@@ -283,13 +283,18 @@ func setupConversationSupervisorTakeoverFixture(t *testing.T) conversationSuperv
 		&models.AgentProfile{},
 		&models.AgentPresenceSession{},
 		&models.StoreStaffBinding{},
+		&models.Channel{},
 		&models.WxWorkProtocolInstance{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.WxWorkKFConversation{},
+		&models.ConversationTakeoverRequest{},
 		&models.ConversationAssignment{},
 		&models.ConversationEventLog{},
 		&models.ConversationReadState{},
 		&models.Message{},
+		&models.ChannelMessageOutbox{},
+		&models.Notification{},
 	); err != nil {
 		t.Fatalf("migrate supervisor takeover models: %v", err)
 	}
@@ -380,7 +385,8 @@ func (f conversationSupervisorTakeoverFixture) createPendingConversation(t *test
 	now := time.Now()
 	conversation := &models.Conversation{
 		TenantID: f.tenantID, CustomerName: "待人工客户", Status: enums.IMConversationStatusPending,
-		CurrentTeamID: teamID, DispatchWeight: 1, LastActiveAt: now, LastMessageAt: now,
+		ServiceMode: enums.IMConversationServiceModeAIFirst, CurrentTeamID: teamID,
+		DispatchWeight: 1, LastActiveAt: now, LastMessageAt: now,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := f.db.Create(conversation).Error; err != nil {

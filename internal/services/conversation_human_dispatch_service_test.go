@@ -13,6 +13,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/eventbus"
 	"agent-desk/internal/pkg/openidentity"
@@ -680,12 +681,13 @@ func TestStoreManualAgentReplyStartsIdleTimeout(t *testing.T) {
 	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待"); err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
+	approveHumanDispatchTakeover(t, db, conversation.ID, operator)
 	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply"); err != nil {
 		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.NeedHumanFollowUp || state.ManualExpireAt == nil {
-		t.Fatalf("expected store manual agent reply to clear follow-up and start idle timeout, got %+v", state)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusHQAgentDeskServing || state.NeedHumanFollowUp || state.ManualExpireAt == nil {
+		t.Fatalf("expected approved web takeover reply to clear follow-up and start idle timeout, got %+v", state)
 	}
 	if state.ManualExpireAt.After(time.Now().Add(services.DefaultManualTimeoutMinutes*time.Minute + 2*time.Second)) {
 		t.Fatalf("expected store manual idle timeout around 10 minutes, got %v", state.ManualExpireAt)
@@ -702,6 +704,7 @@ func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotic
 	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待"); err != nil {
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
+	approveHumanDispatchTakeover(t, db, conversation.ID, operator)
 	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout-notice", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply-notice"); err != nil {
 		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
 	}
@@ -765,7 +768,7 @@ func TestManualSessionTimeoutRequeuesLatestCustomerMessageAfterManualRoute(t *te
 	}
 }
 
-func TestConversationHumanDispatchStoreManualAllowsWebReplyWithoutClaim(t *testing.T) {
+func TestConversationHumanDispatchStoreManualRequiresApprovedWebTakeover(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
@@ -780,19 +783,44 @@ func TestConversationHumanDispatchStoreManualAllowsWebReplyWithoutClaim(t *testi
 		t.Fatalf("expected store_wecom decision, got %+v", result)
 	}
 
-	if err := services.ConversationService.EnsureAgentCanReply(conversation.ID, "门店群跟进后网页端回复", operator); err != nil {
-		t.Fatalf("EnsureAgentCanReply() error = %v", err)
+	if err := services.ConversationService.EnsureAgentCanReply(conversation.ID, "门店群跟进后网页端回复", operator); err == nil || !strings.Contains(err.Error(), "接管审批") {
+		t.Fatalf("expected reply to require approved takeover, got %v", err)
+	}
+	var messagesBefore, outboxesBefore int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&messagesBefore).Error; err != nil {
+		t.Fatalf("count messages before rejected send: %v", err)
+	}
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("conversation_id = ?", conversation.ID).Count(&outboxesBefore).Error; err != nil {
+		t.Fatalf("count outboxes before rejected send: %v", err)
+	}
+	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-rejected", enums.IMMessageTypeText, "不应发送。", "", operator, "req-store-manual-rejected"); err == nil {
+		t.Fatal("expected send before approved takeover to fail")
+	}
+	var messagesAfterRejected, outboxesAfterRejected int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&messagesAfterRejected).Error; err != nil {
+		t.Fatalf("count messages after rejected send: %v", err)
+	}
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("conversation_id = ?", conversation.ID).Count(&outboxesAfterRejected).Error; err != nil {
+		t.Fatalf("count outboxes after rejected send: %v", err)
+	}
+	if messagesAfterRejected != messagesBefore || outboxesAfterRejected != outboxesBefore {
+		t.Fatalf("rejected send changed persisted output: messages %d->%d outboxes %d->%d", messagesBefore, messagesAfterRejected, outboxesBefore, outboxesAfterRejected)
+	}
+
+	approveHumanDispatchTakeover(t, db, conversation.ID, operator)
+	if err := services.ConversationService.EnsureAgentCanReply(conversation.ID, "审批后网页端回复", operator); err != nil {
+		t.Fatalf("EnsureAgentCanReply() after approval error = %v", err)
 	}
 	message, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-1", enums.IMMessageTypeText, "我来跟进处理。", "", operator, "req-store-manual-reply")
 	if err != nil {
-		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
+		t.Fatalf("SendAgentMessageWithRequestID() after approval error = %v", err)
 	}
 	if message == nil || message.SenderType != enums.IMSenderTypeAgent {
 		t.Fatalf("expected agent message, got %+v", message)
 	}
 	current := services.ConversationService.Get(conversation.ID)
-	if current.Status == enums.IMConversationStatusPending || current.CurrentAssigneeID != 0 {
-		t.Fatalf("store manual web reply should not require claim or move into pending pool, got %+v", current)
+	if current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != operator.UserID {
+		t.Fatalf("approved web takeover must assign the requester, got %+v", current)
 	}
 }
 
@@ -955,6 +983,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.Conversation{},
 		&models.ConversationRouteState{},
 		&models.ConversationDialogueState{},
+		&models.ConversationTakeoverRequest{},
 		&models.AIManualResumeTask{},
 		&models.ConversationParticipant{},
 		&models.ConversationAssignment{},
@@ -1156,6 +1185,52 @@ func createHumanDispatchStoreAgent(t *testing.T, db *gorm.DB, userID int64) *dto
 		Username:       "store-agent",
 		Nickname:       "门店客服",
 		Roles:          []string{constants.RoleCodeCsUser},
+		Permissions: []string{
+			constants.PermissionConversationView.Code,
+			constants.PermissionConversationSend.Code,
+		},
+	}
+}
+
+func approveHumanDispatchTakeover(t *testing.T, db *gorm.DB, conversationID int64, requester *dto.AuthPrincipal) {
+	t.Helper()
+	const reviewerID int64 = 901
+	if err := db.Model(&models.AgentTeam{}).Where("tenant_id = ? AND id = ?", int64(101), int64(1)).Update("leader_user_id", reviewerID).Error; err != nil {
+		t.Fatalf("set takeover reviewer: %v", err)
+	}
+	if _, err := services.ConversationTakeoverService.Request(request.RequestConversationTakeoverRequest{
+		ConversationID: conversationID,
+		Reason:         "申请网页端接管",
+	}, requester); err != nil {
+		t.Fatalf("request conversation takeover: %v", err)
+	}
+	pending := repositories.ConversationTakeoverRequestRepository.FindOne(db, sqls.NewCnd().
+		Eq("tenant_id", int64(101)).
+		Eq("conversation_id", conversationID).
+		Eq("status", enums.ConversationTakeoverRequestStatusPending).
+		Desc("id"))
+	if pending == nil {
+		t.Fatal("pending conversation takeover request not found")
+	}
+	reviewer := &dto.AuthPrincipal{
+		UserID:         reviewerID,
+		TenantID:       101,
+		ActiveTenantID: 101,
+		Username:       "team-leader",
+		Nickname:       "客服组长",
+		Roles:          []string{constants.RoleCodeCsTeamLeader},
+		Permissions: []string{
+			constants.PermissionConversationView.Code,
+			constants.PermissionConversationSend.Code,
+			constants.PermissionConversationAssign.Code,
+		},
+	}
+	if err := services.ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: pending.ID,
+		Approved:  true,
+		Remark:    "同意接管",
+	}, reviewer); err != nil {
+		t.Fatalf("approve conversation takeover: %v", err)
 	}
 }
 

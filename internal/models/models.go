@@ -90,6 +90,7 @@ var Models = []any{
 	&ReportViewPreset{},
 	&MessageSyncLog{},
 	&ConversationAssignment{},
+	&ConversationTakeoverRequest{},
 	&QuickReply{},
 	&ConversationEventLog{},
 	&Ticket{},
@@ -539,6 +540,32 @@ type Conversation struct {
 	ClosedAt             *time.Time                      `gorm:"type:datetime;index"`                                               // ClosedAt 为会话关闭时间。
 	ClosedBy             int64                           `gorm:"type:bigint;not null;default:0;index"`                              // ClosedBy 为关闭人用户ID，访客关闭时写0。
 	CloseReason          string                          `gorm:"type:varchar(255);not null;default:''"`                             // CloseReason 为关闭原因。
+	AuditFields
+}
+
+// ConversationTakeoverRequest records one active request to take over an
+// unassigned conversation from AI or the human pool. Assigned conversations
+// continue through the existing transfer flow. ActiveKey is nullable so
+// completed requests remain immutable history while a unique key prevents
+// duplicate pending requests for the same conversation session.
+type ConversationTakeoverRequest struct {
+	ID                int64                                   `gorm:"primaryKey;autoIncrement"`
+	TenantID          int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	ConversationID    int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	SessionNo         int                                     `gorm:"type:int;not null;default:1;index"`
+	TeamID            int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	RequesterUserID   int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	RequesterName     string                                  `gorm:"type:varchar(100);not null;default:''"`
+	SourceAssigneeID  int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	SourceRouteStatus enums.ConversationRouteStatus           `gorm:"type:varchar(40);not null;default:'';index"`
+	Reason            string                                  `gorm:"type:varchar(500);not null;default:''"`
+	Status            enums.ConversationTakeoverRequestStatus `gorm:"type:varchar(20);not null;default:'pending';index"`
+	ReviewerUserID    int64                                   `gorm:"type:bigint;not null;default:0;index"`
+	ReviewerName      string                                  `gorm:"type:varchar(100);not null;default:''"`
+	ReviewRemark      string                                  `gorm:"type:varchar(500);not null;default:''"`
+	ReviewedAt        *time.Time                              `gorm:"type:datetime;index"`
+	TerminalReason    string                                  `gorm:"type:varchar(100);not null;default:'';index"`
+	ActiveKey         *string                                 `gorm:"type:varchar(191);uniqueIndex:uk_conversation_takeover_active"`
 	AuditFields
 }
 

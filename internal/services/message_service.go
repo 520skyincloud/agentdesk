@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/constants"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -1048,6 +1047,20 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if senderType == enums.IMSenderTypeAgent && !options.externalAgentReply {
+			lockedConversation, lockedRoute, lockErr := ConversationTakeoverService.lockAndEnsureCanReplyDB(
+				ctx.Tx,
+				conversation.ID,
+				conversation.TenantID,
+				operator,
+			)
+			if lockErr != nil {
+				return lockErr
+			}
+			conversation = lockedConversation
+			sessionNo = lockedRoute.SessionNo
+			message.SessionNo = sessionNo
+		}
 		if !options.skipOutbound {
 			if options.systemOutbound {
 				ChannelMessageOutboxService.PrepareSystemOutboundMessage(ctx.Tx, conversation, message)
@@ -1401,14 +1414,8 @@ func (s *messageService) ValidateConversationSender(conversationID int64, sender
 		if err != nil {
 			return nil, err
 		}
-		if s.canSendStoreManualAgentMessage(conversation, operator) {
-			return conversation, nil
-		}
-		if conversation.Status != enums.IMConversationStatusActive || conversation.CurrentAssigneeID == 0 {
-			return nil, errorsx.InvalidParam("会话未分配客服，暂不允许发送消息")
-		}
-		if conversation.CurrentAssigneeID != operator.UserID {
-			return nil, errorsx.Forbidden("当前会话已分配给其他客服")
+		if err := ConversationTakeoverService.EnsureCanReply(conversationID, operator); err != nil {
+			return nil, err
 		}
 	case enums.IMSenderTypeAI:
 		if operator == nil {
@@ -1428,30 +1435,6 @@ func (s *messageService) ValidateConversationSender(conversationID int64, sender
 		return nil, errorsx.InvalidParam("不支持的发送人类型")
 	}
 	return conversation, nil
-}
-
-func (s *messageService) canSendStoreManualAgentMessage(conversation *models.Conversation, operator *dto.AuthPrincipal) bool {
-	if conversation == nil || operator == nil || operator.UserID <= 0 {
-		return false
-	}
-	if conversation.Status == enums.IMConversationStatusClosed || conversation.CurrentAssigneeID != 0 {
-		return false
-	}
-	if operator.ActiveTenantID != conversation.TenantID {
-		return false
-	}
-	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversation.ID, conversation.TenantID)
-	if route == nil || route.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
-		return false
-	}
-	if ConversationService.isAdmin(operator) {
-		return true
-	}
-	if slices.Contains(operator.Roles, constants.RoleCodeStoreStaff) {
-		return AgentTeamScopeService.CanViewConversation(operator, conversation.ID)
-	}
-	profile := repositories.AgentProfileRepository.Take(sqls.DB(), "tenant_id = ? AND user_id = ? AND status = ?", conversation.TenantID, operator.UserID, enums.StatusOk)
-	return AgentProfileService.ProfileCanServeRoute(profile, route)
 }
 
 func (s *messageService) allowAIMessageOnPendingHandoff(conversation *models.Conversation) bool {

@@ -605,6 +605,15 @@ func WxWorkProtocolInstancePostInvite_room_member(ctx *gin.Context) {
 	if !requireWxWorkInstanceAccess(ctx, operator, req.ID) {
 		return
 	}
+	if req.ConversationID > 0 {
+		if err := services.ConversationTakeoverService.EnsureCanInviteRoomMember(req.ConversationID, req.ID, req.RoomID, operator); err != nil {
+			httpx.WriteJSON(ctx, err)
+			return
+		}
+	} else if !services.AuthService.HasPermission(ctx, constants.PermissionChannelUpdate.Code) {
+		httpx.WriteJSON(ctx, errorsx.Forbidden("会话群邀请必须提供会话ID"))
+		return
+	}
 	if err := services.WxWorkProtocolService.InviteRoomMember(req.ID, req.RoomID, req.UserList); err != nil {
 		httpx.WriteJSON(ctx, err)
 		return

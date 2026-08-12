@@ -1010,7 +1010,10 @@ func (s *wsService) defaultTopics(session *ClientSession) []string {
 		if slices.Contains(session.Principal.Permissions, constants.PermissionConversationHandover.Code) {
 			topics = append(topics, s.dispatchTenantTopic(session.TenantID))
 		}
-		return topics
+		for _, bindingID := range scope.StoreStaffBindingIDs {
+			topics = append(topics, s.storeStaffBindingTopic(bindingID))
+		}
+		return normalizeRealtimeTopics(topics)
 	default:
 		// 开放 IM：仅 External、无 AuthPrincipal 的访客连接必须仍能订阅 guest:{externalId}，否则收不到推送。
 		if session.TenantID > 0 && session.External != nil && strings.TrimSpace(session.External.ExternalID) != "" {

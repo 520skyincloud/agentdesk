@@ -190,6 +190,10 @@ export function useAgentConversationRealtime() {
               void store.resyncRealtimeData(conversationId).catch((error) => {
                 toast.error(error instanceof Error ? error.message : t("conversation.syncConversationListFailed"))
               })
+            } else if (conversationId > 0 && selectedConversationIdRef.current === conversationId) {
+              void store.refreshConversation(conversationId).catch((error) => {
+                toast.error(error instanceof Error ? error.message : t("conversation.syncConversationListFailed"))
+              })
             }
           }
         } catch {

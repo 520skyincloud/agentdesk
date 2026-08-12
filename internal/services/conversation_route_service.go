@@ -2,10 +2,12 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
+	"strings"
 	"time"
 
 	"github.com/mlogclub/simple/sqls"
@@ -126,6 +128,21 @@ func (s *conversationRouteService) EnsureActiveSessionForCustomerMessage(convers
 		resultSessionNo = lockedState.SessionNo + 1
 		if err := ConversationAssignmentService.FinishActiveAssignments(ctx, current.ID, now); err != nil {
 			return err
+		}
+		if ctx.Tx.Migrator().HasTable(&models.ConversationTakeoverRequest{}) {
+			if err := repositories.ConversationTakeoverRequestRepository.CancelPendingByConversationSession(
+				ctx.Tx,
+				current.TenantID,
+				current.ID,
+				lockedState.SessionNo,
+				"session_changed",
+				map[string]any{
+					"updated_at":       now,
+					"update_user_name": "system",
+				},
+			); err != nil {
+				return err
+			}
 		}
 		if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, lockedState.ID, lockedState.TenantID, map[string]any{
 			"session_no":               resultSessionNo,
@@ -517,6 +534,14 @@ func (s *conversationRouteService) enterHQAgentDeskServingWithDB(db *gorm.DB, co
 	if err != nil {
 		return nil, err
 	}
+	locked, err := repositories.ConversationRouteStateRepository.GetForUpdateByConversationInTenant(db, conversationID, state.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if locked == nil {
+		return nil, errorsx.InvalidParam("会话路由不存在")
+	}
+	state = locked
 	expireAt := now.Add(DefaultManualTimeoutMinutes * time.Minute)
 	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(db, state.ID, state.TenantID, map[string]any{
 		"route_status":             enums.ConversationRouteStatusHQAgentDeskServing,
@@ -531,6 +556,21 @@ func (s *conversationRouteService) enterHQAgentDeskServingWithDB(db *gorm.DB, co
 		"update_user_name":         "system",
 	}); err != nil {
 		return nil, err
+	}
+	if db.Migrator().HasTable(&models.ConversationTakeoverRequest{}) {
+		if err := repositories.ConversationTakeoverRequestRepository.CancelPendingByConversationSession(
+			db,
+			state.TenantID,
+			conversationID,
+			state.SessionNo,
+			"conversation_assigned",
+			map[string]any{
+				"updated_at":       now,
+				"update_user_name": "system",
+			},
+		); err != nil {
+			return nil, err
+		}
 	}
 	updated := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, state.TenantID)
 	if _, err := ConversationDialogueStateService.CatchUpRouteStateDB(db, updated, now); err != nil {
@@ -578,6 +618,125 @@ func (s *conversationRouteService) restoreAIWithFollowUpInTenant(conversationID,
 		_, err = ConversationDialogueStateService.CatchUpRouteStateDB(ctx.Tx, updated, now)
 		return err
 	})
+}
+
+// restoreAIWithFollowUpDB atomically returns a manually served conversation to
+// AI. Callers must pass the conversation and route rows locked in the current
+// transaction so assignment, route and dialogue state cannot diverge.
+func (s *conversationRouteService) restoreAIWithFollowUpDB(
+	ctx *sqls.TxContext,
+	conversation *models.Conversation,
+	route *models.ConversationRouteState,
+	reason string,
+	now time.Time,
+	needHumanFollowUp bool,
+	operator *dto.AuthPrincipal,
+	source string,
+) (bool, error) {
+	if ctx == nil || ctx.Tx == nil || conversation == nil || route == nil ||
+		conversation.ID <= 0 || conversation.TenantID <= 0 ||
+		route.ConversationID != conversation.ID || route.TenantID != conversation.TenantID ||
+		route.SessionNo <= 0 {
+		return false, errorsx.InvalidParam("会话恢复AI上下文无效")
+	}
+	if conversation.Status == enums.IMConversationStatusClosed || route.RouteStatus == enums.ConversationRouteStatusClosed {
+		return false, errorsx.InvalidParam("会话已关闭")
+	}
+	if (route.RouteStatus == enums.ConversationRouteStatusAIServing || route.RouteStatus == enums.ConversationRouteStatusAIFallback) &&
+		conversation.CurrentAssigneeID == 0 {
+		return false, nil
+	}
+
+	operatorID := int64(0)
+	operatorName := "system"
+	if operator != nil {
+		operatorID = operator.UserID
+		if operator.Username != "" {
+			operatorName = operator.Username
+		}
+	}
+	fromStatus := conversation.Status
+	fromAssigneeID := conversation.CurrentAssigneeID
+	fromRoute := route.RouteStatus
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "恢复AI接待"
+	}
+	source = strings.TrimSpace(source)
+
+	if err := ConversationAssignmentService.FinishActiveAssignments(ctx, conversation.ID, now); err != nil {
+		return false, err
+	}
+	if err := repositories.ConversationRepository.UpdatesInTenant(ctx.Tx, conversation.ID, conversation.TenantID, map[string]any{
+		"status":              enums.IMConversationStatusAIServing,
+		"current_assignee_id": int64(0),
+		"current_team_id":     int64(0),
+		"handoff_at":          nil,
+		"handoff_reason":      "",
+		"updated_at":          now,
+		"update_user_id":      operatorID,
+		"update_user_name":    operatorName,
+	}); err != nil {
+		return false, err
+	}
+	if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, route.ID, route.TenantID, map[string]any{
+		"route_status":             enums.ConversationRouteStatusAIServing,
+		"route_target":             "ai",
+		"manual_expire_at":         nil,
+		"pending_action":           "",
+		"pending_action_payload":   "",
+		"pending_action_expire_at": nil,
+		"need_human_follow_up":     needHumanFollowUp,
+		"handoff_reason":           reason,
+		"updated_at":               now,
+		"update_user_id":           operatorID,
+		"update_user_name":         operatorName,
+	}); err != nil {
+		return false, err
+	}
+	if ctx.Tx.Migrator().HasTable(&models.ConversationTakeoverRequest{}) {
+		if err := repositories.ConversationTakeoverRequestRepository.CancelPendingByConversationSession(
+			ctx.Tx,
+			conversation.TenantID,
+			conversation.ID,
+			route.SessionNo,
+			"conversation_resumed_ai",
+			map[string]any{
+				"updated_at":       now,
+				"update_user_id":   operatorID,
+				"update_user_name": operatorName,
+			},
+		); err != nil {
+			return false, err
+		}
+	}
+	updatedRoute := *route
+	updatedRoute.RouteStatus = enums.ConversationRouteStatusAIServing
+	updatedRoute.RouteTarget = "ai"
+	updatedRoute.ManualExpireAt = nil
+	updatedRoute.PendingAction = ""
+	updatedRoute.PendingActionPayload = ""
+	updatedRoute.PendingActionExpireAt = nil
+	updatedRoute.NeedHumanFollowUp = needHumanFollowUp
+	updatedRoute.HandoffReason = reason
+	updatedRoute.UpdatedAt = now
+	if _, err := ConversationDialogueStateService.CatchUpRouteStateDB(ctx.Tx, &updatedRoute, now); err != nil {
+		return false, err
+	}
+	if err := ConversationEventLogService.CreateEvent(ctx, conversation.ID, enums.IMEventTypeTransfer, enums.IMSenderTypeAgent, operatorID, reason, ConversationService.buildEventPayload(map[string]any{
+		"source":            source,
+		"fromStatus":        fromStatus,
+		"toStatus":          enums.IMConversationStatusAIServing,
+		"fromAssigneeId":    fromAssigneeID,
+		"toAssigneeId":      0,
+		"fromRoute":         fromRoute,
+		"toRoute":           enums.ConversationRouteStatusAIServing,
+		"sessionNo":         route.SessionNo,
+		"needHumanFollowUp": needHumanFollowUp,
+	})); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *conversationRouteService) RestoreAIWithFollowUpInTenant(conversationID, tenantID int64, reason string, now time.Time, needHumanFollowUp bool) error {

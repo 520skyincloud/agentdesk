@@ -52,6 +52,27 @@ type ConversationManualAttentionResponse struct {
 	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
+type ConversationTakeoverStateResponse struct {
+	RequestID         int64  `json:"requestId,omitempty"`
+	RequestStatus     string `json:"requestStatus,omitempty"`
+	RequesterUserID   int64  `json:"requesterUserId,omitempty"`
+	RequesterName     string `json:"requesterName,omitempty"`
+	TeamID            int64  `json:"teamId,omitempty"`
+	TeamName          string `json:"teamName,omitempty"`
+	Reason            string `json:"reason,omitempty"`
+	ReviewRemark      string `json:"reviewRemark,omitempty"`
+	RequestedAt       string `json:"requestedAt,omitempty"`
+	ReviewedAt        string `json:"reviewedAt,omitempty"`
+	CanReply          bool   `json:"canReply"`
+	CanRequest        bool   `json:"canRequest"`
+	CanDirectTakeover bool   `json:"canDirectTakeover"`
+	CanReview         bool   `json:"canReview"`
+	CanResumeAI       bool   `json:"canResumeAi"`
+	IsCurrentAssignee bool   `json:"isCurrentAssignee"`
+	PendingForMe      bool   `json:"pendingForMe"`
+	PendingForAnother bool   `json:"pendingForAnother"`
+}
+
 type ConversationResponse struct {
 	ID                        int64                               `json:"id"`
 	AIAgentID                 int64                               `json:"aiAgentId"`
@@ -106,6 +127,7 @@ type ConversationResponse struct {
 
 type ConversationDetailResponse struct {
 	ConversationResponse
+	TakeoverState        ConversationTakeoverStateResponse    `json:"takeoverState"`
 	Participants         []ConversationParticipantResponse    `json:"participants,omitempty"`
 	ChannelSessions      []ConversationChannelSessionResponse `json:"channelSessions,omitempty"`
 	HistorySegments      []ConversationHistorySegmentResponse `json:"historySegments,omitempty"`

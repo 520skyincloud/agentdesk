@@ -222,7 +222,8 @@ type AcceptWxWorkProtocolFriendRequest struct {
 }
 
 type InviteWxWorkProtocolRoomMemberRequest struct {
-	ID       int64    `json:"id"`
-	RoomID   string   `json:"roomId"`
-	UserList []string `json:"userList"`
+	ID             int64    `json:"id"`
+	ConversationID int64    `json:"conversationId"`
+	RoomID         string   `json:"roomId"`
+	UserList       []string `json:"userList"`
 }

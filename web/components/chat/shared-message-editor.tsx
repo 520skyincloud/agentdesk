@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type ChangeEvent } from "react"
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react"
 import Placeholder from "@tiptap/extension-placeholder"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
@@ -24,7 +24,6 @@ import {
   CommandList,
 } from "@/components/ui/command"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Switch } from "@/components/ui/switch"
 import {
   buildSendableEditorHTML,
   hasUploadingEditorImages,
@@ -65,15 +64,14 @@ type SharedMessageEditorProps = {
     items: MessageEditorQuickReply[]
     onOpenChange: (open: boolean) => void
   }
-  aiReplyEnabled?: boolean
   canAgentReply?: boolean
   disabledReason?: string
-  aiReplyToggleDisabled?: boolean
-  onSend: (html: string) => Promise<void>
+  replyPermissionHint?: string
+  agentAction?: ReactNode
+  onSend: (html: string) => Promise<boolean | void>
   onUploadImage: (file: File) => Promise<UploadedMessageEditorImage | null>
   onSendImage?: (file: File) => Promise<void>
   onSendAttachment: (file: File) => Promise<void>
-  onToggleAIReply?: (enabled: boolean) => Promise<void> | void
   onOpenGroupInvite?: () => void
 }
 
@@ -83,15 +81,14 @@ export function SharedMessageEditor({
   uploadingAsset = false,
   manageLocalUploading = false,
   quickReplies,
-  aiReplyEnabled = true,
   canAgentReply = !disabled,
   disabledReason,
-  aiReplyToggleDisabled = false,
+  replyPermissionHint,
+  agentAction,
   onSend,
   onUploadImage,
   onSendImage,
   onSendAttachment,
-  onToggleAIReply,
   onOpenGroupInvite,
 }: SharedMessageEditorProps) {
   const t = useI18n()
@@ -208,7 +205,10 @@ export function SharedMessageEditor({
     if (!isMeaningfulHTML(html)) {
       return
     }
-    await onSendRef.current(html)
+    const sent = await onSendRef.current(html)
+    if (sent === false) {
+      return
+    }
     editor.commands.clearContent(true)
     revokeEditorObjectUrls(objectUrlsRef.current)
     uploadedImagesRef.current.clear()
@@ -364,9 +364,9 @@ export function SharedMessageEditor({
           {disabledReason}
         </div>
       ) : null}
-      {!isCustomer && !canAgentReply && !aiReplyEnabled ? (
-        <div className="border-t border-border bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          当前会话暂不可发送，请先接管或检查会话状态。
+      {!isCustomer && !canAgentReply && replyPermissionHint ? (
+        <div className="border-t border-border bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+          {replyPermissionHint}
         </div>
       ) : null}
       <div className={getToolbarClassName(variant)}>
@@ -505,20 +505,11 @@ export function SharedMessageEditor({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          {!isCustomer ? (
-            <label className="flex items-center gap-2 text-sm text-foreground">
-              <span>{t("conversation.aiReply")}</span>
-              <Switch
-                checked={aiReplyEnabled}
-                disabled={aiReplyToggleDisabled}
-                onCheckedChange={(checked) => void onToggleAIReply?.(checked)}
-              />
-            </label>
-          ) : (
+          {isCustomer ? (
             <p className="hidden text-[10px] text-muted-foreground sm:block">
               {t("conversation.enterToSend")}
             </p>
-          )}
+          ) : agentAction}
           {isCustomer ? (
             <Button
               type="button"

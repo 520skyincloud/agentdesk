@@ -65,6 +65,27 @@ export type AgentConversationManualAttention = {
   expiresAt?: string
 }
 
+export type AgentConversationTakeoverState = {
+  requestId?: number
+  requestStatus?: string
+  requesterUserId?: number
+  requesterName?: string
+  teamId?: number
+  teamName?: string
+  reason?: string
+  reviewRemark?: string
+  requestedAt?: string
+  reviewedAt?: string
+  canReply: boolean
+  canRequest: boolean
+  canDirectTakeover: boolean
+  canReview: boolean
+  canResumeAi: boolean
+  isCurrentAssignee: boolean
+  pendingForMe: boolean
+  pendingForAnother: boolean
+}
+
 export type AgentConversation = {
   id: number
   aiAgentId?: number
@@ -101,6 +122,7 @@ export type AgentConversation = {
   autoHandoffEnabled?: boolean
   manualExpireAt?: string
   manualAttention?: AgentConversationManualAttention
+  takeoverState?: AgentConversationTakeoverState
   storeId?: number
   storeName?: string
   storeStaffBindingId?: number
@@ -330,6 +352,44 @@ export function assignAgentConversation(
   return request<void>("/api/dashboard/conversation/assign", {
     method: "POST",
     body: JSON.stringify({ conversationId, assigneeId, reason }),
+  })
+}
+
+export function requestAgentConversationTakeover(
+  conversationId: number,
+  reason: string,
+) {
+  return request<void>("/api/dashboard/conversation/takeover/request", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, reason }),
+  })
+}
+
+export function directTakeoverAgentConversation(
+  conversationId: number,
+  reason: string,
+) {
+  return request<void>("/api/dashboard/conversation/takeover/direct", {
+    method: "POST",
+    body: JSON.stringify({ conversationId, reason }),
+  })
+}
+
+export function reviewAgentConversationTakeover(payload: {
+  requestId: number
+  approved: boolean
+  remark?: string
+}) {
+  return request<void>("/api/dashboard/conversation/takeover/review", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function resumeAgentConversationAI(conversationId: number) {
+  return request<void>("/api/dashboard/conversation/resume_ai", {
+    method: "POST",
+    body: JSON.stringify({ conversationId }),
   })
 }
 
