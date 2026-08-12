@@ -267,3 +267,19 @@ AI_RUNTIME_V2_BINDING_IDS=1
 `agentdesk.service`。若需要回滚二进制，再把 `/opt/agentdesk/current` 切回上一发布目录。新增表和
 nullable 字段不会阻止旧代码运行；若同时回滚 NewAPI 地址，需要显式恢复上一 Profile 网关，
 Credential/API Key 无需改变。
+
+### 8.4 2026-08-12 回复成功后误转人工热修
+
+- 生产消息 `360` 已由 `gpt-5.6-luna` 成功生成并提交消息 `361`，但 AI Reply Job `99` 随后被错误标记为
+  `commit_failed_human_dispatch`。根因是逐题任务使用 48 位小写 SHA-256 截断值作为稳定
+  `ClientMsgID`，而 Job 完成证据校验仍只接受历史 `ai_reply_` 等前缀。
+- 最小修复仅扩展 `isStableRuntimeAIClientMsgID`：继续接受历史前缀，同时严格接受长度恰好 48、字符仅为
+  `0-9a-f` 的新版轮次哈希。Tenant、Conversation、Session、RequestID、消息方向、撤回和发送状态校验
+  全部保留。
+- 回归测试覆盖合法轮次哈希、长度错误、大写和非十六进制值，以及 RequestID 不一致和发送失败仍必须
+  转入 `commit_failed`。
+- 热修提交为 `1d73c49b12705bdf85e91ee43d29d32bf83e3785`，发布目录为
+  `/opt/agentdesk/releases/20260812-ai-evidence-1d73c49`。服务重启后 `agentdesk.service` 为 active、
+  `NRestarts=0`，本机 `/api/auth/options` 返回成功。
+- 回滚只需将 `/opt/agentdesk/current` 切回
+  `/opt/agentdesk/releases/20260812-role-navigation-491e5b6` 并重启服务；无数据库、API、前端或配置变更。

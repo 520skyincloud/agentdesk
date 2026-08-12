@@ -616,6 +616,65 @@ func TestAIReplyJobAcceptsTurnHashCompletionEvidence(t *testing.T) {
 	}
 }
 
+func TestAIReplyJobRejectsInvalidTurnHashCompletionEvidence(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*models.Message)
+	}{
+		{
+			name: "request mismatch",
+			mutate: func(reply *models.Message) {
+				reply.RequestID = "different-request"
+			},
+		},
+		{
+			name: "failed message",
+			mutate: func(reply *models.Message) {
+				reply.SendStatus = enums.IMMessageStatusFailed
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "你好")
+			setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+				now := time.Now()
+				reply := &models.Message{
+					TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: message.SessionNo,
+					RequestID: message.RequestID, ClientMsgID: "01671f38636bdda639e1d2ed22891beff4dd1af82f23e3cb",
+					SenderType: enums.IMSenderTypeAI, SenderID: conversation.AIAgentID,
+					MessageType: enums.IMMessageTypeText, Content: "你好，在的。",
+					SeqNo:      repositories.MessageRepository.NextSeqNoInTenant(fixture.db, conversation.ID, conversation.TenantID),
+					SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+					AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+				}
+				tt.mutate(reply)
+				if err := fixture.db.Create(reply).Error; err != nil {
+					return AIReplyExecutionResult{}, err
+				}
+				return AIReplyExecutionResult{
+					Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed", CommittedMessageIDs: []int64{reply.ID},
+				}, nil
+			})
+			var dispatchCalls atomic.Int32
+			fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+				dispatchCalls.Add(1)
+				return nil
+			}
+			makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+			current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
+				current.ResultCode != "commit_failed_human_dispatch" || current.LastErrorClass != "commit_failed" ||
+				dispatchCalls.Load() != 1 {
+				t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+			}
+		})
+	}
+}
+
 func TestStableRuntimeAIClientMsgID(t *testing.T) {
 	tests := []struct {
 		name  string
