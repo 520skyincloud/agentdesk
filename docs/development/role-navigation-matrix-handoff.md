@@ -156,6 +156,62 @@ go vet ./...
 git diff --check
 ```
 
+## Repository And Server Delivery
+
+The implementation commit is
+`491e5b6972a196547ce5d26ebc089e55b3019bb2`. It was pushed to both
+`origin/main` (`agentdesk`) and `weibao/main`, as well as the matching
+`codex/role-navigation-matrix` branch on both remotes.
+
+The Test 2 server deployment completed on August 12, 2026 at approximately
+19:32 China Standard Time:
+
+- server: `36.138.68.47:2301`;
+- public application: `https://36.138.68.47:2303`;
+- previous release: `/opt/agentdesk/releases/20260812-dispatch-d81dff7`;
+- active release: `/opt/agentdesk/releases/20260812-role-navigation-491e5b6`;
+- release package SHA-256:
+  `62a4fc7627c1dc4e593f0e5a1ea23a337cc522f37ebe3a52537eb1093b47e59e`;
+- running `agent-desk` SHA-256:
+  `9659822587bffd1309b0491edf62570c68e49ccd5f07d691b5d3d961c639db9b`;
+- pre-deployment MySQL backup:
+  `/opt/agentdesk/backups/pre-role-navigation-491e5b6-20260812-112839.sql.gz`;
+- backup SHA-256:
+  `9b3df78e9f1bcf5baaa2462d57d67b36febe885ee846d3a6d35093a4809254b4`.
+
+The server uses `agentdesk.service`, with Nginx port `2303` proxying the Go
+process on port `8083`. Migration `76` completed successfully before the
+atomic `current` symlink switch. Database verification found exactly the five
+expected built-in role relations. The service returned HTTP 200 for the home
+and conversation pages, both retired pages returned HTTP 307 to `/dashboard/`,
+the retired Profile and Channel management endpoints returned HTTP 404, and
+the retained read endpoints continued to enforce authentication. The current
+release contains no static output directories for either retired page.
+
+The deployment did not install, move, restart, or reconfigure FastGPT or
+NewAPI. Those services remain external to the Test 2 AgentDesk host.
+
+### Pre-existing Integrity Finding
+
+The post-deployment tenant integrity audit checked 103 tenant models, 119 of
+119 required tables, and 308 of 308 configured relations. It reported four
+pre-existing relation categories totaling 12 records:
+
+- `ConversationAssignment.to_user_id`: 4;
+- `ConversationResponseSpan.agent_id`: 2;
+- `ConversationServiceSession.assigned_agent_id`: 2;
+- `DispatchDecisionLog.selected_user_id`: 4.
+
+Every affected child record belongs to Tenant `2` but points to the platform
+account `user_id=1`, whose `tenant_id` is `0`. The deployment-predecessor audit
+binary from `20260812-dispatch-d81dff7` produced the exact same categories,
+counts, and record IDs after the deployment, proving the findings predate this
+role-navigation change. No historical business data was rewritten as part of
+this task. Audit outputs are retained at:
+
+- `/opt/agentdesk/backups/tenant-integrity-audit-491e5b6.json`;
+- `/opt/agentdesk/backups/tenant-integrity-audit-pre-role-navigation-d81dff7.json`.
+
 ## Parallel Branch And Merge Notes
 
 - Shared files include `internal/pkg/constants/auth.go`, migration registration,
