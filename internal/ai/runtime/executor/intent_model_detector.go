@@ -322,7 +322,7 @@ func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolv
 	errorMessage := ""
 	if callErr != nil {
 		status = "failed"
-		errorMessage = "model_call_failed"
+		errorMessage = modelconfig.InvocationErrorClass(callErr)
 	}
 	event := models.AIUsageEvent{
 		EventKey:       fmt.Sprintf("%s:intent_detect:%d", requestID, attempt),

@@ -5,26 +5,30 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
 
 func TestValidateStructuredResponsesPayload(t *testing.T) {
+	schema := contracts.MustSchema(contracts.SchemaIntentTasksV2)
+	valid := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1}]}`
 	for _, test := range []struct {
 		name string
 		raw  string
 		want bool
 	}{
-		{name: "output text", raw: `{"output_text":"{\"ok\":true}"}`, want: true},
-		{name: "nested output", raw: `{"output":[{"content":[{"type":"output_text","text":"{\"ok\":true}"}]}]}`, want: true},
+		{name: "output text", raw: `{"output_text":` + strconv.Quote(valid) + `}`, want: true},
+		{name: "nested output", raw: `{"output":[{"content":[{"type":"output_text","text":` + strconv.Quote(valid) + `}]}]}`, want: true},
 		{name: "schema not followed", raw: `{"output_text":"OK"}`, want: false},
-		{name: "wrong value", raw: `{"output_text":"{\"ok\":false}"}`, want: false},
+		{name: "wrong schema version", raw: `{"output_text":"{\"schemaVersion\":\"intent_tasks.v1\",\"dialogueAct\":\"greeting\",\"tasks\":[]}"}`, want: false},
 		{name: "empty", raw: `{"output":[]}`, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := validateStructuredResponsesPayload([]byte(test.raw)); got != test.want {
+			if got := validateStructuredResponsesPayload([]byte(test.raw), schema); got != test.want {
 				t.Fatalf("got=%v want=%v", got, test.want)
 			}
 		})
@@ -38,6 +42,12 @@ func TestValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots(t *testi
 	} {
 		t.Run(string(usageCode), func(t *testing.T) {
 			var captured map[string]any
+			responseText := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1}]}`
+			expectedSchemaName := "intent_tasks_v2"
+			if usageCode == enums.ModelUsageSlotReplyLLM {
+				responseText = `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"您好，请问有什么可以帮您？","evidenceRefs":[],"actionRefs":[]}]}`
+				expectedSchemaName = "reply_output_v2"
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1/responses" {
 					t.Errorf("path=%s", r.URL.Path)
@@ -49,7 +59,7 @@ func TestValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots(t *testi
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"output_text":"{\"ok\":true}"}`))
+				_ = json.NewEncoder(w).Encode(map[string]any{"output_text": responseText})
 			}))
 			defer server.Close()
 
@@ -67,11 +77,17 @@ func TestValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots(t *testi
 				t.Fatalf("missing Responses text config: %#v", captured)
 			}
 			format, ok := textConfig["format"].(map[string]any)
-			if !ok || format["type"] != "json_schema" || format["name"] != "agentdesk_connection_test" || format["strict"] != true {
+			if !ok || format["type"] != "json_schema" || format["name"] != expectedSchemaName || format["strict"] != true {
 				t.Fatalf("unexpected Responses format: %#v", textConfig)
 			}
-			if _, ok := format["schema"].(map[string]any); !ok {
+			schema, ok := format["schema"].(map[string]any)
+			if !ok {
 				t.Fatalf("missing connection-test JSON Schema: %#v", format)
+			}
+			properties, _ := schema["properties"].(map[string]any)
+			schemaVersion, _ := properties["schemaVersion"].(map[string]any)
+			if schemaVersion["type"] != "string" {
+				t.Fatalf("runtime Schema was not normalized for Responses: %#v", schemaVersion)
 			}
 			reasoning, ok := captured["reasoning"].(map[string]any)
 			if !ok || reasoning["effort"] != "none" {

@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/pkg/strictjson"
 )
 
 type storeCredentialSlotValidator interface {
@@ -119,18 +121,21 @@ func (v *newAPIStoreCredentialValidator) validateTextModel(ctx context.Context, 
 			"model": slot.ModelName, "instructions": "这是连接验证。", "input": prompt, "max_output_tokens": 16,
 		}
 		validator := validateResponsesPayload
-		if slot.UsageCode == enums.ModelUsageSlotIntentDetectLLM || slot.UsageCode == enums.ModelUsageSlotReplyLLM {
-			payload["instructions"] = "输出符合指定 JSON Schema 的结果。"
-			payload["input"] = "返回 ok=true。"
-			payload["max_output_tokens"] = 64
+		if schemaName, schemaRaw, input := runtimeStructuredValidationContract(slot.UsageCode); schemaName != "" {
+			normalizedSchema, err := modelconfig.NormalizeResponsesJSONSchema(schemaRaw)
+			if err != nil {
+				return &storeCredentialValidationError{UsageCode: slot.UsageCode, Class: "request_build_failed"}
+			}
+			payload["instructions"] = "只输出符合指定 JSON Schema 的 UTF-8 JSON Object，不要输出 Markdown 或解释。"
+			payload["input"] = input
+			payload["max_output_tokens"] = structuredValidationMaxOutputTokens(slot.MaxOutputTokens)
 			payload["text"] = map[string]any{"format": map[string]any{
-				"type": "json_schema", "name": "agentdesk_connection_test", "strict": true,
-				"schema": map[string]any{
-					"type": "object", "additionalProperties": false, "required": []string{"ok"},
-					"properties": map[string]any{"ok": map[string]any{"type": "boolean", "const": true}},
-				},
+				"type": "json_schema", "name": strings.ReplaceAll(schemaName, ".", "_"), "strict": true,
+				"schema": json.RawMessage(normalizedSchema),
 			}}
-			validator = validateStructuredResponsesPayload
+			validator = func(raw []byte) bool {
+				return validateStructuredResponsesPayload(raw, schemaRaw)
+			}
 		}
 		if modelconfig.IsDeepSeekV4Model(slot.ModelName) {
 			payload["reasoning"] = map[string]any{"effort": "none"}
@@ -296,12 +301,35 @@ func validateResponsesPayload(raw []byte) bool {
 	return strings.TrimSpace(responsesOutputText(raw)) != ""
 }
 
-func validateStructuredResponsesPayload(raw []byte) bool {
-	var payload struct {
-		OK bool `json:"ok"`
-	}
+func validateStructuredResponsesPayload(raw, schemaRaw []byte) bool {
 	text := strings.TrimSpace(responsesOutputText(raw))
-	return text != "" && json.Unmarshal([]byte(text), &payload) == nil && payload.OK
+	return text != "" && strictjson.ValidateSchema([]byte(text), schemaRaw) == nil
+}
+
+func runtimeStructuredValidationContract(usageCode enums.ModelUsageSlot) (string, []byte, string) {
+	switch usageCode {
+	case enums.ModelUsageSlotIntentDetectLLM:
+		return contracts.SchemaIntentTasksV2, contracts.MustSchema(contracts.SchemaIntentTasksV2),
+			"当前客户说：你好。输出一个 greeting/social 任务。"
+	case enums.ModelUsageSlotReplyLLM:
+		return contracts.SchemaReplyOutputV2, contracts.MustSchema(contracts.SchemaReplyOutputV2),
+			"任务 task_1：简短回复客户你好。evidenceRefs 和 actionRefs 为空数组。"
+	default:
+		return "", nil, ""
+	}
+}
+
+func structuredValidationMaxOutputTokens(configured int) int {
+	if configured <= 0 {
+		return 512
+	}
+	if configured < 256 {
+		return 256
+	}
+	if configured > 1024 {
+		return 1024
+	}
+	return configured
 }
 
 func responsesOutputText(raw []byte) string {

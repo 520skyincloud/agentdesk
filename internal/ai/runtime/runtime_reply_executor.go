@@ -115,7 +115,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 	}
 	errorMessage := ""
 	if runErr != nil {
-		errorMessage = "model_call_failed"
+		errorMessage = modelconfig.InvocationErrorClass(runErr)
 	}
 	runID := ""
 	if summary != nil {

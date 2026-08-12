@@ -86,6 +86,9 @@ func (m *retryingToolCallingChatModel) Generate(ctx context.Context, input []*sc
 			err = fmt.Errorf("model returned empty output")
 		}
 		lastErr = err
+		if !modelconfig.InvocationErrorRetryable(err) {
+			return nil, err
+		}
 		if attempt < m.maxRetryCount && !sleepModelRetry(ctx, time.Duration(attempt+1)*100*time.Millisecond) {
 			return nil, ctx.Err()
 		}
@@ -110,6 +113,9 @@ func (m *retryingToolCallingChatModel) Stream(ctx context.Context, input []*sche
 			err = fmt.Errorf("model returned empty stream")
 		}
 		lastErr = err
+		if !modelconfig.InvocationErrorRetryable(err) {
+			return nil, err
+		}
 		if attempt < m.maxRetryCount && !sleepModelRetry(ctx, time.Duration(attempt+1)*100*time.Millisecond) {
 			return nil, ctx.Err()
 		}

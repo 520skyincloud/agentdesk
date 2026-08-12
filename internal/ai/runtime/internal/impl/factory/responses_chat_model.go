@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,9 +132,13 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 		if strings.TrimSpace(structured.Name) == "" || !json.Valid(structured.JSONSchema) {
 			return nil, fmt.Errorf("responses structured output contract is invalid")
 		}
+		normalizedSchema, err := modelconfig.NormalizeResponsesJSONSchema(structured.JSONSchema)
+		if err != nil {
+			return nil, err
+		}
 		body.Text = &responsesText{Format: responsesTextFormat{
 			Type: "json_schema", Name: structured.Name, Strict: structured.Strict,
-			Schema: append(json.RawMessage(nil), structured.JSONSchema...),
+			Schema: normalizedSchema,
 		}}
 	}
 	if modelconfig.IsDeepSeekV4Model(m.config.ModelName) {
@@ -165,22 +170,26 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return nil, err
+		class := modelconfig.InvocationErrorNetwork
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			class = modelconfig.InvocationErrorTimeout
+		}
+		return nil, modelconfig.NewInvocationError(class, 0, true)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, modelconfig.NewInvocationError(modelconfig.InvocationErrorInvalidResponse, resp.StatusCode, true)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("responses api status %d: %s", resp.StatusCode, compactResponseError(raw))
+		return nil, responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
 	}
 	parsed := responsesResponse{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("parse responses api response: %w; raw=%s", err, compactResponseError(raw))
+		return nil, modelconfig.NewInvocationError(modelconfig.InvocationErrorInvalidResponse, resp.StatusCode, true)
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
-		return nil, fmt.Errorf("responses api error: %s", parsed.Error.Message)
+		return nil, responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
 	}
 	content := strings.TrimSpace(parsed.OutputText)
 	if content == "" {
@@ -355,11 +364,40 @@ func extractResponsesOutputText(resp responsesResponse) string {
 	return strings.Join(parts, "\n")
 }
 
-func compactResponseError(raw []byte) string {
-	text := strings.Join(strings.Fields(string(raw)), " ")
-	runes := []rune(text)
-	if len(runes) <= 500 {
-		return text
+func responsesInvocationError(statusCode int, raw []byte, structured bool) error {
+	class := modelconfig.InvocationErrorUpstream
+	retryable := statusCode == http.StatusTooManyRequests || statusCode >= 500
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		class = modelconfig.InvocationErrorCredentialRejected
+		retryable = false
+	case http.StatusNotFound:
+		class = modelconfig.InvocationErrorEndpointNotFound
+		retryable = false
+	case http.StatusBadRequest:
+		class = modelconfig.InvocationErrorPayloadRejected
+		retryable = false
+	case http.StatusTooManyRequests:
+		class = modelconfig.InvocationErrorRateLimited
 	}
-	return string(runes[:500]) + "..."
+	if structured && responseErrorMentionsSchema(raw) {
+		class = modelconfig.InvocationErrorStructuredOutputSchemaRejected
+		retryable = false
+	}
+	return modelconfig.NewInvocationError(class, statusCode, retryable)
+}
+
+func responseErrorMentionsSchema(raw []byte) bool {
+	var payload struct {
+		Error *struct {
+			Message string `json:"message"`
+			Param   string `json:"param"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &payload) != nil || payload.Error == nil {
+		return false
+	}
+	value := strings.ToLower(strings.Join([]string{payload.Error.Message, payload.Error.Param, payload.Error.Code}, " "))
+	return strings.Contains(value, "schema") || strings.Contains(value, "json_schema")
 }

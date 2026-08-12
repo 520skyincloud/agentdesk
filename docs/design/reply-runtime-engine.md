@@ -123,10 +123,19 @@ TaskCoverage、EvidenceReference、ActionReference、Safety 和 CommitInvariant 
 不是替代本地验证的成功凭据。
 
 DeepSeek Responses 当前只允许精确模型名 `deepseek-v4-flash`。请求显式携带
-`reasoning.effort=none`；九槽真实测试必须验证模型确实返回符合最小 Schema 的 `{"ok":true}`，
-不能只以 HTTP 200 或非空 `output` 判定通过。Responses 工具调用同时必须完整传递 `tools`、
+`reasoning.effort=none`。发送到 Responses 的 Schema 必须为 `const`、`enum` 等原本可推断的
+原始类型补齐显式 `type`，以满足 NewAPI/DeepSeek 对每个 Schema 节点必须声明 `type`、`anyOf`
+或 `$ref` 的要求；该处理只能等价显式化类型，不能删除约束或替代本地完整 Schema 校验。
+九槽真实测试必须让 `intent_detect_llm` 和 `reply_llm` 分别执行真实的 `intent_tasks.v2` 与
+`reply_output.v2` Schema，并验证输出通过对应本地 Schema，不能使用简化的连接测试 Schema，
+也不能只以 HTTP 200 或非空 `output` 判定通过。Responses 工具调用同时必须完整传递 `tools`、
 `tool_choice=auto`、模型返回的 `function_call.call_id` 以及后续 `function_call_output.call_id`，确保
 天气、工单和其他现有工具链在最终严格 JSON 输出前仍可正常执行。
+
+Responses 的确定性 HTTP 400（尤其结构化 Schema 被拒绝）必须记录为受控错误分类，例如
+`structured_output_schema_rejected`，并立即失败，不能用槽内网络重试重复发送相同非法请求。
+超时、网络错误、429 和 5xx 仍按九槽 `MaxRetryCount` 执行初次调用加槽内重试。日志、Usage 和
+RunLog 只保存受控分类、状态码关联证据和请求 ID，不保存 Prompt、原始上游响应或客户正文。
 
 当前统一模型网关为 `http://36.138.68.47:6081/v1`。OpenAI 兼容接口必须从 `/v1` 开始，
 `/chat/completions`、`/responses`、`/embeddings`、`/rerank` 和 `/audio/transcriptions` 均在该

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"agent-desk/internal/pkg/enums"
@@ -58,12 +59,48 @@ func TestResponsesChatModelSendsDeepSeekStrictJSONSchema(t *testing.T) {
 	if !ok || format["type"] != "json_schema" || format["name"] != "reply_output_v2" || format["strict"] != true {
 		t.Fatalf("unexpected response format: %#v", textConfig)
 	}
-	if _, ok := format["schema"].(map[string]any); !ok {
+	requestSchema, ok := format["schema"].(map[string]any)
+	if !ok {
 		t.Fatalf("missing JSON Schema: %#v", format)
+	}
+	properties, _ := requestSchema["properties"].(map[string]any)
+	okSchema, _ := properties["ok"].(map[string]any)
+	if okSchema["type"] != "boolean" {
+		t.Fatalf("const type was not normalized for Responses: %#v", okSchema)
 	}
 	reasoning, ok := captured["reasoning"].(map[string]any)
 	if !ok || reasoning["effort"] != "none" {
 		t.Fatalf("DeepSeek reasoning must be disabled: %#v", captured["reasoning"])
+	}
+}
+
+func TestResponsesChatModelClassifiesSchemaRejectionWithoutRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","code":"invalid_request_error","message":"Invalid json schema"}}`))
+	}))
+	defer server.Close()
+
+	config, err := (modelconfig.Config{
+		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
+		ModelName: "deepseek-v4-flash", TimeoutMS: 1000, MaxRetryCount: 2,
+	}).WithJSONSchema("intent_tasks.v2", []byte(`{"type":"object"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatModel, err := NewChatModelFactory().Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = chatModel.Generate(context.Background(), []*schema.Message{schema.UserMessage("ping")})
+	if got := modelconfig.InvocationErrorClass(err); got != modelconfig.InvocationErrorStructuredOutputSchemaRejected {
+		t.Fatalf("error class=%q err=%v", got, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("non-retryable schema rejection calls=%d want=1", got)
 	}
 }
 

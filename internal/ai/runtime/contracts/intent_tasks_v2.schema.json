@@ -7,9 +7,11 @@
   "required": ["schemaVersion", "dialogueAct", "tasks"],
   "properties": {
     "schemaVersion": {
+	  "type": "string",
       "const": "intent_tasks.v2"
     },
     "dialogueAct": {
+	  "type": "string",
       "enum": [
         "new_topic",
         "follow_up",
@@ -59,6 +61,7 @@
             "maxLength": 1000
           },
           "requestMode": {
+			"type": "string",
             "enum": [
               "answer",
               "request_action",

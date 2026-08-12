@@ -7,6 +7,7 @@
   "required": ["schemaVersion", "parts"],
   "properties": {
     "schemaVersion": {
+	  "type": "string",
       "const": "reply_output.v2"
     },
     "parts": {
