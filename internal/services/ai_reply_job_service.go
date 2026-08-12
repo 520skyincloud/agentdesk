@@ -1043,7 +1043,15 @@ func isStableRuntimeAIClientMsgID(clientMsgID string) bool {
 			return true
 		}
 	}
-	return false
+	if len(clientMsgID) != 48 {
+		return false
+	}
+	for _, char := range clientMsgID {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *aiReplyJobService) ValidateRuntimeCheckpoint(ctx context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {

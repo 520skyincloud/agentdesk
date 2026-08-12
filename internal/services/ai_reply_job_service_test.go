@@ -580,6 +580,64 @@ func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) 
 	}
 }
 
+func TestAIReplyJobAcceptsTurnHashCompletionEvidence(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "你好")
+	setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+		now := time.Now()
+		reply := &models.Message{
+			TenantID: conversation.TenantID, ConversationID: conversation.ID, SessionNo: message.SessionNo,
+			RequestID: message.RequestID, ClientMsgID: "01671f38636bdda639e1d2ed22891beff4dd1af82f23e3cb",
+			SenderType: enums.IMSenderTypeAI, SenderID: conversation.AIAgentID,
+			MessageType: enums.IMMessageTypeText, Content: "你好，在的。",
+			SeqNo:      repositories.MessageRepository.NextSeqNoInTenant(fixture.db, conversation.ID, conversation.TenantID),
+			SendStatus: enums.IMMessageStatusSent, SentAt: &now,
+			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		}
+		if err := fixture.db.Create(reply).Error; err != nil {
+			return AIReplyExecutionResult{}, err
+		}
+		return AIReplyExecutionResult{
+			Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed", CommittedMessageIDs: []int64{reply.ID},
+		}, nil
+	})
+	var dispatchCalls atomic.Int32
+	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
+		dispatchCalls.Add(1)
+		return nil
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted ||
+		current.ResultCode != "runtime_completed" || dispatchCalls.Load() != 0 {
+		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	}
+}
+
+func TestStableRuntimeAIClientMsgID(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "legacy prefix", value: "ai_reply_123", want: true},
+		{name: "turn hash", value: "01671f38636bdda639e1d2ed22891beff4dd1af82f23e3cb", want: true},
+		{name: "short hash", value: "01671f38636bdda639e1d2ed22891beff4dd1af82f23e3c", want: false},
+		{name: "long hash", value: "01671f38636bdda639e1d2ed22891beff4dd1af82f23e3cb0", want: false},
+		{name: "uppercase hash", value: "01671F38636BDDA639E1D2ED22891BEFF4DD1AF82F23E3CB", want: false},
+		{name: "non hex", value: "g1671f38636bdda639e1d2ed22891beff4dd1af82f23e3cb", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStableRuntimeAIClientMsgID(tt.value); got != tt.want {
+				t.Fatalf("isStableRuntimeAIClientMsgID(%q)=%v want=%v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAIReplyJobSystemMessageDoesNotSupersedeCustomer(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	createAIReplyJobTestMessageWithSender(
