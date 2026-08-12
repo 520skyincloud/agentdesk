@@ -41,13 +41,13 @@ export type DashboardNavItemConfig = Omit<DashboardNavMenuItem, "title"> & {
    */
   requiredPermission?: string;
   context?: DashboardNavContextScope;
+  allowedRoles?: readonly DashboardBuiltinRole[];
 };
 
 export type DashboardNavSectionConfig = {
   titleKey: string;
   icon: ReactNode;
   context: DashboardNavContextScope;
-  hiddenForStandaloneCustomerService?: boolean;
   items: DashboardNavItemConfig[];
 };
 
@@ -62,7 +62,39 @@ type DashboardRouteAccessRule = {
   url: string;
   requiredPermission?: string;
   context: DashboardNavContextScope;
+  allowedRoles?: readonly DashboardBuiltinRole[];
 };
+
+const dashboardBuiltinRoles = [
+  "super_admin",
+  "admin",
+  "tenant_admin",
+  "cs_team_leader",
+  "cs_user",
+  "store_staff",
+] as const;
+
+type DashboardBuiltinRole = (typeof dashboardBuiltinRoles)[number];
+
+const builtinRoleSet = new Set<string>(dashboardBuiltinRoles);
+const platformAdminRoles = ["super_admin", "admin"] as const;
+const tenantManagementRoles = ["super_admin", "admin", "tenant_admin"] as const;
+const tenantSupervisorRoles = [
+  "super_admin",
+  "admin",
+  "tenant_admin",
+  "cs_team_leader",
+] as const;
+const customerServiceRoles = [
+  "super_admin",
+  "admin",
+  "tenant_admin",
+  "cs_team_leader",
+  "cs_user",
+] as const;
+const conversationRoles = [...customerServiceRoles, "store_staff"] as const;
+const billingRoles = [...tenantSupervisorRoles, "store_staff"] as const;
+const storeWorkbenchRoles = ["super_admin", "admin", "store_staff"] as const;
 
 function contextVisible(
   scope: DashboardNavContextScope,
@@ -81,8 +113,12 @@ function navItemVisible(
   item: DashboardNavItemConfig,
   permissionSet: Set<string>,
   context: DashboardNavContext,
+  roles?: readonly string[],
 ): boolean {
   if (!contextVisible(item.context ?? "always", context)) {
+    return false;
+  }
+  if (!roleVisible(item.allowedRoles, roles)) {
     return false;
   }
   if (!item.requiredPermission) {
@@ -91,21 +127,18 @@ function navItemVisible(
   return permissionSet.has(item.requiredPermission);
 }
 
-const elevatedCustomerServiceRoles = new Set([
-  "cs_team_leader",
-  "tenant_admin",
-  "admin",
-  "super_admin",
-]);
-
-function isStandaloneCustomerServiceUser(
+function roleVisible(
+  allowedRoles: readonly DashboardBuiltinRole[] | undefined,
   roles: readonly string[] | undefined,
 ): boolean {
-  const roleSet = new Set(roles ?? []);
-  return (
-    roleSet.has("cs_user") &&
-    !(roles ?? []).some((role) => elevatedCustomerServiceRoles.has(role))
+  const builtinRoles = (roles ?? []).filter((role): role is DashboardBuiltinRole =>
+    builtinRoleSet.has(role),
   );
+  if (builtinRoles.length === 0 || !allowedRoles) {
+    return true;
+  }
+  const allowedRoleSet = new Set<string>(allowedRoles);
+  return builtinRoles.some((role) => allowedRoleSet.has(role));
 }
 
 export function filterDashboardNavForSession(
@@ -114,18 +147,13 @@ export function filterDashboardNavForSession(
   roles?: readonly string[],
 ): { titleKey: string; icon: ReactNode; items: DashboardNavMenuItem[] }[] {
   const permissionSet = new Set(permissions ?? []);
-  const standaloneCustomerServiceUser = isStandaloneCustomerServiceUser(roles);
   return dashboardNavSections
-    .filter(
-      (section) =>
-        contextVisible(section.context, context) &&
-        !(standaloneCustomerServiceUser && section.hiddenForStandaloneCustomerService),
-    )
+    .filter((section) => contextVisible(section.context, context))
     .map((section) => ({
       titleKey: section.titleKey,
       icon: section.icon,
       items: section.items
-        .filter((item) => navItemVisible(item, permissionSet, context))
+        .filter((item) => navItemVisible(item, permissionSet, context, roles))
         .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon })),
     }))
     .filter((section) => section.items.length > 0);
@@ -134,10 +162,11 @@ export function filterDashboardNavForSession(
 export function filterDashboardSecondaryNavForSession(
   permissions: readonly string[] | undefined,
   context: DashboardNavContext,
+  roles?: readonly string[],
 ): DashboardNavMenuItem[] {
   const permissionSet = new Set(permissions ?? []);
   return dashboardSecondaryNav
-    .filter((item) => navItemVisible(item, permissionSet, context))
+    .filter((item) => navItemVisible(item, permissionSet, context, roles))
     .map(({ titleKey, url, icon }) => ({ title: titleKey, titleKey, url, icon }));
 }
 
@@ -152,6 +181,8 @@ const dashboardSupplementalRouteAccessRules: DashboardRouteAccessRule[] = [
 const retiredDashboardRoutes = [
   "/dashboard/companies",
   "/dashboard/company-detail",
+  "/dashboard/settings",
+  "/dashboard/reply-intent-profiles",
 ] as const;
 
 function findDashboardRouteAccessRule(
@@ -167,6 +198,7 @@ function findDashboardRouteAccessRule(
           url: item.url,
           requiredPermission: item.requiredPermission,
           context: item.context ?? section.context,
+          allowedRoles: item.allowedRoles,
         };
       }
     }
@@ -180,6 +212,7 @@ export function dashboardPathIsAccessible(
   pathname: string | null | undefined,
   permissions: readonly string[] | undefined,
   context: DashboardNavContext,
+  roles?: readonly string[],
 ): boolean {
   if (retiredDashboardRoutes.some((url) => isDashboardNavItemActive(pathname ?? "", url))) {
     return false;
@@ -191,14 +224,18 @@ export function dashboardPathIsAccessible(
   if (!contextVisible(rule.context, context)) {
     return false;
   }
+  if (!roleVisible(rule.allowedRoles, roles)) {
+    return false;
+  }
   return !rule.requiredPermission || new Set(permissions ?? []).has(rule.requiredPermission);
 }
 
 export function firstAccessibleDashboardPath(
   permissions: readonly string[] | undefined,
   context: DashboardNavContext,
+  roles?: readonly string[],
 ): string | null {
-  for (const section of filterDashboardNavForSession(permissions, context)) {
+  for (const section of filterDashboardNavForSession(permissions, context, roles)) {
     const item = section.items[0];
     if (item) {
       return item.url;
@@ -241,6 +278,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <LayoutDashboardIcon />,
         requiredPermission: "dashboard.view",
         context: "tenant",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.serviceAnalytics",
@@ -248,6 +286,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <ActivitySquareIcon />,
         requiredPermission: "serviceAnalytics.view",
         context: "tenant",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.conversations",
@@ -255,6 +294,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <BotMessageSquareIcon />,
         requiredPermission: "conversation.view",
         context: "tenant",
+        allowedRoles: conversationRoles,
       },
       {
         titleKey: "nav.conversationDispatch",
@@ -262,6 +302,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <MessageSquareShareIcon />,
         requiredPermission: "conversation.handover",
         context: "tenant",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.conversationRecords",
@@ -269,6 +310,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <FileCheck2Icon />,
         requiredPermission: "conversationRecord.view",
         context: "tenant",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.tickets",
@@ -276,6 +318,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <FileTextIcon />,
         requiredPermission: "ticket.view",
         context: "tenant",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.customers",
@@ -283,6 +326,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <UsersIcon />,
         requiredPermission: "customer.view",
         context: "tenant",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.modelBilling",
@@ -290,6 +334,7 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <ReceiptTextIcon />,
         requiredPermission: "billing.view",
         context: "always",
+        allowedRoles: billingRoles,
       },
     ],
   },
@@ -303,36 +348,42 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/stores",
         icon: <Building2Icon />,
         requiredPermission: "store.view",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.storeWorkbench",
         url: "/dashboard/store-workbench",
         icon: <HomeIcon />,
         requiredPermission: "storeWorkbench.view",
+        allowedRoles: storeWorkbenchRoles,
       },
       {
         titleKey: "nav.agents",
         url: "/dashboard/agents",
         icon: <UserCogIcon />,
         requiredPermission: "agent.view",
+        allowedRoles: customerServiceRoles,
       },
       {
         titleKey: "nav.agentTeamSchedules",
         url: "/dashboard/agent-team-schedules",
         icon: <CalendarClockIcon />,
         requiredPermission: "agentTeamSchedule.view",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.wxworkProtocolInstances",
         url: "/dashboard/wxwork-protocol-instances",
         icon: <NetworkIcon />,
         requiredPermission: "channel.view",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.arrivalConnections",
         url: "/dashboard/arrival-connections",
         icon: <Link2Icon />,
         requiredPermission: "arrivalConnection.view",
+        allowedRoles: customerServiceRoles,
       },
     ],
   },
@@ -340,43 +391,41 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.serviceCapabilities",
     icon: <BrainCircuitIcon />,
     context: "tenant",
-    hiddenForStandaloneCustomerService: true,
     items: [
-      {
-        titleKey: "nav.channelSettings",
-        url: "/dashboard/settings",
-        icon: <NetworkIcon />,
-        requiredPermission: "channel.view",
-      },
       {
         titleKey: "nav.knowledge",
         url: "/dashboard/knowledge",
         icon: <FileTextIcon />,
         requiredPermission: "knowledgeBase.view",
+        allowedRoles: tenantManagementRoles,
       },
       {
         titleKey: "nav.knowledgeCandidates",
         url: "/dashboard/knowledge-candidates",
         icon: <FileCheck2Icon />,
         requiredPermission: "knowledgeBase.view",
+        allowedRoles: tenantManagementRoles,
       },
       {
         titleKey: "nav.quickReplies",
         url: "/dashboard/quick-replies",
         icon: <MessageSquareMoreIcon />,
         requiredPermission: "quickReply.view",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.tags",
         url: "/dashboard/tags",
         icon: <TagsIcon />,
         requiredPermission: "tag.view",
+        allowedRoles: tenantSupervisorRoles,
       },
       {
         titleKey: "nav.skillDefinition",
         url: "/dashboard/skill-definition",
         icon: <MessageSquareCodeIcon />,
         requiredPermission: "skillDefinition.view",
+        allowedRoles: tenantManagementRoles,
       },
     ],
   },
@@ -384,7 +433,6 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.accessManagement",
     icon: <ShieldCheckIcon />,
     context: "always",
-    hiddenForStandaloneCustomerService: true,
     items: [
       {
         titleKey: "nav.users",
@@ -392,18 +440,21 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         icon: <UsersIcon />,
         requiredPermission: "user.view",
         context: "tenant",
+        allowedRoles: tenantManagementRoles,
       },
       {
         titleKey: "nav.roles",
         url: "/dashboard/roles",
         icon: <ShieldCheckIcon />,
         requiredPermission: "role.view",
+        allowedRoles: tenantManagementRoles,
       },
       {
         titleKey: "nav.permissions",
         url: "/dashboard/permissions",
         icon: <KeyRoundIcon />,
         requiredPermission: "permission.view",
+        allowedRoles: tenantManagementRoles,
       },
     ],
   },
@@ -417,54 +468,56 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         url: "/dashboard/channels",
         icon: <Building2Icon />,
         requiredPermission: "tenant.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.modelProfiles",
         url: "/dashboard/model-profiles",
         icon: <BrainCircuitIcon />,
         requiredPermission: "aiConfig.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.agentRunLogs",
         url: "/dashboard/agent-run-logs",
         icon: <ActivitySquareIcon />,
         requiredPermission: "agentRunLog.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.storageSettings",
         url: "/dashboard/storage-settings",
         icon: <HardDriveIcon />,
         requiredPermission: "storageSetting.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.wxworkDevicePool",
         url: "/dashboard/wxwork-device-pool",
         icon: <ServerCogIcon />,
         requiredPermission: "wxworkDevicePool.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.mcp",
         url: "/dashboard/mcp",
         icon: <MessageSquareCodeIcon />,
         requiredPermission: "mcp.view",
-      },
-      {
-        titleKey: "nav.replyIntentProfiles",
-        url: "/dashboard/reply-intent-profiles",
-        icon: <BrainCircuitIcon />,
-        requiredPermission: "aiConfig.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.replyIntentConfigs",
         url: "/dashboard/reply-intent-configs",
         icon: <SlidersHorizontalIcon />,
         requiredPermission: "aiConfig.view",
+        allowedRoles: platformAdminRoles,
       },
       {
         titleKey: "nav.industryTagTemplates",
         url: "/dashboard/industry-tag-templates",
         icon: <TagsIcon />,
         requiredPermission: "aiConfig.view",
+        allowedRoles: platformAdminRoles,
       },
     ],
   },

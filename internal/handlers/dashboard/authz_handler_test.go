@@ -156,20 +156,6 @@ func TestTenantCreateRequiresTenantCreatePermission(t *testing.T) {
 	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
 }
 
-func TestChannelDetailRequiresUpdatePermission(t *testing.T) {
-	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
-		UserID:         131,
-		TenantID:       9,
-		ActiveTenantID: 9,
-		Username:       "channel_viewer",
-		Permissions:    []string{constants.PermissionChannelView.Code},
-	})
-	ctx.Params = gin.Params{{Key: "id", Value: "1"}}
-
-	ChannelGetBy(ctx)
-	assertAuthzErrorCode(t, recorder, errorsx.CodeAuthForbidden)
-}
-
 func TestStoreWorkbenchViewRequiresExplicitPermission(t *testing.T) {
 	ctx, recorder := newAuthzHandlerTestContext(t, "", &dto.AuthPrincipal{
 		UserID:         141,

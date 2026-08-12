@@ -354,14 +354,7 @@ func registerDashboardQuickReplyRoutes(group *gin.RouterGroup) {
 }
 
 func registerDashboardChannelRoutes(group *gin.RouterGroup) {
-	group.GET("/:id", dashboard.ChannelGetBy)
-	group.POST("/create", dashboard.ChannelPostCreate)
-	group.POST("/delete", dashboard.ChannelPostDelete)
 	group.Any("/list", dashboard.ChannelAnyList)
-	group.POST("/reset_user_token_secret", dashboard.ChannelPostReset_user_token_secret)
-	group.POST("/update", dashboard.ChannelPostUpdate)
-	group.POST("/update_status", dashboard.ChannelPostUpdate_status)
-	group.Any("/wxwork/kf/accounts", dashboard.ChannelAnyWxworkKfAccounts)
 }
 
 func registerDashboardWxWorkProtocolInstanceRoutes(group *gin.RouterGroup) {
@@ -477,20 +470,11 @@ func registerDashboardBillingQueryRoutes(group *gin.RouterGroup) {
 
 func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.ReplyIntentConfigAnyList)
+	group.GET("/profile_options", dashboard.ReplyIntentConfigGetProfileOptions)
 	group.GET("/:id", dashboard.ReplyIntentConfigGetBy)
 	group.POST("/create", dashboard.ReplyIntentConfigPostCreate)
 	group.POST("/update", dashboard.ReplyIntentConfigPostUpdate)
 	group.POST("/delete", dashboard.ReplyIntentConfigPostDelete)
-}
-
-func registerDashboardReplyIntentProfileRoutes(group *gin.RouterGroup) {
-	group.Any("/list", dashboard.ReplyIntentProfileAnyList)
-	group.GET("/:id", dashboard.ReplyIntentProfileGetBy)
-	group.POST("/create", dashboard.ReplyIntentProfilePostCreate)
-	group.POST("/update", dashboard.ReplyIntentProfilePostUpdate)
-	group.POST("/delete", dashboard.ReplyIntentProfilePostDelete)
-	group.POST("/test", dashboard.ReplyIntentProfilePostTest)
-	group.POST("/publish", dashboard.ReplyIntentProfilePostPublish)
 }
 
 func registerDashboardIndustryTagDefinitionRoutes(group *gin.RouterGroup) {

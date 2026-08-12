@@ -49,6 +49,16 @@ func (s *replyIntentProfileService) FindPageByCnd(cnd *sqls.Cnd) (list []models.
 	return repositories.ReplyIntentProfileRepository.FindPageByCnd(sqls.DB(), cnd)
 }
 
+func (s *replyIntentProfileService) FindOptions() []models.ReplyIntentProfile {
+	if sqls.DB() == nil {
+		return []models.ReplyIntentProfile{}
+	}
+	return repositories.ReplyIntentProfileRepository.Find(sqls.DB(), sqls.NewCnd().
+		Where("status <> ?", enums.StatusDeleted).
+		Asc("sort_no").
+		Asc("id"))
+}
+
 func (s *replyIntentProfileService) CreateReplyIntentProfile(req request.CreateReplyIntentProfileRequest, operator *dto.AuthPrincipal) (*models.ReplyIntentProfile, error) {
 	if operator == nil {
 		return nil, errorsx.Unauthorized("未登录或登录已过期")

@@ -306,35 +306,13 @@ export type ReplyIntentConfig = {
   updateUserName: string
 }
 
-export type ReplyIntentProfile = {
+export type ReplyIntentProfileOption = {
   id: number
   code: string
-  name: string
   industryCode: string
-  description: string
-  intentDetectPrompt: string
-  intentJsonSchema: string
+  name: string
   revision: number
-  publishedAt?: string
   status: number
-  sortNo: number
-  remark: string
-  createdAt: string
-  updatedAt: string
-  createUserName: string
-  updateUserName: string
-}
-
-export type ReplyIntentProfileValidation = {
-  profileId: number
-  revision: number
-  valid: boolean
-  errors: string[]
-  warnings: string[]
-  activeIntentCount: number
-  tagCategoryCount: number
-  tagCount: number
-  conflictGroupCount: number
 }
 
 export type IndustryTagDefinition = {
@@ -380,30 +358,6 @@ export type AdminChannel = {
   configJson: string
   status: number
   remark: string
-}
-
-export type WxWorkKFAccount = {
-  openKfId: string
-  name: string
-  avatar: string
-  managePrivilege: boolean
-}
-
-export type CreateAdminChannelPayload = {
-  channelType: string
-  aiAgentId: number
-  name: string
-  configJson: string
-  status: number
-  remark: string
-}
-
-export type UpdateAdminChannelPayload = CreateAdminChannelPayload & {
-  id: number
-}
-
-export type ResetChannelUserTokenSecretResult = {
-  userTokenSecret: string
 }
 
 export type StorageSetting = {
@@ -719,21 +673,6 @@ export type CreateReplyIntentConfigPayload = Omit<
 >
 
 export type UpdateReplyIntentConfigPayload = CreateReplyIntentConfigPayload & {
-  id: number
-}
-
-export type CreateReplyIntentProfilePayload = Omit<
-  ReplyIntentProfile,
-  | "id"
-  | "revision"
-  | "publishedAt"
-  | "createdAt"
-  | "updatedAt"
-  | "createUserName"
-  | "updateUserName"
->
-
-export type UpdateReplyIntentProfilePayload = CreateReplyIntentProfilePayload & {
   id: number
 }
 
@@ -1161,14 +1100,6 @@ export function fetchChannels(
   )
 }
 
-export function fetchChannel(id: number) {
-  return request<AdminChannel>(`/api/dashboard/channel/${id}`)
-}
-
-export function fetchWxWorkKFAccounts() {
-  return request<WxWorkKFAccount[]>("/api/dashboard/channel/wxwork/kf/accounts")
-}
-
 export function fetchWxWorkProtocolInstances(
   query?: Record<string, string | number | undefined>
 ) {
@@ -1530,37 +1461,6 @@ export function repairWxWorkProtocolMessages(id: number, limit = 100) {
   })
 }
 
-export function createChannel(payload: CreateAdminChannelPayload) {
-  return request<AdminChannel>("/api/dashboard/channel/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateChannel(payload: UpdateAdminChannelPayload) {
-  return request<void>("/api/dashboard/channel/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateChannelStatus(id: number, status: number) {
-  return request<void>("/api/dashboard/channel/update_status", {
-    method: "POST",
-    body: JSON.stringify({ id, status }),
-  })
-}
-
-export function resetChannelUserTokenSecret(id: number) {
-  return request<ResetChannelUserTokenSecretResult>(
-    "/api/dashboard/channel/reset_user_token_secret",
-    {
-      method: "POST",
-      body: JSON.stringify({ id }),
-    }
-  )
-}
-
 export function fetchStorageSetting() {
   return request<StorageSetting>("/api/dashboard/storage-setting/get")
 }
@@ -1569,13 +1469,6 @@ export function updateStorageSetting(payload: StorageSetting) {
   return request<StorageSetting>("/api/dashboard/storage-setting/update", {
     method: "POST",
     body: JSON.stringify(payload),
-  })
-}
-
-export function deleteChannel(id: number) {
-  return request<void>("/api/dashboard/channel/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
   })
 }
 
@@ -1988,51 +1881,6 @@ export function deleteQuickReply(id: number) {
   })
 }
 
-export function fetchReplyIntentProfiles(query?: Record<string, string | number | undefined>) {
-  return request<PageResult<ReplyIntentProfile>>(
-    `/api/dashboard/reply-intent-profile/list${toQueryString(query)}`
-  )
-}
-
-export function fetchReplyIntentProfile(id: number) {
-  return request<ReplyIntentProfile>(`/api/dashboard/reply-intent-profile/${id}`)
-}
-
-export function createReplyIntentProfile(payload: CreateReplyIntentProfilePayload) {
-  return request<ReplyIntentProfile>("/api/dashboard/reply-intent-profile/create", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function updateReplyIntentProfile(payload: UpdateReplyIntentProfilePayload) {
-  return request<void>("/api/dashboard/reply-intent-profile/update", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  })
-}
-
-export function deleteReplyIntentProfile(id: number) {
-  return request<void>("/api/dashboard/reply-intent-profile/delete", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function testReplyIntentProfile(id: number) {
-  return request<ReplyIntentProfileValidation>("/api/dashboard/reply-intent-profile/test", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  })
-}
-
-export function publishReplyIntentProfile(id: number, revision: number) {
-  return request<ReplyIntentProfile>("/api/dashboard/reply-intent-profile/publish", {
-    method: "POST",
-    body: JSON.stringify({ id, revision, confirmRevision: true }),
-  })
-}
-
 export function fetchIndustryTagDefinitions(intentProfileId: number) {
   return request<IndustryTagDefinition[]>(
     `/api/dashboard/industry-tag-definition/list_all${toQueryString({ intentProfileId })}`
@@ -2068,6 +1916,12 @@ export function updateIndustryTagDefinition(payload: UpdateIndustryTagDefinition
 export function fetchReplyIntentConfigs(query?: Record<string, string | number | undefined>) {
   return request<PageResult<ReplyIntentConfig>>(
     `/api/dashboard/reply-intent-config/list${toQueryString(query)}`
+  )
+}
+
+export function fetchReplyIntentProfileOptions() {
+  return request<ReplyIntentProfileOption[]>(
+    "/api/dashboard/reply-intent-config/profile_options"
   )
 }
 

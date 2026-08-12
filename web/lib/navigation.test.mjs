@@ -47,6 +47,7 @@ const allPermissions = [
   "serviceAnalytics.view",
   "billing.view",
   "conversationRecord.view",
+  "store.view",
   "storeWorkbench.view",
   "conversation.view",
   "conversation.handover",
@@ -56,7 +57,6 @@ const allPermissions = [
   "agent.view",
   "agentTeamSchedule.view",
   "arrivalConnection.view",
-  "aiAgent.view",
   "knowledgeBase.view",
   "quickReply.view",
   "tag.view",
@@ -73,6 +73,91 @@ const allPermissions = [
   "mcp.view",
 ]
 
+const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+const platformContext = { isPlatformAccount: true, hasActiveTenant: true }
+const platformOnlyContext = { isPlatformAccount: true, hasActiveTenant: false }
+
+const companyAll = [
+  "/dashboard",
+  "/dashboard/service-analytics",
+  "/dashboard/conversations",
+  "/dashboard/conversation-dispatch",
+  "/dashboard/conversation-monitor",
+  "/dashboard/tickets",
+  "/dashboard/customers",
+  "/dashboard/billing-query",
+]
+const organizationAll = [
+  "/dashboard/stores",
+  "/dashboard/store-workbench",
+  "/dashboard/agents",
+  "/dashboard/agent-team-schedules",
+  "/dashboard/wxwork-protocol-instances",
+  "/dashboard/arrival-connections",
+]
+const serviceAll = [
+  "/dashboard/knowledge",
+  "/dashboard/knowledge-candidates",
+  "/dashboard/quick-replies",
+  "/dashboard/tags",
+  "/dashboard/skill-definition",
+]
+const accessAll = [
+  "/dashboard/users",
+  "/dashboard/roles",
+  "/dashboard/permissions",
+]
+const platformAll = [
+  "/dashboard/channels",
+  "/dashboard/model-profiles",
+  "/dashboard/agent-run-logs",
+  "/dashboard/storage-settings",
+  "/dashboard/wxwork-device-pool",
+  "/dashboard/mcp",
+  "/dashboard/reply-intent-configs",
+  "/dashboard/industry-tag-templates",
+]
+
+const expectedRoleUrls = {
+  super_admin: [...companyAll, ...organizationAll, ...serviceAll, ...accessAll, ...platformAll],
+  admin: [...companyAll, ...organizationAll, ...serviceAll, ...accessAll, ...platformAll],
+  tenant_admin: [
+    ...companyAll,
+    "/dashboard/stores",
+    "/dashboard/agents",
+    "/dashboard/agent-team-schedules",
+    "/dashboard/wxwork-protocol-instances",
+    "/dashboard/arrival-connections",
+    ...serviceAll,
+    ...accessAll,
+  ],
+  cs_team_leader: [
+    ...companyAll,
+    "/dashboard/stores",
+    "/dashboard/agents",
+    "/dashboard/agent-team-schedules",
+    "/dashboard/wxwork-protocol-instances",
+    "/dashboard/arrival-connections",
+    "/dashboard/quick-replies",
+    "/dashboard/tags",
+  ],
+  cs_user: [
+    "/dashboard",
+    "/dashboard/conversations",
+    "/dashboard/conversation-monitor",
+    "/dashboard/tickets",
+    "/dashboard/customers",
+    "/dashboard/stores",
+    "/dashboard/agents",
+    "/dashboard/arrival-connections",
+  ],
+  store_staff: [
+    "/dashboard/conversations",
+    "/dashboard/billing-query",
+    "/dashboard/store-workbench",
+  ],
+}
+
 function sectionKeys(sections) {
   return Array.from(sections, (section) => section.titleKey)
 }
@@ -81,264 +166,211 @@ function itemUrls(sections) {
   return Array.from(sections.flatMap((section) => section.items), (item) => item.url)
 }
 
-test("platform accounts without a selected company only see platform-safe navigation", async () => {
+test("built-in roles receive the exact product page matrix", async () => {
   const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(allPermissions, {
-    isPlatformAccount: true,
-    hasActiveTenant: false,
-  })
-
-  assert.deepEqual(sectionKeys(sections), ["nav.companyWorkspace", "nav.accessManagement", "nav.platformManagement"])
-  assert.equal(itemUrls(sections).includes("/dashboard/users"), false)
-  assert.equal(itemUrls(sections).includes("/dashboard/channels"), true)
-  assert.equal(itemUrls(sections).includes("/dashboard/reply-intent-profiles"), true)
-  assert.equal(itemUrls(sections).includes("/dashboard/reply-intent-configs"), true)
-  assert.equal(itemUrls(sections).includes("/dashboard"), false)
-  assert.equal(itemUrls(sections).includes("/dashboard/billing-query"), true)
-})
-
-test("tenant accounts see company work areas but no platform controls", async () => {
-  const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(allPermissions, {
-    isPlatformAccount: false,
-    hasActiveTenant: true,
-  })
-  const keys = sectionKeys(sections)
-  const urls = itemUrls(sections)
-
-  assert.equal(keys.includes("nav.companyWorkspace"), true)
-  assert.equal(keys.includes("nav.customerServiceOrganization"), true)
-  assert.equal(keys.includes("nav.serviceCapabilities"), true)
-  assert.equal(keys.includes("nav.platformManagement"), false)
-  assert.equal(urls.includes("/dashboard/ai-agents"), false)
-  assert.equal(urls.includes("/dashboard/model-profiles"), false)
-  assert.equal(urls.includes("/dashboard/agent-run-logs"), false)
-  assert.equal(urls.includes("/dashboard/wxwork-protocol-instances"), true)
-  assert.equal(urls.includes("/dashboard/settings"), true)
-  assert.equal(urls.includes("/dashboard/channels"), false)
-  assert.equal(urls.includes("/dashboard/reply-intent-profiles"), false)
-  assert.equal(urls.includes("/dashboard/reply-intent-configs"), false)
-  assert.equal(urls.includes("/dashboard/billing-query"), true)
-})
-
-test("standalone customer service users do not see service or access management sections", async () => {
-  const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(
-    allPermissions,
-    { isPlatformAccount: false, hasActiveTenant: true },
-    ["cs_user"],
-  )
-  const keys = sectionKeys(sections)
-
-  assert.equal(keys.includes("nav.companyWorkspace"), true)
-  assert.equal(keys.includes("nav.customerServiceOrganization"), true)
-  assert.equal(keys.includes("nav.serviceCapabilities"), false)
-  assert.equal(keys.includes("nav.accessManagement"), false)
-})
-
-test("team leaders and administrators retain service and access management sections", async () => {
-  const { filterDashboardNavForSession } = await loadNavigation()
-  const context = { isPlatformAccount: false, hasActiveTenant: true }
-  const elevatedRoles = ["cs_team_leader", "tenant_admin", "admin", "super_admin"]
-
-  for (const elevatedRole of elevatedRoles) {
-    for (const roles of [[elevatedRole], ["cs_user", elevatedRole]]) {
-      const keys = sectionKeys(filterDashboardNavForSession(allPermissions, context, roles))
-      assert.equal(keys.includes("nav.serviceCapabilities"), true, roles.join(","))
-      assert.equal(keys.includes("nav.accessManagement"), true, roles.join(","))
-    }
+  for (const [role, expected] of Object.entries(expectedRoleUrls)) {
+    const context = role === "super_admin" || role === "admin" ? platformContext : tenantContext
+    const sections = filterDashboardNavForSession(allPermissions, context, [role])
+    assert.deepEqual(itemUrls(sections), expected, role)
   }
 })
 
-test("platform accounts inside a company can use both company and platform navigation", async () => {
+test("platform administrators without a selected company only see platform-safe pages", async () => {
   const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(allPermissions, {
-    isPlatformAccount: true,
-    hasActiveTenant: true,
-  })
-  const keys = sectionKeys(sections)
-  const urls = itemUrls(sections)
+  const sections = filterDashboardNavForSession(
+    allPermissions,
+    platformOnlyContext,
+    ["super_admin"],
+  )
 
-  assert.equal(keys.includes("nav.companyWorkspace"), true)
-  assert.equal(keys.includes("nav.platformManagement"), true)
-  assert.equal(urls.includes("/dashboard/model-profiles"), true)
-  assert.equal(urls.includes("/dashboard/agent-run-logs"), true)
-  assert.equal(urls.includes("/dashboard/billing-query"), true)
+  assert.deepEqual(sectionKeys(sections), [
+    "nav.companyWorkspace",
+    "nav.accessManagement",
+    "nav.platformManagement",
+  ])
+  assert.deepEqual(itemUrls(sections), [
+    "/dashboard/billing-query",
+    "/dashboard/roles",
+    "/dashboard/permissions",
+    ...platformAll,
+  ])
 })
 
-test("view permissions still control individual entries inside an allowed context", async () => {
+test("permissions remain required inside an allowed built-in role", async () => {
   const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(["conversation.view"], {
-    isPlatformAccount: false,
-    hasActiveTenant: true,
-  })
-  const urls = itemUrls(sections)
+  const sections = filterDashboardNavForSession(
+    ["conversation.view", "serviceAnalytics.view"],
+    tenantContext,
+    ["cs_user"],
+  )
 
-  assert.equal(urls.includes("/dashboard/conversations"), true)
-  assert.equal(urls.includes("/dashboard/conversation-dispatch"), false)
-  assert.equal(urls.includes("/dashboard"), false)
-  assert.equal(urls.includes("/dashboard/settings"), false)
-  assert.equal(urls.includes("/dashboard/tickets"), false)
-  assert.equal(urls.includes("/dashboard/roles"), false)
+  assert.deepEqual(itemUrls(sections), ["/dashboard/conversations"])
 })
 
-test("dispatch orchestration requires the existing handover permission", async () => {
-  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
-  const context = { isPlatformAccount: false, hasActiveTenant: true }
-  const viewOnly = filterDashboardNavForSession(["conversation.view"], context)
-  const handover = filterDashboardNavForSession(
-    ["conversation.view", "conversation.handover"],
-    context,
-  )
-
-  assert.equal(itemUrls(viewOnly).includes("/dashboard/conversation-dispatch"), false)
-  assert.equal(itemUrls(handover).includes("/dashboard/conversation-dispatch"), true)
-  assert.equal(
-    dashboardPathIsAccessible("/dashboard/conversation-dispatch", ["conversation.view"], context),
-    false,
-  )
-  assert.equal(
-    dashboardPathIsAccessible(
-      "/dashboard/conversation-dispatch",
-      ["conversation.view", "conversation.handover"],
-      context,
-    ),
-    true,
-  )
-})
-
-test("operations overview requires its explicit permission", async () => {
+test("custom roles retain permission-driven navigation", async () => {
   const { filterDashboardNavForSession } = await loadNavigation()
-  const sections = filterDashboardNavForSession(["dashboard.view"], {
-    isPlatformAccount: false,
-    hasActiveTenant: true,
-  })
-  const urls = itemUrls(sections)
-
-  assert.equal(urls.includes("/dashboard"), true)
-  assert.equal(urls.includes("/dashboard/conversations"), false)
-})
-
-test("analytics and conversation records use their own permissions", async () => {
-  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
-  const context = { isPlatformAccount: false, hasActiveTenant: true }
-  const analyticsOnly = filterDashboardNavForSession(["serviceAnalytics.view"], context)
-  const recordsOnly = filterDashboardNavForSession(["conversationRecord.view"], context)
-
-  assert.equal(itemUrls(analyticsOnly).includes("/dashboard/service-analytics"), true)
-  assert.equal(itemUrls(analyticsOnly).includes("/dashboard/conversation-monitor"), false)
-  assert.equal(itemUrls(recordsOnly).includes("/dashboard/conversation-monitor"), true)
-  assert.equal(itemUrls(recordsOnly).includes("/dashboard/conversations"), false)
-  assert.equal(dashboardPathIsAccessible("/dashboard/service-analytics", [], context), false)
-  assert.equal(dashboardPathIsAccessible("/dashboard/conversation-monitor", ["conversationRecord.view"], context), true)
-})
-
-test("store workbench uses its own permission instead of channel access", async () => {
-  const { filterDashboardNavForSession } = await loadNavigation()
-  const withWorkbench = filterDashboardNavForSession(["storeWorkbench.view"], {
-    isPlatformAccount: false,
-    hasActiveTenant: true,
-  })
-  const withChannelOnly = filterDashboardNavForSession(["channel.view"], {
-    isPlatformAccount: false,
-    hasActiveTenant: true,
-  })
-
-  assert.equal(itemUrls(withWorkbench).includes("/dashboard/store-workbench"), true)
-  assert.equal(itemUrls(withChannelOnly).includes("/dashboard/store-workbench"), false)
-  assert.equal(itemUrls(withChannelOnly).includes("/dashboard/wxwork-protocol-instances"), true)
-})
-
-test("arrival linking is tenant-scoped and uses its explicit permission", async () => {
-  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
-  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
-  const platformContext = { isPlatformAccount: true, hasActiveTenant: false }
-
-  assert.equal(
-    itemUrls(
-      filterDashboardNavForSession(["arrivalConnection.view"], tenantContext),
-    ).includes("/dashboard/arrival-connections"),
-    true,
+  const customUrls = itemUrls(
+    filterDashboardNavForSession(allPermissions, tenantContext, ["custom_auditor"]),
   )
-  assert.equal(
-    itemUrls(
-      filterDashboardNavForSession(["channel.view"], tenantContext),
-    ).includes("/dashboard/arrival-connections"),
-    false,
-  )
-  assert.equal(
-    dashboardPathIsAccessible(
-      "/dashboard/arrival-connections",
-      ["arrivalConnection.view"],
+  assert.deepEqual(customUrls, [
+    ...companyAll,
+    ...organizationAll,
+    ...serviceAll,
+    ...accessAll,
+  ])
+
+  const mixedUrls = itemUrls(
+    filterDashboardNavForSession(
+      allPermissions,
       tenantContext,
+      ["custom_auditor", "cs_user"],
+    ),
+  )
+  assert.deepEqual(mixedUrls, expectedRoleUrls.cs_user)
+})
+
+test("multiple built-in roles receive the union of their page scopes", async () => {
+  const { filterDashboardNavForSession } = await loadNavigation()
+  const urls = itemUrls(
+    filterDashboardNavForSession(
+      allPermissions,
+      tenantContext,
+      ["cs_user", "store_staff"],
+    ),
+  )
+  assert.deepEqual(urls, [
+    "/dashboard",
+    "/dashboard/conversations",
+    "/dashboard/conversation-monitor",
+    "/dashboard/tickets",
+    "/dashboard/customers",
+    "/dashboard/billing-query",
+    "/dashboard/stores",
+    "/dashboard/store-workbench",
+    "/dashboard/agents",
+    "/dashboard/arrival-connections",
+  ])
+})
+
+test("direct URL access uses the same role and permission contract", async () => {
+  const { dashboardPathIsAccessible } = await loadNavigation()
+
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/service-analytics",
+      allPermissions,
+      tenantContext,
+      ["cs_user"],
+    ),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/quick-replies",
+      allPermissions,
+      tenantContext,
+      ["cs_team_leader"],
     ),
     true,
   )
   assert.equal(
     dashboardPathIsAccessible(
-      "/dashboard/arrival-connections",
-      ["arrivalConnection.view"],
-      platformContext,
+      "/dashboard/knowledge",
+      allPermissions,
+      tenantContext,
+      ["cs_team_leader"],
+    ),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/store-workbench",
+      allPermissions,
+      tenantContext,
+      ["store_staff"],
+    ),
+    true,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard",
+      allPermissions,
+      tenantContext,
+      ["store_staff"],
+    ),
+    false,
+  )
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/channels",
+      allPermissions,
+      tenantContext,
+      ["super_admin"],
     ),
     false,
   )
 })
 
-test("direct dashboard routes reuse navigation permissions and context", async () => {
-  const { dashboardPathIsAccessible, firstAccessibleDashboardPath } = await loadNavigation()
-  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+test("retired product pages are inaccessible even with full permissions", async () => {
+  const { dashboardPathIsAccessible } = await loadNavigation()
+  for (const path of [
+    "/dashboard/companies",
+    "/dashboard/company-detail/1",
+    "/dashboard/settings",
+    "/dashboard/reply-intent-profiles",
+  ]) {
+    assert.equal(
+      dashboardPathIsAccessible(path, allPermissions, platformContext, ["super_admin"]),
+      false,
+      path,
+    )
+  }
+})
+
+test("fallback path follows the same role matrix", async () => {
+  const { firstAccessibleDashboardPath } = await loadNavigation()
 
   assert.equal(
-    dashboardPathIsAccessible("/dashboard/store-workbench", ["storeWorkbench.view"], tenantContext),
-    true,
-  )
-  assert.equal(
-    dashboardPathIsAccessible("/dashboard/conversations", ["storeWorkbench.view"], tenantContext),
-    false,
-  )
-  assert.equal(dashboardPathIsAccessible("/dashboard/companies", ["customer.view"], tenantContext), false)
-  assert.equal(dashboardPathIsAccessible("/dashboard/company-detail/1", ["customer.view"], tenantContext), false)
-  assert.equal(
-    dashboardPathIsAccessible("/dashboard/notifications", [], tenantContext),
-    false,
-  )
-  assert.equal(
-    dashboardPathIsAccessible("/dashboard/channels", ["tenant.view"], tenantContext),
-    false,
-  )
-  assert.equal(dashboardPathIsAccessible("/dashboard/help", allPermissions, tenantContext), false)
-  assert.equal(dashboardPathIsAccessible("/dashboard/unregistered-module", allPermissions, tenantContext), false)
-  assert.equal(firstAccessibleDashboardPath(["storeWorkbench.view"], tenantContext), "/dashboard/store-workbench")
-  assert.equal(
-    firstAccessibleDashboardPath(
-      ["storeWorkbench.view", "conversation.view", "billing.view"],
-      tenantContext,
-    ),
+    firstAccessibleDashboardPath(allPermissions, tenantContext, ["store_staff"]),
     "/dashboard/conversations",
   )
+  assert.equal(
+    firstAccessibleDashboardPath(
+      ["store.view", "arrivalConnection.view"],
+      tenantContext,
+      ["cs_user"],
+    ),
+    "/dashboard/stores",
+  )
+  assert.equal(
+    firstAccessibleDashboardPath(allPermissions, platformOnlyContext, ["super_admin"]),
+    "/dashboard/billing-query",
+  )
 })
 
-test("tenant page guard follows the same navigation context contract", async () => {
+test("tenant context detection excludes retired and platform-only pages", async () => {
   const { dashboardPathRequiresTenant } = await loadNavigation()
 
   assert.equal(dashboardPathRequiresTenant("/dashboard"), true)
   assert.equal(dashboardPathRequiresTenant("/dashboard/conversations/12"), true)
   assert.equal(dashboardPathRequiresTenant("/dashboard/users"), true)
-  assert.equal(dashboardPathRequiresTenant("/dashboard/settings"), true)
-  assert.equal(dashboardPathRequiresTenant("/dashboard/channels"), false)
+  assert.equal(dashboardPathRequiresTenant("/dashboard/settings"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/reply-intent-profiles"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/reply-intent-configs"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/roles"), false)
   assert.equal(dashboardPathRequiresTenant("/dashboard/billing-query"), false)
 })
 
-test("billing uses one permission-gated route across platform and tenant scopes", async () => {
-  const { filterDashboardNavForSession, dashboardPathIsAccessible } = await loadNavigation()
-  const platformContext = { isPlatformAccount: true, hasActiveTenant: false }
-  const tenantContext = { isPlatformAccount: false, hasActiveTenant: true }
+test("unregistered dashboard paths remain blocked", async () => {
+  const { dashboardPathIsAccessible } = await loadNavigation()
 
-  assert.equal(itemUrls(filterDashboardNavForSession(["billing.view"], platformContext)).includes("/dashboard/billing-query"), true)
-  assert.equal(itemUrls(filterDashboardNavForSession(["billing.view"], tenantContext)).includes("/dashboard/billing-query"), true)
-  assert.equal(dashboardPathIsAccessible("/dashboard/billing-query", [], platformContext), false)
-  assert.equal(dashboardPathIsAccessible("/dashboard/billing-query", ["billing.view"], platformContext), true)
+  assert.equal(
+    dashboardPathIsAccessible(
+      "/dashboard/unregistered-module",
+      allPermissions,
+      tenantContext,
+      ["tenant_admin"],
+    ),
+    false,
+  )
 })

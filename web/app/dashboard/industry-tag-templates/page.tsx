@@ -17,11 +17,11 @@ import {
   fetchIndustryTagDefinition,
   fetchIndustryTagDefinitionPage,
   fetchIndustryTagDefinitions,
-  fetchReplyIntentProfiles,
+  fetchReplyIntentProfileOptions,
   updateIndustryTagDefinition,
   type CreateIndustryTagDefinitionPayload,
   type IndustryTagDefinition,
-  type ReplyIntentProfile,
+  type ReplyIntentProfileOption,
 } from "@/lib/api/admin"
 import { Status } from "@/lib/generated/enums"
 
@@ -38,17 +38,16 @@ export default function IndustryTagTemplatesPage() {
     [session?.permissions],
   )
   const canManage = Boolean(session?.isPlatformAccount) && permissions.has("aiConfig.update")
-  const [profiles, setProfiles] = useState<ReplyIntentProfile[]>([])
+  const [profiles, setProfiles] = useState<ReplyIntentProfileOption[]>([])
   const [profileID, setProfileID] = useState(0)
   const [catalog, setCatalog] = useState<IndustryTagDefinition[]>([])
   const [loadingProfiles, setLoadingProfiles] = useState(true)
 
   useEffect(() => {
     let active = true
-    void fetchReplyIntentProfiles({ page: 1, limit: 100 })
-      .then((result) => {
+    void fetchReplyIntentProfileOptions()
+      .then((items) => {
         if (!active) return
-        const items = result.results ?? []
         setProfiles(items)
         setProfileID((current) => current || items[0]?.id || 0)
       })

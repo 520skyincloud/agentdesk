@@ -126,7 +126,10 @@ func assertArrivalPermissionAssignments(t *testing.T, db *gorm.DB) {
 			constants.PermissionArrivalConnectionView.Code: true,
 			constants.PermissionArrivalAuditView.Code:      true,
 		},
-		constants.RoleCodeCsUser:     {},
+		constants.RoleCodeCsUser: {
+			constants.PermissionArrivalConnectionView.Code: true,
+			constants.PermissionArrivalAuditView.Code:      true,
+		},
 		constants.RoleCodeStoreStaff: {},
 	}
 	for _, permission := range arrivalPermissionSpecs {

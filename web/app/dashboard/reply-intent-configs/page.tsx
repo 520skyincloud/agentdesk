@@ -16,11 +16,11 @@ import {
   deleteReplyIntentConfig,
   fetchReplyIntentConfig,
   fetchReplyIntentConfigs,
-  fetchReplyIntentProfiles,
+  fetchReplyIntentProfileOptions,
   updateReplyIntentConfig,
   type CreateReplyIntentConfigPayload,
   type ReplyIntentConfig,
-  type ReplyIntentProfile,
+  type ReplyIntentProfileOption,
 } from "@/lib/api/admin"
 import { getEnumOptions } from "@/lib/enums"
 import { Status, StatusLabels } from "@/lib/generated/enums"
@@ -96,13 +96,12 @@ export default function ReplyIntentConfigsPage() {
     return updateReplyIntentConfig({ ...item, status: nextStatus })
   }
 
-  const [profiles, setProfiles] = useState<ReplyIntentProfile[]>([])
+  const [profiles, setProfiles] = useState<ReplyIntentProfileOption[]>([])
 
   useEffect(() => {
     async function loadProfiles() {
       try {
-        const page = await fetchReplyIntentProfiles({ limit: 200 })
-        setProfiles(page.results.filter((item) => item.status !== Status.Deleted))
+        setProfiles(await fetchReplyIntentProfileOptions())
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "加载意图行业失败")
       }

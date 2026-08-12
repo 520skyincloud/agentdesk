@@ -7,6 +7,8 @@ const source = await readFile(new URL("./layout.tsx", import.meta.url), "utf8")
 test("dashboard layout blocks direct routes with the shared navigation permission contract", () => {
   assert.match(source, /dashboardPathIsAccessible/)
   assert.match(source, /firstAccessibleDashboardPath/)
+  assert.match(source, /firstAccessibleDashboardPath\(session\.permissions, navContext, session\.roles\)/)
+  assert.match(source, /session\.roles/)
   assert.match(source, /router\.replace\(fallbackPath \?\? "\/dashboard"\)/)
   assert.match(source, /missingTenantContext \|\| inaccessibleRoute/)
 })

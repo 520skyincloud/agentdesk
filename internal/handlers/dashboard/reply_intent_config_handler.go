@@ -28,6 +28,14 @@ func ReplyIntentConfigAnyList(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, &web.PageResult{Results: builders.BuildReplyIntentConfigs(list), Page: paging})
 }
 
+func ReplyIntentConfigGetProfileOptions(ctx *gin.Context) {
+	if _, err := requirePlatformPermission(ctx, constants.PermissionAIConfigView); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, builders.BuildReplyIntentProfileOptions(services.ReplyIntentProfileService.FindOptions()))
+}
+
 func ReplyIntentConfigGetBy(ctx *gin.Context) {
 	id, ok := httpx.GetPathInt64(ctx, "id")
 	if !ok {

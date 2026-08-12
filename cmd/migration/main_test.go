@@ -88,8 +88,8 @@ func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
 	if err := db.Model(&models.Migration{}).Where("success = ?", true).Count(&successful).Error; err != nil {
 		t.Fatalf("count successful migrations: %v", err)
 	}
-	if successful != 10 {
-		t.Fatalf("successful fresh initializers=%d want=10", successful)
+	if successful != 11 {
+		t.Fatalf("successful fresh initializers=%d want=11", successful)
 	}
 	var migrations []models.Migration
 	if err := db.Order("version ASC").Find(&migrations).Error; err != nil {
@@ -102,7 +102,7 @@ func TestMigrationMainUsesExplicitConfigAndExitsZero(t *testing.T) {
 			t.Fatalf("initializer %d failed: %+v", migrations[i].Version, migrations[i])
 		}
 	}
-	if want := []int64{2, 15, 35, 68, 69, 70, 71, 72, 74, 75}; !reflect.DeepEqual(versions, want) {
+	if want := []int64{2, 15, 35, 68, 69, 70, 71, 72, 74, 75, 76}; !reflect.DeepEqual(versions, want) {
 		t.Fatalf("fresh initializer versions=%v want=%v", versions, want)
 	}
 

@@ -36,3 +36,40 @@ func TestStoreStaffRoleIncludesOwnConversationWorkspacePermissions(t *testing.T)
 		}
 	}
 }
+
+func TestRoleNavigationViewPermissions(t *testing.T) {
+	tests := []struct {
+		roleCode string
+		want     []string
+	}{
+		{
+			roleCode: RoleCodeAdmin,
+			want:     []string{PermissionStoreWorkbenchView.Code},
+		},
+		{
+			roleCode: RoleCodeCsTeamLeader,
+			want:     []string{PermissionBillingView.Code},
+		},
+		{
+			roleCode: RoleCodeCsUser,
+			want: []string{
+				PermissionStoreView.Code,
+				PermissionArrivalConnectionView.Code,
+				PermissionArrivalAuditView.Code,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.roleCode, func(t *testing.T) {
+			got := make(map[string]bool)
+			for _, permission := range RolePermissions[tt.roleCode] {
+				got[permission.Code] = true
+			}
+			for _, permissionCode := range tt.want {
+				if !got[permissionCode] {
+					t.Fatalf("role %s missing permission %s", tt.roleCode, permissionCode)
+				}
+			}
+		})
+	}
+}

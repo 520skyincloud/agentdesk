@@ -39,8 +39,13 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
     [navContext, session?.permissions, session?.roles]
   )
   const secondaryNavItems = useMemo(
-    () => filterDashboardSecondaryNavForSession(session?.permissions, navContext),
-    [navContext, session?.permissions]
+    () =>
+      filterDashboardSecondaryNavForSession(
+        session?.permissions,
+        navContext,
+        session?.roles
+      ),
+    [navContext, session?.permissions, session?.roles]
   )
   const brandHref = navContext.hasActiveTenant ? "/dashboard" : "/dashboard/channels"
   const user = {

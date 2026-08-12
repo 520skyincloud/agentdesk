@@ -386,7 +386,6 @@ func buildDashboardQuickLinks(locale string) []response.DashboardQuickLinkRespon
 		{Title: dashboardText(locale, "quick.conversations.title"), Description: dashboardText(locale, "quick.conversations.description"), Link: "/dashboard/conversations"},
 		{Title: dashboardText(locale, "quick.agents.title"), Description: dashboardText(locale, "quick.agents.description"), Link: "/dashboard/agents"},
 		{Title: dashboardText(locale, "quick.knowledge.title"), Description: dashboardText(locale, "quick.knowledge.description"), Link: "/dashboard/knowledge"},
-		{Title: dashboardText(locale, "quick.settings.title"), Description: dashboardText(locale, "quick.settings.description"), Link: "/dashboard/settings"},
 	}
 }
 
@@ -477,8 +476,6 @@ var dashboardZhCN = map[string]string{
 	"quick.agents.description":          "查看客服状态与分组配置",
 	"quick.knowledge.title":             "知识库",
 	"quick.knowledge.description":       "维护文档与查看检索日志",
-	"quick.settings.title":              "接入设置",
-	"quick.settings.description":        "配置当前公司的接入渠道与接待策略",
 }
 
 var dashboardEnUS = map[string]string{
@@ -496,6 +493,4 @@ var dashboardEnUS = map[string]string{
 	"quick.agents.description":          "Check agent status and team setup",
 	"quick.knowledge.title":             "Knowledge base",
 	"quick.knowledge.description":       "Manage documents and review retrieval logs",
-	"quick.settings.title":              "Access settings",
-	"quick.settings.description":        "Configure channels and reception strategies for the current company",
 }

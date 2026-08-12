@@ -59,6 +59,7 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodGet + " /api/dashboard/tenant/list",
 		http.MethodGet + " /api/dashboard/tenant/:id",
 		http.MethodPost + " /api/dashboard/tenant/create",
+		http.MethodGet + " /api/dashboard/reply-intent-config/profile_options",
 		http.MethodGet + " /api/dashboard/tenant-invitation/current",
 		http.MethodPost + " /api/dashboard/tenant-invitation/rotate",
 		http.MethodGet + " /api/dashboard/tenant-registration/list",
@@ -146,6 +147,20 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		{http.MethodGet, "/api/dashboard/knowledge-faq/list"},
 		{http.MethodPost, "/api/dashboard/knowledge-faq/create"},
 		{http.MethodPost, "/api/dashboard/knowledge-retrieve/build"},
+		{http.MethodGet, "/api/dashboard/reply-intent-profile/list"},
+		{http.MethodGet, "/api/dashboard/reply-intent-profile/1"},
+		{http.MethodPost, "/api/dashboard/reply-intent-profile/create"},
+		{http.MethodPost, "/api/dashboard/reply-intent-profile/update"},
+		{http.MethodPost, "/api/dashboard/reply-intent-profile/delete"},
+		{http.MethodPost, "/api/dashboard/reply-intent-profile/test"},
+		{http.MethodPost, "/api/dashboard/reply-intent-profile/publish"},
+		{http.MethodGet, "/api/dashboard/channel/1"},
+		{http.MethodPost, "/api/dashboard/channel/create"},
+		{http.MethodPost, "/api/dashboard/channel/update"},
+		{http.MethodPost, "/api/dashboard/channel/update_status"},
+		{http.MethodPost, "/api/dashboard/channel/delete"},
+		{http.MethodPost, "/api/dashboard/channel/reset_user_token_secret"},
+		{http.MethodGet, "/api/dashboard/channel/wxwork/kf/accounts"},
 	}
 	for _, endpoint := range retiredEndpoints {
 		recorder := httptest.NewRecorder()
@@ -195,6 +210,10 @@ func TestNewServerRedirectsRetiredDashboardPages(t *testing.T) {
 		"/dashboard/companies",
 		"/dashboard/companies/",
 		"/dashboard/company-detail/1",
+		"/dashboard/settings",
+		"/dashboard/settings/",
+		"/dashboard/reply-intent-profiles",
+		"/dashboard/reply-intent-profiles/1",
 	} {
 		recorder := httptest.NewRecorder()
 		app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))

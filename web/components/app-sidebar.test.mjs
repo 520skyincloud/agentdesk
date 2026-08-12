@@ -10,4 +10,8 @@ test("sidebar navigation receives both permissions and roles from the session", 
     /filterDashboardNavForSession\(session\?\.permissions, navContext, session\?\.roles\)/,
   )
   assert.match(source, /\[navContext, session\?\.permissions, session\?\.roles\]/)
+  assert.match(
+    source,
+    /filterDashboardSecondaryNavForSession\([\s\S]*?session\?\.permissions,[\s\S]*?navContext,[\s\S]*?session\?\.roles/,
+  )
 })

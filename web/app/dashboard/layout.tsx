@@ -38,10 +38,15 @@ export default function DashboardLayout({
       dashboardPathRequiresTenant(pathname)
   )
   const fallbackPath = session
-    ? firstAccessibleDashboardPath(session.permissions, navContext)
+    ? firstAccessibleDashboardPath(session.permissions, navContext, session.roles)
     : null
   const routeAccessible = session
-    ? dashboardPathIsAccessible(pathname, session.permissions, navContext)
+    ? dashboardPathIsAccessible(
+        pathname,
+        session.permissions,
+        navContext,
+        session.roles
+      )
     : true
   const inaccessibleRoute = Boolean(
     ready &&

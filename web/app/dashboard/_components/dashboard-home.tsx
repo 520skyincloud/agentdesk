@@ -37,7 +37,10 @@ import {
   type DashboardOverview,
   type DashboardRange,
 } from "@/lib/api/dashboard"
-import { filterDashboardNavForSession } from "@/lib/navigation"
+import {
+  dashboardPathIsAccessible,
+  filterDashboardNavForSession,
+} from "@/lib/navigation"
 import { cn, formatDateTime } from "@/lib/utils"
 
 function duration(seconds: number) {
@@ -115,18 +118,33 @@ export function DashboardHome() {
   const t = useI18n()
   const router = useRouter()
   const { session } = useAuth()
-  const canViewOverview = session?.permissions.includes("dashboard.view") ?? false
+  const navContext = useMemo(
+    () => ({
+      isPlatformAccount: Boolean(session?.isPlatformAccount),
+      hasActiveTenant: (session?.activeTenantId ?? 0) > 0,
+    }),
+    [session?.activeTenantId, session?.isPlatformAccount],
+  )
+  const canViewOverview = session
+    ? dashboardPathIsAccessible(
+        "/dashboard",
+        session.permissions,
+        navContext,
+        session.roles,
+      )
+    : false
   const canViewAnalytics = session?.permissions.includes("serviceAnalytics.view") ?? false
   const canViewRecords = session?.permissions.includes("conversationRecord.view") ?? false
   const canManageDispatch = session?.permissions.includes("conversation.handover") ?? false
   const fallbackPath = useMemo(() => {
     if (!session || canViewOverview) return null
-    const sections = filterDashboardNavForSession(session.permissions, {
-      isPlatformAccount: session.isPlatformAccount,
-      hasActiveTenant: session.activeTenantId > 0,
-    })
+    const sections = filterDashboardNavForSession(
+      session.permissions,
+      navContext,
+      session.roles,
+    )
     return sections.flatMap((section) => section.items).find((item) => item.url !== "/dashboard")?.url ?? null
-  }, [canViewOverview, session])
+  }, [canViewOverview, navContext, session])
   const [range, setRange] = useState<DashboardRange>("7d")
   const [data, setData] = useState<DashboardOverview | null>(null)
   const [loading, setLoading] = useState(true)

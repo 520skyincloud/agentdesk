@@ -35,7 +35,6 @@ func TestDashboardQuickLinksUseCurrentTenantPages(t *testing.T) {
 		"/dashboard/conversations",
 		"/dashboard/agents",
 		"/dashboard/knowledge",
-		"/dashboard/settings",
 	}
 	links := buildDashboardQuickLinks(i18nx.LocaleZhCN)
 	if len(links) != len(wantLinks) {
@@ -45,8 +44,5 @@ func TestDashboardQuickLinksUseCurrentTenantPages(t *testing.T) {
 		if links[i].Link != want {
 			t.Fatalf("buildDashboardQuickLinks()[%d].Link = %q, want %q", i, links[i].Link, want)
 		}
-	}
-	if links[len(links)-1].Title != "接入设置" {
-		t.Fatalf("settings quick link title = %q", links[len(links)-1].Title)
 	}
 }

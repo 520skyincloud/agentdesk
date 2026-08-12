@@ -72,7 +72,12 @@ func NewServer() (*gin.Engine, error) {
 }
 
 func retiredDashboardRouteMiddleware() gin.HandlerFunc {
-	retiredRoutes := []string{"/dashboard/companies", "/dashboard/company-detail"}
+	retiredRoutes := []string{
+		"/dashboard/companies",
+		"/dashboard/company-detail",
+		"/dashboard/settings",
+		"/dashboard/reply-intent-profiles",
+	}
 	return func(ctx *gin.Context) {
 		if ctx.Request.Method == http.MethodGet || ctx.Request.Method == http.MethodHead {
 			path := strings.TrimRight(ctx.Request.URL.Path, "/")
@@ -242,7 +247,6 @@ func addRouter(app *gin.Engine) {
 	registerDashboardStoreModelProfileRoutes(dashboardGroup.Group("/store-model-profile"))
 	registerDashboardStoreModelCredentialRoutes(dashboardGroup.Group("/store-model-credential"))
 	registerDashboardBillingQueryRoutes(dashboardGroup.Group("/billing-query"))
-	registerDashboardReplyIntentProfileRoutes(dashboardGroup.Group("/reply-intent-profile"))
 	registerDashboardReplyIntentConfigRoutes(dashboardGroup.Group("/reply-intent-config"))
 	registerDashboardIndustryTagDefinitionRoutes(dashboardGroup.Group("/industry-tag-definition"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
