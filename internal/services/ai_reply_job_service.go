@@ -555,7 +555,13 @@ func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobE
 	if strings.TrimSpace(status) == "understood" {
 		return nil
 	}
-	return MediaUnderstandingService.UnderstandInboundMessage(ctx, state.Message.ID)
+	// 媒体理解必须独立于当前 job 的生命周期：客户常常发图后紧跟文字追问，
+	// 文字消息会把本 media job supersede 并 cancel ctx；若媒体理解继承该 ctx，
+	// vision 调用会被 context canceled 打断，导致图片永远"没加载出来"。
+	// 这里剥离 cancel 但保留 values（requestID 等），再套独立超时。
+	mediaCtx, mediaCancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+	defer mediaCancel()
+	return MediaUnderstandingService.UnderstandInboundMessage(mediaCtx, state.Message.ID)
 }
 
 func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error) {
