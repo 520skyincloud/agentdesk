@@ -889,7 +889,11 @@ func (s *aiReplyJobService) dispatchToExistingHumanPool(state *aiReplyJobExecuti
 		return fmt.Errorf("human dispatch AI agent unavailable")
 	}
 	requestID := fmt.Sprintf("ai_reply_job_handoff_%d", job.ID)
-	_, err := ConversationHumanDispatchService.HandoffByAIWithRequestID(state.Conversation.ID, aiAgent, reason, requestID)
+	// 技术失败兜底也必须先向客户二次确认，而不是直接转人工；
+	// 确认后才真正进入人工池，避免“模型一抖就直接转人工”。
+	_, err := ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		state.Conversation.ID, aiAgent, reason, requestID, state.Message.ID,
+	)
 	return err
 }
 

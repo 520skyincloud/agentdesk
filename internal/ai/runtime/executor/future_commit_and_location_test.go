@@ -2,6 +2,8 @@ package executor
 
 import (
 	"testing"
+
+	"agent-desk/internal/ai/runtime/contracts"
 )
 
 func TestFutureCommitPhraseDetectsPromises(t *testing.T) {
@@ -34,5 +36,34 @@ func TestLooksLikeNonHotelLocation(t *testing.T) {
 		if got := looksLikeNonHotelLocation(text); got != want {
 			t.Fatalf("looksLikeNonHotelLocation(%q) = %v, want %v", text, got, want)
 		}
+	}
+}
+
+func TestFutureCommitClaimIsRepairableNotRejected(t *testing.T) {
+	// 直接测未来承诺校验本身：命中 → 产出 issue（可修复），且中性表达不命中。
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{
+			Tasks: []contracts.ReplyPlanTaskV2{{TaskKey: "t1", OutputMode: "text"}},
+		},
+		Output: contracts.ReplyOutputV2{
+			Parts: []contracts.ReplyPartV2{{TaskKeys: []string{"t1"}, Content: "我帮你查查优惠"}},
+		},
+	}
+	if issues := validateReplyFutureCommitClaims(input); len(issues) == 0 {
+		t.Fatalf("expected future_commit_claim issue")
+	}
+}
+
+func TestNeutralPhraseNotBlocked(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{
+			Tasks: []contracts.ReplyPlanTaskV2{{TaskKey: "t1", OutputMode: "text"}},
+		},
+		Output: contracts.ReplyOutputV2{
+			Parts: []contracts.ReplyPartV2{{TaskKeys: []string{"t1"}, Content: "我看看有没有别的选择，具体以门店实际为准。"}},
+		},
+	}
+	if issues := validateReplyFutureCommitClaims(input); len(issues) != 0 {
+		t.Fatalf("neutral phrase should pass, got issues: %+v", issues)
 	}
 }

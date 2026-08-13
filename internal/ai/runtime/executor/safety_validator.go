@@ -48,9 +48,20 @@ func validateReplySafety(input ReplyValidationInput) []contracts.ValidationIssue
 				}
 			}
 		}
-		if futureCommitPhrase(content) {
+	}
+	return issues
+}
+
+// validateReplyFutureCommitClaims 单独校验"未来承诺"表达。它只给一次协议修复机会
+// （repairable），而不是像 safety 其它硬伤那样一票否决。因为模型表达"我看看/先确认"
+// 等中性短语并不一定构成承诺执行，直接 rejected 会误杀正常回复并触发转人工。
+func validateReplyFutureCommitClaims(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	issues := make([]contracts.ValidationIssueV1, 0)
+	for partIndex, part := range input.Output.Parts {
+		if futureCommitPhrase(strings.TrimSpace(part.Content)) {
 			issues = append(issues, validationIssue("future_commit_claim", "$.parts", "reply promises a pending staff action without an action ledger entry"))
 		}
+		_ = partIndex
 	}
 	return issues
 }
@@ -73,9 +84,8 @@ func futureCommitPhrase(content string) bool {
 func futureCommitPhrases() []string {
 	return []string{
 		"我帮你查", "我查一下", "我先查", "我去查", "这就去查", "我去查一下",
-		"我帮你问", "我问一下", "我去问", "我帮你确认", "我确认一下", "我去确认",
-		"我帮你看看", "帮您看看", "我看看有没有", "我这边看看",
-		"我帮你记下", "我记下了", "帮你记下", "我这边先确认", "先确认下", "确认下再回复",
+		"我帮你问", "我去问", "我帮你确认", "我确认一下", "我去确认",
+		"我帮你记下", "我记下了", "帮你记下", "我这边先确认", "确认下再回复",
 		"等下给你信", "稍后回复你", "稍后给你", "晚点回复", "我再去查",
 	}
 }

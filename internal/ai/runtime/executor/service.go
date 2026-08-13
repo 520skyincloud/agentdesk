@@ -90,15 +90,6 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
-		if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) {
-			collector.Data.Output.FinishReason = "intent_emergency_human_route_dispatched"
-			collector.Data.Pipeline.Generate.Status = "skipped"
-			collector.Data.Pipeline.Generate.Reason = "intent stage dispatched emergency safety directly to human reception"
-			collector.Data.Pipeline.Validate.Status = "passed"
-			collector.Data.Pipeline.Validate.Reason = "emergency safety route dispatched without customer confirmation"
-			summary.TraceData = collector.Marshal()
-			return summary, nil
-		}
 		collector.Data.Output.FinishReason = "intent_human_route_confirmation_requested"
 		collector.Data.Pipeline.Generate.Status = "skipped"
 		collector.Data.Pipeline.Generate.Reason = "intent stage requested customer confirmation before human route"
