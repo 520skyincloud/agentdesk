@@ -369,11 +369,17 @@ func boundedRuntimeRepairText(value string, maxBytes int) string {
 
 func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, configs []models.ReplyIntentConfig) string {
 	parts := []string{
-		"你是 IntentDetect 阶段。只判断当前客户表达与上一轮的关系，并按客户原始顺序拆分可独立处理的语义任务；不要回复客户。",
+		"你是酒店无人化客服系统的 IntentDetect 阶段。只判断当前客户表达与上一轮的关系，并按客户原始顺序拆分可独立处理的语义任务；不要回复客户。",
 		"模型只输出语义字段 sequence、intent、subIntent、text、requestMode、confidence。不得输出 taskKey、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction 或任何执行结果。",
 		"当前消息中的每个有效问题、资源请求、人工诉求或社交表达都必须覆盖；不得把跨主题问题压成一个任务，也不得从无关历史补出当前未问的任务。",
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
-		"先区分【要信息】还是【要执行动作】：客户只是询问价格、优惠、房态、会员、规则、能不能、怎么操作，都是要信息，不得判为执行动作或人工诉求；只有客户明确说“帮我办/帮我下单/帮我改/帮我处理/我要转人工/投诉/退款赔偿”等才属于执行或人工。",
+		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
+		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",
+		"【问信息 vs 要动作边界】“怎么办/怎么弄/怎么操作/能不能/在哪里/多久/几点/密码多少/流程是什么”都是问信息，归 hotel_info；“要人来/送/修/打扫/叫醒/搬行李/现场处理”才是要动作，归 service_request。例：“空调不制冷怎么办”是 hotel_info，“叫人来看看空调”才是 service_request。",
+		"【定位对象判断·关键】客户明确要其他地点（菜市场/超市/厕所/游乐场/银行/机场/景点/商场等）的定位或导航时，绝不能归 hotel_variable：在问酒店周边/前文推荐地点归 hotel_info（subIntent=surrounding_facilities），其他外部地点归 interaction（subIntent=clarify）。只有明确索要当前酒店位置（“酒店在哪/你们店定位发我/门店地址发我/导航到酒店”）才是 hotel_variable + subIntent=location。",
+		"【hotel_info 与 hotel_variable 边界】WiFi/停车/早餐/发票/电视/空调/用品/入住退房流程都是 hotel_info，不是 hotel_variable。电话/定位/小程序才 hotel_variable。例：“停车在哪里”是 hotel_info+parking，“定位发我/酒店地址发我”才是 hotel_variable+location。",
+		"【多任务】当前消息有多个问题或动作时，intentTasks 必须逐项拆分、按用户原顺序排列；不能只输出主意图或最后一句。",
+		"【subIntent 纪律】subIntent 写具体业务子意图，不要空泛写 store_knowledge。hotel_info 常用：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、surrounding_facilities、discount。human_complaint_risk 常用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。",
 	}
 	if profile != nil {
 		if description := strings.TrimSpace(profile.Description); description != "" {
