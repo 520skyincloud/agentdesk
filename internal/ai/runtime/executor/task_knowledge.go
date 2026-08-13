@@ -211,7 +211,8 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				); actionCode != "" {
 					taskActionCodes[item.TaskKey] = actionCode
 				} else if knowledgeContentRequiresHandoff(result.Content) {
-					// 知识正文明确要求转人工：即使未显式绑定，也按结构化转人工处理并二次确认。
+					// 只有知识正文明确出现"转人工"三个字才判转人工；
+					// "需要人工/人工客服/联系人工/人工帮助"等一概不算。
 					taskActionCodes[item.TaskKey] = "human_handoff"
 				}
 			}
@@ -474,14 +475,8 @@ func mergeRuntimeTaskKnowledge(items []runtimeTaskKnowledgeItem, knowledgeBaseID
 }
 
 // knowledgeContentRequiresHandoff 判断知识正文是否明确要求转人工。
-// 这是绑定表之外的确定性兜底，避免“知识答案写了转人工、模型却口头复述”的情况。
+// 只认"转人工"三个字精确出现；"需要人工/人工客服/联系人工/人工帮助"等一律不算，
+// 避免把"让客户打客服电话"这类知识误判成要转人工。
 func knowledgeContentRequiresHandoff(content string) bool {
-	compact := compactRuntimeProtocolText(content)
-	if compact == "" {
-		return false
-	}
-	return containsAny(compact, []string{
-		"转人工", "人工客服", "联系人工", "需人工", "需要人工", "人工介入",
-		"人工处理", "人工接待", "请转人工", "转接人工", "转给人工",
-	})
+	return strings.Contains(strings.TrimSpace(content), "转人工")
 }

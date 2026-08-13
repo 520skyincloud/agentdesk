@@ -64,12 +64,14 @@ func TestValidateReplyFactGroundingSkipsGroundedTask(t *testing.T) {
 	}
 }
 
-func TestKnowledgeContentRequiresHandoff(t *testing.T) {
+func TestKnowledgeContentRequiresHandoffOnlyExactKeyword(t *testing.T) {
 	cases := map[string]bool{
-		"订错房间需要转人工处理":    true,
-		"请联系人工客服":        true,
+		"订错房间需要转人工处理": true,
+		"请转人工":        true,
+		"如果需要人工帮助，24小时客服电话是多少": false,
+		"请联系人工客服":        false,
+		"需要人工介入处理":       false,
 		"停车场免费，地下车库有充电桩": false,
-		"退房在小程序里操作即可":    false,
 	}
 	for content, want := range cases {
 		if got := knowledgeContentRequiresHandoff(content); got != want {
