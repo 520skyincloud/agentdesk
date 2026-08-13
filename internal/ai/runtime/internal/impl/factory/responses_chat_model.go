@@ -378,9 +378,18 @@ func responsesInvocationError(statusCode int, raw []byte, structured bool) error
 	class := modelconfig.InvocationErrorUpstream
 	retryable := failure.retryable
 	switch statusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized:
 		class = modelconfig.InvocationErrorCredentialRejected
 		retryable = false
+	case http.StatusForbidden:
+		// 403 需要区分：配额/余额不足（充值可恢复，可重试）vs 权限被拒（不可重试）。
+		if responsesQuotaExhausted(raw) {
+			class = modelconfig.InvocationErrorUpstream
+			retryable = true
+		} else {
+			class = modelconfig.InvocationErrorCredentialRejected
+			retryable = false
+		}
 	case http.StatusNotFound:
 		class = modelconfig.InvocationErrorEndpointNotFound
 		retryable = false
@@ -406,6 +415,18 @@ type responsesFailure struct {
 	responseStatus string
 	providerCode   string
 	retryable      bool
+}
+
+// responsesQuotaExhausted 判断 403 是否为配额/余额不足（充值可恢复，应重试），
+// 而不是权限被拒（不可重试）。newapi 返回 "token quota is not enough" / "quota is not enough"。
+func responsesQuotaExhausted(raw []byte) bool {
+	text := strings.ToLower(string(raw))
+	for _, marker := range []string{"quota is not enough", "token quota", "remain quota", "pre_consume_token_quota_failed", "quota not enough", "balance insufficient", "insufficient balance", "余额不足", "配额不足", "token balance"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseResponsesFailure(statusCode int, raw []byte) responsesFailure {

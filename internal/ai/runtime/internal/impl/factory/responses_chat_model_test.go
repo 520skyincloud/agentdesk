@@ -289,3 +289,27 @@ func TestResponsesChatModelPreservesFunctionToolLoop(t *testing.T) {
 		t.Fatalf("tool call correlation was lost: call=%#v output=%#v", functionCall, functionOutput)
 	}
 }
+
+func TestResponsesInvocationError403QuotaIsRetryable(t *testing.T) {
+	// 403 + 配额不足 → 可重试 upstream_error，不判成 credential_rejected
+	raw := []byte(`{"error":{"code":"pre_consume_token_quota_failed","message":"token quota is not enough, token remain quota: ¥0.000993"}}`)
+	err := responsesInvocationError(http.StatusForbidden, raw, true)
+	if class := modelconfig.InvocationErrorClass(err); class != modelconfig.InvocationErrorUpstream {
+		t.Fatalf("quota 403 class = %q, want upstream_error", class)
+	}
+	if !modelconfig.InvocationErrorRetryable(err) {
+		t.Fatalf("quota 403 should be retryable")
+	}
+}
+
+func TestResponsesInvocationError403AuthIsNotRetryable(t *testing.T) {
+	// 403 但无配额标记 → 仍是 credential_rejected 不可重试
+	raw := []byte(`{"error":{"message":"permission denied"}}`)
+	err := responsesInvocationError(http.StatusForbidden, raw, true)
+	if class := modelconfig.InvocationErrorClass(err); class != modelconfig.InvocationErrorCredentialRejected {
+		t.Fatalf("auth 403 class = %q, want credential_rejected", class)
+	}
+	if modelconfig.InvocationErrorRetryable(err) {
+		t.Fatalf("auth 403 should not be retryable")
+	}
+}
