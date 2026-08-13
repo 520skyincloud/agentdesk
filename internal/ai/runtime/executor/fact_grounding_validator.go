@@ -22,10 +22,10 @@ func validateReplyFactGrounding(input ReplyValidationInput) []contracts.Validati
 		}
 		for _, taskKey := range part.TaskKeys {
 			task, ok := planByTask[taskKey]
-			if !ok || task.OutputMode != "clarification" {
+			if !ok {
 				continue
 			}
-			if assertsUngroundedFact(content) {
+			if task.OutputMode == "clarification" && assertsUngroundedFact(content) {
 				issues = append(issues, validationIssue(
 					"fact_ungrounded",
 					"$.parts",
@@ -33,10 +33,36 @@ func validateReplyFactGrounding(input ReplyValidationInput) []contracts.Validati
 				))
 				break
 			}
+			// 通用常识型回答必须带"以门店实际为准"类免责，防止把通用建议说成门店事实。
+			if task.OutputMode == "text" && constraintPresent(task.Constraints, "general_guidance_only_with_disclaimer") && !hasStoreDisclaimer(content) {
+				issues = append(issues, validationIssue(
+					"missing_disclaimer",
+					"$.parts",
+					"general guidance task "+taskKey+" lacks a store disclaimer",
+				))
+				break
+			}
 		}
 		_ = partIndex
 	}
 	return issues
+}
+
+func constraintPresent(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStoreDisclaimer(content string) bool {
+	compact := compactReplyText(content)
+	if compact == "" {
+		return false
+	}
+	return containsAnyReplyPhrase(compact, []string{"以实际为准", "以门店实际", "具体以门店", "以店内为准", "门店实际", "建议先确认", "以现场为准"})
 }
 
 // assertsUngroundedFact 检测确定性断言模式。只拦截“动词/判断词 + 具体宾语”的强断言，

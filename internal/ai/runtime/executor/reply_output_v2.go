@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/channelbreaker"
 	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -51,10 +52,15 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 	startedAt := time.Now()
 	generate := func(input []*schema.Message) error {
 		summary.ReplyModelAttempted = true
+		if open, retryAt := channelbreaker.IsOpen("reply_generate", req.ModelConfig.ModelName, time.Now()); open {
+			return fmt.Errorf("reply channel breaker open until %s", retryAt.Format(time.RFC3339))
+		}
 		response, generateErr := chatModel.Generate(ctx, input)
 		if generateErr != nil {
+			channelbreaker.RecordFailure("reply_generate", req.ModelConfig.ModelName, time.Now())
 			return generateErr
 		}
+		channelbreaker.RecordSuccess("reply_generate", req.ModelConfig.ModelName)
 		collectTokenUsage(response, summary, collector)
 		if response == nil {
 			summary.RawReplyOutput = ""

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agent-desk/internal/ai/replyengine"
+	"agent-desk/internal/ai/runtime/channelbreaker"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
@@ -197,9 +198,17 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	if retryCount < 1 {
 		retryCount = 1
 	}
+	if open, retryAt := channelbreaker.IsOpen("media_vision", resolved.ModelName, time.Now()); open {
+		return "", fmt.Errorf("vision channel breaker open until %s", retryAt.Format(time.RFC3339))
+	}
 	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
 	for attempt := 0; attempt < retryCount && err != nil && isRetryableMediaError(err); attempt++ {
 		text, usage, err = s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
+	}
+	if err != nil {
+		channelbreaker.RecordFailure("media_vision", resolved.ModelName, time.Now())
+	} else {
+		channelbreaker.RecordSuccess("media_vision", resolved.ModelName)
 	}
 	s.recordMediaModelUsage(message, resolved, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	return text, err

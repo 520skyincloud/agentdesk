@@ -536,6 +536,13 @@ func (s *aiManualResumeTaskService) failOrRetry(task *models.AIManualResumeTask,
 	if task == nil {
 		return
 	}
+	// 技术失败（intent/generation/knowledge/commit 等）是模型通道问题，不是客户诉求。
+	// 不应该因此把会话升级成"仍需人工"，否则模型故障期间会"恢复→失败→再人工"死循环。
+	// 这里改为退避重试，交给主链熔断（P2-2）与更大的重试上限兜底。
+	if _, isTechnical := AIReplyExecutionErrorCodeOf(runErr); isTechnical {
+		s.retryTechnical(task, runErr, now)
+		return
+	}
 	retryCount := task.RetryCount + 1
 	if retryCount <= 3 {
 		delays := []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
@@ -549,6 +556,73 @@ func (s *aiManualResumeTaskService) failOrRetry(task *models.AIManualResumeTask,
 		})
 		return
 	}
+	_ = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.AIManualResumeTaskRepository.UpdatesInTenant(ctx.Tx, task.ID, task.TenantID, map[string]any{
+			"task_status":      aiManualResumeTaskFailed,
+			"retry_count":      retryCount,
+			"completed_at":     now,
+			"last_error":       limitText(runErr.Error(), 1000),
+			"updated_at":       now,
+			"update_user_name": "system",
+		}); err != nil {
+			return err
+		}
+		state := repositories.ConversationRouteStateRepository.Take(ctx.Tx, "conversation_id = ? AND tenant_id = ?", task.ConversationID, task.TenantID)
+		if state != nil {
+			if err := repositories.ConversationRouteStateRepository.UpdatesInTenant(ctx.Tx, state.ID, task.TenantID, map[string]any{
+				"need_human_follow_up": true,
+				"handoff_reason":       "人工超时后AI恢复失败，仍需人工关注",
+				"updated_at":           now,
+				"update_user_name":     "system",
+			}); err != nil {
+				return err
+			}
+		}
+		return ConversationEventLogService.CreateEvent(ctx, task.ConversationID, enums.IMEventTypeTransfer, enums.IMSenderTypeSystem, 0,
+			"人工超时后AI恢复失败，仍需人工关注", ConversationService.buildEventPayload(map[string]any{
+				"action":       "manual_resume_failed",
+				"taskKey":      task.TaskKey,
+				"retryCount":   retryCount,
+				"errorMessage": limitText(runErr.Error(), 500),
+			}))
+	})
+	if conversation := ConversationService.GetByTenantID(task.ConversationID, task.TenantID); conversation != nil {
+		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
+	if state := ConversationRouteService.GetByConversationIDInTenant(task.ConversationID, task.TenantID); state != nil && state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
+		ConversationHumanDispatchService.notifyStoreRoomHandoffWithKey(task.ConversationID, "AI 临时恢复失败，仍需人工接待。 "+state.HandoffReason, task.TaskKey+":resume_failed")
+	}
+}
+
+// retryTechnical 处理技术失败的退避重试：不升级为人工，交给熔断与更大上限兜底。
+func (s *aiManualResumeTaskService) retryTechnical(task *models.AIManualResumeTask, runErr error, now time.Time) {
+	const maxTechnicalRetry = 6
+	retryCount := task.RetryCount + 1
+	if retryCount > maxTechnicalRetry {
+		// 重试彻底耗尽，仍走原人工兜底，避免无限循环。
+		s.failOrRetryNonTechnical(task, runErr, now)
+		return
+	}
+	delays := []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
+	delay := delays[0]
+	if retryCount-1 < len(delays) {
+		delay = delays[retryCount-1]
+	} else {
+		delay = delays[len(delays)-1]
+	}
+	_ = repositories.AIManualResumeTaskRepository.UpdatesInTenant(sqls.DB(), task.ID, task.TenantID, map[string]any{
+		"task_status":      aiManualResumeTaskRetry,
+		"retry_count":      retryCount,
+		"next_retry_at":    now.Add(delay),
+		"last_error":       limitText(runErr.Error(), 1000),
+		"updated_at":       now,
+		"update_user_name": "system",
+	})
+}
+
+// failOrRetryNonTechnical 是技术失败重试耗尽后的最终兜底（与历史语义一致）。
+func (s *aiManualResumeTaskService) failOrRetryNonTechnical(task *models.AIManualResumeTask, runErr error, now time.Time) {
+	retryCount := task.RetryCount + 1
 	_ = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		if err := repositories.AIManualResumeTaskRepository.UpdatesInTenant(ctx.Tx, task.ID, task.TenantID, map[string]any{
 			"task_status":      aiManualResumeTaskFailed,

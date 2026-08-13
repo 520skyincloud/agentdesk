@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-desk/internal/ai/runtime/channelbreaker"
 	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
@@ -114,13 +115,18 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	firstStartedAt := time.Now()
 	firstReceiptOffset := len(usageCapture.Receipts())
+	if open, retryAt := channelbreaker.IsOpen("intent_detect", resolved.ModelName, time.Now()); open {
+		return callbacks.IntentTraceData{}, fmt.Errorf("intent channel breaker open until %s", retryAt.Format(time.RFC3339))
+	}
 	firstCallCtx, firstCallCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
 	result, err := chatModel.Generate(firstCallCtx, compiled.Messages)
 	firstCallCancel()
 	if err != nil {
+		channelbreaker.RecordFailure("intent_detect", resolved.ModelName, time.Now())
 		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
+	channelbreaker.RecordSuccess("intent_detect", resolved.ModelName)
 	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, runtimeSchema, configs)
 	if err != nil && runtimeProtocolRepairAllowed(err) {

@@ -78,7 +78,13 @@ func buildRuntimeReplyPlanV2(
 				evidenceRefs = append([]string(nil), outcome.SupportingRefs...)
 			}
 			if knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable" {
-				outputMode = "clarification"
+				if isGeneralKnowledgeQuestion(plan.Text) {
+					// 通用常识型问题（停车/WiFi/发票/早餐/退房等普适问题），
+					// 即使门店知识库没写，也可给通用建议，但必须带"以门店实际为准"免责。
+					outputMode = "text"
+				} else {
+					outputMode = "clarification"
+				}
 			}
 			if knowledgeStatus == "unavailable" {
 				outputMode = "handoff"
@@ -93,6 +99,9 @@ func buildRuntimeReplyPlanV2(
 		}
 		if outputMode == "clarification" {
 			constraints = appendUniqueStrings(constraints, "ask_one_missing_field", "acknowledge_uncertainty")
+		}
+		if outputMode == "text" && (knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable") && isGeneralKnowledgeQuestion(plan.Text) {
+			constraints = appendUniqueStrings(constraints, "general_guidance_only_with_disclaimer")
 		}
 		objective := strings.TrimSpace(plan.Text)
 		if objective == "" {
@@ -285,4 +294,27 @@ func validateActionLedgerContract(ledger contracts.ActionLedgerV1) error {
 		return fmt.Errorf("action ledger contract: %w", err)
 	}
 	return nil
+}
+
+// isGeneralKnowledgeQuestion 判断是否属于"通用酒店常识型"问题。
+// 这类问题即使当前门店知识库没有，也能给普适建议（带免责），而不是只会追问。
+func isGeneralKnowledgeQuestion(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" {
+		return false
+	}
+	return containsAny(compact, []string{
+		"停车", "停车场", "车位", "充电", "充电桩", "电车",
+		"wifi", "wi-fi", "无线", "网络",
+		"发票", "专票", "普票", "报销",
+		"早餐", "早饭", "餐饮",
+		"退房", "入住", "办理入住", "入住时间",
+		"洗衣", "洗衣机", "烘干",
+		"健身房", "泳池", "游泳池",
+		"押金", "会员", "积分",
+		"电视", "投屏", "投影", "空调", "热水", "热水壶",
+		"拖鞋", "牙刷", "牙膏", "毛巾", "浴巾", "浴帽", "矿泉水", "送水", "洗漱",
+		"叫醒", "行李", "寄存", "外卖", "快递",
+		"周边", "附近", "交通", "地铁", "公交",
+	})
 }
