@@ -682,6 +682,11 @@ func isMediaOnlyWithoutActionableIntent(message models.Message) bool {
 	if text == "" {
 		return false
 	}
+	// 语音一旦已转成文字，本质就是文本消息，不能再按"纯媒体无诉求"门控拦截；
+	// 否则客户用语音回答"房间号1203"这类连续补充会被静默跳过、不回复。
+	if message.MessageType == enums.IMMessageTypeVoice {
+		return false
+	}
 	if replyengine.MediaUnderstandingExplicitlyNoIntent(text) {
 		return true
 	}
