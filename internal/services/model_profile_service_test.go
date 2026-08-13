@@ -56,7 +56,7 @@ func TestModelProfileRequiresExactlyNineCompatibleNewAPISlots(t *testing.T) {
 	}
 }
 
-func TestModelProfileDeepSeekResponsesRequiresV4Flash(t *testing.T) {
+func TestModelProfileDeepSeekResponsesAcceptsAnyV4Model(t *testing.T) {
 	template := &models.ModelProfileTemplate{Code: "standard", Name: "Standard", GatewayBaseURL: "https://newapi.example.com/v1"}
 	slots := completeModelProfileSlotsForTest(0)
 	for i := range slots {
@@ -66,24 +66,9 @@ func TestModelProfileDeepSeekResponsesRequiresV4Flash(t *testing.T) {
 		slots[i].APIMode = "responses"
 		slots[i].ModelName = "deepseek-v4-pro"
 	}
-	if issues := ValidateModelProfileForPublication(template, slots); !hasModelProfileIssue(issues, "必须选择 deepseek-v4-flash") {
-		t.Fatalf("expected DeepSeek Responses model compatibility issue, got %#v", issues)
-	}
-	for i := range slots {
-		if slots[i].UsageCode == enums.ModelUsageSlotIntentDetectLLM || slots[i].UsageCode == enums.ModelUsageSlotReplyLLM {
-			slots[i].ModelName = "deepseek-v4-flash-preview"
-		}
-	}
-	if issues := ValidateModelProfileForPublication(template, slots); !hasModelProfileIssue(issues, "必须选择 deepseek-v4-flash") {
-		t.Fatalf("expected noncanonical DeepSeek V4 Flash name to be rejected, got %#v", issues)
-	}
-	for i := range slots {
-		if slots[i].UsageCode == enums.ModelUsageSlotIntentDetectLLM || slots[i].UsageCode == enums.ModelUsageSlotReplyLLM {
-			slots[i].ModelName = "deepseek-v4-flash"
-		}
-	}
-	if issues := ValidateModelProfileForPublication(template, slots); len(issues) != 0 {
-		t.Fatalf("deepseek-v4-flash responses issues=%#v", issues)
+	// DeepSeek Responses 协议不再限制模型必须是 deepseek-v4-flash；v4-pro 等同样支持。
+	if issues := ValidateModelProfileForPublication(template, slots); hasModelProfileIssue(issues, "必须选择 deepseek-v4-flash") {
+		t.Fatalf("DeepSeek Responses 不应再强制 deepseek-v4-flash, got %#v", issues)
 	}
 }
 
