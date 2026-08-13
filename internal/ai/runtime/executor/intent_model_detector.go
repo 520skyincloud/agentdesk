@@ -738,6 +738,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsKnowledge = true
 	}
 	intent = enforceHumanRouteFlagByIntentCategory(intent)
+	intent = suppressNonHotelLocationResource(intent, req.UserMessage.Content)
 	if intent.DetectedIntent == "" {
 		intent.DetectedIntent = intent.PrimaryIntent
 	}
@@ -1123,4 +1124,70 @@ func normalizeHotelVariableResourceType(resourceType string) string {
 	default:
 		return strings.TrimSpace(resourceType)
 	}
+}
+
+// suppressNonHotelLocationResource 在最终归一化阶段兜底：如果用户要的是非酒店地标定位，
+// 即使上游把意图判成了 hotel_variable/location，也移除 provide_location，避免错误发送酒店定位。
+// 这是确定性兜底，覆盖意图模型和协议恢复两条路径。
+func suppressNonHotelLocationResource(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
+	if !looksLikeNonHotelLocation(currentText) {
+		return intent
+	}
+	// 只有纯定位诉求才需要抑制；若同时问了酒店电话/小程序等其它变量，不整体清空。
+	if intentHasHotelVariableTask(intent) {
+		intent.ResourceActions = removeString(intent.ResourceActions, "provide_location")
+	}
+	if strings.TrimSpace(intent.ResourceAction) == "provide_location" {
+		intent.ResourceAction = ""
+		intent.ResourceType = ""
+	}
+	// 清理任务账本里对应 location 任务。
+	kept := make([]callbacks.IntentTaskTraceData, 0, len(intent.IntentTasks))
+	for _, task := range intent.IntentTasks {
+		if task.Intent == "hotel_variable" && strings.TrimSpace(task.ResourceAction) == "provide_location" {
+			continue
+		}
+		kept = append(kept, task)
+	}
+	intent.IntentTasks = kept
+	if !intentHasHotelVariableTask(intent) && len(intent.ResourceActions) == 0 {
+		intent.NeedsResource = false
+		if intent.PrimaryIntent == "hotel_variable" {
+			intent.PrimaryIntent = "interaction"
+			intent.MatchedIntentCode = "interaction"
+			intent.SubIntent = "clarify"
+			intent.NeedsClarification = true
+		}
+	}
+	return intent
+}
+
+func looksLikeNonHotelLocation(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" || !containsAny(compact, []string{"定位", "地址", "导航", "怎么去", "在哪里", "在哪儿"}) {
+		return false
+	}
+	return containsAny(compact, nonHotelLocationMarkers())
+}
+
+func nonHotelLocationMarkers() []string {
+	return []string{
+		"菜市场", "菜场", "市场", "超市", "商场", "商店", "便利店",
+		"银行", "药房", "药店", "医院", "诊所", "学校", "幼儿园",
+		"小区", "公寓", "写字楼", "公司", "工厂", "地铁", "地铁站",
+		"高铁站", "火车站", "机场", "车站", "汽车站", "公交站",
+		"餐厅", "饭店", "小吃", "火锅", "烧烤", "咖啡馆", "奶茶",
+		"景点", "公园", "游乐园", "博物馆", "图书馆", "政府", "派出所",
+		"健身房", "影院", "电影院", "ktv", "酒吧", "网咖", "网吧",
+	}
+}
+
+func removeString(values []string, target string) []string {
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != target {
+			ret = append(ret, value)
+		}
+	}
+	return ret
 }

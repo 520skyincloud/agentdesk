@@ -191,9 +191,30 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	startedAt := time.Now()
 	modelCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, message.ConversationID, message.ID, message.RequestID))
 	modelCtx, usageCapture := usagex.WithCapture(modelCtx)
+	// 视觉理解对体验影响大，单次 context canceled/网络抖动不该直接判 failed。
+	// 先做一次同步重试，再失败才落 failed，让“图片识别不出来”的概率显著降低。
 	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
+	if err != nil && isRetryableMediaError(err) {
+		text, usage, err = s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
+	}
 	s.recordMediaModelUsage(message, resolved, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)
 	return text, err
+}
+
+func isRetryableMediaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "http 429") ||
+		strings.Contains(msg, "http 500") ||
+		strings.Contains(msg, "http 502") ||
+		strings.Contains(msg, "http 503")
 }
 
 func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message *models.Message, payload *messageMediaPayload) (string, error) {

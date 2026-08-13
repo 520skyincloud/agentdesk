@@ -48,6 +48,34 @@ func validateReplySafety(input ReplyValidationInput) []contracts.ValidationIssue
 				}
 			}
 		}
+		if futureCommitPhrase(content) {
+			issues = append(issues, validationIssue("future_commit_claim", "$.parts", "reply promises a pending staff action without an action ledger entry"))
+		}
 	}
 	return issues
+}
+
+// futureCommitPhrase 识别“未落地就口头承诺后续动作”的表述。
+// 这些动作必须由 ActionLedger/工具链落地，模型不能口头承诺“我去查/我帮你问/记下了”。
+func futureCommitPhrase(content string) bool {
+	compact := compactReplyText(content)
+	if compact == "" {
+		return false
+	}
+	for _, phrase := range futureCommitPhrases() {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func futureCommitPhrases() []string {
+	return []string{
+		"我帮你查", "我查一下", "我先查", "我去查", "这就去查", "我去查一下",
+		"我帮你问", "我问一下", "我去问", "我帮你确认", "我确认一下", "我去确认",
+		"我帮你看看", "帮您看看", "我看看有没有", "我这边看看",
+		"我帮你记下", "我记下了", "帮你记下", "我这边先确认", "先确认下", "确认下再回复",
+		"等下给你信", "稍后回复你", "稍后给你", "晚点回复", "我再去查",
+	}
 }
