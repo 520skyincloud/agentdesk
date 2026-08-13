@@ -395,3 +395,24 @@ Credential/API Key 无需改变。
 本次提交完成后必须使用提交完整 SHA 构建新 release，保留旧 release 作为回滚点，原子切换
 `/opt/agentdesk/current`，重启 `agentdesk.service`，并核对 `current/REVISION`、二进制 SHA-256、服务状态、
 `NRestarts`、本机健康接口和关键错误日志。未完成这些步骤前，不宣称服务器已更新。
+
+### 8.9 2026-08-13 测试 2 实际发布结果
+
+- 修复提交：`2c06d10f32c113fb0e3d3a33bf6d7dde5a2aa8f0`。
+- 新 release：`/opt/agentdesk/releases/20260813-runtime-retry-2c06d10`。
+- `current/REVISION`：`2c06d10f32c113fb0e3d3a33bf6d7dde5a2aa8f0`。
+- 运行二进制 SHA-256：`57f7c3ec6ff3571d1caa396a1c17b3fa74973d27eb53c70fb141e5cdf661a9ba`，与本地构建产物一致。
+- 发布前旧 release `/opt/agentdesk/releases/20260813-takeover-65802f4` 保留；本次成功备份目录为
+  `/opt/agentdesk/backups/pre-runtime-retry-2c06d10-20260813-053404`，包含运行配置和 MySQL 压缩快照。
+- `agentdesk.service` 为 `active`，`NRestarts=0`；本机 `8083` 根路径和 `/api/auth/options` 均返回 HTTP 200，
+  公网 `http://36.138.68.47:2303`、`https://36.138.68.47:2303` 和 `https://weibao.omnireva.com` 均返回 HTTP 200。
+- 关键任务表 `t_ai_reply_turn`、`t_ai_reply_turn_task` 均存在。发布后未执行客户消息重放，因此业务表现仍需用户用真实消息验收，
+  不能把健康检查当作 AI 回复验收。
+- 本次只替换 AgentDesk 应用，没有部署、重启或修改 FastGPT、NewAPI、企微回调、Nginx、systemd 或运行环境配置。
+- 发布期间第一次备份因 MySQL 账号缺少 `PROCESS` 权限被 `mysqldump` 的 tablespace 导出拒绝，未发生切换；随后使用
+  `--no-tablespaces` 重新备份并成功发布。该权限问题不影响应用运行。
+- 发布后日志仍周期性出现既有 `FastGPT usage sync failed`（知识库用量同步告警）；未发现 API Key、Authorization Bearer、
+  Prompt、原始上游响应或客户敏感字段泄漏。
+
+回滚时将 `/opt/agentdesk/current` 原子切回旧 release 并重启 `agentdesk.service`；数据库无需回滚，若需要恢复数据可使用上述
+发布前 MySQL 快照。
