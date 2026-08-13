@@ -111,3 +111,69 @@ git diff --check
 - 回退应用提交或恢复上一镜像即可，不需要数据库回填。
 - 新表和已完成申请记录保留为审计历史；nullable 字段/独立表不影响旧版本。
 - 回滚后恢复旧会话页时，网页回复将回到旧权限语义，因此应同时回滚前后端，不能只回滚一侧。
+
+## 2026-08-13 主线合并与测试 2 发布
+
+### 主线合并
+
+- 实施提交 `4a1ad9c8f2ae94c251d9b2380e1fa24b640ce8d8` 基于旧主线
+  `3ab3809` 完成。发布前两个远端主线已前进到 `6e528e5`，因此没有覆盖推送，
+  而是从最新主线创建集成分支并移植功能提交。
+- 唯一冲突位于 `conversation_human_dispatch_service_test.go` 的测试 AutoMigrate
+  列表：新主线新增 `ConversationDialogueState`，本功能新增
+  `ConversationTakeoverRequest`。合并结果同时保留两张表，没有选择任一侧覆盖另一侧。
+- 合并后的运行代码提交为
+  `65802f40ceff3fd5947a651a60c944ce2e315b11`，已快进推送到
+  `origin/main`（agentdesk）和 `weibao/main`。
+- 合并后重新执行并通过：聚焦会话服务测试、bootstrap 路由/AutoMigrate 测试、
+  完整 `go test ./internal/services -count=1`、`pnpm typecheck`、13 个会话前端
+  Node 测试和 `git diff --check`。
+
+### 新服务器发布
+
+- 仅发布微宝应用到测试 2 服务器 `test-2`（公网 `36.138.68.47`）；没有连接或修改
+  旧服务器。
+- 服务器真实运行形态是 `agentdesk.service`，Nginx 在公网端口 `2303` 反向代理
+  本机 `127.0.0.1:8083`，不是 Docker Compose 常驻容器。
+- 上一 release：`/opt/agentdesk/releases/20260812-ai-recovery-6e528e5`。
+- 当前 release：`/opt/agentdesk/releases/20260813-takeover-65802f4`。
+- `/opt/agentdesk/current/REVISION` 为
+  `65802f40ceff3fd5947a651a60c944ce2e315b11`。
+- 当前 `agent-desk` SHA-256：
+  `56472b77f69b34a1e93f4b2da77b5a5a412e42b3cbbdce40d758a6b17c30f979`。
+- 发布包总 SHA-256：
+  `a4f13844ee22bb07591bc16070bfe6f73463773234fda333739e8bb2d863e2a5`；
+  包内 658 条逐文件校验全部通过，其中包含 656 个同版本前端文件。
+- 发布前回滚点：
+  `/opt/agentdesk/backups/pre-takeover-65802f4-20260813-023600`。
+- 发布前 MySQL 一致性快照 SHA-256：
+  `929cd83024b934ab975d9608e561624f54e43b2e4a4499d729a27291773d3b4e`。
+- `current` 使用原子符号链接切换；重启后 `agentdesk.service` 为
+  `active/running`，`NRestarts=0`。切换脚本包含 90 秒健康门禁和自动回滚。
+
+### 生产验收
+
+- AutoMigrate 已真实创建 `t_conversation_takeover_request`，共 23 列；唯一索引
+  `uk_conversation_takeover_active` 已存在。
+- 三条接管接口均已注册，不再是 404：
+  `/takeover/request`、`/takeover/direct`、`/takeover/review`。
+- 本机 `/api/auth/options`、`/dashboard/login/`、`/dashboard/conversations/`
+  均返回 HTTP 200。
+- 公网 `http://36.138.68.47:2303`、`https://36.138.68.47:2303` 和
+  `https://weibao.omnireva.com` 登录页均返回 HTTP 200。
+- 发布前后逐字节比对确认以下文件未变化：
+  `runtime-production.env`、`agent-desk.yaml`、Nginx 2303 配置和
+  `agentdesk.service`。
+- FastGPT 仍为 `http://36.138.68.47:6080`，NewAPI 模型网关仍为
+  `http://36.138.68.47:6081/v1`；两者公网入口均返回 HTTP 200。本次没有部署、
+  重启或修改 FastGPT/NewAPI，也没有输出其密钥。
+- 日志中的 `FastGPT usage sync failed` 在发布前旧进程与发布后新进程均持续出现，
+  属于既有外部用量同步告警，不是本次接管审批发布引入；本次按范围未修改该链路。
+
+### 发布回滚
+
+- 应用回滚只需将 `/opt/agentdesk/current` 原子切回
+  `/opt/agentdesk/releases/20260812-ai-recovery-6e528e5` 并重启
+  `agentdesk.service`。
+- 新增表可保留，不阻止旧版本启动；如需要恢复数据，使用上述发布前 MySQL 快照。
+- 回滚不需要修改 Nginx、ESA、FastGPT、NewAPI、生产环境文件或企微回调配置。
