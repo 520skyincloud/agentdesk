@@ -184,6 +184,7 @@ func applyReplyGatewayReceipt(event *models.AIUsageEvent, receipt *usagex.Receip
 	event.Gateway = receipt.Gateway
 	event.GatewayRequestID = receipt.RequestID
 	event.GatewayUpstreamID = receipt.UpstreamRequestID
+	event.GatewayHTTPStatus = receipt.StatusCode
 	event.CallStartedAt = &receipt.StartedAt
 	event.CallFinishedAt = &receipt.FinishedAt
 	if receipt.LatencyMS() > 0 {

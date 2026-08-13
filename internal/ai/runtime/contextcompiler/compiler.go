@@ -296,7 +296,11 @@ func buildIntentPolicy(input CompileInput) string {
 	if base == "" {
 		base = "你是 IntentDetect 阶段，只分析当前客户消息并拆分任务，不回复客户。"
 	}
-	return strings.TrimSpace(base + "\n\n只输出符合 intent_tasks.v2 的 UTF-8 JSON Object。不得输出 Markdown、解释、注释或额外字段。\nSchema:\n" + string(contracts.MustSchema(contracts.SchemaIntentTasksV2)))
+	intentSchema := input.IntentSchema
+	if len(intentSchema) == 0 {
+		intentSchema = contracts.MustSchema(contracts.SchemaIntentTasksV2)
+	}
+	return strings.TrimSpace(base + "\n\n只输出符合 intent_tasks.v2 的 UTF-8 JSON Object。不得输出 Markdown、解释、注释或额外字段。\nSchema:\n" + string(intentSchema))
 }
 
 func buildGeneratePolicy(input CompileInput) string {

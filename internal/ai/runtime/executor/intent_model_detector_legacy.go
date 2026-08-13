@@ -129,10 +129,10 @@ func detectRuntimeIntentLegacy(ctx context.Context, req RunInput, history adapte
 	result, err := chatModel.Generate(firstCallCtx, messages)
 	firstCallCancel()
 	if err != nil {
-		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, offset), 1, time.Since(startedAt).Milliseconds(), err)
+		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, offset), 1, time.Since(startedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
-	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptSince(usageCapture, offset), 1, time.Since(startedAt).Milliseconds(), nil)
+	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, offset), 1, time.Since(startedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectLegacyJSON(result.Content)
 	if err != nil {
 		startedAt = time.Now()
@@ -143,10 +143,10 @@ func detectRuntimeIntentLegacy(ctx context.Context, req RunInput, history adapte
 		)))
 		repairCallCancel()
 		if retryErr != nil {
-			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, offset), 2, time.Since(startedAt).Milliseconds(), retryErr)
+			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, offset), 2, time.Since(startedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
-		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptSince(usageCapture, offset), 2, time.Since(startedAt).Milliseconds(), nil)
+		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, offset), 2, time.Since(startedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectLegacyJSON(retry.Content)
 		if err != nil {
 			return callbacks.IntentTraceData{}, err

@@ -69,7 +69,7 @@ func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, cal
 					state.CoveredByTaskID = task.ID
 				}
 			}
-			if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusFailed {
+			if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || task.Status == enums.AIReplyTurnTaskStatusFailed {
 				state.FailedTaskKeys = appendUniqueStrings(state.FailedTaskKeys, task.TaskKey)
 			}
 		}
@@ -305,8 +305,7 @@ func runtimeTaskState(turn *models.AIReplyTurn, tasks []models.AIReplyTurnTask, 
 	for _, task := range tasks {
 		state.SelectedTaskKeys = append(state.SelectedTaskKeys, task.TaskKey)
 		switch {
-		case task.Status == enums.AIReplyTurnTaskStatusFailed || task.Status == enums.AIReplyTurnTaskStatusHandoffPending ||
-			task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusFailed:
+		case task.Status == enums.AIReplyTurnTaskStatusFailed || task.Status == enums.AIReplyTurnTaskStatusHandoffPending:
 			state.FailedTaskKeys = append(state.FailedTaskKeys, task.TaskKey)
 		case task.TaskType == enums.AIReplyTurnTaskTypeHuman:
 			state.HumanTaskKeys = append(state.HumanTaskKeys, task.TaskKey)

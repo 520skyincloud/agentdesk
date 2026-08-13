@@ -24,6 +24,8 @@ import (
 
 var WxWorkProtocolDefaultResourceService = &wxWorkProtocolDefaultResourceService{}
 
+var ErrWxWorkPhoneNotConfigured = errors.New("员工号未配置联系电话")
+
 type wxWorkProtocolDefaultResourceService struct{}
 
 func (s *wxWorkProtocolDefaultResourceService) SendNewFriendWelcome(conversation *models.Conversation, instance *models.WxWorkProtocolInstance, requestID string) error {
@@ -171,9 +173,20 @@ func (s *wxWorkProtocolDefaultResourceService) BuildDefaultPhoneMessage(instance
 	}
 	phone := utils.RepairMojibakeText(strings.TrimSpace(instance.StoreContactPhone))
 	if phone == "" {
-		return "", "", fmt.Errorf("员工号未配置联系电话")
+		return "", "", ErrWxWorkPhoneNotConfigured
 	}
 	return "酒店电话：" + phone, "", nil
+}
+
+// The readiness check still uses BuildDefaultPhoneMessage so missing setup is
+// visible before release. Runtime replies use a safe text fallback instead of
+// turning a normal customer question into a human handoff.
+func (s *wxWorkProtocolDefaultResourceService) BuildRuntimePhoneMessage(instance *models.WxWorkProtocolInstance) (string, string, error) {
+	content, payload, err := s.BuildDefaultPhoneMessage(instance)
+	if errors.Is(err, ErrWxWorkPhoneNotConfigured) {
+		return "当前门店暂未配置联系电话，请联系门店获取。", "", nil
+	}
+	return content, payload, err
 }
 
 func injectMiniProgramStoreParams(body map[string]any, instance *models.WxWorkProtocolInstance) {

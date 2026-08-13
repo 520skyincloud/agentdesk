@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +11,32 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
+
+const (
+	intentInvariantUnknownIntentCode            = "unknown_intent_code"
+	intentInvariantUnsupportedResourceSubIntent = "unsupported_resource_subintent"
+	intentInvariantDuplicateTaskSequence        = "duplicate_task_sequence"
+	intentInvariantUnsupportedContractVersion   = "unsupported_contract_version"
+)
+
+type runtimeIntentInvariantError struct {
+	Code          string
+	Path          string
+	Value         string
+	AllowedValues []string
+}
+
+func (e *runtimeIntentInvariantError) Error() string {
+	if e == nil {
+		return "runtime intent invariant failed"
+	}
+	return fmt.Sprintf("%s at %s", e.Code, e.Path)
+}
+
+func runtimeIntentInvariantDetails(err error) (*runtimeIntentInvariantError, bool) {
+	var typed *runtimeIntentInvariantError
+	return typed, errors.As(err, &typed)
+}
 
 // DerivedTaskCapabilities is the backend-owned execution policy for one
 // semantic task. IntentDetect never controls these fields directly.
@@ -33,7 +60,7 @@ type DerivedTaskCapabilities struct {
 
 func DeriveRuntimeIntentCapabilities(v2 contracts.IntentTasksV2, configs []models.ReplyIntentConfig) ([]DerivedTaskCapabilities, error) {
 	if v2.SchemaVersion != contracts.IntentTasksV2SchemaVersion {
-		return nil, fmt.Errorf("intent contract version %q is unsupported", v2.SchemaVersion)
+		return nil, &runtimeIntentInvariantError{Code: intentInvariantUnsupportedContractVersion, Path: "$.schemaVersion", Value: v2.SchemaVersion, AllowedValues: []string{contracts.IntentTasksV2SchemaVersion}}
 	}
 	if len(v2.Tasks) == 0 || len(v2.Tasks) > 12 {
 		return nil, fmt.Errorf("intent task count %d is invalid", len(v2.Tasks))
@@ -51,9 +78,9 @@ func DeriveRuntimeIntentCapabilities(v2 contracts.IntentTasksV2, configs []model
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Sequence < ordered[j].Sequence })
 	seenSequence := make(map[int]struct{}, len(ordered))
 	ret := make([]DerivedTaskCapabilities, 0, len(ordered))
-	for _, task := range ordered {
+	for taskIndex, task := range ordered {
 		if _, exists := seenSequence[task.Sequence]; exists {
-			return nil, fmt.Errorf("duplicate intent task sequence %d", task.Sequence)
+			return nil, &runtimeIntentInvariantError{Code: intentInvariantDuplicateTaskSequence, Path: fmt.Sprintf("$.tasks[%d].sequence", taskIndex), Value: fmt.Sprintf("%d", task.Sequence)}
 		}
 		seenSequence[task.Sequence] = struct{}{}
 		if task.Sequence < 1 || task.Sequence > 12 {
@@ -65,10 +92,14 @@ func DeriveRuntimeIntentCapabilities(v2 contracts.IntentTasksV2, configs []model
 		task.RequestMode = strings.TrimSpace(task.RequestMode)
 		config, ok := configByCode[task.Intent]
 		if !ok {
-			return nil, fmt.Errorf("intent code %q is not present in the published profile", task.Intent)
+			return nil, &runtimeIntentInvariantError{Code: intentInvariantUnknownIntentCode, Path: fmt.Sprintf("$.tasks[%d].intent", taskIndex), Value: task.Intent, AllowedValues: enabledRuntimeIntentCodes(configByCode)}
 		}
 		derived, err := deriveRuntimeIntentTaskCapabilities(task, config)
 		if err != nil {
+			var invariant *runtimeIntentInvariantError
+			if errors.As(err, &invariant) && invariant.Path == "" {
+				invariant.Path = fmt.Sprintf("$.tasks[%d].subIntent", taskIndex)
+			}
 			return nil, err
 		}
 		ret = append(ret, derived)
@@ -93,7 +124,10 @@ func deriveRuntimeIntentTaskCapabilities(task contracts.IntentTaskV2, config mod
 		}
 		resourceType, resourceAction := normalizeHotelVariableResourceAction("", configuredType, task.SubIntent)
 		if resourceAction == "provide_store_variable" {
-			return DerivedTaskCapabilities{}, fmt.Errorf("intent %q subIntent %q does not resolve to a configured resource action", task.Intent, task.SubIntent)
+			return DerivedTaskCapabilities{}, &runtimeIntentInvariantError{
+				Code: intentInvariantUnsupportedResourceSubIntent, Value: task.SubIntent,
+				AllowedValues: []string{"location", "mini_program", "phone", "store_group"},
+			}
 		}
 		derived.ResourceType = resourceType
 		derived.ResourceAction = resourceAction
@@ -124,6 +158,15 @@ func deriveRuntimeIntentTaskCapabilities(task contracts.IntentTaskV2, config mod
 		derived.Constraints = splitIntentLines(rules)
 	}
 	return derived, nil
+}
+
+func enabledRuntimeIntentCodes(configByCode map[string]models.ReplyIntentConfig) []string {
+	ret := make([]string, 0, len(configByCode))
+	for code := range configByCode {
+		ret = append(ret, code)
+	}
+	sort.Strings(ret)
+	return ret
 }
 
 func AdaptIntentV2ToLegacyTrace(v2 contracts.IntentTasksV2, derived []DerivedTaskCapabilities) callbacks.IntentTraceData {

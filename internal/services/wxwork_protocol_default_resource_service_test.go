@@ -166,6 +166,19 @@ func TestBuildDefaultPhoneMessageRequiresExplicitStoreContactPhone(t *testing.T)
 	}
 }
 
+func TestBuildRuntimePhoneMessageUsesSafeTextWhenStorePhoneIsMissing(t *testing.T) {
+	content, payload, err := WxWorkProtocolDefaultResourceService.BuildRuntimePhoneMessage(&models.WxWorkProtocolInstance{
+		Remark:       "备注里有 19900001111 也不能猜",
+		StoreAddress: "地址里有 400-000-0000 也不能猜",
+	})
+	if err != nil {
+		t.Fatalf("runtime phone fallback: %v", err)
+	}
+	if content != "当前门店暂未配置联系电话，请联系门店获取。" || payload != "" {
+		t.Fatalf("unexpected runtime phone fallback content=%q payload=%q", content, payload)
+	}
+}
+
 func TestBuildDefaultMiniProgramMessageStripsProtocolEchoFields(t *testing.T) {
 	sqls.SetDB(nil)
 	content, payload, err := WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(&models.WxWorkProtocolInstance{

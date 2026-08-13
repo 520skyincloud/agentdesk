@@ -78,6 +78,9 @@ type responsesResponse struct {
 		Type    string `json:"type"`
 		Code    string `json:"code"`
 	} `json:"error"`
+	IncompleteDetails *struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
 	Output []struct {
 		Type      string `json:"type"`
 		Role      string `json:"role"`
@@ -182,14 +185,20 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 		return nil, modelconfig.NewInvocationError(modelconfig.InvocationErrorInvalidResponse, resp.StatusCode, true)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
+		invocationErr := responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
+		annotateResponsesReceipt(req.Context(), invocationErr)
+		return nil, invocationErr
 	}
 	parsed := responsesResponse{}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, modelconfig.NewInvocationError(modelconfig.InvocationErrorInvalidResponse, resp.StatusCode, true)
+		invocationErr := modelconfig.NewInvocationErrorWithMetadata(modelconfig.InvocationErrorInvalidResponse, resp.StatusCode, "invalid_json", "", true)
+		annotateResponsesReceipt(req.Context(), invocationErr)
+		return nil, invocationErr
 	}
-	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
-		return nil, responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
+	if responsesStatusFailed(parsed) {
+		invocationErr := responsesInvocationError(resp.StatusCode, raw, m.config.StructuredOutput != nil)
+		annotateResponsesReceipt(req.Context(), invocationErr)
+		return nil, invocationErr
 	}
 	content := strings.TrimSpace(parsed.OutputText)
 	if content == "" {
@@ -365,8 +374,9 @@ func extractResponsesOutputText(resp responsesResponse) string {
 }
 
 func responsesInvocationError(statusCode int, raw []byte, structured bool) error {
+	failure := parseResponsesFailure(statusCode, raw)
 	class := modelconfig.InvocationErrorUpstream
-	retryable := statusCode == http.StatusTooManyRequests || statusCode >= 500
+	retryable := failure.retryable
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		class = modelconfig.InvocationErrorCredentialRejected
@@ -380,11 +390,108 @@ func responsesInvocationError(statusCode int, raw []byte, structured bool) error
 	case http.StatusTooManyRequests:
 		class = modelconfig.InvocationErrorRateLimited
 	}
-	if structured && responseErrorMentionsSchema(raw) {
+	schemaRejected := structured && responseErrorMentionsSchema(raw)
+	if schemaRejected {
 		class = modelconfig.InvocationErrorStructuredOutputSchemaRejected
 		retryable = false
 	}
-	return modelconfig.NewInvocationError(class, statusCode, retryable)
+	if statusCode >= 200 && statusCode < 300 && !schemaRejected {
+		class = failure.class
+	}
+	return modelconfig.NewInvocationErrorWithMetadata(class, statusCode, failure.responseStatus, failure.providerCode, retryable)
+}
+
+type responsesFailure struct {
+	class          string
+	responseStatus string
+	providerCode   string
+	retryable      bool
+}
+
+func parseResponsesFailure(statusCode int, raw []byte) responsesFailure {
+	ret := responsesFailure{
+		class:     modelconfig.InvocationErrorUpstream,
+		retryable: statusCode == http.StatusTooManyRequests || statusCode >= 500,
+	}
+	var payload struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ret
+	}
+	ret.responseStatus = strings.TrimSpace(payload.Status)
+	values := make([]string, 0, 3)
+	if payload.Error != nil {
+		values = append(values, payload.Error.Code, payload.Error.Type)
+		ret.providerCode = firstNonEmptyResponseValue(payload.Error.Code, payload.Error.Type)
+	}
+	if payload.IncompleteDetails != nil {
+		values = append(values, payload.IncompleteDetails.Reason)
+		if ret.providerCode == "" {
+			ret.providerCode = strings.TrimSpace(payload.IncompleteDetails.Reason)
+		}
+	}
+	normalized := strings.ToLower(strings.Join(values, " "))
+	switch {
+	case containsResponsesErrorCode(normalized,
+		"rate_limit", "too_many_requests", "server_error", "service_unavailable", "provider_unavailable",
+		"temporarily_unavailable", "overloaded", "upstream_error", "timeout", "request_timeout"):
+		ret.retryable = true
+		if strings.Contains(normalized, "rate_limit") || strings.Contains(normalized, "too_many_requests") {
+			ret.class = modelconfig.InvocationErrorRateLimited
+		}
+	case containsResponsesErrorCode(normalized,
+		"authentication", "invalid_api_key", "permission_denied", "forbidden", "invalid_request",
+		"unsupported_model", "model_not_found", "schema", "json_schema", "max_output_tokens"):
+		ret.retryable = false
+		ret.class = modelconfig.InvocationErrorPayloadRejected
+	}
+	return ret
+}
+
+func responsesStatusFailed(parsed responsesResponse) bool {
+	if parsed.Error != nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(parsed.Status)) {
+	case "failed", "cancelled", "incomplete":
+		return true
+	default:
+		return false
+	}
+}
+
+func annotateResponsesReceipt(ctx context.Context, err error) {
+	details, ok := modelconfig.InvocationErrorDetails(err)
+	if !ok {
+		return
+	}
+	usagex.AnnotateLatestReceipt(ctx, details.Class, details.ResponseStatus, details.ProviderCode)
+}
+
+func containsResponsesErrorCode(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmptyResponseValue(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func responseErrorMentionsSchema(raw []byte) bool {

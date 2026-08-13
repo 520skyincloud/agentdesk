@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
 )
 
@@ -23,6 +25,25 @@ func TestRuntimeStructuredOutputContractsAreInvocationScoped(t *testing.T) {
 	}
 	assertRuntimeStructuredOutput(t, intentConfig, "intent_tasks_v2", contracts.SchemaIntentTasksV2)
 	assertRuntimeStructuredOutput(t, replyConfig, "reply_output_v2", contracts.SchemaReplyOutputV2)
+}
+
+func TestRuntimeIntentStructuredOutputAcceptsInvocationSchema(t *testing.T) {
+	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
+	runtimeSchema, _, err := contracts.BuildRuntimeIntentSchema(contracts.MustSchema(contracts.SchemaIntentTasksV2), nil)
+	if err == nil {
+		t.Fatal("empty published intent catalog must fail")
+	}
+	runtimeSchema, _, err = contracts.BuildRuntimeIntentSchema(contracts.MustSchema(contracts.SchemaIntentTasksV2), []models.ReplyIntentConfig{{Code: "interaction", Status: enums.StatusOk}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured, err := withRuntimeIntentStructuredOutputSchema(base, runtimeSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.StructuredOutput == nil || string(configured.StructuredOutput.JSONSchema) != string(runtimeSchema) {
+		t.Fatal("invocation schema was not attached")
+	}
 }
 
 func assertRuntimeStructuredOutput(t *testing.T, config modelconfig.Config, name, schemaName string) {

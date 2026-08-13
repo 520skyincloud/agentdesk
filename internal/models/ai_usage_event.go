@@ -29,6 +29,7 @@ type AIUsageEvent struct {
 	Gateway                string     `gorm:"type:varchar(40);not null;default:'';index"`
 	GatewayRequestID       string     `gorm:"type:varchar(191);not null;default:'';index"`
 	GatewayUpstreamID      string     `gorm:"type:varchar(191);not null;default:'';index"`
+	GatewayHTTPStatus      int        `gorm:"-"`
 	CallStartedAt          *time.Time `gorm:"type:datetime;index"`
 	CallFinishedAt         *time.Time `gorm:"type:datetime;index"`
 	PromptTokens           int64      `gorm:"type:bigint;not null;default:0"`

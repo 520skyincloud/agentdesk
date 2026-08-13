@@ -131,7 +131,7 @@ func buildPreparedRuntimeAction(
 		prepared.Content, prepared.Payload, err = services.WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance)
 	case "send_phone":
 		prepared.MessageType = string(enums.IMMessageTypeText)
-		prepared.Content, prepared.Payload, err = services.WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(instance)
+		prepared.Content, prepared.Payload, err = services.WxWorkProtocolDefaultResourceService.BuildRuntimePhoneMessage(instance)
 	case "send_knowledge_image":
 		prepared.MessageType = string(enums.IMMessageTypeImage)
 		prepared.ResourceRef = strings.TrimPrefix(resourceType, "image:")
@@ -142,11 +142,15 @@ func buildPreparedRuntimeAction(
 	if err != nil {
 		return contracts.PreparedActionV1{}, err
 	}
-	if strings.TrimSpace(prepared.Content) == "" || strings.TrimSpace(prepared.Payload) == "" {
+	if strings.TrimSpace(prepared.Content) == "" || (preparedActionPayloadRequired(prepared.ActionType) && strings.TrimSpace(prepared.Payload) == "") {
 		return contracts.PreparedActionV1{}, fmt.Errorf("prepared action payload is empty")
 	}
 	prepared.PreparedRevision = preparedActionRevision(prepared)
 	return prepared, nil
+}
+
+func preparedActionPayloadRequired(actionType string) bool {
+	return strings.TrimSpace(actionType) != "send_phone"
 }
 
 func resolvePreparedActionInstance(req RunInput) (*models.WxWorkProtocolInstance, error) {

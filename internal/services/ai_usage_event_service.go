@@ -64,6 +64,14 @@ func recordResolvedModelCall(event models.AIUsageEvent, resolved *ModelCallConfi
 // Record inserts once by EventKey. Existing events are never updated because
 // retries and corrections must remain separately auditable usage evidence.
 func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
+	return s.record(event, nil)
+}
+
+func (s *aiUsageEventService) RecordWithGatewayReceipts(event models.AIUsageEvent, receipts []usagex.Receipt) error {
+	return s.record(event, receipts)
+}
+
+func (s *aiUsageEventService) record(event models.AIUsageEvent, receipts []usagex.Receipt) error {
 	event.EventKey = strings.TrimSpace(event.EventKey)
 	if event.EventKey == "" {
 		return nil
@@ -110,6 +118,9 @@ func (s *aiUsageEventService) Record(event models.AIUsageEvent) error {
 	}
 	if err := repositories.AIUsageEventRepository.CreateIfAbsent(sqls.DB(), &event); err != nil {
 		return err
+	}
+	if len(receipts) > 0 {
+		return AIUsageGatewayCallService.RecordReceiptsFromEvent(event, receipts)
 	}
 	return AIUsageGatewayCallService.RecordFromEvent(event)
 }

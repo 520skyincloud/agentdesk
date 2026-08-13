@@ -3,6 +3,7 @@ package factory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/pkg/usagex"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -101,6 +103,81 @@ func TestResponsesChatModelClassifiesSchemaRejectionWithoutRetry(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("non-retryable schema rejection calls=%d want=1", got)
+	}
+}
+
+func TestResponsesChatModelRetriesHTTP200FailedResponseAndCapturesEveryAttempt(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempt := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(usagex.NewAPIRequestIDHeader, fmt.Sprintf("newapi-failed-%d", attempt))
+		_, _ = w.Write([]byte(`{"id":"resp_failed","status":"failed","error":{"type":"server_error","code":"provider_unavailable","message":"provider unavailable"}}`))
+	}))
+	defer server.Close()
+
+	chatModel, err := NewChatModelFactory().Build(context.Background(), modelconfig.Config{
+		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
+		ModelName: "deepseek-v4-flash", TimeoutMS: 1000, MaxRetryCount: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, capture := usagex.WithCapture(context.Background())
+	_, err = chatModel.Generate(ctx, []*schema.Message{schema.UserMessage("ping")})
+	if got := modelconfig.InvocationErrorClass(err); got != modelconfig.InvocationErrorUpstream {
+		t.Fatalf("error class=%q err=%v", got, err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("retryable HTTP 200 failed calls=%d want=3", got)
+	}
+	receipts := capture.Receipts()
+	if len(receipts) != 3 {
+		t.Fatalf("receipts=%d want=3: %#v", len(receipts), receipts)
+	}
+	for index, receipt := range receipts {
+		if receipt.Attempt != index+1 || receipt.StatusCode != http.StatusOK ||
+			receipt.RequestID != fmt.Sprintf("newapi-failed-%d", index+1) ||
+			receipt.ProviderStatus != "failed" || receipt.ProviderCode != "provider_unavailable" ||
+			receipt.ErrorClass != modelconfig.InvocationErrorUpstream {
+			t.Fatalf("receipt[%d]=%#v", index, receipt)
+		}
+	}
+}
+
+func TestResponsesChatModelDoesNotRetryHTTP200SchemaFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(usagex.NewAPIRequestIDHeader, "newapi-schema-failed")
+		_, _ = w.Write([]byte(`{"id":"resp_schema_failed","status":"failed","error":{"type":"invalid_request_error","code":"json_schema_invalid","message":"invalid JSON schema"}}`))
+	}))
+	defer server.Close()
+
+	config, err := (modelconfig.Config{
+		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
+		ModelName: "deepseek-v4-flash", TimeoutMS: 1000, MaxRetryCount: 2,
+	}).WithJSONSchema("intent_tasks.v2", []byte(`{"type":"object"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatModel, err := NewChatModelFactory().Build(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, capture := usagex.WithCapture(context.Background())
+	_, err = chatModel.Generate(ctx, []*schema.Message{schema.UserMessage("ping")})
+	if got := modelconfig.InvocationErrorClass(err); got != modelconfig.InvocationErrorStructuredOutputSchemaRejected {
+		t.Fatalf("error class=%q err=%v", got, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("HTTP 200 schema failure calls=%d want=1", got)
+	}
+	receipts := capture.Receipts()
+	if len(receipts) != 1 || receipts[0].StatusCode != http.StatusOK || receipts[0].RequestID != "newapi-schema-failed" ||
+		receipts[0].ProviderStatus != "failed" || receipts[0].ProviderCode != "json_schema_invalid" {
+		t.Fatalf("receipts=%#v", receipts)
 	}
 }
 

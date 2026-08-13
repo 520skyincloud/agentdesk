@@ -53,6 +53,7 @@ type CompileInput struct {
 	GenerationInstruction            string
 	ReplyContract                    ReplyContract
 	IntentInstruction                string
+	IntentSchema                     []byte
 	IntentProfileRevision            int64
 	RepairInstruction                string
 	ExpectedEvidenceScopeFingerprint string

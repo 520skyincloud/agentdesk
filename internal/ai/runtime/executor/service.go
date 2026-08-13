@@ -259,9 +259,13 @@ func markRuntimePreparationError(summary *RunResult, collector *callbacks.Runtim
 }
 
 func withRuntimeIntentStructuredOutput(config modelconfig.Config) (modelconfig.Config, error) {
+	return withRuntimeIntentStructuredOutputSchema(config, contracts.MustSchema(contracts.SchemaIntentTasksV2))
+}
+
+func withRuntimeIntentStructuredOutputSchema(config modelconfig.Config, schema []byte) (modelconfig.Config, error) {
 	return config.WithJSONSchema(
 		contracts.SchemaIntentTasksV2,
-		contracts.MustSchema(contracts.SchemaIntentTasksV2),
+		schema,
 	)
 }
 

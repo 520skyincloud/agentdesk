@@ -509,15 +509,25 @@ func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *te
 		dispatchCalls.Add(1)
 		return nil
 	}
+	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
+		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
+			current.LastErrorClass != "generation_failed" || dispatchCalls.Load() != 0 {
+			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
+		}
+	}
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "generation_failed_human_dispatch" || current.LastErrorClass != "generation_failed" ||
-		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
-		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "retry_exhausted_human_dispatch" ||
+		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 1 {
+		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 
@@ -538,14 +548,26 @@ func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
 		}
 		return nil
 	}
+	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
+		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
+			runtimeCalls.Load() != int32(attempt+1) || dispatchCalls.Load() != 0 {
+			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
+		}
+	}
+
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	first, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first == nil || first.Status != enums.AIReplyJobStatusRetry || first.ResultCode != "human_dispatch_retry" ||
-		first.AttemptCount != 0 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 1 {
-		t.Fatalf("first job=%#v runtimeCalls=%d dispatchCalls=%d", first, runtimeCalls.Load(), dispatchCalls.Load())
+		first.AttemptCount != aiReplyJobMaxAttempts-1 || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 1 {
+		t.Fatalf("dispatch retry job=%#v runtimeCalls=%d dispatchCalls=%d", first, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
@@ -554,7 +576,7 @@ func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "model_failure_human_dispatch" ||
-		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 2 {
+		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 2 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }

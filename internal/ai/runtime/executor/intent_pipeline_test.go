@@ -19,6 +19,7 @@ import (
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/securex"
+	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/services"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -238,6 +239,55 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent prompt missing boundary phrase %q: %s", expected, prompt)
 		}
+	}
+}
+
+func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{Code: "hotel_info", Status: enums.StatusOk},
+		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
+	}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:    "interaction",
+		SubIntent:        "chat",
+		IntentConfidence: 0.8,
+		ShouldReply:      true,
+	}, RunInput{UserMessage: models.Message{Content: "我想办理入住"}}, adapter.HistoryBuildResult{}, configs)
+	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || !intent.NeedsResource {
+		t.Fatalf("expected deterministic checkin normalization, got %#v", intent)
+	}
+	if !containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("expected checkin mini program action, got %#v", intent.ResourceActions)
+	}
+	var knowledgeTask, resourceTask bool
+	for _, task := range intent.IntentTasks {
+		if task.Intent == "hotel_info" && task.SubIntent == "checkin_process" && task.NeedsKnowledge {
+			knowledgeTask = true
+		}
+		if task.Intent == "hotel_variable" && task.ResourceAction == "provide_mini_program" && task.NeedsResource {
+			resourceTask = true
+		}
+	}
+	if !knowledgeTask || !resourceTask {
+		t.Fatalf("expected both checkin knowledge and resource tasks, got %#v", intent.IntentTasks)
+	}
+}
+
+func TestRuntimeIntentProtocolFallbackPreservesCheckinHandling(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{Code: "hotel_info", Status: enums.StatusOk},
+		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
+	}
+	intent, ok := buildRuntimeIntentProtocolFallback(
+		RunInput{UserMessage: models.Message{Content: "咋入住"}},
+		configs,
+		&strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.tasks"},
+	)
+	if !ok {
+		t.Fatal("expected deterministic protocol fallback")
+	}
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || !containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("protocol fallback lost checkin handling: %#v", intent)
 	}
 }
 
@@ -1872,6 +1922,42 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func TestRuntimeIntentProtocolFallbackIsNarrowAndDeterministic(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{Code: "interaction", Status: enums.StatusOk},
+		{Code: "hotel_variable", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk},
+		{Code: "human_complaint_risk", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", Status: enums.StatusOk},
+	}
+	protocolErr := &strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.tasks[0].intent", Message: "invalid intent"}
+	tests := []struct {
+		name       string
+		text       string
+		intent     string
+		subIntent  string
+		action     string
+		needsHuman bool
+	}{
+		{name: "explicit human", text: "别机器人了，帮我转人工", intent: "human_complaint_risk", subIntent: "explicit_handoff", needsHuman: true},
+		{name: "current hotel location", text: "把这家酒店定位发我", intent: "hotel_variable", subIntent: "location", action: "provide_location"},
+		{name: "external location", text: "把酒店附近小区定位发我", intent: "interaction", subIntent: "clarify"},
+		{name: "ordinary text", text: "来一杯生椰拿铁", intent: "interaction", subIntent: "clarify"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent, ok := buildRuntimeIntentProtocolFallback(RunInput{
+				UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: test.text},
+			}, configs, protocolErr)
+			if !ok || intent.PrimaryIntent != test.intent || intent.SubIntent != test.subIntent ||
+				intent.ResourceAction != test.action || intent.NeedsHumanRoute != test.needsHuman {
+				t.Fatalf("fallback=%+v ok=%v", intent, ok)
+			}
+			if test.name == "external location" && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
+				t.Fatalf("external location must not send hotel resource: %+v", intent)
+			}
+		})
+	}
 }
 
 func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {

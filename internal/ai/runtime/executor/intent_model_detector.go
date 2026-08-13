@@ -63,7 +63,11 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	intentConfig, err := withRuntimeIntentStructuredOutput(resolved.RuntimeConfig())
+	runtimeSchema, schemaCatalog, err := contracts.BuildRuntimeIntentSchema(contracts.MustSchema(contracts.SchemaIntentTasksV2), configs)
+	if err != nil {
+		return callbacks.IntentTraceData{}, err
+	}
+	intentConfig, err := withRuntimeIntentStructuredOutputSchema(resolved.RuntimeConfig(), runtimeSchema)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
@@ -101,6 +105,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		CurrentMessages: []models.Message{req.UserMessage}, RecentHistory: history.RawItems,
 		DialogueState:         dialogueState,
 		IntentInstruction:     runtimeIntentDetectV2Instruction(profile, configs),
+		IntentSchema:          runtimeSchema,
 		IntentProfileRevision: profile.Revision,
 	}
 	compiled, err := contextcompiler.New(nil).Compile(intentCtx, compileInput)
@@ -113,15 +118,17 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	result, err := chatModel.Generate(firstCallCtx, compiled.Messages)
 	firstCallCancel()
 	if err != nil {
-		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
+		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
 		return callbacks.IntentTraceData{}, err
 	}
-	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
-	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, configs)
+	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
+	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, runtimeSchema, configs)
 	if err != nil && runtimeProtocolRepairAllowed(err) {
+		firstProtocolErr := err
 		compileInput.RepairInstruction = buildRuntimeProtocolRepairInstruction(
 			contracts.SchemaIntentTasksV2,
 			err,
+			schemaCatalog,
 			req.UserMessage.Content,
 			result.Content,
 		)
@@ -138,12 +145,18 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		retry, retryErr := chatModel.Generate(repairCallCtx, repairContext.Messages)
 		repairCallCancel()
 		if retryErr != nil {
-			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
-			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
+			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
+			if fallback, ok := buildRuntimeIntentProtocolFallback(req, configs, firstProtocolErr); ok {
+				return fallback, nil
+			}
+			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", firstProtocolErr, retryErr)
 		}
-		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
-		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, configs)
+		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
+		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, runtimeSchema, configs)
 		if err != nil {
+			if fallback, ok := buildRuntimeIntentProtocolFallback(req, configs, err); ok {
+				return fallback, nil
+			}
 			return callbacks.IntentTraceData{}, err
 		}
 	}
@@ -153,19 +166,140 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	return AdaptIntentV2ToLegacyTrace(parsed, derived), nil
 }
 
-func parseRuntimeIntentTasksV2(content string, configs []models.ReplyIntentConfig) (contracts.IntentTasksV2, []DerivedTaskCapabilities, error) {
+func buildRuntimeIntentProtocolFallback(req RunInput, configs []models.ReplyIntentConfig, protocolErr error) (callbacks.IntentTraceData, bool) {
+	if _, ok := strictjson.CodeOf(protocolErr); !ok {
+		return callbacks.IntentTraceData{}, false
+	}
+	text := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	if text == "" {
+		return callbacks.IntentTraceData{}, false
+	}
+	intent := callbacks.IntentTraceData{
+		ShouldReply: true, IntentConfidence: 0.55, MatchMode: "protocol_local_recovery",
+		Reason: "intent protocol repair exhausted; deterministic narrow recovery",
+	}
+	setTask := func(code, subIntent, requestMode string) {
+		intent.PrimaryIntent = code
+		intent.MatchedIntentCode = code
+		intent.DetectedIntent = code
+		intent.SubIntent = subIntent
+		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: code, SubIntent: subIntent, Text: text,
+			RequestMode: requestMode, Confidence: intent.IntentConfidence,
+			Reason: "deterministic protocol recovery",
+		}}
+	}
+	switch {
+	case explicitRuntimeHumanRequest(text) && runtimeIntentConfigEnabled(configs, "human_complaint_risk"):
+		setTask("human_complaint_risk", "explicit_handoff", "request_action")
+		intent.NeedsHumanRoute = true
+		intent.HumanRoutePolicy = "managed_mode"
+		intent.IntentTasks[0].NeedsHumanRoute = true
+	case explicitCheckinKnowledgeRequest(text) && runtimeIntentConfigEnabled(configs, "hotel_info"):
+		setTask("hotel_info", "checkin_process", "question")
+		intent.NeedsKnowledge = true
+		if runtimeIntentConfigEnabled(configs, "hotel_variable") {
+			intent = ensureCheckinProcessMiniProgramTask(intent, req)
+		}
+	case explicitCurrentHotelResourceRequest(text, "phone") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
+		setTask("hotel_variable", "phone", "request_action")
+		applyRuntimeProtocolFallbackResource(&intent, "provide_phone")
+	case explicitCurrentHotelResourceRequest(text, "location") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
+		setTask("hotel_variable", "location", "request_action")
+		applyRuntimeProtocolFallbackResource(&intent, "provide_location")
+	case explicitCurrentHotelResourceRequest(text, "mini_program") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
+		setTask("hotel_variable", "mini_program", "request_action")
+		applyRuntimeProtocolFallbackResource(&intent, "provide_mini_program")
+	default:
+		setTask("interaction", "clarify", "clarify_previous")
+		intent.NeedsClarification = true
+	}
+	return normalizeModelIntentTrace(intent, req, adapter.HistoryBuildResult{}, configs), true
+}
+
+func applyRuntimeProtocolFallbackResource(intent *callbacks.IntentTraceData, action string) {
+	if intent == nil {
+		return
+	}
+	intent.NeedsResource = true
+	intent.ResourceAction = action
+	intent.ResourceActions = []string{action}
+	intent.ResourceType = hotelVariableResourceTypeFromAction(action)
+	if len(intent.IntentTasks) > 0 {
+		intent.IntentTasks[0].NeedsResource = true
+		intent.IntentTasks[0].ResourceAction = action
+	}
+}
+
+func runtimeIntentConfigEnabled(configs []models.ReplyIntentConfig, code string) bool {
+	_, ok := findIntentConfigByCode(configs, code)
+	return ok
+}
+
+func explicitRuntimeHumanRequest(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	return containsAny(compact, []string{"转人工", "人工客服", "找人工", "找客服", "真人客服", "找真人", "人工接待", "客服人员"})
+}
+
+func explicitCheckinKnowledgeRequest(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" || strings.Contains(compact, "小程序") || strings.Contains(compact, "入口") {
+		return false
+	}
+	return containsAny(compact, []string{
+		"办理入住", "怎么入住", "咋入住", "怎么办入住", "入住怎么办", "入住怎么弄",
+		"如何入住", "入住流程", "入住步骤", "我想入住", "我要入住", "入住",
+	})
+}
+
+func explicitCurrentHotelResourceRequest(text, resourceType string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" {
+		return false
+	}
+	if resourceType == "location" && containsAny(compact, []string{
+		"小区", "商场", "车站", "机场", "餐厅", "饭店", "景点", "医院", "学校", "公司", "写字楼", "地铁", "高铁站", "火车站", "超市", "附近",
+	}) {
+		return false
+	}
+	currentHotel := containsAny(compact, []string{"酒店", "门店", "你们店", "贵店", "这家店", "这家酒店", "本店", "前台"})
+	switch resourceType {
+	case "phone":
+		return currentHotel && containsAny(compact, []string{"电话", "号码", "联系电话"})
+	case "location":
+		return currentHotel && containsAny(compact, []string{"定位", "地址", "导航", "在哪里", "在哪儿", "怎么去"})
+	case "mini_program":
+		return containsAny(compact, []string{"入住小程序", "酒店小程序", "门店小程序", "你们店小程序"})
+	default:
+		return false
+	}
+}
+
+func compactRuntimeProtocolText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "", "，", "", "。", "", "！", "", "!", "", "？", "", "?", "", "：", "", ":", "", "；", "", ";", "",
+	).Replace(value)
+}
+
+func parseRuntimeIntentTasksV2(content string, runtimeSchema []byte, configs []models.ReplyIntentConfig) (contracts.IntentTasksV2, []DerivedTaskCapabilities, error) {
+	if len(runtimeSchema) == 0 {
+		runtimeSchema = contracts.MustSchema(contracts.SchemaIntentTasksV2)
+	}
 	parsed, err := strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(content), strictjson.DecodeOptions{
 		MaxBytes: 32 * 1024,
-		Schema:   contracts.MustSchema(contracts.SchemaIntentTasksV2),
+		Schema:   runtimeSchema,
 	})
 	if err != nil {
 		return contracts.IntentTasksV2{}, nil, err
 	}
 	derived, err := DeriveRuntimeIntentCapabilities(parsed, configs)
 	if err != nil {
-		return contracts.IntentTasksV2{}, nil, &strictjson.ProtocolError{
-			Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.tasks", Message: err.Error(), Err: err,
+		path := "$.tasks"
+		if invariant, ok := runtimeIntentInvariantDetails(err); ok && strings.TrimSpace(invariant.Path) != "" {
+			path = strings.TrimSpace(invariant.Path)
 		}
+		return contracts.IntentTasksV2{}, nil, &strictjson.ProtocolError{Code: strictjson.ErrorJSONBusinessInvariant, Path: path, Message: err.Error(), Err: err}
 	}
 	return parsed, derived, nil
 }
@@ -180,27 +314,39 @@ func runtimeProtocolRepairAllowed(err error) bool {
 		strictjson.ErrorJSONDuplicateKey, strictjson.ErrorJSONUnknownField,
 		strictjson.ErrorJSONTrailingContent, strictjson.ErrorJSONSchemaInvalid:
 		return true
+	case strictjson.ErrorJSONBusinessInvariant:
+		invariant, ok := runtimeIntentInvariantDetails(err)
+		return ok && invariant.Code != intentInvariantDuplicateTaskSequence
 	default:
 		return false
 	}
 }
 
-func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error, currentText, firstOutput string) string {
+func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error, catalog contracts.RuntimeIntentSchemaCatalog, currentText, firstOutput string) string {
 	code, _ := strictjson.CodeOf(protocolErr)
 	path := "$"
 	var typed *strictjson.ProtocolError
 	if errors.As(protocolErr, &typed) && strings.TrimSpace(typed.Path) != "" {
 		path = strings.TrimSpace(typed.Path)
 	}
-	return strings.Join([]string{
+	parts := []string{
 		"上一版输出存在可修复的 JSON 协议错误。只修复协议，不新增、删除或改写当前客户原文中的业务任务。",
 		"schema=" + strings.TrimSpace(schemaName),
 		"errorCode=" + strings.TrimSpace(code),
 		"jsonPath=" + path,
 		"当前客户原文：" + boundedRuntimeRepairText(currentText, 4096),
 		"第一次输出：" + boundedRuntimeRepairText(firstOutput, 8*1024),
-		"重新输出唯一一个严格 JSON Object；不要输出 Markdown、解释、注释或额外文本。",
-	}, "\n")
+	}
+	if invariant, ok := runtimeIntentInvariantDetails(protocolErr); ok {
+		parts = append(parts, "businessErrorCode="+invariant.Code)
+		if len(invariant.AllowedValues) > 0 {
+			parts = append(parts, "allowedValues="+strings.Join(invariant.AllowedValues, ","))
+		}
+	} else if len(catalog.IntentCodes) > 0 {
+		parts = append(parts, "allowedIntentCodes="+strings.Join(catalog.IntentCodes, ","))
+	}
+	parts = append(parts, "重新输出唯一一个严格 JSON Object；不要输出 Markdown、解释、注释或额外文本。")
+	return strings.Join(parts, "\n")
 }
 
 func boundedRuntimeRepairText(value string, maxBytes int) string {
@@ -313,7 +459,7 @@ func runtimeIntentModelInvocationTimeout(timeoutMS, maxRetryCount int) time.Dura
 	return time.Duration(attempts)*perAttempt + backoff + time.Second
 }
 
-func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolved *services.ModelCallConfig, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
+func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolved *services.ModelCallConfig, message *schema.Message, receipts []usagex.Receipt, attempt int, latencyMS int64, callErr error) {
 	requestID := strings.TrimSpace(req.UserMessage.RequestID)
 	if requestID == "" {
 		return
@@ -340,17 +486,23 @@ func recordIntentModelUsage(req RunInput, modelConfig modelconfig.Config, resolv
 		event.ReasoningTokens = int64(usage.CompletionTokensDetails.ReasoningTokens)
 		event.MetricSource = services.AIUsageMetricSourceUpstreamActual
 	}
-	applyGatewayReceiptToUsageEvent(&event, receipt)
-	_ = services.AIUsageEventService.Record(event)
+	applyGatewayReceiptToUsageEvent(&event, lastGatewayReceipt(receipts))
+	_ = services.AIUsageEventService.RecordWithGatewayReceipts(event, receipts)
 }
 
-func gatewayReceiptSince(capture *usagex.Capture, offset int) *usagex.Receipt {
+func gatewayReceiptsSince(capture *usagex.Capture, offset int) []usagex.Receipt {
 	receipts := capture.Receipts()
 	if offset < 0 || offset >= len(receipts) {
 		return nil
 	}
-	receipt := receipts[len(receipts)-1]
-	return &receipt
+	return append([]usagex.Receipt(nil), receipts[offset:]...)
+}
+
+func lastGatewayReceipt(receipts []usagex.Receipt) *usagex.Receipt {
+	if len(receipts) == 0 {
+		return nil
+	}
+	return &receipts[len(receipts)-1]
 }
 
 func applyGatewayReceiptToUsageEvent(event *models.AIUsageEvent, receipt *usagex.Receipt) {
@@ -360,6 +512,7 @@ func applyGatewayReceiptToUsageEvent(event *models.AIUsageEvent, receipt *usagex
 	event.Gateway = receipt.Gateway
 	event.GatewayRequestID = receipt.RequestID
 	event.GatewayUpstreamID = receipt.UpstreamRequestID
+	event.GatewayHTTPStatus = receipt.StatusCode
 	event.CallStartedAt = &receipt.StartedAt
 	event.CallFinishedAt = &receipt.FinishedAt
 	if receipt.LatencyMS() > 0 {
@@ -556,6 +709,16 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 			intent.HumanRoutePolicy = "managed_mode"
 		}
 	}
+	if explicitCheckinKnowledgeRequest(req.UserMessage.Content) && intent.PrimaryIntent != "human_complaint_risk" &&
+		runtimeIntentConfigEnabled(configs, "hotel_info") {
+		intent.PrimaryIntent = "hotel_info"
+		intent.MatchedIntentCode = "hotel_info"
+		intent.SubIntent = "checkin_process"
+		intent.NeedsClarification = false
+		intent.NeedsKnowledge = true
+		intent.Reason = appendIntentReason(intent.Reason, "deterministic checkin rule")
+		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
+	}
 	if shouldAttachCheckinMiniProgramTask(intent) {
 		intent = ensureCheckinProcessMiniProgramTask(intent, req)
 	}
@@ -584,6 +747,17 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.MatchMode = "model"
 	}
 	return intent
+}
+
+func ensureCheckinProcessMiniProgramTaskIfConfigured(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
+	if !runtimeIntentConfigEnabled(configs, "hotel_variable") {
+		intent.NeedsResource = false
+		intent.ResourceActions = nil
+		intent.ResourceAction = ""
+		intent.ResourceType = ""
+		return intent
+	}
+	return ensureCheckinProcessMiniProgramTask(intent, req)
 }
 
 func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.IntentTraceData {

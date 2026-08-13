@@ -359,3 +359,39 @@ Credential/API Key 无需改变。
 - 新增仅服务器管理员可运行的 `cmd/conversation_ai_recovery`，不增加 HTTP API、前端入口、DTO、
   WebSocket payload、模型调用或数据库结构。命令必须提供会话 ID 和审计原因，并使用生产配置及环境
   密钥调用上述业务服务，禁止直接 SQL 修复会话状态。
+
+### 8.7 2026-08-13 自动转人工真实根因与本次修复
+
+诊断文档 `customer-service-auto-handoff-diagnosis-playbook.md` 对测试 2 的数据库记录和运行日志的结论为：
+
+- 入住、咖啡、停车等问题并不是因为连续消息并发把知识库打崩；真实失败记录集中在
+  `t_ai_usage_event.stage=reply_generate`、`error_class=model_call_failed`，旧代码一次模型失败后直接把
+  Job 送入人工池。
+- 知识检索成功的任务会留下命中证据；部分知识任务失败时，旧任务账本会把失败扩大成整轮人工，成功任务也
+  不能独立收敛。
+- 电话资源缺失属于门店配置不完整，不是客户问题不可处理；旧资源构建错误被当作不可恢复错误，导致整条回复转人工。
+- 入住小程序动作原先主要依赖模型是否临时输出资源动作；现在在 Runtime 归一化层和协议修复后的本地恢复层
+  统一补齐 `hotel_info/checkin_process` 知识任务及 `provide_mini_program` 资源任务，模型漏动作不会改变提交契约。
+
+本次代码修复的结构化边界：
+
+- `AIReplyExecutionError` 携带错误分类和可重试元数据。Intent、Generate、Knowledge、空输出、资源不变量和
+  Commit 的技术失败先使用已有 Job/逐题任务退避预算；只有不可恢复错误或预算耗尽才进入人工池。
+- FastGPT/模型每次网络调用的重试仍由各自网关或九槽客户端负责；Job Claim 只负责恢复，不重复放大已经耗尽的
+  单阶段调用。人工派单失败只重试派单，不重新运行模型。
+- 知识任务失败会释放 Claim、写入 `next_retry_at`，成功任务保持 delivered/committed；当 Runtime 在生成任务键前失败时，
+  `MarkUnfinishedHandoffPendingDB` 从持久任务账本收敛所有未完成任务，避免账本悬空或静默完成。
+- Responses Schema HTTP 400 被识别为确定性 `structured_output_schema_rejected`，同一非法请求不重复发送；
+  超时、网络、429、5xx 和上游临时失败仍按既有初次调用加两次重试。
+- 缺少门店电话时 Runtime 返回“当前门店暂未配置联系电话，请联系门店获取。”，不再因为缺配置把普通客户问题直接转人工；
+  readiness 检查仍会报告缺配置，避免把配置问题隐藏。
+
+### 8.8 服务器版本状态
+
+此前测试 2 当前运行的是 `/opt/agentdesk/releases/20260813-takeover-65802f4`，对应旧提交
+`65802f40ceff3fd5947a651a60c944ce2e315b11`。因此在本次提交部署前，服务器不会包含本节新增的错误状态机、
+入住确定性规则和任务账本修复；此前在服务器上看到的旧行为不能作为本次修复的验收结果。
+
+本次提交完成后必须使用提交完整 SHA 构建新 release，保留旧 release 作为回滚点，原子切换
+`/opt/agentdesk/current`，重启 `agentdesk.service`，并核对 `current/REVISION`、二进制 SHA-256、服务状态、
+`NRestarts`、本机健康接口和关键错误日志。未完成这些步骤前，不宣称服务器已更新。

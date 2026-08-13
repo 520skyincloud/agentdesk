@@ -352,18 +352,32 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		}
 		status := enums.AIReplyTurnTaskStatusRunning
 		stage := enums.AIReplyTurnTaskStageGenerate
+		claimedByJobID := task.ClaimedByJobID
+		claimedVersion := task.ClaimedVersion
+		var nextRetryAt *time.Time
 		if update.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-			status = enums.AIReplyTurnTaskStatusHandoffPending
-			stage = enums.AIReplyTurnTaskStageHandoff
+			status = enums.AIReplyTurnTaskStatusPending
+			stage = enums.AIReplyTurnTaskStageKnowledge
+			claimedByJobID = 0
+			claimedVersion = 0
+			nextAttempt := task.AttemptCount + 1
+			if nextAttempt >= aiReplyJobMaxAttempts {
+				status = enums.AIReplyTurnTaskStatusHandoffPending
+				stage = enums.AIReplyTurnTaskStageHandoff
+			} else {
+				nextRetryAt = aiReplyTaskRetryAt(now, nextAttempt)
+			}
 		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
 			"knowledge_status":    update.Status,
 			"knowledge_hit_count": max(update.HitCount, 0),
 			"stage":               stage,
 			"status":              status,
+			"claimed_by_job_id":   claimedByJobID,
+			"claimed_version":     claimedVersion,
 			"attempt_count":       gorm.Expr("attempt_count + 1"),
 			"result_code":         controlledResultCode(update.ResultCode, string(update.Status)),
-			"next_retry_at":       nil,
+			"next_retry_at":       nextRetryAt,
 			"updated_at":          now,
 			"update_user_name":    "ai_reply_knowledge",
 		}); err != nil {
@@ -371,6 +385,18 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		}
 	}
 	return nil
+}
+
+func aiReplyTaskRetryAt(now time.Time, attempt int) *time.Time {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	delayIndex := attempt - 1
+	if delayIndex >= len(aiReplyJobRetryDelays) {
+		delayIndex = len(aiReplyJobRetryDelays) - 1
+	}
+	next := now.Add(aiReplyJobRetryDelays[delayIndex])
+	return &next
 }
 
 func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
@@ -497,6 +523,13 @@ func (s *aiReplyTurnTaskService) HasRunnable(tenantID, turnID int64) bool {
 	return repositories.AIReplyTurnTaskRepository.CountRunnableByTurnInTenant(sqls.DB(), tenantID, turnID) > 0
 }
 
+func (s *aiReplyTurnTaskService) NextRetryAt(tenantID, turnID int64) *time.Time {
+	if !s.Enabled() {
+		return nil
+	}
+	return repositories.AIReplyTurnTaskRepository.NextRetryAtByTurnInTenant(sqls.DB(), tenantID, turnID, time.Now())
+}
+
 func (s *aiReplyTurnTaskService) HasFailureHandoffs(tenantID, turnID int64) bool {
 	if !s.Enabled() {
 		return false
@@ -619,6 +652,40 @@ func (s *aiReplyTurnTaskService) MarkHandoffPendingDB(db *gorm.DB, tenantID, tur
 		}
 	}
 	return nil
+}
+
+// MarkUnfinishedHandoffPendingDB is the terminal failure boundary for a turn.
+// A runtime error may not contain task keys (for example a prepare or protocol
+// failure before the reply plan is returned), so the turn ledger itself is the
+// source of truth for the tasks that still need human handling.
+func (s *aiReplyTurnTaskService) MarkUnfinishedHandoffPendingDB(
+	db *gorm.DB,
+	tenantID, turnID, jobID int64,
+	resultCode string,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || turnID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+		return nil
+	}
+	query := db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND status IN ?", tenantID, turnID, []enums.AIReplyTurnTaskStatus{
+			enums.AIReplyTurnTaskStatusPending,
+			enums.AIReplyTurnTaskStatusReady,
+			enums.AIReplyTurnTaskStatusRunning,
+		})
+	if jobID > 0 {
+		query = query.Where("claimed_by_job_id = 0 OR claimed_by_job_id = ?", jobID)
+	}
+	return query.Updates(map[string]any{
+		"stage":             enums.AIReplyTurnTaskStageHandoff,
+		"status":            enums.AIReplyTurnTaskStatusHandoffPending,
+		"result_code":       controlledResultCode(resultCode, "human_handoff_pending"),
+		"claimed_by_job_id": 0,
+		"claimed_version":   0,
+		"next_retry_at":     nil,
+		"updated_at":        now,
+		"update_user_name":  "ai_reply_handoff",
+	}).Error
 }
 
 func (s *aiReplyTurnTaskService) MarkTurnHandoffDB(db *gorm.DB, tenantID, turnID int64, resultCode string, now time.Time) error {

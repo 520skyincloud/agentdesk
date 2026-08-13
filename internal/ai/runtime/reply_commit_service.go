@@ -285,7 +285,7 @@ func (s *replyCommitService) updateCommitTrace(input replyCommitInput, commitSta
 }
 
 func (s *replyCommitService) sendStructuredVariableReply(input replyCommitInput, structured structuredVariableReply) (*models.Message, error) {
-	if strings.TrimSpace(structured.Content) == "" || strings.TrimSpace(structured.Payload) == "" {
+	if strings.TrimSpace(structured.Content) == "" || (structuredPayloadRequired(structured) && strings.TrimSpace(structured.Payload) == "") {
 		return nil, nil
 	}
 	commitStartedAt := time.Now()
@@ -380,7 +380,7 @@ func (s *replyCommitService) buildStructuredVariableRepliesStrict(input replyCom
 			appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(reply.MessageType), 0, "prepared", "")})
 			ret = append(ret, reply)
 		case "phone":
-			content, payload, err := svc.WxWorkProtocolDefaultResourceService.BuildDefaultPhoneMessage(instance)
+			content, payload, err := svc.WxWorkProtocolDefaultResourceService.BuildRuntimePhoneMessage(instance)
 			if err != nil {
 				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeText), 0, "missing", string(svc.AIReplyExecutionErrorResourceInvariantBroken))})
 				return nil, svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, err)
@@ -399,6 +399,10 @@ func (s *replyCommitService) buildStructuredVariableRepliesStrict(input replyCom
 		}
 	}
 	return ret, nil
+}
+
+func structuredPayloadRequired(structured structuredVariableReply) bool {
+	return structured.ResourceType != "phone"
 }
 
 func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInput) []structuredVariableReply {
@@ -600,7 +604,7 @@ func preparedStructuredReplies(actions []contracts.PreparedActionV1) []structure
 		messageType := enums.IMMessageType(strings.TrimSpace(action.MessageType))
 		if strings.TrimSpace(action.ActionKey) == "" || strings.TrimSpace(action.TaskKey) == "" ||
 			strings.TrimSpace(action.PreparedRevision) == "" || strings.TrimSpace(action.Content) == "" ||
-			strings.TrimSpace(action.Payload) == "" || messageType == "" {
+			(messageType != enums.IMMessageTypeText && strings.TrimSpace(action.Payload) == "") || messageType == "" {
 			continue
 		}
 		resourceType := strings.TrimSpace(action.ResourceType)

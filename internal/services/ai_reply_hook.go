@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/pkg/strictjson"
 )
 
 type AIReplyExecutionStatus string
@@ -30,8 +32,21 @@ const (
 )
 
 type AIReplyExecutionError struct {
-	code  AIReplyExecutionErrorCode
-	cause error
+	code     AIReplyExecutionErrorCode
+	cause    error
+	metadata AIReplyExecutionErrorMetadata
+}
+
+type AIReplyExecutionErrorMetadata struct {
+	Code              AIReplyExecutionErrorCode
+	CauseClass        string
+	ProtocolCode      string
+	JSONPath          string
+	HTTPStatus        int
+	ProviderStatus    string
+	ProviderCode      string
+	Retryable         bool
+	RetryabilityKnown bool
 }
 
 func (e *AIReplyExecutionError) Error() string {
@@ -52,7 +67,33 @@ func NewAIReplyExecutionError(code AIReplyExecutionErrorCode, cause error) error
 	if strings.TrimSpace(string(code)) == "" {
 		code = AIReplyExecutionErrorGenerationFailed
 	}
-	return &AIReplyExecutionError{code: code, cause: cause}
+	metadata := AIReplyExecutionErrorMetadata{Code: code}
+	if invocation, ok := modelconfig.InvocationErrorDetails(cause); ok {
+		metadata.CauseClass = strings.TrimSpace(invocation.Class)
+		metadata.HTTPStatus = invocation.StatusCode
+		metadata.ProviderStatus = strings.TrimSpace(invocation.ResponseStatus)
+		metadata.ProviderCode = strings.TrimSpace(invocation.ProviderCode)
+		metadata.Retryable = invocation.Retryable
+		metadata.RetryabilityKnown = true
+	}
+	var protocolErr *strictjson.ProtocolError
+	if errors.As(cause, &protocolErr) && protocolErr != nil {
+		metadata.ProtocolCode = strings.TrimSpace(protocolErr.Code)
+		metadata.JSONPath = strings.TrimSpace(protocolErr.Path)
+		if metadata.CauseClass == "" {
+			metadata.CauseClass = "protocol_error"
+		}
+		if !metadata.RetryabilityKnown {
+			metadata.RetryabilityKnown = true
+			metadata.Retryable = false
+		}
+	}
+	if errors.Is(cause, context.DeadlineExceeded) && !metadata.RetryabilityKnown {
+		metadata.CauseClass = modelconfig.InvocationErrorTimeout
+		metadata.Retryable = true
+		metadata.RetryabilityKnown = true
+	}
+	return &AIReplyExecutionError{code: code, cause: cause, metadata: metadata}
 }
 
 func AIReplyExecutionErrorCodeOf(err error) (AIReplyExecutionErrorCode, bool) {
@@ -61,6 +102,16 @@ func AIReplyExecutionErrorCodeOf(err error) (AIReplyExecutionErrorCode, bool) {
 		return "", false
 	}
 	return controlled.code, true
+}
+
+func AIReplyExecutionErrorDetailsOf(err error) (AIReplyExecutionErrorMetadata, bool) {
+	var controlled *AIReplyExecutionError
+	if !errors.As(err, &controlled) || controlled == nil || strings.TrimSpace(string(controlled.code)) == "" {
+		return AIReplyExecutionErrorMetadata{}, false
+	}
+	metadata := controlled.metadata
+	metadata.Code = controlled.code
+	return metadata, true
 }
 
 type AIReplyExecutionResult struct {

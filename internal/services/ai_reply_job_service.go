@@ -627,7 +627,11 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		return
 	}
 	if code, ok := AIReplyExecutionErrorCodeOf(runErr); ok {
-		s.dispatchControlledFailure(job, owner, string(code), now)
+		if controlledExecutionErrorShouldRetry(runErr) {
+			s.retryOrDispatch(job, owner, string(code), now)
+		} else {
+			s.dispatchControlledFailure(job, owner, string(code), now)
+		}
 		return
 	}
 	s.retryOrDispatch(job, owner, classifyAIReplyJobError(runErr), now)
@@ -649,22 +653,49 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 			return false
 		}
 	}
-	failedTaskKeys := uniqueTaskKeys(result.FailedTaskKeys)
-	if taskFailureRequiresHuman(runErr) {
-		failedTaskKeys = uniqueTaskKeys(append(failedTaskKeys, result.TaskKeys...))
-	}
-	if len(failedTaskKeys) > 0 {
-		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			return AIReplyTurnTaskService.MarkHandoffPendingDB(
-				ctx.Tx, job.TenantID, job.TurnID, job.ID, failedTaskKeys, classifyTaskFailure(runErr), now,
+	hasRunnable := result.HasRemainingTasks || AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
+	hasActiveTasks := AIReplyTurnTaskService.HasUnfinished(job.TenantID, job.TurnID) &&
+		!AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	hasFailureHandoff := AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	if hasActiveTasks && !hasFailureHandoff {
+		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr)
+		if runErr != nil && (!retryable || job.AttemptCount >= aiReplyJobMaxAttempts) {
+			if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+				return AIReplyTurnTaskService.MarkUnfinishedHandoffPendingDB(
+					ctx.Tx, job.TenantID, job.TurnID, job.ID, classifyTaskFailure(runErr), now,
+				)
+			}); err != nil {
+				return false
+			}
+			hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+		} else {
+			nextRetryAt := now.Add(aiReplyJobContinuationDelay)
+			if taskRetryAt := AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID); taskRetryAt != nil && taskRetryAt.After(nextRetryAt) {
+				nextRetryAt = *taskRetryAt
+			}
+			consumeAttempt := runErr != nil
+			if consumeAttempt && job.AttemptCount < aiReplyJobMaxAttempts {
+				delayIndex := job.AttemptCount - 1
+				if delayIndex < 0 {
+					delayIndex = 0
+				}
+				if delayIndex >= len(aiReplyJobRetryDelays) {
+					delayIndex = len(aiReplyJobRetryDelays) - 1
+				}
+				modelRetryAt := now.Add(aiReplyJobRetryDelays[delayIndex])
+				if modelRetryAt.After(nextRetryAt) {
+					nextRetryAt = modelRetryAt
+				}
+			}
+			_, _ = repositories.AIReplyJobRepository.MarkRetry(
+				sqls.DB(), job.ID, job.TenantID, owner,
+				"turn_tasks_remaining", classifyTaskFailure(runErr), nextRetryAt, now, consumeAttempt,
 			)
-		}); err != nil {
-			return false
+			return true
 		}
 	}
 
-	hasRunnable := result.HasRemainingTasks || AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
-	if hasRunnable {
+	if hasRunnable && !hasFailureHandoff {
 		if result.Status == AIReplyExecutionStatusCompleted {
 			if err := s.validateCompletionEvidence(job, result); err != nil {
 				return false
@@ -677,7 +708,7 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		return true
 	}
 
-	hasFailureHandoff := len(failedTaskKeys) > 0 || AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	hasFailureHandoff = hasFailureHandoff || AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 	if !hasFailureHandoff {
 		return false
 	}
@@ -722,14 +753,24 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 	return true
 }
 
-func taskFailureRequiresHuman(err error) bool {
+func controlledExecutionErrorShouldRetry(err error) bool {
+	details, ok := AIReplyExecutionErrorDetailsOf(err)
+	if ok && details.RetryabilityKnown {
+		return details.Retryable
+	}
 	code, ok := AIReplyExecutionErrorCodeOf(err)
 	if !ok {
 		return false
 	}
+	// Runtime stages are technical failures by default. They must consume the
+	// existing Job retry budget before the conversation is offered to a human.
 	switch code {
-	case AIReplyExecutionErrorGenerationFailed, AIReplyExecutionErrorKnowledgeUnavailable,
-		AIReplyExecutionErrorEmptyOutput, AIReplyExecutionErrorResourceInvariantBroken:
+	case AIReplyExecutionErrorIntentDetectFailed,
+		AIReplyExecutionErrorGenerationFailed,
+		AIReplyExecutionErrorKnowledgeUnavailable,
+		AIReplyExecutionErrorEmptyOutput,
+		AIReplyExecutionErrorResourceInvariantBroken,
+		AIReplyExecutionErrorCommitFailed:
 		return true
 	default:
 		return false
@@ -951,7 +992,7 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 		}
 	}
 	taskLedgerUnfinished := state.Job.TurnID > 0 && AIReplyTurnTaskService.Enabled() &&
-		AIReplyTurnTaskService.HasRunnable(state.Job.TenantID, state.Job.TurnID)
+		AIReplyTurnTaskService.HasUnfinished(state.Job.TenantID, state.Job.TurnID)
 	if len(committedIDs) > 0 && !taskLedgerUnfinished {
 		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusCompleted, Code: "reply_already_committed", CommittedMessageIDs: committedIDs}
 	}

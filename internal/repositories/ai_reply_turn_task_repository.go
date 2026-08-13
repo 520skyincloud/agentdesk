@@ -142,13 +142,30 @@ func (r *aiReplyTurnTaskRepository) CountRunnableByTurnInTenant(db *gorm.DB, ten
 	}
 	var count int64
 	_ = db.Model(&models.AIReplyTurnTask{}).
-		Where("tenant_id = ? AND turn_id = ? AND status IN ?", tenantID, turnID, []enums.AIReplyTurnTaskStatus{
+		Where("tenant_id = ? AND turn_id = ? AND status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", tenantID, turnID, []enums.AIReplyTurnTaskStatus{
 			enums.AIReplyTurnTaskStatusPending,
 			enums.AIReplyTurnTaskStatusReady,
-			enums.AIReplyTurnTaskStatusRunning,
-		}).
+		}, time.Now()).
 		Count(&count).Error
 	return count
+}
+
+func (r *aiReplyTurnTaskRepository) NextRetryAtByTurnInTenant(db *gorm.DB, tenantID, turnID int64, now time.Time) *time.Time {
+	if db == nil || tenantID <= 0 || turnID <= 0 {
+		return nil
+	}
+	var item models.AIReplyTurnTask
+	if err := db.Where(
+		"tenant_id = ? AND turn_id = ? AND status IN ? AND next_retry_at IS NOT NULL AND next_retry_at > ?",
+		tenantID, turnID, []enums.AIReplyTurnTaskStatus{
+			enums.AIReplyTurnTaskStatusPending,
+			enums.AIReplyTurnTaskStatusReady,
+		}, now,
+	).Order("next_retry_at ASC, id ASC").First(&item).Error; err != nil || item.NextRetryAt == nil {
+		return nil
+	}
+	next := *item.NextRetryAt
+	return &next
 }
 
 func (r *aiReplyTurnTaskRepository) CountFailureHandoffsByTurnInTenant(db *gorm.DB, tenantID, turnID int64) int64 {

@@ -18,9 +18,13 @@ type Receipt struct {
 	Gateway           string
 	RequestID         string
 	UpstreamRequestID string
+	Attempt           int
 	StartedAt         time.Time
 	FinishedAt        time.Time
 	StatusCode        int
+	ErrorClass        string
+	ProviderStatus    string
+	ProviderCode      string
 }
 
 func (r Receipt) LatencyMS() int64 {
@@ -40,8 +44,26 @@ func (c *Capture) add(receipt Receipt) {
 		return
 	}
 	c.mu.Lock()
+	if receipt.Attempt <= 0 {
+		receipt.Attempt = len(c.receipts) + 1
+	}
 	c.receipts = append(c.receipts, receipt)
 	c.mu.Unlock()
+}
+
+func (c *Capture) annotateLatest(errorClass, providerStatus, providerCode string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.receipts) == 0 {
+		return
+	}
+	latest := &c.receipts[len(c.receipts)-1]
+	latest.ErrorClass = strings.TrimSpace(errorClass)
+	latest.ProviderStatus = strings.TrimSpace(providerStatus)
+	latest.ProviderCode = strings.TrimSpace(providerCode)
 }
 
 func (c *Capture) Receipts() []Receipt {
@@ -95,6 +117,12 @@ func captureFromContext(ctx context.Context) *Capture {
 	}
 	capture, _ := ctx.Value(captureContextKey{}).(*Capture)
 	return capture
+}
+
+func AnnotateLatestReceipt(ctx context.Context, errorClass, providerStatus, providerCode string) {
+	if capture := captureFromContext(ctx); capture != nil {
+		capture.annotateLatest(errorClass, providerStatus, providerCode)
+	}
 }
 
 type TrackingTransport struct {

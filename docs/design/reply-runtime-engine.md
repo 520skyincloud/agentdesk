@@ -208,11 +208,16 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 - 新客户消息提交后立即取消同一会话中更早的活动 Context；旧任务重新检查最新消息并直接收敛为 `superseded`，不得占用重试次数。
 - CAS 租约为 90 秒，每 30 秒续租；租约丢失立即取消 Context，Commit 前再次校验租约和业务范围。
 - 每个模型阶段由当前九槽 `MaxRetryCount` 控制调用重试，默认 `2`，即初次调用加两次重试；
-  Intent 严格 JSON 修复属于协议修复，不计作网络重试。
-- Job 最多 4 次 Claim 只用于进程崩溃、租约、数据库等基础设施恢复，退避为 15 秒、1 分钟、
-  3 分钟。受控模型、FastGPT、空输出、资源不变量或 Commit 失败不会重新运行完整模型链；重新
-  检查新鲜度后立即用 `ai_reply_job_handoff_<jobID>` 进入现有人工任务池。
+  Intent 严格 JSON 修复属于协议修复，不计作网络重试。Responses 结构化 Schema 被上游以确定性
+  HTTP 400 拒绝时，归类为 `structured_output_schema_rejected`，同一非法请求不重复发送。
+- Job 最多 4 次 Claim 用于进程崩溃、租约、数据库和可重试 Runtime 失败的恢复，退避为 15 秒、
+  1 分钟、3 分钟。阶段重试耗尽后的技术错误仍先进入 Job 的受控重试预算；Job 重试只重新执行
+  尚未提交的 Runtime，不重建已经提交的 Message、Outbox、Usage 或人工任务。只有 Job 重试耗尽、
+  任务账本达到任务重试上限，或错误明确不可恢复时，才使用稳定键
+  `ai_reply_job_handoff_<jobID>` 进入现有人工任务池。
 - 人工派单失败时记录 `human_dispatch_retry`，后续 Claim 只重试派单，不再调用模型。
+- 知识任务失败会释放任务占用并写入 `next_retry_at`，不把整轮立即改成 `handoff_pending`；同轮已
+  成功的任务继续保留，只有该任务重试耗尽后才转人工。
 - 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。
 - 最近 15 分钟补偿扫描只补非历史、未撤回、可触发且缺任务的客户消息，不扫描旧历史。
 - 同 Session 更新客户消息使旧任务 `superseded`；更新人工消息按人工接管处理；System、欢迎语、
@@ -446,8 +451,9 @@ AI 只输出是否需要人工、原因和客户等待文案。唯一任务入�
 明确人工、退款/赔偿/投诉升级、安全、隐私、严重订单异常和价格争议可进入人工路由。
 普通 FAQ、用品、电视、入住、小程序、定位、轻互动和普通文件咨询不能因为关键词误转。
 
-模型槽重试耗尽、FastGPT 基础设施失败、空输出、结构化资源不变量损坏或 Commit 失败也进入
-同一任务池；该兜底只负责保住客户问题，不改变客服选择、排班和容量算法。范围损坏时继续
+模型槽与 Job 重试都耗尽、FastGPT 基础设施失败达到任务上限、空输出、结构化资源不变量损坏
+或 Commit 失败才进入同一任务池；确定性 Schema/配置错误可直接进入该池，因为继续发送同一非法
+请求没有恢复价值。该兜底只负责保住客户问题，不改变客服选择、排班和容量算法。范围损坏时继续
 fail closed，不使用不可信 Store/Binding 创建人工任务。
 
 ## 10. 提交、Outbox 与 WebSocket
@@ -518,8 +524,9 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - Credential 未激活、revision 不一致或解密失败：阻止 AI。
 - FastGPT 未就绪：知识路径失败关闭，不读取本地 fallback。
 - 任一父链跨 Tenant/Store：拒绝执行。
-- IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：重新检查会话
-  新鲜度，仍有效则立即进入现有人工任务池，不把 Job 标成 `completed`。
+- IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：先按错误元数据判断
+  是否可重试；可重试错误进入 Job 或逐题任务的退避队列，重新检查会话新鲜度后继续处理。确定性
+  Schema/配置错误，或重试预算耗尽后，进入现有人工任务池，不把 Job 标成 `completed`。
 - Commit 已成功但外部发送失败：只重试 Outbox，不重跑模型。
 - 需要人工且 AI 不可用：仍可进入现有人工池。
 

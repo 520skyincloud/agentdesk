@@ -22,9 +22,11 @@ const (
 )
 
 type InvocationError struct {
-	Class      string
-	StatusCode int
-	Retryable  bool
+	Class          string
+	StatusCode     int
+	ResponseStatus string
+	ProviderCode   string
+	Retryable      bool
 }
 
 func (e *InvocationError) Error() string {
@@ -43,6 +45,38 @@ func (e *InvocationError) Error() string {
 
 func NewInvocationError(class string, statusCode int, retryable bool) error {
 	return &InvocationError{Class: strings.TrimSpace(class), StatusCode: statusCode, Retryable: retryable}
+}
+
+func NewInvocationErrorWithMetadata(class string, statusCode int, responseStatus, providerCode string, retryable bool) error {
+	return &InvocationError{
+		Class:          strings.TrimSpace(class),
+		StatusCode:     statusCode,
+		ResponseStatus: strings.TrimSpace(responseStatus),
+		ProviderCode:   strings.TrimSpace(providerCode),
+		Retryable:      retryable,
+	}
+}
+
+type InvocationErrorMetadata struct {
+	Class          string
+	StatusCode     int
+	ResponseStatus string
+	ProviderCode   string
+	Retryable      bool
+}
+
+func InvocationErrorDetails(err error) (InvocationErrorMetadata, bool) {
+	var invocationErr *InvocationError
+	if !errors.As(err, &invocationErr) || invocationErr == nil {
+		return InvocationErrorMetadata{}, false
+	}
+	return InvocationErrorMetadata{
+		Class:          strings.TrimSpace(invocationErr.Class),
+		StatusCode:     invocationErr.StatusCode,
+		ResponseStatus: strings.TrimSpace(invocationErr.ResponseStatus),
+		ProviderCode:   strings.TrimSpace(invocationErr.ProviderCode),
+		Retryable:      invocationErr.Retryable,
+	}, true
 }
 
 func InvocationErrorClass(err error) string {
