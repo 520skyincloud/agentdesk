@@ -191,10 +191,14 @@ func (s *mediaUnderstandingService) understandImage(ctx context.Context, message
 	startedAt := time.Now()
 	modelCtx := usagex.WithScope(ctx, modelCallUsageScope(resolved, message.ConversationID, message.ID, message.RequestID))
 	modelCtx, usageCapture := usagex.WithCapture(modelCtx)
-	// 视觉理解对体验影响大，单次 context canceled/网络抖动不该直接判 failed。
-	// 先做一次同步重试，再失败才落 failed，让“图片识别不出来”的概率显著降低。
+	// 视觉理解对体验影响大，超时/网络抖动不该直接判 failed。
+	// 重试次数优先读 vision 槽位的 MaxRetryCount（默认 1 次重试 = 初次调用 + 1 次）。
+	retryCount := resolved.MaxRetryCount
+	if retryCount < 1 {
+		retryCount = 1
+	}
 	text, usage, err := s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
-	if err != nil && isRetryableMediaError(err) {
+	for attempt := 0; attempt < retryCount && err != nil && isRetryableMediaError(err); attempt++ {
 		text, usage, err = s.callOpenAICompatibleVisionWithUsage(modelCtx, resolved.RuntimeConfig(), imageURL)
 	}
 	s.recordMediaModelUsage(message, resolved, "vision", usage, lastUsageReceipt(usageCapture), time.Since(startedAt).Milliseconds(), err)

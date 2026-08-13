@@ -367,6 +367,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"模型只输出语义字段 sequence、intent、subIntent、text、requestMode、confidence。不得输出 taskKey、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction 或任何执行结果。",
 		"当前消息中的每个有效问题、资源请求、人工诉求或社交表达都必须覆盖；不得把跨主题问题压成一个任务，也不得从无关历史补出当前未问的任务。",
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
+		"先区分【要信息】还是【要执行动作】：客户只是询问价格、优惠、房态、会员、规则、能不能、怎么操作，都是要信息，不得判为执行动作或人工诉求；只有客户明确说“帮我办/帮我下单/帮我改/帮我处理/我要转人工/投诉/退款赔偿”等才属于执行或人工。",
 	}
 	if profile != nil {
 		if description := strings.TrimSpace(profile.Description); description != "" {
