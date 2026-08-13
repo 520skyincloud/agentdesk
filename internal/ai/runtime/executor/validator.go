@@ -36,7 +36,7 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		Status:        "passed", NormalizedParts: normalizeReplyParts(input.Output.Parts, &input.Plan),
 		Checks: contracts.ValidationChecksV1{
 			Schema: "passed", TaskCoverage: "passed", EvidenceReferences: "passed",
-			ActionReferences: "passed", Safety: "passed", CommitInvariants: "passed",
+			FactGrounding: "passed", ActionReferences: "passed", Safety: "passed", CommitInvariants: "passed",
 		},
 		Errors: []contracts.ValidationIssueV1{}, Warnings: []contracts.ValidationIssueV1{},
 	}
@@ -55,6 +55,13 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		result.Checks.EvidenceReferences = "failed"
 		result.Errors = append(result.Errors, issues...)
 		result.Status = "rejected"
+	}
+	if issues := validateReplyFactGrounding(input); len(issues) > 0 {
+		result.Checks.FactGrounding = "failed"
+		result.Errors = append(result.Errors, issues...)
+		if result.Status != "rejected" {
+			result.Status = "repairable_protocol_error"
+		}
 	}
 	if issues := validateReplyActionReferences(input); len(issues) > 0 {
 		result.Checks.ActionReferences = "failed"

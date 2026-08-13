@@ -3056,3 +3056,35 @@ export function batchToggleCustomerTagRuntime(
     }
   )
 }
+
+export type ReplyAction = {
+  id: number
+  code: string
+  name: string
+  kind: string
+  description: string
+  inputSchema: string
+  requireConfirmation: boolean
+  executorRef: string
+  enabled: boolean
+  provisioned: boolean
+  sortNo: number
+  createdAt: string
+  updatedAt: string
+  createUserName: string
+  updateUserName: string
+}
+
+export function fetchReplyActions() {
+  return request<ReplyAction[]>("/api/dashboard/reply-action/list")
+}
+
+export function updateReplyActionStatus(payload: {
+  id: number
+  enabled: boolean
+}) {
+  return request<void>("/api/dashboard/reply-action/update_status", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}

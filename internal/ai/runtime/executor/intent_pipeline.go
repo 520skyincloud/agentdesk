@@ -110,6 +110,13 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		if knowledgeOutcome.Evidence != nil {
 			evidence = *knowledgeOutcome.Evidence
 		}
+		// 知识命中绑定动作：把“转人工”类知识答案从口头文本提升为结构化人工路由，
+		// 让既有二次确认链真正触发，而不是模型复述“我要转人工”。
+		activePlans, knowledgeHandoff := applyKnowledgeActionBindings(activePlans, knowledgeOutcome.TaskActionCodes)
+		replyPlan.TaskPlans = activePlans
+		if knowledgeHandoff {
+			intent = markIntentAsKnowledgeHandoff(intent)
+		}
 	}
 	actionLedgerV2, err := ensureRuntimeActionLedger(req, taskState, replyPlan.TaskPlans, &evidence)
 	if err != nil {
@@ -583,6 +590,46 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		Output:         output,
 		ResourceAction: task.ResourceAction,
 	}
+}
+
+// applyKnowledgeActionBindings 把命中知识的任务按绑定动作改写为结构化执行计划。
+// 目前只把 human_handoff 提升为人工路由计划；资源/工具动作继续走各自链路。
+// 返回 (plans, hasHumanHandoff)。
+func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, taskActionCodes map[string]string) ([]callbacks.ReplyTaskPlanTraceData, bool) {
+	if len(taskActionCodes) == 0 {
+		return plans, false
+	}
+	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
+	hasHandoff := false
+	for _, plan := range plans {
+		actionCode, ok := taskActionCodes[plan.TaskKey]
+		if !ok || actionCode != "human_handoff" {
+			ret = append(ret, plan)
+			continue
+		}
+		plan.Intent = "human_complaint_risk"
+		plan.SubIntent = "explicit_handoff"
+		plan.Output = "human_route_confirmation_or_dispatch"
+		plan.ResourceAction = ""
+		ret = append(ret, plan)
+		hasHandoff = true
+	}
+	return ret, hasHandoff
+}
+
+// markIntentAsKnowledgeHandoff 把意图收敛为人工路由，驱动 executeIntentHumanRoute 发起二次确认。
+func markIntentAsKnowledgeHandoff(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	intent.PrimaryIntent = "human_complaint_risk"
+	intent.MatchedIntentCode = "human_complaint_risk"
+	intent.DetectedIntent = "human_complaint_risk"
+	intent.SubIntent = "explicit_handoff"
+	intent.NeedsHumanRoute = true
+	intent.HumanRoutePolicy = "managed_mode"
+	intent.NeedsKnowledge = false
+	intent.NeedsResource = false
+	intent.NeedsTool = false
+	intent.Reason = appendIntentReason(intent.Reason, "knowledge action binding promoted to human handoff")
+	return intent
 }
 
 func expectedIntentResources(intent callbacks.IntentTraceData) []string {

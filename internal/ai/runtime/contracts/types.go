@@ -289,6 +289,7 @@ type ValidationChecksV1 struct {
 	Schema             string `json:"schema"`
 	TaskCoverage       string `json:"taskCoverage"`
 	EvidenceReferences string `json:"evidenceReferences"`
+	FactGrounding      string `json:"factGrounding"`
 	ActionReferences   string `json:"actionReferences"`
 	Safety             string `json:"safety"`
 	CommitInvariants   string `json:"commitInvariants"`

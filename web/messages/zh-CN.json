@@ -2646,6 +2646,7 @@
     "storageSettings": "存储设置",
     "wxworkDevicePool": "实例池",
     "replyIntentConfigs": "意图分类",
+    "replyActions": "回复动作",
     "industryTagTemplates": "行业标签模板",
     "dashboardHome": "后台总览",
     "notifications": "通知中心",

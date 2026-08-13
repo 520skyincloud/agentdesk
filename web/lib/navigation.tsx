@@ -513,6 +513,13 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
         allowedRoles: platformAdminRoles,
       },
       {
+        titleKey: "nav.replyActions",
+        url: "/dashboard/reply-actions",
+        icon: <MessageSquareCodeIcon />,
+        requiredPermission: "aiConfig.view",
+        allowedRoles: platformAdminRoles,
+      },
+      {
         titleKey: "nav.industryTagTemplates",
         url: "/dashboard/industry-tag-templates",
         icon: <TagsIcon />,

@@ -130,6 +130,8 @@ var Models = []any{
 	&AIUsageGatewayCall{},
 	&ReplyIntentProfile{},
 	&ReplyIntentConfig{},
+	&ReplyActionDefinition{},
+	&KnowledgeActionBinding{},
 	&ConversationInterrupt{},
 	&SystemConfig{},
 }

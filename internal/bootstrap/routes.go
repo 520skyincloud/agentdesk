@@ -481,6 +481,17 @@ func registerDashboardReplyIntentConfigRoutes(group *gin.RouterGroup) {
 	group.POST("/delete", dashboard.ReplyIntentConfigPostDelete)
 }
 
+func registerDashboardReplyActionRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.ReplyActionAnyList)
+	group.POST("/update_status", dashboard.ReplyActionPostUpdateStatus)
+}
+
+func registerDashboardKnowledgeActionBindingRoutes(group *gin.RouterGroup) {
+	group.Any("/list", dashboard.KnowledgeActionBindingAnyList)
+	group.POST("/set", dashboard.KnowledgeActionBindingPostSet)
+	group.POST("/delete", dashboard.KnowledgeActionBindingPostDelete)
+}
+
 func registerDashboardIndustryTagDefinitionRoutes(group *gin.RouterGroup) {
 	group.Any("/list", dashboard.IndustryTagDefinitionAnyList)
 	group.GET("/list_all", dashboard.IndustryTagDefinitionGetListAll)

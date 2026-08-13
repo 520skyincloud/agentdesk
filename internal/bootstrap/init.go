@@ -5,6 +5,7 @@ import (
 	"agent-desk/internal/oidcclient"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/logx"
+	"agent-desk/internal/services"
 	"agent-desk/internal/services/cronx"
 	"agent-desk/internal/wxwork"
 	"context"
@@ -37,6 +38,10 @@ func Init(configPath string) error {
 	}
 	if err := InitMigrations(); err != nil {
 		slog.Error("init migrations failed", "error", err)
+		return err
+	}
+	if err := services.ReplyActionCatalogService.Seed(); err != nil {
+		slog.Error("seed reply action catalog failed", "error", err)
 		return err
 	}
 	if backgroundWorkersEnabled(cfg) {

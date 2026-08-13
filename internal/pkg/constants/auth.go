@@ -234,6 +234,10 @@ var (
 	// MCP 调试相关权限
 	PermissionMCPView = Permission{Name: "查看MCP调试信息", Code: "mcp.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/list_tools", SortNo: 1710}
 	PermissionMCPCall = Permission{Name: "调用MCP工具", Code: "mcp.call", Type: "api", Scope: PermissionScopePlatform, GroupName: "mcp", Method: "POST", APIPath: "/api/dashboard/mcp/call_tool", SortNo: 1720}
+
+	// 回复动作目录相关权限（平台级）
+	PermissionReplyActionView   = Permission{Name: "查看回复动作目录", Code: "replyAction.view", Type: "api", Scope: PermissionScopePlatform, GroupName: "replyAction", Method: "ANY", APIPath: "/api/dashboard/reply-action/list", SortNo: 1730}
+	PermissionReplyActionUpdate = Permission{Name: "管理回复动作目录", Code: "replyAction.update", Type: "api", Scope: PermissionScopePlatform, GroupName: "replyAction", Method: "POST", APIPath: "/api/dashboard/reply-action/update_status", SortNo: 1740}
 )
 
 // Permissions 内置权限列表
@@ -358,6 +362,8 @@ var Permissions = []Permission{
 	PermissionSkillDefinitionDelete,
 	PermissionMCPView,
 	PermissionMCPCall,
+	PermissionReplyActionView,
+	PermissionReplyActionUpdate,
 }
 
 // PermissionMap 权限映射，用于通过 Code 查找 Permission
@@ -424,6 +430,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionKnowledgeBaseView, PermissionKnowledgeBaseCreate, PermissionKnowledgeBaseUpdate, PermissionKnowledgeBaseDelete,
 		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
 		PermissionMCPView, PermissionMCPCall,
+		PermissionReplyActionView, PermissionReplyActionUpdate,
 	},
 	RoleCodeTenantAdmin: {
 		PermissionUserView, PermissionUserCreate, PermissionUserUpdate, PermissionUserDelete, PermissionUserAssignRole,

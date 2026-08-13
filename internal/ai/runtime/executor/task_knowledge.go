@@ -30,6 +30,7 @@ type runtimeTaskKnowledgeOutcome struct {
 	NoHitTaskKeys    []string
 	KnowledgeTaskIDs []string
 	KnowledgeByTask  map[string]AnswerabilityOutcome
+	TaskActionCodes  map[string]string
 	Evidence         *contracts.EvidenceBundleV1
 }
 
@@ -60,6 +61,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	outcome := runtimeTaskKnowledgeOutcome{
 		ActiveTaskPlans: append([]callbacks.ReplyTaskPlanTraceData(nil), plans...),
 		KnowledgeByTask: make(map[string]AnswerabilityOutcome),
+		TaskActionCodes: make(map[string]string),
 	}
 	knowledgePlans := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
 	for _, plan := range plans {
@@ -153,12 +155,13 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	}
 	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
 	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
-	outcome.Evidence, outcome.KnowledgeByTask = buildRuntimeEvidenceBundle(req, items, outcome.Prefetched)
+	outcome.Evidence, outcome.KnowledgeByTask, outcome.TaskActionCodes = buildRuntimeEvidenceBundle(req, items, outcome.Prefetched)
 	return outcome, nil
 }
 
-func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, merged *retrievers.KnowledgeRetrieveResult) (*contracts.EvidenceBundleV1, map[string]AnswerabilityOutcome) {
+func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, merged *retrievers.KnowledgeRetrieveResult) (*contracts.EvidenceBundleV1, map[string]AnswerabilityOutcome, map[string]string) {
 	byTask := make(map[string]AnswerabilityOutcome, len(items))
+	taskActionCodes := make(map[string]string, len(items))
 	bundle := &contracts.EvidenceBundleV1{
 		SchemaVersion:    contracts.EvidenceBundleV1SchemaVersion,
 		ScopeFingerprint: runtimeEvidenceScopeFingerprint(req, items),
@@ -202,6 +205,16 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				bundle.Items[entry.index].TaskKeys = appendUniqueStrings(bundle.Items[entry.index].TaskKeys, item.TaskKey)
 			}
 			outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, bundle.Items[entry.index].Ref)
+			if outcome.Status == "has_context" && strings.TrimSpace(taskActionCodes[item.TaskKey]) == "" {
+				if actionCode := services.KnowledgeActionBindingService.ActionCodeForHit(
+					req.Conversation.TenantID, req.Conversation.StoreID, result.KnowledgeBaseID, result.SourceRecordID,
+				); actionCode != "" {
+					taskActionCodes[item.TaskKey] = actionCode
+				} else if knowledgeContentRequiresHandoff(result.Content) {
+					// 知识正文明确要求转人工：即使未显式绑定，也按结构化转人工处理并二次确认。
+					taskActionCodes[item.TaskKey] = "human_handoff"
+				}
+			}
 		}
 		if outcome.Status == "has_context" && len(outcome.SupportingRefs) == 0 {
 			outcome.Status = "unanswerable"
@@ -250,7 +263,7 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	case len(byTask) > 0:
 		bundle.RetrievalStatus = "no_context"
 	}
-	return bundle, byTask
+	return bundle, byTask, taskActionCodes
 }
 
 func runtimeEvidenceScopeFingerprint(req RunInput, items []runtimeTaskKnowledgeItem) string {
@@ -458,4 +471,17 @@ func mergeRuntimeTaskKnowledge(items []runtimeTaskKnowledgeItem, knowledgeBaseID
 		return nil
 	}
 	return merged
+}
+
+// knowledgeContentRequiresHandoff 判断知识正文是否明确要求转人工。
+// 这是绑定表之外的确定性兜底，避免“知识答案写了转人工、模型却口头复述”的情况。
+func knowledgeContentRequiresHandoff(content string) bool {
+	compact := compactRuntimeProtocolText(content)
+	if compact == "" {
+		return false
+	}
+	return containsAny(compact, []string{
+		"转人工", "人工客服", "联系人工", "需人工", "需要人工", "人工介入",
+		"人工处理", "人工接待", "请转人工", "转接人工", "转给人工",
+	})
 }

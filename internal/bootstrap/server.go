@@ -248,6 +248,8 @@ func addRouter(app *gin.Engine) {
 	registerDashboardStoreModelCredentialRoutes(dashboardGroup.Group("/store-model-credential"))
 	registerDashboardBillingQueryRoutes(dashboardGroup.Group("/billing-query"))
 	registerDashboardReplyIntentConfigRoutes(dashboardGroup.Group("/reply-intent-config"))
+	registerDashboardReplyActionRoutes(dashboardGroup.Group("/reply-action"))
+	registerDashboardKnowledgeActionBindingRoutes(dashboardGroup.Group("/knowledge-action-binding"))
 	registerDashboardIndustryTagDefinitionRoutes(dashboardGroup.Group("/industry-tag-definition"))
 	registerDashboardAssetRoutes(dashboardGroup.Group("/asset"))
 	registerDashboardStorageSettingRoutes(dashboardGroup.Group("/storage-setting"))
