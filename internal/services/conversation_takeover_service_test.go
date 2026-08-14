@@ -2,6 +2,7 @@ package services
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,19 +122,44 @@ func TestConversationTakeoverReviewApprovalAndResumeAIAuthorization(t *testing.T
 		t.Fatalf("approve takeover request: %v", err)
 	}
 	stored := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
-	if stored == nil || stored.Status != enums.ConversationTakeoverRequestStatusApproved || stored.ActiveKey != nil {
+	if stored == nil || stored.Status != enums.ConversationTakeoverRequestStatusAuthorized || stored.ActiveKey == nil {
 		t.Fatalf("unexpected approved request: %+v", stored)
 	}
 	current := ConversationService.GetByTenantID(conversation.ID, fixture.tenantID)
-	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != requester.UserID {
-		t.Fatalf("unexpected approved conversation: %+v", current)
+	if current == nil || current.Status != enums.IMConversationStatusPending || current.CurrentAssigneeID != 0 {
+		t.Fatalf("approval must not assign conversation before requester confirmation: %+v", current)
 	}
 	route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, fixture.tenantID)
+	if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending {
+		t.Fatalf("approval must not change route before requester confirmation: %+v", route)
+	}
+	if err := ConversationTakeoverService.EnsureCanReply(conversation.ID, requester); err == nil {
+		t.Fatal("authorized requester must not reply before confirming takeover")
+	}
+	state := ConversationTakeoverService.ResolveState(current, requester)
+	if !state.AuthorizedForMe || !state.CanActivateTakeover || state.CanReply {
+		t.Fatalf("unexpected authorized requester state: %+v", state)
+	}
+	if err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "申请人确认接管",
+	}, requester); err != nil {
+		t.Fatalf("activate authorized takeover: %v", err)
+	}
+	stored = repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
+	if stored == nil || stored.Status != enums.ConversationTakeoverRequestStatusApproved || stored.ActiveKey != nil {
+		t.Fatalf("unexpected activated request: %+v", stored)
+	}
+	current = ConversationService.GetByTenantID(conversation.ID, fixture.tenantID)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != requester.UserID {
+		t.Fatalf("unexpected activated conversation: %+v", current)
+	}
+	route = ConversationRouteService.GetByConversationIDInTenant(conversation.ID, fixture.tenantID)
 	if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskServing {
-		t.Fatalf("unexpected approved route: %+v", route)
+		t.Fatalf("unexpected activated route: %+v", route)
 	}
 	if err := ConversationTakeoverService.EnsureCanReply(conversation.ID, requester); err != nil {
-		t.Fatalf("approved requester cannot reply: %v", err)
+		t.Fatalf("activated requester cannot reply: %v", err)
 	}
 	if err := ConversationTakeoverService.ResumeAI(conversation.ID, fixture.leaderA); err == nil || !strings.Contains(err.Error(), "当前接待人") {
 		t.Fatalf("non-assignee unexpectedly resumed AI: %v", err)
@@ -146,6 +172,217 @@ func TestConversationTakeoverReviewApprovalAndResumeAIAuthorization(t *testing.T
 	if current == nil || current.Status != enums.IMConversationStatusAIServing || current.CurrentAssigneeID != 0 || route == nil || route.RouteStatus != enums.ConversationRouteStatusAIServing {
 		t.Fatalf("unexpected AI resumed state: conversation=%+v route=%+v", current, route)
 	}
+}
+
+func TestConversationTakeoverAuthorizedActivationIsRequesterOnlyAndIdempotent(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+
+	if err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("approve takeover request: %v", err)
+	}
+
+	if err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "非申请人尝试确认",
+	}, fixture.leaderA); err == nil || !strings.Contains(err.Error(), "申请人") {
+		t.Fatalf("non-requester unexpectedly activated takeover: %v", err)
+	}
+
+	if err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "申请人确认接管",
+	}, requester); err != nil {
+		t.Fatalf("activate authorized takeover: %v", err)
+	}
+	if err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "重复确认应保持幂等",
+	}, requester); err != nil {
+		t.Fatalf("repeat activation should be idempotent: %v", err)
+	}
+
+	var activeAssignments int64
+	if err := fixture.db.Model(&models.ConversationAssignment{}).
+		Where("tenant_id = ? AND conversation_id = ? AND status = ?", fixture.tenantID, conversation.ID, enums.IMAssignmentStatusActive).
+		Count(&activeAssignments).Error; err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignments = %d, want 1", activeAssignments)
+	}
+}
+
+func TestConversationTakeoverAuthorizedActivationConcurrentSingleAssignment(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+	if err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("approve takeover request: %v", err)
+	}
+
+	// Two browser tabs can confirm the same authorization at the same time.
+	// Each call gets its own principal copy to model independent requests.
+	operators := []*dto.AuthPrincipal{}
+	for range 2 {
+		copy := *requester
+		operators = append(operators, &copy)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(operators))
+	var wg sync.WaitGroup
+	for _, operator := range operators {
+		operator := operator
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+				RequestID: item.ID,
+				Reason:    "两个页面同时确认",
+			}, operator)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+			continue
+		}
+		// SQLite may report a transient writer lock for the losing transaction;
+		// the durable assertions below are the correctness contract.
+		if !strings.Contains(err.Error(), "locked") && !strings.Contains(err.Error(), "已处理") && !strings.Contains(err.Error(), "已失效") {
+			t.Fatalf("unexpected concurrent activation error: %v", err)
+		}
+	}
+	if successes == 0 {
+		t.Fatal("concurrent activation did not produce a successful assignment")
+	}
+
+	var activeAssignments int64
+	if err := fixture.db.Model(&models.ConversationAssignment{}).
+		Where("tenant_id = ? AND conversation_id = ? AND status = ?", fixture.tenantID, conversation.ID, enums.IMAssignmentStatusActive).
+		Count(&activeAssignments).Error; err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignments = %d, want 1", activeAssignments)
+	}
+	var totalAssignments int64
+	if err := fixture.db.Model(&models.ConversationAssignment{}).
+		Where("tenant_id = ? AND conversation_id = ?", fixture.tenantID, conversation.ID).
+		Count(&totalAssignments).Error; err != nil {
+		t.Fatalf("count all assignments: %v", err)
+	}
+	if totalAssignments != 1 {
+		t.Fatalf("total assignments = %d, want 1", totalAssignments)
+	}
+}
+
+func TestConversationTakeoverAuthorizedActivationCancelsAfterSessionChange(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+	if err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("approve takeover request: %v", err)
+	}
+	if err := fixture.db.Model(&models.ConversationRouteState{}).
+		Where("tenant_id = ? AND conversation_id = ?", fixture.tenantID, conversation.ID).
+		Update("session_no", 2).Error; err != nil {
+		t.Fatalf("advance conversation session: %v", err)
+	}
+
+	err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "确认已失效申请",
+	}, requester)
+	if err == nil || !strings.Contains(err.Error(), "服务段已变化") {
+		t.Fatalf("session change did not invalidate authorized takeover: %v", err)
+	}
+	cancelled := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
+	if cancelled == nil || cancelled.Status != enums.ConversationTakeoverRequestStatusCancelled || cancelled.TerminalReason != "session_changed" || cancelled.ActiveKey != nil {
+		t.Fatalf("unexpected cancelled authorized request: %+v", cancelled)
+	}
+}
+
+func TestConversationTakeoverAuthorizedActivationCancelsWhenConversationIsClosed(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+	if err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("approve takeover request: %v", err)
+	}
+
+	if err := fixture.db.Model(&models.Conversation{}).
+		Where("tenant_id = ? AND id = ?", fixture.tenantID, conversation.ID).
+		Update("status", enums.IMConversationStatusClosed).Error; err != nil {
+		t.Fatalf("close conversation: %v", err)
+	}
+	if err := fixture.db.Model(&models.ConversationRouteState{}).
+		Where("tenant_id = ? AND conversation_id = ?", fixture.tenantID, conversation.ID).
+		Update("route_status", enums.ConversationRouteStatusClosed).Error; err != nil {
+		t.Fatalf("close conversation route: %v", err)
+	}
+
+	err := ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: item.ID,
+		Reason:    "关闭后确认接管",
+	}, requester)
+	if err == nil || !strings.Contains(err.Error(), "会话已关闭") {
+		t.Fatalf("closed conversation activation was not cancelled: %v", err)
+	}
+	cancelled := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
+	if cancelled == nil || cancelled.Status != enums.ConversationTakeoverRequestStatusCancelled || cancelled.TerminalReason != "conversation_closed" || cancelled.ActiveKey != nil {
+		t.Fatalf("unexpected closed conversation activation request: %+v", cancelled)
+	}
+}
+
+func TestConversationAuthorizedTakeoverRequestCancelsWhenConversationIsAssigned(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+
+	if err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("approve takeover request: %v", err)
+	}
+	authorized := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
+	if authorized == nil || authorized.Status != enums.ConversationTakeoverRequestStatusAuthorized {
+		t.Fatalf("takeover request was not authorized: %+v", authorized)
+	}
+
+	if err := ConversationService.AssignConversation(request.AssignConversationRequest{
+		ConversationID: conversation.ID,
+		AssigneeID:     fixture.breakAgent.ID,
+		Reason:         "主管先行派单",
+	}, fixture.adminA); err != nil {
+		t.Fatalf("assign conversation after authorization: %v", err)
+	}
+	fixture.assertTakeoverCancelled(t, item.ID)
 }
 
 func TestConversationTakeoverReviewRejectsCrossTeamAndCanReject(t *testing.T) {
@@ -202,6 +439,36 @@ func TestConversationTakeoverRequestCancelsWhenSessionChanges(t *testing.T) {
 	cancelled := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
 	if cancelled == nil || cancelled.Status != enums.ConversationTakeoverRequestStatusCancelled || cancelled.TerminalReason != "session_changed" || cancelled.ActiveKey != nil {
 		t.Fatalf("unexpected cancelled request: %+v", cancelled)
+	}
+}
+
+func TestConversationTakeoverReviewCancelsWhenConversationIsClosed(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+	requester := fixture.agentPrincipal(fixture.offlineAgent)
+	item := fixture.requestTakeover(t, conversation.ID, requester)
+
+	if err := fixture.db.Model(&models.Conversation{}).
+		Where("tenant_id = ? AND id = ?", fixture.tenantID, conversation.ID).
+		Update("status", enums.IMConversationStatusClosed).Error; err != nil {
+		t.Fatalf("close conversation: %v", err)
+	}
+	if err := fixture.db.Model(&models.ConversationRouteState{}).
+		Where("tenant_id = ? AND conversation_id = ?", fixture.tenantID, conversation.ID).
+		Update("route_status", enums.ConversationRouteStatusClosed).Error; err != nil {
+		t.Fatalf("close conversation route: %v", err)
+	}
+
+	err := ConversationTakeoverService.Review(request.ReviewConversationTakeoverRequest{
+		RequestID: item.ID,
+		Approved:  true,
+	}, fixture.leaderA)
+	if err == nil || !strings.Contains(err.Error(), "会话已关闭") {
+		t.Fatalf("closed conversation review was not cancelled: %v", err)
+	}
+	cancelled := repositories.ConversationTakeoverRequestRepository.FindOne(fixture.db, sqls.NewCnd().Eq("id", item.ID))
+	if cancelled == nil || cancelled.Status != enums.ConversationTakeoverRequestStatusCancelled || cancelled.TerminalReason != "conversation_closed" || cancelled.ActiveKey != nil {
+		t.Fatalf("unexpected closed conversation request: %+v", cancelled)
 	}
 }
 

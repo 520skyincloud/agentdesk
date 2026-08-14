@@ -44,11 +44,27 @@ func (r *conversationTakeoverRequestRepository) GetForUpdateInTenant(db *gorm.DB
 }
 
 func (r *conversationTakeoverRequestRepository) FindPendingByConversationSession(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) (*models.ConversationTakeoverRequest, error) {
+	return r.findByConversationSessionStatuses(db, tenantID, conversationID, sessionNo, []enums.ConversationTakeoverRequestStatus{
+		enums.ConversationTakeoverRequestStatusPending,
+	}, forUpdate)
+}
+
+func (r *conversationTakeoverRequestRepository) FindActiveByConversationSession(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) (*models.ConversationTakeoverRequest, error) {
+	return r.findByConversationSessionStatuses(db, tenantID, conversationID, sessionNo, []enums.ConversationTakeoverRequestStatus{
+		enums.ConversationTakeoverRequestStatusPending,
+		enums.ConversationTakeoverRequestStatusAuthorized,
+	}, forUpdate)
+}
+
+func (r *conversationTakeoverRequestRepository) findByConversationSessionStatuses(db *gorm.DB, tenantID, conversationID int64, sessionNo int, statuses []enums.ConversationTakeoverRequestStatus, forUpdate bool) (*models.ConversationTakeoverRequest, error) {
 	if db == nil || tenantID <= 0 || conversationID <= 0 || sessionNo <= 0 {
 		return nil, nil
 	}
+	if len(statuses) == 0 {
+		return nil, nil
+	}
 	item := &models.ConversationTakeoverRequest{}
-	query := db.Where("tenant_id = ? AND conversation_id = ? AND session_no = ? AND status = ?", tenantID, conversationID, sessionNo, enums.ConversationTakeoverRequestStatusPending)
+	query := db.Where("tenant_id = ? AND conversation_id = ? AND session_no = ? AND status IN ?", tenantID, conversationID, sessionNo, statuses)
 	if forUpdate {
 		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -82,6 +98,9 @@ func (r *conversationTakeoverRequestRepository) CancelPendingByConversationSessi
 	updates["terminal_reason"] = reason
 	updates["active_key"] = nil
 	return db.Model(&models.ConversationTakeoverRequest{}).
-		Where("tenant_id = ? AND conversation_id = ? AND session_no = ? AND status = ?", tenantID, conversationID, sessionNo, enums.ConversationTakeoverRequestStatusPending).
+		Where("tenant_id = ? AND conversation_id = ? AND session_no = ? AND status IN ?", tenantID, conversationID, sessionNo, []enums.ConversationTakeoverRequestStatus{
+			enums.ConversationTakeoverRequestStatusPending,
+			enums.ConversationTakeoverRequestStatusAuthorized,
+		}).
 		Updates(updates).Error
 }

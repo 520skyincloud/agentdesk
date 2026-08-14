@@ -2,11 +2,7 @@
 
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  BotIcon,
-  Clock3Icon,
   LoaderCircleIcon,
-  UserRoundCheckIcon,
-  UserRoundPlusIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -26,11 +22,6 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -38,10 +29,10 @@ import {
 import { useIsLgUp } from "@/hooks/use-lg-media";
 import {
   directTakeoverAgentConversation,
+  activateAgentConversationTakeover,
   requestAgentConversationTakeover,
   resumeAgentConversationAI,
   reviewAgentConversationTakeover,
-  type AgentConversationTakeoverState,
   type AgentMessage,
   type ConversationHistorySegment,
 } from "@/lib/api/agent";
@@ -60,7 +51,7 @@ import { formatDateTime, repairMojibakeText } from "@/lib/utils";
 import { AgentMessageEditor } from "./agent-message-editor";
 
 const EMPTY_AGENT_MESSAGES: AgentMessage[] = [];
-type TakeoverDialogMode = "request" | "direct" | "review" | "resume";
+type TakeoverDialogMode = "request" | "direct" | "activate" | "review" | "resume";
 
 type ChatPanelProps = {
   wxWorkInstance?: WxWorkProtocolInstance | null;
@@ -129,6 +120,15 @@ export function ChatPanel({
     !isClosedConversation &&
     !replyRouteUnavailable &&
     takeoverState?.canReply === true;
+  // Older conversation detail responses may omit routeStatus. Preserve the
+  // historical default of AI service in that case; the backend remains the
+  // final permission gate for every send/takeover action.
+  const aiReplyServing = Boolean(
+    conversation &&
+      (!conversation.routeStatus ||
+        conversation.routeStatus === "AI_SERVING" ||
+        conversation.routeStatus === "AI_FALLBACK"),
+  );
   const showBottomEditor = !isClosedConversation;
   const currentUserId = readSession()?.user?.id ?? 0;
   const protocolRoomID = getProtocolRoomID(conversation?.wxWorkExternalUserId);
@@ -153,6 +153,10 @@ export function ChatPanel({
         ? "当前企微账号或会话路由不可用，暂时无法发送。已输入内容会保留。"
         : takeoverState?.pendingForMe
           ? "接管申请正在等待客服组长审批，审批通过后即可回复。"
+          : takeoverState?.authorizedForMe
+            ? "接管申请已通过，请再次点击右下角 AI 回复开关确认接管。"
+            : takeoverState?.authorizedForAnother
+              ? "该会话已有申请通过，等待申请人确认接管。"
           : takeoverState?.pendingForAnother
             ? takeoverState.canReview
               ? `${takeoverState.requesterName || "客服"}正在申请接管，请先审核。`
@@ -374,6 +378,14 @@ export function ChatPanel({
       toast.info("接管申请正在等待客服组长审批。");
       return false;
     }
+    if (takeoverState.authorizedForMe) {
+      setTakeoverDialogMode("activate");
+      return false;
+    }
+    if (takeoverState.authorizedForAnother) {
+      toast.info("该会话已有申请通过，等待申请人确认接管。");
+      return false;
+    }
     if (takeoverState.pendingForAnother) {
       if (takeoverState.canReview) {
         setTakeoverDialogMode("review");
@@ -427,6 +439,16 @@ export function ChatPanel({
           await directTakeoverAgentConversation(conversation.id, "客服组长主动接管会话");
           toast.success("会话已接管，可以继续回复。");
           break;
+        case "activate":
+          if (!takeoverState?.requestId) {
+            throw new Error("接管申请已变化，请刷新后重试。");
+          }
+          await activateAgentConversationTakeover({
+            requestId: takeoverState.requestId,
+            reason: "确认接管会话",
+          });
+          toast.success("会话已接管，可以继续回复。");
+          break;
         case "review":
           if (!takeoverState?.requestId) {
             throw new Error("接管申请已变化，请刷新后重试。");
@@ -450,6 +472,52 @@ export function ChatPanel({
     } finally {
       setTakeoverSubmitting(false);
     }
+  };
+
+  const handleToggleAIReply = async () => {
+    if (
+      !conversation ||
+      !takeoverState ||
+      takeoverSubmitting ||
+      sending ||
+      uploadingAsset ||
+      invitingGroupMembers
+    ) {
+      return;
+    }
+    if (takeoverState.canResumeAi) {
+      setTakeoverDialogMode("resume");
+      return;
+    }
+    if (takeoverState.authorizedForMe) {
+      setTakeoverDialogMode("activate");
+      return;
+    }
+    if (takeoverState.pendingForMe) {
+      toast.info("接管申请正在等待客服组长审批。");
+      return;
+    }
+    if (takeoverState.pendingForAnother) {
+      if (takeoverState.canReview) {
+        setTakeoverDialogMode("review");
+      } else {
+        toast.info("该会话已有其他客服申请接管，请等待处理。");
+      }
+      return;
+    }
+    if (takeoverState.authorizedForAnother) {
+      toast.info("该会话已有申请通过，等待申请人确认接管。");
+      return;
+    }
+    if (takeoverState.canDirectTakeover) {
+      setTakeoverDialogMode("direct");
+      return;
+    }
+    if (takeoverState.canRequest) {
+      setTakeoverDialogMode("request");
+      return;
+    }
+    toast.info("当前账号暂无切换该会话的权限。");
   };
 
   const reloadConversationData = async (conversationId: number) => {
@@ -608,15 +676,20 @@ export function ChatPanel({
             <AgentMessageEditor
               disabled={!conversation || sending}
               uploadingAsset={uploadingAsset}
+              aiReplyEnabled={aiReplyServing}
               canAgentReply={canAgentReply}
               replyPermissionHint={replyPermissionHint}
-              agentAction={(
-                <ConversationTakeoverAction
-                  state={takeoverState}
-                  submitting={takeoverSubmitting}
-                  onOpen={setTakeoverDialogMode}
-                />
-              )}
+              aiReplyToggleDisabled={
+                !conversation ||
+                isClosedConversation ||
+                replyRouteUnavailable ||
+                !takeoverState ||
+                takeoverSubmitting ||
+                sending ||
+                uploadingAsset ||
+                invitingGroupMembers
+              }
+              onToggleAIReply={handleToggleAIReply}
               onSend={handleSend}
               onUploadImage={async (file) => {
                 if (!ensureReplyPermission()) {
@@ -790,81 +863,14 @@ export function ChatPanel({
   );
 }
 
-function ConversationTakeoverAction({
-  state,
-  submitting,
-  onOpen,
-}: {
-  state?: AgentConversationTakeoverState;
-  submitting: boolean;
-  onOpen: (mode: TakeoverDialogMode) => void;
-}) {
-  if (!state) {
-    return null;
-  }
-
-  let mode: TakeoverDialogMode | null = null;
-  let label = "";
-  let icon = <UserRoundPlusIcon className="size-4" />;
-  let disabled = submitting;
-
-  if (state.canResumeAi) {
-    mode = "resume";
-    label = "交还 AI 接管";
-    icon = <BotIcon className="size-4" />;
-  } else if (state.pendingForMe) {
-    label = "接管申请待审批";
-    icon = <Clock3Icon className="size-4" />;
-    disabled = true;
-  } else if (state.pendingForAnother && state.canReview) {
-    mode = "review";
-    label = "审核接管申请";
-    icon = <UserRoundCheckIcon className="size-4" />;
-  } else if (state.canDirectTakeover) {
-    mode = "direct";
-    label = "直接接管会话";
-    icon = <UserRoundCheckIcon className="size-4" />;
-  } else if (state.canRequest) {
-    mode = "request";
-    label = "申请接管会话";
-  }
-
-  if (!label) {
-    return null;
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={(
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="size-9 rounded-md"
-            disabled={disabled}
-            onClick={() => {
-              if (mode) {
-                onOpen(mode);
-              }
-            }}
-            aria-label={label}
-          />
-        )}
-      >
-        {submitting ? <LoaderCircleIcon className="size-4 animate-spin" /> : icon}
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
 function takeoverDialogTitle(mode: TakeoverDialogMode | null) {
   switch (mode) {
     case "request":
       return "申请接管会话";
     case "direct":
       return "确认直接接管";
+    case "activate":
+      return "确认接管会话";
     case "review":
       return "审核接管申请";
     case "resume":
@@ -880,8 +886,10 @@ function takeoverDialogDescription(mode: TakeoverDialogMode | null, requesterNam
       return "主动接管会话需要向客服组长申请。审批通过前不能发送消息，当前草稿会保留。";
     case "direct":
       return "确认后该会话会立即分配给你，你可以在当前回复框继续处理。";
+    case "activate":
+      return "客服组长已批准本次申请。确认后会话才会正式分配给你。";
     case "review":
-      return `${requesterName || "客服"}申请主动接管该会话。通过后会话将分配给申请人。`;
+      return `${requesterName || "客服"}申请主动接管该会话。通过后只授予申请人接管资格，申请人还需再次点击 AI 回复开关确认接管。`;
     case "resume":
       return "确认后当前人工接待结束，后续客户消息将重新由 AI 处理。";
     default:
@@ -894,6 +902,8 @@ function takeoverDialogConfirmLabel(mode: TakeoverDialogMode | null) {
     case "request":
       return "提交申请";
     case "direct":
+      return "确认接管";
+    case "activate":
       return "确认接管";
     case "review":
       return "通过";

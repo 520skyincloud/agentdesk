@@ -1232,6 +1232,16 @@ func approveHumanDispatchTakeover(t *testing.T, db *gorm.DB, conversationID int6
 	}, reviewer); err != nil {
 		t.Fatalf("approve conversation takeover: %v", err)
 	}
+	authorized := repositories.ConversationTakeoverRequestRepository.FindOne(db, sqls.NewCnd().Eq("id", pending.ID))
+	if authorized == nil || authorized.Status != enums.ConversationTakeoverRequestStatusAuthorized {
+		t.Fatalf("conversation takeover approval did not create authorization: %+v", authorized)
+	}
+	if err := services.ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: pending.ID,
+		Reason:    "申请人确认接管",
+	}, requester); err != nil {
+		t.Fatalf("activate approved conversation takeover: %v", err)
+	}
 }
 
 func createHumanDispatchConversation(t *testing.T, db *gorm.DB, aiAgentID int64, status enums.IMConversationStatus) models.Conversation {

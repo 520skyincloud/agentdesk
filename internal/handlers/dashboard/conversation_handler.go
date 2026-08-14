@@ -350,6 +350,27 @@ func ConversationPostTakeover_review(ctx *gin.Context) {
 	httpx.WriteJSON(ctx, nil)
 }
 
+func ConversationPostTakeover_activate(ctx *gin.Context) {
+	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationSend)
+	if err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	req := request.ActivateConversationTakeoverRequest{}
+	if err := params.ReadJSON(ctx, &req); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	if err := services.ConversationTakeoverService.ActivateAuthorizedTakeover(request.RequestConversationTakeoverRequest{
+		RequestID: req.RequestID,
+		Reason:    req.Reason,
+	}, operator); err != nil {
+		httpx.WriteJSON(ctx, err)
+		return
+	}
+	httpx.WriteJSON(ctx, nil)
+}
+
 func ConversationPostResume_ai(ctx *gin.Context) {
 	operator, err := services.AuthService.RequirePermission(ctx, constants.PermissionConversationView)
 	if err != nil {

@@ -20,16 +20,17 @@
 
 ### 后端
 
-- 新增内部 `ConversationTakeoverRequest`，状态为 `pending/approved/rejected/cancelled`。nullable `ActiveKey` 保证同一 Tenant、Conversation、Session 只有一个待审批申请。
+- 新增内部 `ConversationTakeoverRequest`，状态为 `pending/authorized/approved/rejected/cancelled`。`authorized` 表示主管已批准、等待申请人二次确认；nullable `ActiveKey` 保证同一 Tenant、Conversation、Session 只有一个活动申请。
 - 新增 dashboard 动作接口：
   - `POST /api/dashboard/conversation/takeover/request`
   - `POST /api/dashboard/conversation/takeover/direct`
   - `POST /api/dashboard/conversation/takeover/review`
+  - `POST /api/dashboard/conversation/takeover/activate`
   - `POST /api/dashboard/conversation/resume_ai`
-- 会话详情兼容新增 `takeoverState`，包含可回复、可申请、可直接接管、可审核、可交还 AI 以及当前申请展示状态；不修改 WebSocket 公共 payload。
+- 会话详情兼容新增 `takeoverState`，包含可回复、可申请、可直接接管、可审核、可二次确认激活、可交还 AI 以及当前申请展示状态；不修改 WebSocket 公共 payload。
 - 普通申请只写申请和审计事件，不改变指派关系。重复申请幂等；已分配会话拒绝申请并要求走转派。
 - 同时持有客服和门店员工角色时，申请资格按任一合法范围通过处理；客服档案不匹配不会覆盖有效的门店员工绑定资格。
-- 审批通过时重新校验申请人的账号、角色、权限、客服组/门店员工绑定和会话范围，再原子写入 Assignment、Conversation、RouteState、申请终态和事件。
+- 审批通过时重新校验申请人的账号、角色、权限、客服组/门店员工绑定和会话范围，先写入 `authorized`；申请人二次确认后才原子写入 Assignment、Conversation、RouteState、申请终态和事件。
 - 直接接管只允许 `HQ_AGENTDESK_PENDING + NeedHumanFollowUp + 未分配`，组长只能处理本人负责组，管理员只能处理当前租户。
 - 当前接待人才能交还 AI；其他组长或管理员不能结束他人的人工服务。`HumanOnly` 或员工号 AI 回复关闭时拒绝交还。
 - 网页发送在事务外初检、事务内锁定 Conversation/Route 后复检；企微员工号真实回复使用 `externalAgentReply`，不受网页审批门禁影响。
@@ -41,7 +42,7 @@
 ### 前端
 
 - 会话底部不再用大按钮替换回复框；所有未关闭会话都显示原编辑器。
-- 右下角小按钮根据服务端 `takeoverState` 展示申请接管、直接接管、审核申请或交还 AI，并使用 Dialog 二次确认。
+- 会话页恢复原回复框右下角 `AI回复` Switch 的位置和交互外观；Switch 只表示当前会话模式，不再调用员工号级全局 AI 开关。普通客服第一次点击提交申请，审批后申请人再次点击并确认才正式接管；组长、租户管理员、平台管理员和超级管理员在有效租户及权限范围内可直接确认接管。
 - 点击发送时若尚无资格，会打开相应确认或提示，不会发送消息；文本发送失败或未获权限时不清空草稿。
 - 交还 AI 只作用于当前会话，不再通过会话页切换员工号全局 AI 开关。
 - 实时会话状态变化会刷新当前会话详情，使审批、派单和交还 AI 后的按钮状态及时更新。
@@ -50,7 +51,7 @@
 
 - 申请人：`conversation.view` + `conversation.send`，且为负责组客服或当前门店员工绑定用户。
 - 混合角色账号：客服或门店员工任一身份满足当前会话范围即可申请，不按角色顺序短路拒绝。
-- 审核/直接接管：`conversation.view` + `conversation.assign`；直接接管额外要求 `conversation.send`。
+- 审核/直接接管：`conversation.view` + `conversation.assign`；直接接管额外要求 `conversation.send`。普通申请审批通过后进入内部 `authorized` 状态，仍不改变会话指派；申请人再次确认后才变为 `approved`。
 - 网页回复：`conversation.send` + 当前指派人 + `HQ_AGENTDESK_SERVING`。
 - 会话页群邀请：网页回复全部条件 + 当前会话绑定的企微实例和群 ID；无会话上下文的实例级调用额外要求 `channel.update`。
 - 交还 AI：当前指派人 + `conversation.view` + `conversation.send`。
@@ -155,8 +156,8 @@ git diff --check
 
 - AutoMigrate 已真实创建 `t_conversation_takeover_request`，共 23 列；唯一索引
   `uk_conversation_takeover_active` 已存在。
-- 三条接管接口均已注册，不再是 404：
-  `/takeover/request`、`/takeover/direct`、`/takeover/review`。
+- 四条接管接口均已注册，不再是 404：
+  `/takeover/request`、`/takeover/direct`、`/takeover/review`、`/takeover/activate`。
 - 本机 `/api/auth/options`、`/dashboard/login/`、`/dashboard/conversations/`
   均返回 HTTP 200。
 - 公网 `http://36.138.68.47:2303`、`https://36.138.68.47:2303` 和

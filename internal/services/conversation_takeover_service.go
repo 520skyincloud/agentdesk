@@ -60,19 +60,19 @@ func (s *conversationTakeoverService) ResolveState(conversation *models.Conversa
 	state.TeamID = scope.team.ID
 	state.TeamName = utils.RepairMojibakeText(scope.team.Name)
 	state.CanDirectTakeover = !state.IsCurrentAssignee &&
-		conversation.Status == enums.IMConversationStatusPending &&
 		conversation.CurrentAssigneeID == 0 &&
-		route.RouteStatus == enums.ConversationRouteStatusHQAgentDeskPending &&
-		route.NeedHumanFollowUp &&
+		s.directTakeoverRouteAllowed(conversation, route) &&
 		s.hasPermissions(operator,
 			constants.PermissionConversationView.Code,
 			constants.PermissionConversationSend.Code,
 			constants.PermissionConversationAssign.Code,
 		) && s.canManageTeamDB(operator, scope.team)
-	pending := s.findPendingDB(db, conversation.TenantID, conversation.ID, route.SessionNo, false)
-	if pending != nil {
-		s.applyRequestState(&state, pending, operator)
-		state.CanReview = s.hasPermission(operator, constants.PermissionConversationAssign.Code) && s.canManageTeamDB(operator, scope.team)
+	activeRequest := s.findActiveDB(db, conversation.TenantID, conversation.ID, route.SessionNo, false)
+	if activeRequest != nil {
+		s.applyRequestState(&state, activeRequest, operator)
+		state.CanDirectTakeover = false
+		state.CanReview = activeRequest.Status == enums.ConversationTakeoverRequestStatusPending &&
+			s.hasPermission(operator, constants.PermissionConversationAssign.Code) && s.canManageTeamDB(operator, scope.team)
 		return state
 	}
 	state.CanRequest = !state.IsCurrentAssignee &&
@@ -128,7 +128,7 @@ func (s *conversationTakeoverService) Request(req request.RequestConversationTak
 		if err := s.canRequestTakeoverDB(ctx.Tx, scope, operator); err != nil {
 			return err
 		}
-		if pending := s.findPendingDB(ctx.Tx, tenantID, conversation.ID, route.SessionNo, true); pending != nil {
+		if pending := s.findActiveDB(ctx.Tx, tenantID, conversation.ID, route.SessionNo, true); pending != nil {
 			if pending.RequesterUserID == operator.UserID {
 				result = pending
 				return nil
@@ -180,7 +180,7 @@ func (s *conversationTakeoverService) Request(req request.RequestConversationTak
 		}
 		route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), req.ConversationID, tenantID)
 		if route != nil {
-			if pending := s.findPendingDB(sqls.DB(), tenantID, req.ConversationID, route.SessionNo, false); pending != nil {
+			if pending := s.findActiveDB(sqls.DB(), tenantID, req.ConversationID, route.SessionNo, false); pending != nil {
 				if pending.RequesterUserID == operator.UserID {
 					return pending, nil
 				}
@@ -236,7 +236,7 @@ func (s *conversationTakeoverService) DirectTakeover(req request.RequestConversa
 		if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID != 0 {
 			return errorsx.InvalidParam("只有尚未分配的待人工会话允许直接接管，已分配会话请使用转派")
 		}
-		if route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending || !route.NeedHumanFollowUp {
+		if !s.directTakeoverRouteAllowed(conversation, route) {
 			return errorsx.InvalidParam("只有等待总部人工处理的会话允许直接接管")
 		}
 		scope, err := s.resolveScopeDB(ctx.Tx, conversation, route)
@@ -252,6 +252,115 @@ func (s *conversationTakeoverService) DirectTakeover(req request.RequestConversa
 		return err
 	}
 	s.publishTakeover(req.ConversationID, assignedEvent)
+	return nil
+}
+
+// ActivateAuthorizedTakeover consumes the requester's approved authorization
+// only after the requester confirms the same conversation switch a second time.
+func (s *conversationTakeoverService) ActivateAuthorizedTakeover(req request.RequestConversationTakeoverRequest, operator *dto.AuthPrincipal) error {
+	if operator == nil || operator.UserID <= 0 {
+		return errorsx.Unauthorized("未登录或登录已过期")
+	}
+	tenantID := AgentTeamScopeService.ActiveTenantID(operator)
+	if tenantID <= 0 {
+		return errorsx.Forbidden("请先进入需要管理会话的接入公司")
+	}
+	if !s.hasPermissions(operator,
+		constants.PermissionConversationView.Code,
+		constants.PermissionConversationSend.Code,
+	) {
+		return errorsx.Forbidden("缺少会话查看或回复权限")
+	}
+	if req.RequestID <= 0 {
+		return errorsx.InvalidParam("接管申请不能为空")
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "确认接管会话"
+	}
+	if len([]rune(reason)) > 500 {
+		return errorsx.InvalidParam("接管原因不能超过500个字符")
+	}
+
+	itemPreview, err := repositories.ConversationTakeoverRequestRepository.GetInTenant(sqls.DB(), req.RequestID, tenantID)
+	if err != nil {
+		return err
+	}
+	if itemPreview == nil {
+		return errorsx.InvalidParam("接管申请不存在")
+	}
+	conversationID := itemPreview.ConversationID
+	var assignedEvent events.ConversationAssignedEvent
+	var staleErr error
+	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		conversation, route, err := s.lockConversationRouteDB(ctx.Tx, itemPreview.ConversationID, tenantID)
+		if err != nil {
+			return err
+		}
+		item, err := repositories.ConversationTakeoverRequestRepository.GetForUpdateInTenant(ctx.Tx, req.RequestID, tenantID)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			return errorsx.InvalidParam("接管申请不存在")
+		}
+		if item.RequesterUserID != operator.UserID {
+			return errorsx.Forbidden("只有申请人可以确认接管")
+		}
+		if item.Status == enums.ConversationTakeoverRequestStatusApproved && conversation.CurrentAssigneeID == operator.UserID {
+			return nil
+		}
+		if item.Status != enums.ConversationTakeoverRequestStatusAuthorized {
+			return errorsx.InvalidParam("接管申请尚未获批或已失效")
+		}
+		if conversation.Status == enums.IMConversationStatusClosed || route.RouteStatus == enums.ConversationRouteStatusClosed {
+			if err := s.cancelStaleRequestDB(ctx.Tx, item, operator, "conversation_closed"); err != nil {
+				return err
+			}
+			staleErr = errorsx.InvalidParam("会话已关闭，接管申请已自动取消")
+			return nil
+		}
+		if route.SessionNo != item.SessionNo {
+			if err := s.cancelStaleRequestDB(ctx.Tx, item, operator, "session_changed"); err != nil {
+				return err
+			}
+			staleErr = errorsx.InvalidParam("会话服务段已变化，接管申请已自动取消")
+			return nil
+		}
+		if conversation.CurrentAssigneeID != item.SourceAssigneeID || route.RouteStatus != item.SourceRouteStatus || conversation.CurrentAssigneeID != 0 {
+			if err := s.cancelStaleRequestDB(ctx.Tx, item, operator, "conversation_changed"); err != nil {
+				return err
+			}
+			staleErr = errorsx.InvalidParam("会话接待状态已变化，接管申请已自动取消")
+			return nil
+		}
+		scope, err := s.resolveScopeDB(ctx.Tx, conversation, route)
+		if err != nil {
+			return err
+		}
+		if err := s.canRequestTakeoverDB(ctx.Tx, scope, operator); err != nil {
+			return err
+		}
+		if err := s.takeoverDB(ctx, scope, operator.UserID, operator, reason, item.ID, &assignedEvent); err != nil {
+			return err
+		}
+		now := time.Now()
+		return repositories.ConversationTakeoverRequestRepository.UpdatesInTenant(ctx.Tx, item.ID, tenantID, map[string]any{
+			"status":           enums.ConversationTakeoverRequestStatusApproved,
+			"terminal_reason":  "approved",
+			"active_key":       nil,
+			"updated_at":       now,
+			"update_user_id":   operator.UserID,
+			"update_user_name": s.operatorName(operator),
+		})
+	})
+	if err != nil {
+		return err
+	}
+	if staleErr != nil {
+		return staleErr
+	}
+	s.publishTakeover(conversationID, assignedEvent)
 	return nil
 }
 
@@ -299,6 +408,13 @@ func (s *conversationTakeoverService) Review(req request.ReviewConversationTakeo
 		if item.ConversationID != conversation.ID {
 			return errorsx.InvalidParam("接管申请关联会话已变化")
 		}
+		if conversation.Status == enums.IMConversationStatusClosed || route.RouteStatus == enums.ConversationRouteStatusClosed {
+			if err := s.cancelStaleRequestDB(ctx.Tx, item, operator, "conversation_closed"); err != nil {
+				return err
+			}
+			staleErr = errorsx.InvalidParam("会话已关闭，接管申请已自动取消")
+			return nil
+		}
 		if route.SessionNo != item.SessionNo {
 			if err := s.cancelStaleRequestDB(ctx.Tx, item, operator, "session_changed"); err != nil {
 				return err
@@ -341,11 +457,13 @@ func (s *conversationTakeoverService) Review(req request.ReviewConversationTakeo
 			if err := s.canRequestTakeoverDB(ctx.Tx, scope, requester); err != nil {
 				return err
 			}
-			if err := s.takeoverDB(ctx, scope, item.RequesterUserID, operator, item.Reason, item.ID, &assignedEvent); err != nil {
-				return err
-			}
-			status = enums.ConversationTakeoverRequestStatusApproved
-			terminalReason = "approved"
+			status = enums.ConversationTakeoverRequestStatusAuthorized
+			terminalReason = "authorized"
+		}
+		activeKey := item.ActiveKey
+		if req.Approved && activeKey == nil {
+			key := fmt.Sprintf("%d:%d:%d", item.TenantID, item.ConversationID, item.SessionNo)
+			activeKey = &key
 		}
 		if err := repositories.ConversationTakeoverRequestRepository.UpdatesInTenant(ctx.Tx, item.ID, tenantID, map[string]any{
 			"status":           status,
@@ -354,14 +472,27 @@ func (s *conversationTakeoverService) Review(req request.ReviewConversationTakeo
 			"review_remark":    remark,
 			"reviewed_at":      now,
 			"terminal_reason":  terminalReason,
-			"active_key":       nil,
+			"active_key": func() any {
+				if req.Approved {
+					return activeKey
+				}
+				return nil
+			}(),
 			"updated_at":       now,
 			"update_user_id":   operator.UserID,
 			"update_user_name": operator.Username,
 		}); err != nil {
 			return err
 		}
-		if !req.Approved {
+		if req.Approved {
+			if err := ConversationEventLogService.CreateEvent(ctx, conversation.ID, enums.IMEventTypeAssign, enums.IMSenderTypeAgent, operator.UserID, "主动接管申请已通过，等待申请人确认", ConversationService.buildEventPayload(map[string]any{
+				"requestId": item.ID,
+				"sessionNo": item.SessionNo,
+				"status":    string(status),
+			})); err != nil {
+				return err
+			}
+		} else {
 			if err := ConversationEventLogService.CreateEvent(ctx, conversation.ID, enums.IMEventTypeAssign, enums.IMSenderTypeAgent, operator.UserID, "主动接管申请已拒绝", ConversationService.buildEventPayload(map[string]any{
 				"requestId": item.ID,
 				"remark":    remark,
@@ -376,7 +507,10 @@ func (s *conversationTakeoverService) Review(req request.ReviewConversationTakeo
 		copy.ReviewRemark = remark
 		copy.ReviewedAt = &now
 		copy.TerminalReason = terminalReason
-		copy.ActiveKey = nil
+		copy.ActiveKey = activeKey
+		if !req.Approved {
+			copy.ActiveKey = nil
+		}
 		reviewed = &copy
 		return nil
 	})
@@ -739,6 +873,13 @@ func (s *conversationTakeoverService) hasTakeoverTable(db *gorm.DB) bool {
 	return db != nil && db.Migrator().HasTable(&models.ConversationTakeoverRequest{})
 }
 
+func (s *conversationTakeoverService) directTakeoverRouteAllowed(conversation *models.Conversation, route *models.ConversationRouteState) bool {
+	return conversation != nil && route != nil &&
+		conversation.Status == enums.IMConversationStatusPending &&
+		route.RouteStatus == enums.ConversationRouteStatusHQAgentDeskPending &&
+		route.NeedHumanFollowUp
+}
+
 func (s *conversationTakeoverService) findPendingDB(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) *models.ConversationTakeoverRequest {
 	if !s.hasTakeoverTable(db) {
 		return nil
@@ -746,6 +887,18 @@ func (s *conversationTakeoverService) findPendingDB(db *gorm.DB, tenantID, conve
 	item, err := repositories.ConversationTakeoverRequestRepository.FindPendingByConversationSession(db, tenantID, conversationID, sessionNo, forUpdate)
 	if err != nil {
 		slog.Warn("load pending conversation takeover request failed", "conversation_id", conversationID, "error", err)
+		return nil
+	}
+	return item
+}
+
+func (s *conversationTakeoverService) findActiveDB(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) *models.ConversationTakeoverRequest {
+	if !s.hasTakeoverTable(db) {
+		return nil
+	}
+	item, err := repositories.ConversationTakeoverRequestRepository.FindActiveByConversationSession(db, tenantID, conversationID, sessionNo, forUpdate)
+	if err != nil {
+		slog.Warn("load active conversation takeover request failed", "conversation_id", conversationID, "error", err)
 		return nil
 	}
 	return item
@@ -765,6 +918,9 @@ func (s *conversationTakeoverService) applyRequestState(state *response.Conversa
 	state.ReviewedAt = utils.FormatTimePtr(item.ReviewedAt)
 	state.PendingForMe = item.Status == enums.ConversationTakeoverRequestStatusPending && item.RequesterUserID == operator.UserID
 	state.PendingForAnother = item.Status == enums.ConversationTakeoverRequestStatusPending && item.RequesterUserID != operator.UserID
+	state.AuthorizedForMe = item.Status == enums.ConversationTakeoverRequestStatusAuthorized && item.RequesterUserID == operator.UserID
+	state.AuthorizedForAnother = item.Status == enums.ConversationTakeoverRequestStatusAuthorized && item.RequesterUserID != operator.UserID
+	state.CanActivateTakeover = state.AuthorizedForMe
 	state.CanRequest = false
 }
 
@@ -887,7 +1043,7 @@ func (s *conversationTakeoverService) notifyRequester(item *models.ConversationT
 	content := fmt.Sprintf("会话 #%d 的接管申请未通过", item.ConversationID)
 	if approved {
 		title = "会话接管申请已通过"
-		content = fmt.Sprintf("你现在可以回复会话 #%d", item.ConversationID)
+		content = fmt.Sprintf("会话 #%d 的接管申请已通过，请再次点击 AI 回复开关确认接管", item.ConversationID)
 	}
 	if remark := strings.TrimSpace(item.ReviewRemark); remark != "" {
 		content += "\n备注: " + remark
@@ -908,7 +1064,11 @@ func (s *conversationTakeoverService) notifyRequester(item *models.ConversationT
 func (s *conversationTakeoverService) publishTakeover(conversationID int64, assignedEvent events.ConversationAssignedEvent) {
 	if conversationID > 0 {
 		if conversation := ConversationService.Get(conversationID); conversation != nil {
-			WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationAssigned)
+			eventType := enums.IMRealtimeEventConversationUpdated
+			if assignedEvent.ConversationID > 0 {
+				eventType = enums.IMRealtimeEventConversationAssigned
+			}
+			WsService.PublishConversationChanged(conversation, eventType)
 		}
 	}
 	if assignedEvent.ConversationID > 0 {

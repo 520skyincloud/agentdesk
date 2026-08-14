@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ChangeEvent } from "react"
 import Placeholder from "@tiptap/extension-placeholder"
 import { EditorContent, useEditor } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import {
   Command,
   CommandEmpty,
@@ -64,14 +65,16 @@ type SharedMessageEditorProps = {
     items: MessageEditorQuickReply[]
     onOpenChange: (open: boolean) => void
   }
+  aiReplyEnabled?: boolean
   canAgentReply?: boolean
   disabledReason?: string
   replyPermissionHint?: string
-  agentAction?: ReactNode
+  aiReplyToggleDisabled?: boolean
   onSend: (html: string) => Promise<boolean | void>
   onUploadImage: (file: File) => Promise<UploadedMessageEditorImage | null>
   onSendImage?: (file: File) => Promise<void>
   onSendAttachment: (file: File) => Promise<void>
+  onToggleAIReply?: (enabled: boolean) => Promise<void> | void
   onOpenGroupInvite?: () => void
 }
 
@@ -81,14 +84,16 @@ export function SharedMessageEditor({
   uploadingAsset = false,
   manageLocalUploading = false,
   quickReplies,
+  aiReplyEnabled = true,
   canAgentReply = !disabled,
   disabledReason,
   replyPermissionHint,
-  agentAction,
+  aiReplyToggleDisabled = false,
   onSend,
   onUploadImage,
   onSendImage,
   onSendAttachment,
+  onToggleAIReply,
   onOpenGroupInvite,
 }: SharedMessageEditorProps) {
   const t = useI18n()
@@ -509,7 +514,16 @@ export function SharedMessageEditor({
             <p className="hidden text-[10px] text-muted-foreground sm:block">
               {t("conversation.enterToSend")}
             </p>
-          ) : agentAction}
+          ) : (
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <span>{t("conversation.aiReply")}</span>
+              <Switch
+                checked={aiReplyEnabled}
+                disabled={aiReplyToggleDisabled}
+                onCheckedChange={(checked) => void onToggleAIReply?.(checked)}
+              />
+            </label>
+          )}
           {isCustomer ? (
             <Button
               type="button"

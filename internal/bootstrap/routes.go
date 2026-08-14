@@ -308,6 +308,7 @@ func registerDashboardConversationRoutes(group *gin.RouterGroup) {
 	group.POST("/takeover/request", dashboard.ConversationPostTakeover_request)
 	group.POST("/takeover/direct", dashboard.ConversationPostTakeover_direct)
 	group.POST("/takeover/review", dashboard.ConversationPostTakeover_review)
+	group.POST("/takeover/activate", dashboard.ConversationPostTakeover_activate)
 	group.POST("/resume_ai", dashboard.ConversationPostResume_ai)
 	group.POST("/transfer", dashboard.ConversationPostTransfer)
 	group.POST("/upload_attachment", dashboard.ConversationPostUpload_attachment)
