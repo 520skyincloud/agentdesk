@@ -431,7 +431,10 @@ func resolveRuntimeCompilerInstance(req RunInput, resolved *services.ModelCallCo
 	if instance == nil || instance.StoreID != resolved.StoreID || instance.StoreStaffBindingID != resolved.StoreStaffBindingID {
 		return nil, fmt.Errorf("runtime protocol instance is outside the resolved model scope")
 	}
-	return instance, nil
+	// 关键：文本生成路径也必须 hydrate，把 Store 表里的权威事实（地址/电话/导航名/定位）
+	// 补到 instance 上，与发定位卡片的路径保持一致。否则 Generate 阶段门店地址为空，
+	// 模型会从最近上下文（如客户图片 OCR 文本）里抓“看着像地址”的内容来补，导致编造。
+	return services.StoreService.HydrateRuntimeInstanceDB(sqls.DB(), instance)
 }
 
 func runtimeCompilerScope(req RunInput, resolved *services.ModelCallConfig, instance *models.WxWorkProtocolInstance) contextcompiler.RuntimeScope {
@@ -1096,6 +1099,16 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		if task.Intent == "" {
 			continue
 		}
+		// 「外卖地址/收货地址/酒店地址」这类要地址的诉求，本质是索要门店地址变量，
+		// 必须归 hotel_variable/location 走系统门店地址，而不是 hotel_info 走知识库自由发挥。
+		// 否则模型在门店地址缺失时会从客户图片 OCR 等错误来源抓料编造（如把外卖收货地址当酒店地址）。
+		if task.Intent == "hotel_info" && isAddressRequestSubIntent(task.SubIntent) {
+			task.Intent = "hotel_variable"
+			task.SubIntent = "location"
+			task.NeedsKnowledge = false
+			task.NeedsResource = true
+			task.ResourceAction = "provide_location"
+		}
 		if task.Intent == "hotel_info" {
 			task.NeedsKnowledge = true
 		}
@@ -1109,6 +1122,17 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		ret = append(ret, task)
 	}
 	return ret
+}
+
+// isAddressRequestSubIntent 判断子意图是否属于「索要门店地址」这一类。
+// 这些子意图都应走 hotel_variable/location，而不是 hotel_info 走知识库自由发挥。
+func isAddressRequestSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "address_for_delivery", "delivery_address", "store_location", "location", "address", "navigation":
+		return true
+	default:
+		return false
+	}
 }
 
 func intentHasHotelVariableTask(intent callbacks.IntentTraceData) bool {
