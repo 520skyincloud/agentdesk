@@ -37,12 +37,14 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	if !runtimeV2ScopeEnabled(req) {
 		return legacyRuntimeFeatureModes()
 	}
+	// V2 已是默认主链：未显式设置环境变量时，全部落到 v2/authoritative。
+	// legacyRuntimeFeatureModes() 仅在 runtimeV2ScopeEnabled 白名单排除时作为回退手段保留。
 	return runtimeFeatureModes{
-		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerLegacy, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
-		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV1, runtimeIntentContractV1, runtimeIntentContractV2),
-		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractLegacy, runtimeReplyContractLegacy, runtimeReplyContractV2),
-		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorLegacy, runtimeValidatorLegacy, runtimeValidatorV2),
-		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerShadow, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
+		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerV2, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
+		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2),
+		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2),
+		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2),
+		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
 	}
 }
 

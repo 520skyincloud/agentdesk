@@ -1704,6 +1704,9 @@ func TestResolveRuntimeIntentDetectModelCallRejectsMissingStoreAssignment(t *tes
 }
 
 func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
+	// 本测试 mock 的是 legacy chat.completion 协议，显式固定 intent contract=v1，
+	// 避免 V2 成为默认后误走 responses 路径（该路径需要已发布意图配置）。
+	t.Setenv("AI_RUNTIME_INTENT_CONTRACT", "v1")
 	const generateOnlyPersona = "PERSONA_MUST_NOT_ENTER_INTENT_DETECT"
 	for _, scenario := range []struct {
 		name         string

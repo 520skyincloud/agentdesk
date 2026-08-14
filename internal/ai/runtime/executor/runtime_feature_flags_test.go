@@ -6,13 +6,21 @@ import (
 	"agent-desk/internal/models"
 )
 
-func TestResolveRuntimeFeatureModesDefaultsToLegacy(t *testing.T) {
+func TestResolveRuntimeFeatureModesDefaultsToV2(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{TenantID: 1, StoreID: 2, StoreStaffBindingID: 3}}
 	modes := resolveRuntimeFeatureModes(req)
-	if modes.ContextCompiler != runtimeContextCompilerLegacy || modes.IntentContract != runtimeIntentContractV1 ||
-		modes.ReplyContract != runtimeReplyContractLegacy || modes.Validator != runtimeValidatorLegacy ||
-		modes.ActionLedger != runtimeActionLedgerShadow {
+	if modes.ContextCompiler != runtimeContextCompilerV2 || modes.IntentContract != runtimeIntentContractV2 ||
+		modes.ReplyContract != runtimeReplyContractV2 || modes.Validator != runtimeValidatorV2 ||
+		modes.ActionLedger != runtimeActionLedgerAuthoritative {
 		t.Fatalf("unexpected default modes: %+v", modes)
+	}
+}
+
+func TestResolveRuntimeFeatureModesScopeMismatchFallsBackToLegacy(t *testing.T) {
+	t.Setenv("AI_RUNTIME_V2_BINDING_IDS", "33")
+	modes := resolveRuntimeFeatureModes(RunInput{Conversation: models.Conversation{TenantID: 11, StoreID: 22, StoreStaffBindingID: 34}})
+	if modes != legacyRuntimeFeatureModes() {
+		t.Fatalf("scope mismatch must fall back to legacy: %+v", modes)
 	}
 }
 
