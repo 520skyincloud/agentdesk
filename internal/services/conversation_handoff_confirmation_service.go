@@ -173,6 +173,11 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 		return false, err
 	}
 	if decision == humanHandoffConfirmationCancel {
+		// 闭合链路：把触发本次确认的 handoff_pending 任务标记 skipped，
+		// 避免后续 job 为同一诉求反复触发转人工确认造成死循环。
+		if cancelErr := AIReplyTurnTaskService.CancelHandoffPendingBySourceMessageDB(sqls.DB(), conversation.TenantID, payload.OriginMessageID, time.Now()); cancelErr != nil {
+			slog.Warn("cancel handoff pending task failed", "conversation_id", conversation.ID, "origin_message_id", payload.OriginMessageID, "error", cancelErr)
+		}
 		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好，那先不转人工。我继续帮您看这个问题。", "", systemOperator(), message.RequestID)
 		return true, err
 	}

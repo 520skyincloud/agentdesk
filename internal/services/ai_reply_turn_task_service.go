@@ -703,6 +703,33 @@ func (s *aiReplyTurnTaskService) MarkTurnHandoffDB(db *gorm.DB, tenantID, turnID
 	})
 }
 
+// CancelHandoffPendingBySourceMessageDB 在客户取消转人工后，把该来源消息触发的
+// handoff_pending 任务标记为 skipped，闭合确认链路：否则任务仍挂在 handoff_pending，
+// 后续 job 会为同一个诉求反复触发转人工确认，造成死循环。
+func (s *aiReplyTurnTaskService) CancelHandoffPendingBySourceMessageDB(db *gorm.DB, tenantID, sourceMessageID int64, now time.Time) error {
+	if db == nil || tenantID <= 0 || sourceMessageID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+		return nil
+	}
+	msg := repositories.MessageRepository.GetInTenant(db, sourceMessageID, tenantID)
+	if msg == nil || msg.AIReplyTurnID <= 0 {
+		return nil
+	}
+	return db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND source_message_id = ? AND status = ?",
+			tenantID, msg.AIReplyTurnID, sourceMessageID, enums.AIReplyTurnTaskStatusHandoffPending).
+		Updates(map[string]any{
+			"stage":             enums.AIReplyTurnTaskStageComplete,
+			"status":            enums.AIReplyTurnTaskStatusSkipped,
+			"result_code":       "human_handoff_cancelled",
+			"claimed_by_job_id": 0,
+			"claimed_version":   0,
+			"completed_at":      now,
+			"next_retry_at":     nil,
+			"updated_at":        now,
+			"update_user_name":  "ai_reply_handoff_cancel",
+		}).Error
+}
+
 func (s *aiReplyTurnTaskService) MarkTaskKeysHandoffDB(db *gorm.DB, tenantID, turnID int64, taskKeys []string, resultCode string, now time.Time) error {
 	if db == nil || tenantID <= 0 || turnID <= 0 || len(taskKeys) == 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
 		return nil
