@@ -45,6 +45,7 @@ type TaskRuntimeView struct {
 type TaskEvidenceResultView struct {
 	Status             string
 	Fingerprint        string
+	EvidenceRefs       []string
 	AuthoritativeFacts []string
 	Answerability      string
 }
