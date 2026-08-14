@@ -50,6 +50,11 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 		return markRuntimeGenerationError(summary, collector, time.Now(), err)
 	}
 	startedAt := time.Now()
+
+	// 阶段一（取数）：若有可用工具，先用不带结构化输出的模型跑工具循环，
+	// 把工具调用与结果以 Tool 消息追加进上下文；无工具则跳过，保持单次 Generate。
+	messages = runRuntimeToolCollection(ctx, req, messages, summary, collector)
+
 	generate := func(input []*schema.Message) error {
 		summary.ReplyModelAttempted = true
 		if open, retryAt := channelbreaker.IsOpen("reply_generate", req.ModelConfig.ModelName, time.Now()); open {
@@ -90,6 +95,69 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 		return markRuntimeGenerationError(summary, collector, startedAt, err)
 	}
 	return completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, startedAt)
+}
+
+// runRuntimeToolCollection 是两阶段生成里的「取数」阶段。只在存在可用工具时执行，
+// 最多 runtimeToolLoopMaxRounds 轮；无工具或无工具调用时返回原 messages。
+func runRuntimeToolCollection(
+	ctx context.Context,
+	req RunInput,
+	messages []*schema.Message,
+	summary *RunResult,
+	collector *callbacks.RuntimeTraceCollector,
+) []*schema.Message {
+	tools := collectRuntimeBaseTools(ctx, req)
+	if len(tools) == 0 {
+		return messages
+	}
+	toolInfos := buildRuntimeToolInfos(ctx, tools)
+	if len(toolInfos) == 0 {
+		return messages
+	}
+
+	// 取数阶段不带结构化输出，模型自由在「调工具 / 输出取数意图」间切换。
+	toolConfig := req.ModelConfig
+	toolConfig.StructuredOutput = nil
+	chatModel, err := factory.NewChatModelFactory().Build(ctx, toolConfig)
+	if err != nil {
+		return messages
+	}
+	toolModel, err := chatModel.WithTools(toolInfos)
+	if err != nil {
+		return messages
+	}
+
+	nameToCode := runtimeToolNameToCode(req, toolInfos)
+	loopMessages := append([]*schema.Message(nil), messages...)
+	invoked := false
+	for round := 0; round < runtimeToolLoopMaxRounds; round++ {
+		if open, _ := channelbreaker.IsOpen("reply_generate", req.ModelConfig.ModelName, time.Now()); open {
+			break
+		}
+		response, generateErr := toolModel.Generate(ctx, loopMessages)
+		if generateErr != nil {
+			channelbreaker.RecordFailure("reply_generate", req.ModelConfig.ModelName, time.Now())
+			break
+		}
+		channelbreaker.RecordSuccess("reply_generate", req.ModelConfig.ModelName)
+		collectTokenUsage(response, summary, collector)
+		if response == nil || len(response.ToolCalls) == 0 {
+			break
+		}
+		invoked = true
+		loopMessages = append(loopMessages, response)
+		for _, toolCall := range response.ToolCalls {
+			if code := nameToCode[strings.TrimSpace(toolCall.Function.Name)]; code != "" {
+				summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, code)
+			}
+			result := executeRuntimeToolCall(ctx, tools, toolCall)
+			loopMessages = append(loopMessages, schema.ToolMessage(result, toolCall.ID, schema.WithToolName(toolCall.Function.Name)))
+		}
+	}
+	if invoked {
+		summary.ToolCallCount = len(summary.InvokedToolCodes)
+	}
+	return loopMessages
 }
 
 func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callbacks.RuntimeTraceCollector) error {
