@@ -182,6 +182,10 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 	usedSourceMessageIDs := make(map[int64]struct{}, len(sourceMessages))
 	plannedBySourceMessageID := make(map[int64]callbacks.ReplyTaskPlanTraceData, len(sourceMessages))
 	for index, plan := range plans {
+		// 纯标点/空白消息：归一化后无实质文本，不创建无意义任务，直接跳过。
+		if normalizeRuntimeTaskText(plan.Text) == "" {
+			continue
+		}
 		sourceMessageID := matchRuntimeTaskSourceMessage(plan, fallbackMessageID, sourceMessages, usedSourceMessageIDs)
 		if sourceMessageID <= 0 {
 			return nil, nil, fmt.Errorf("AI reply task source message unavailable")
@@ -251,19 +255,23 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 }
 
 func matchRuntimeTaskSourceMessage(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) int64 {
+	// 按文档绑定顺序，禁止字符串包含作为主匹配：
+	// 1. 严格文本哈希（归一化后完全相等，不是 contains）优先。
+	// 2. sequence 兜底：合法时对应当前 Turn 客户消息顺序。
+	// 3. 仍无法唯一匹配时不猜测，回退到 fallbackMessageID / 最后一条消息。
 	needle := normalizeRuntimeTaskText(plan.Text)
 	if needle != "" {
 		for _, message := range messages {
 			candidate := normalizeRuntimeTaskText(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			if _, alreadyUsed := used[message.ID]; !alreadyUsed && candidate != "" && (strings.Contains(candidate, needle) || strings.Contains(needle, candidate)) {
+			if _, alreadyUsed := used[message.ID]; !alreadyUsed && candidate != "" && candidate == needle {
 				return message.ID
 			}
 		}
-		for _, message := range messages {
-			candidate := normalizeRuntimeTaskText(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			if candidate != "" && (strings.Contains(candidate, needle) || strings.Contains(needle, candidate)) {
-				return message.ID
-			}
+	}
+	if plan.Sequence >= 1 && plan.Sequence <= len(messages) {
+		message := messages[plan.Sequence-1]
+		if _, alreadyUsed := used[message.ID]; !alreadyUsed {
+			return message.ID
 		}
 	}
 	for _, message := range messages {

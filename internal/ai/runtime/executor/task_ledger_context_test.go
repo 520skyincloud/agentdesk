@@ -76,3 +76,37 @@ func TestBuildRuntimeTaskInputsMapsSeparateMessagesAndLabelsExactDuplicate(t *te
 		t.Fatal("exact duplicate messages must share the deterministic question fingerprint")
 	}
 }
+
+func TestBuildRuntimeTaskInputsSkipsPunctuationOnlyPlan(t *testing.T) {
+	messages := []models.Message{
+		{ID: 21, MessageType: enums.IMMessageTypeText, Content: "怎么办理入住"},
+		{ID: 22, MessageType: enums.IMMessageTypeText, Content: "？？？"},
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", SubIntent: "checkin_process", Text: "怎么办理入住", Output: "knowledge_text_reply"},
+		{Intent: "interaction", SubIntent: "chat", Text: "？？？", Output: "text_reply"},
+	}
+	inputs, _, err := buildRuntimeTaskInputs(plans, 22, messages)
+	if err != nil {
+		t.Fatalf("build runtime task inputs: %v", err)
+	}
+	if len(inputs) != 1 {
+		t.Fatalf("punctuation-only plan must not create a task, got %d inputs: %#v", len(inputs), inputs)
+	}
+	if inputs[0].SourceMessageID != 21 {
+		t.Fatalf("expected source=21, got %d", inputs[0].SourceMessageID)
+	}
+}
+
+func TestMatchRuntimeTaskSourceMessagePrefersExactHash(t *testing.T) {
+	messages := []models.Message{
+		{ID: 31, MessageType: enums.IMMessageTypeText, Content: "停车场在哪里"},
+		{ID: 32, MessageType: enums.IMMessageTypeText, Content: "停车场在哪里入口怎么走"},
+	}
+	plan := callbacks.ReplyTaskPlanTraceData{Sequence: 2, Text: "停车场在哪里"}
+	// 严格相等优先：sequence=2 会指到 32，但文本哈希只等于 31，必须选 31 而非 contains 匹配。
+	got := matchRuntimeTaskSourceMessage(plan, 31, messages, map[int64]struct{}{})
+	if got != 31 {
+		t.Fatalf("expected exact-hash match to 31, got %d", got)
+	}
+}
