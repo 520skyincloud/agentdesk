@@ -2,9 +2,12 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -723,9 +726,15 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				return false
 			}
 		}
+		// 续批延迟由任务层状态驱动：任务都在退避等待时，等最早可执行时间，
+		// 不做 25ms 无进展空转（文档第 15 节：不允许无进展空转，续批由状态变化触发）。
+		nextRetryAt := now.Add(aiReplyJobContinuationDelay)
+		if taskRetryAt := AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID); taskRetryAt != nil && taskRetryAt.After(nextRetryAt) {
+			nextRetryAt = *taskRetryAt
+		}
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(
 			sqls.DB(), job.ID, job.TenantID, owner,
-			"turn_tasks_remaining", classifyTaskFailure(runErr), now.Add(aiReplyJobContinuationDelay), now, false,
+			"turn_tasks_remaining", classifyTaskFailure(runErr), nextRetryAt, now, false,
 		)
 		return true
 	}
@@ -904,13 +913,46 @@ func (s *aiReplyJobService) dispatchToExistingHumanPool(state *aiReplyJobExecuti
 	if !ok || aiAgent.TenantID != state.Conversation.TenantID {
 		return fmt.Errorf("human dispatch AI agent unavailable")
 	}
-	requestID := fmt.Sprintf("ai_reply_job_handoff_%d", job.ID)
+	requestID := s.stableHandoffRequestID(job)
 	// 技术失败兜底也必须先向客户二次确认，而不是直接转人工；
 	// 确认后才真正进入人工池，避免“模型一抖就直接转人工”。
 	_, err := ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
 		state.Conversation.ID, aiAgent, reason, requestID, state.Message.ID,
 	)
 	return err
+}
+
+// stableHandoffRequestID 生成文档第 10 节要求的稳定派单键：
+// ai_handoff_<tenantID>_<conversationID>_<turnID>_<failedTaskFingerprint>。
+// 同一 Turn 内失败任务集合不变时，重复派单命中 handoffAlreadyRecordedDB 幂等短路，
+// 不产生第二条派单；失败任务集合变化时才允许新派单。
+func (s *aiReplyJobService) stableHandoffRequestID(job *models.AIReplyJob) string {
+	if job == nil || job.TenantID <= 0 || job.ConversationID <= 0 {
+		if job != nil {
+			return fmt.Sprintf("ai_reply_job_handoff_%d", job.ID)
+		}
+		return "ai_reply_job_handoff_0"
+	}
+	fingerprint := "none"
+	if job.TurnID > 0 && AIReplyTurnTaskService.Enabled() {
+		if tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID); len(tasks) > 0 {
+			keys := make([]string, 0, len(tasks))
+			for _, task := range tasks {
+				if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || task.Status == enums.AIReplyTurnTaskStatusFailed {
+					keys = append(keys, task.TaskKey)
+				}
+			}
+			sort.Strings(keys)
+			if len(keys) > 0 {
+				sum := sha256.Sum256([]byte(strings.Join(keys, ",")))
+				fingerprint = hex.EncodeToString(sum[:8])
+			}
+		}
+	}
+	if fingerprint == "none" {
+		return fmt.Sprintf("ai_reply_job_handoff_%d", job.ID)
+	}
+	return fmt.Sprintf("ai_handoff_%d_%d_%d_%s", job.TenantID, job.ConversationID, job.TurnID, fingerprint)
 }
 
 func (s *aiReplyJobService) dispatchHuman(state *aiReplyJobExecutionState, job *models.AIReplyJob, reason string) error {

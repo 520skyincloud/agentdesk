@@ -604,3 +604,11 @@ func assertPartialKnowledgeTaskStates(t *testing.T, fixture *aiReplyTaskLedgerJo
 		t.Fatalf("failed task=%+v", stored[1])
 	}
 }
+
+func TestStableHandoffRequestIDFormat(t *testing.T) {
+	job := &models.AIReplyJob{ID: 1, TenantID: 2, ConversationID: 3, TurnID: 0}
+	got := AIReplyJobService.stableHandoffRequestID(job)
+	if got != "ai_reply_job_handoff_1" {
+		t.Fatalf("expected job-level fallback key, got %q", got)
+	}
+}
