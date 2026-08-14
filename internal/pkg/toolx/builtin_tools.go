@@ -62,7 +62,7 @@ var (
 		Description:   "根据用户描述中的城市、地点和日期查询天气。适合回答今天、明天、未来几天的天气、温度、降雨、风力等问题。",
 		SourceType:    enums.ToolSourceTypeBuiltin,
 		DirectAccess:  true,
-		RuntimeStatic: true,
+		RuntimeStatic: false, // 天气能力已下线（后续作为技能重接）；不再进入运行时静态工具清单，避免模型自主调用。
 		Appendix: strings.TrimSpace(`
 当用户询问天气、温度、下雨、冷不冷、热不热、适不适合出门等实时天气问题时，优先调用 get_weather 工具。
 1. 从用户描述中提取 location；缺城市时优先结合门店/对话上下文，否则追问城市。
