@@ -108,6 +108,13 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
 		return err
 	}
+	// 多模态契约 7/22.3：Analysis ready 与 Payload 兼容投影必须在同一事务完成，
+	// 提交成功后才发 WebSocket；Payload 降级为兼容投影，权威状态是 Analysis row。
+	if err := MessageAnalysisService.RecordMediaReady(message, text, s.analyzerIdentityFor(message)); err != nil {
+		// Analysis 落库失败不回滚客户可见的 Payload 理解结果（旧链路仍可工作），
+		// 但必须告警，不允许静默丢失权威状态。
+		slog.Warn("record message analysis ready failed", "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
+	}
 	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
 	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
 	if updated != nil && conversation != nil {
@@ -115,6 +122,20 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 	}
 	return nil
+}
+
+// analyzerIdentityFor 返回当前媒体分析器身份（写入 Analysis row 供审计与过期判断）。
+func (s *mediaUnderstandingService) analyzerIdentityFor(message *models.Message) MessageAnalyzerIdentity {
+	switch message.MessageType {
+	case enums.IMMessageTypeImage:
+		return MessageAnalyzerIdentity{Kind: "vision", Name: "media_understanding", Version: "v1"}
+	case enums.IMMessageTypeVoice:
+		return MessageAnalyzerIdentity{Kind: "asr", Name: "media_understanding", Version: "v1"}
+	case enums.IMMessageTypeAttachment:
+		return MessageAnalyzerIdentity{Kind: "file_parser", Name: "media_understanding", Version: "v1"}
+	default:
+		return MessageAnalyzerIdentity{Kind: "rule", Name: "media_understanding", Version: "v1"}
+	}
 }
 
 func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {

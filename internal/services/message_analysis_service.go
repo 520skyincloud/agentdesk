@@ -11,6 +11,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/repositories"
 
@@ -187,4 +188,47 @@ func (s *messageAnalysisService) ReadyForMessage(message *models.Message) (*cont
 
 func isRecordNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+// RecordMediaReady 是媒体理解成功后的权威状态写入（多模态契约 7）：
+// Ensure pending revision -> CompleteReady。Payload 已由媒体服务先行更新为兼容投影，
+// 本方法在同一事务内 CAS ready 并标旧 revision stale；失败由调用方告警，不回滚 Payload。
+func (s *messageAnalysisService) RecordMediaReady(message *models.Message, normalizedText string, analyzer MessageAnalyzerIdentity) error {
+	if message == nil || message.ID <= 0 || message.TenantID <= 0 {
+		return fmt.Errorf("message analysis scope is invalid")
+	}
+	if strings.TrimSpace(normalizedText) == "" {
+		return fmt.Errorf("normalized text is required for ready analysis")
+	}
+	item, err := s.EnsurePending(message, 1, analyzer)
+	if err != nil {
+		return err
+	}
+	if item == nil {
+		return fmt.Errorf("message analysis row unavailable")
+	}
+	if enums.NormalizeMessageAnalysisStatus(item.AnalysisStatus) == enums.MessageAnalysisStatusReady {
+		return nil
+	}
+	// 按 message_analysis.v1 合同写入：媒体理解产出 normalizedText 作为 result 主体；
+	// 使用权限由服务端投影（最小权限：只描述媒体/解析指代，禁止门店事实与动作）。
+	analysis := contracts.MessageAnalysisV1{
+		SchemaVersion: contracts.MessageAnalysisV1SchemaVersion,
+		MessageID:     message.ID, SourceRevision: item.SourceRevision,
+		ContentFingerprint: item.ContentFingerprint, Status: "ready",
+		Analyzer: contracts.MessageAnalysisAnalyzer{
+			Kind: strings.TrimSpace(analyzer.Kind), Name: strings.TrimSpace(analyzer.Name), Version: strings.TrimSpace(analyzer.Version),
+		},
+		Result: &contracts.MessageAnalysisResult{
+			Language:         "zh",
+			DialogueAct:      "other",
+			RelationToPrior:  "unknown",
+			NormalizedText:   limitText(normalizedText, 4000),
+			Entities:         []contracts.MessageAnalysisEntity{},
+			MentionedTagKeys: []string{},
+			RiskSignals:      []string{"none"},
+		},
+		ErrorCode: nil,
+	}
+	return s.CompleteReady(item.ID, item.TenantID, analysis)
 }

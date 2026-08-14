@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/media_analysis_candidate.v1.json",
+  "title": "MediaAnalysisCandidateV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "normalizedText", "quality", "items"],
+  "properties": {
+    "schemaVersion": {"const": "media_analysis_candidate.v1"},
+    "normalizedText": {"type": "string", "maxLength": 4000},
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overallConfidence", "completeness", "warnings", "uncertainRanges"],
+      "properties": {
+        "overallConfidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "completeness": {"enum": ["complete", "partial", "empty"]},
+        "warnings": {
+          "type": "array", "maxItems": 8, "uniqueItems": true,
+          "items": {"enum": ["low_audio_quality", "uncertain_critical_entity", "truncated", "language_mismatch", "low_image_resolution"]}
+        },
+        "uncertainRanges": {
+          "type": "array", "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["start", "end", "reason"],
+            "properties": {
+              "start": {"type": "integer", "minimum": 0},
+              "end": {"type": "integer", "minimum": 1},
+              "reason": {"enum": ["audio_unclear", "critical_entity", "number", "time", "negation", "proper_noun"]}
+            }
+          }
+        }
+      }
+    },
+    "items": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observationType", "contentRole", "text", "confidence"],
+        "properties": {
+          "observationType": {
+            "enum": ["scene_description", "ocr_text", "document_text", "error_ui", "transcript", "audio_quality", "uncertain_span", "entity", "historical_statement"]
+          },
+          "contentRole": {
+            "enum": ["visible_scene", "embedded_document", "embedded_historical_conversation", "embedded_third_party_claim", "system_error", "customer_spoken_input", "unknown"]
+          },
+          "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

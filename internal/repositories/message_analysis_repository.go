@@ -75,3 +75,99 @@ func (r *messageAnalysisRepository) MarkStaleByMessageInTenant(db *gorm.DB, tena
 		Where("tenant_id = ? AND message_id = ? AND content_fingerprint <> ? AND analysis_status IN ?", tenantID, messageID, currentFingerprint, []string{"pending", "ready", "failed"}).
 		Updates(map[string]any{"analysis_status": "stale", "updated_at": now, "update_user_name": "message_analysis"}).Error
 }
+
+// FindClaimable 取可领取的分析工作（pending 或到期可重试），按 due 复合索引扫描。
+func (r *messageAnalysisRepository) FindClaimable(db *gorm.DB, now time.Time, limit int) []models.MessageAnalysis {
+	if db == nil || limit <= 0 {
+		return nil
+	}
+	var list []models.MessageAnalysis
+	err := db.Where("analysis_status IN ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?) AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+		[]string{"pending", "failed_retryable"}, now, now).
+		Order("id ASC").Limit(limit).Find(&list).Error
+	if err != nil {
+		return nil
+	}
+	return list
+}
+
+// TryClaim 领取一条分析工作：置 processing + owner + lease。
+func (r *messageAnalysisRepository) TryClaim(db *gorm.DB, id, tenantID int64, owner string, leaseUntil time.Time) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
+		return false, nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where("id = ? AND tenant_id = ? AND analysis_status IN ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
+			id, tenantID, []string{"pending", "failed_retryable"}, leaseUntil).
+		Updates(map[string]any{
+			"analysis_status":  "processing",
+			"claimed_by":       owner,
+			"lease_expires_at": leaseUntil,
+			"attempt_count":    gorm.Expr("attempt_count + 1"),
+			"updated_at":       time.Now(),
+			"update_user_name": "message_analysis_claim",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// RenewLease 续约当前 owner 持有的分析工作。
+func (r *messageAnalysisRepository) RenewLease(db *gorm.DB, id, tenantID int64, owner string, leaseUntil time.Time) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
+		return false, nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where("id = ? AND tenant_id = ? AND claimed_by = ? AND analysis_status = ?", id, tenantID, owner, "processing").
+		Updates(map[string]any{"lease_expires_at": leaseUntil, "updated_at": time.Now()})
+	return result.RowsAffected == 1, result.Error
+}
+
+// CASCompleteReady 原子完成：processing -> ready + AnalysisJSON + analyzedAt。
+func (r *messageAnalysisRepository) CASCompleteReady(db *gorm.DB, id, tenantID int64, owner string, analysisJSON string, now time.Time) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
+		return false, nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where("id = ? AND tenant_id = ? AND claimed_by = ? AND analysis_status = ?", id, tenantID, owner, "processing").
+		Updates(map[string]any{
+			"analysis_status":  "ready",
+			"analysis_json":    analysisJSON,
+			"error_code":       "",
+			"last_error_class": "",
+			"claimed_by":       "",
+			"lease_expires_at": nil,
+			"next_retry_at":    nil,
+			"analyzed_at":      now,
+			"updated_at":       now,
+			"update_user_name": "message_analysis_ready",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// CASMarkFailed 原子失败：processing -> failed_retryable/failed_terminal + nextRetry。
+func (r *messageAnalysisRepository) CASMarkFailed(db *gorm.DB, id, tenantID int64, owner string, status string, errorClass string, errorCode string, nextRetryAt *time.Time, now time.Time) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
+		return false, nil
+	}
+	if status != "failed_retryable" && status != "failed_terminal" {
+		return false, nil
+	}
+	updates := map[string]any{
+		"analysis_status":  status,
+		"error_code":       errorCode,
+		"last_error_class": errorClass,
+		"claimed_by":       "",
+		"lease_expires_at": nil,
+		"analyzed_at":      now,
+		"updated_at":       now,
+		"update_user_name": "message_analysis_failed",
+	}
+	if nextRetryAt != nil {
+		updates["next_retry_at"] = *nextRetryAt
+	} else {
+		updates["next_retry_at"] = nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where("id = ? AND tenant_id = ? AND claimed_by = ? AND analysis_status = ?", id, tenantID, owner, "processing").
+		Updates(updates)
+	return result.RowsAffected == 1, result.Error
+}

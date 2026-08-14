@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/capability_decision.v1.json",
+  "title": "CapabilityDecisionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "taskKey",
+    "policyFingerprint",
+    "requestMode",
+    "capabilityCode",
+    "route",
+    "knowledgePolicy",
+    "execution",
+    "responseMode",
+    "reasonCode"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "capability_decision.v1"
+    },
+    "taskKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "policyFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "requestMode": {
+      "enum": [
+        "answer",
+        "request_action",
+        "clarify_previous",
+        "correct_previous",
+        "confirm_previous",
+        "cancel_previous",
+        "social"
+      ]
+    },
+    "capabilityCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "route": {
+      "enum": [
+        "knowledge_answer",
+        "direct_answer",
+        "tool_execute",
+        "clarify_required_fields",
+        "confirm_action",
+        "business_handoff",
+        "reject_unsupported",
+        "social_reply",
+        "no_reply"
+      ]
+    },
+    "knowledgePolicy": {
+      "enum": [
+        "required",
+        "optional",
+        "forbidden"
+      ]
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "toolCodes",
+        "confirmation",
+        "requiredFields",
+        "missingFields"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "tool",
+            "human"
+          ]
+        },
+        "toolCodes": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "confirmation": {
+          "enum": [
+            "none",
+            "required",
+            "confirmed"
+          ]
+        },
+        "requiredFields": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          }
+        },
+        "missingFields": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          }
+        }
+      }
+    },
+    "responseMode": {
+      "enum": [
+        "text",
+        "text_and_action",
+        "clarification",
+        "handoff_confirmation",
+        "skip"
+      ]
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    }
+  }
+}

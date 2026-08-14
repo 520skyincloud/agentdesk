@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/turn_input_envelope.v1.json",
+  "title": "TurnInputEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scope",
+    "utterances",
+    "observations",
+    "priorAssistant",
+    "unresolvedTasks"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "turn_input_envelope.v1"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantId",
+        "storeId",
+        "conversationId",
+        "sessionNo",
+        "turnId",
+        "turnVersion"
+      ],
+      "properties": {
+        "tenantId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "storeId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "conversationId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sessionNo": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "turnId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "turnVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "utterances": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "messageId",
+          "messageType",
+          "text",
+          "sentAt",
+          "analysisStatus",
+          "observationRefs"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^U[1-9][0-9]*$"
+          },
+          "messageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "messageType": {
+            "enum": [
+              "text",
+              "html",
+              "voice",
+              "image",
+              "video",
+              "gif",
+              "attachment",
+              "location",
+              "link",
+              "mini_program",
+              "quote"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "analysisStatus": {
+            "enum": [
+              "not_required",
+              "pending",
+              "processing",
+              "ready",
+              "failed_retryable",
+              "failed_terminal",
+              "stale"
+            ]
+          },
+          "observationRefs": {
+            "type": "array",
+            "maxItems": 20,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^O[1-9][0-9]*$"
+            }
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sourceMessageId",
+          "sourceRevision",
+          "status",
+          "sourceType",
+          "observationType",
+          "text",
+          "confidence",
+          "allowedUses",
+          "forbiddenUses"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^O[1-9][0-9]*$"
+          },
+          "sourceMessageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sourceRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "failed"
+            ]
+          },
+          "sourceType": {
+            "enum": [
+              "image",
+              "voice",
+              "video",
+              "gif",
+              "attachment",
+              "text",
+              "history"
+            ]
+          },
+          "observationType": {
+            "enum": [
+              "scene_description",
+              "ocr_text",
+              "document_text",
+              "error_ui",
+              "transcript",
+              "audio_quality",
+              "uncertain_span",
+              "entity",
+              "historical_statement"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "allowedUses": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "describe_media",
+                "resolve_reference",
+                "build_knowledge_query",
+                "quote_document"
+              ]
+            }
+          },
+          "forbiddenUses": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "store_identity",
+                "store_address",
+                "store_phone",
+                "store_policy",
+                "resource_eligibility",
+                "handoff_decision"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "priorAssistant": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "messageId",
+            "taskKeys",
+            "summary"
+          ],
+          "properties": {
+            "messageId": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "taskKeys": {
+              "type": "array",
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "summary": {
+              "type": "string",
+              "maxLength": 800
+            }
+          }
+        }
+      ]
+    },
+    "unresolvedTasks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskKey",
+          "intent",
+          "subIntent",
+          "status"
+        ],
+        "properties": {
+          "taskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "intent": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "subIntent": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 24
+          }
+        }
+      }
+    }
+  }
+}

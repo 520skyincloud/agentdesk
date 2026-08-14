@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/validation_issue.v1.json",
+  "title": "ValidationIssueV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "code",
+    "path",
+    "message",
+    "class"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "class": {
+      "enum": [
+        "protocol",
+        "content",
+        "scope",
+        "safety",
+        "commit"
+      ]
+    }
+  }
+}

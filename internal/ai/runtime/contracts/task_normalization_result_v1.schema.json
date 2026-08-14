@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/task_normalization_result.v1.json",
+  "title": "TaskNormalizationResultV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "acceptedUnits",
+    "suppressedUnits",
+    "groupHints",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "task_normalization_result.v1"
+    },
+    "acceptedUnits": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "questionKey",
+          "sequence",
+          "primarySourceMessageId",
+          "analysisRevision",
+          "sourceRefs",
+          "sourceSpans",
+          "sourceSetFingerprint",
+          "dependsOnObservationRefs",
+          "intent",
+          "subIntent",
+          "requestMode",
+          "text",
+          "canonicalQuestionHash",
+          "relation"
+        ],
+        "properties": {
+          "questionKey": {
+            "type": "string",
+            "pattern": "^Q[1-9][0-9]*$"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "primarySourceMessageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "analysisRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sourceRefs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^U[1-9][0-9]*$"
+            }
+          },
+          "sourceSpans": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sourceRef",
+                "start",
+                "end"
+              ],
+              "properties": {
+                "sourceRef": {
+                  "type": "string",
+                  "pattern": "^U[1-9][0-9]*$"
+                },
+                "start": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "dependsOnObservationRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^O[1-9][0-9]*$"
+            }
+          },
+          "sourceSetFingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "subIntent": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "requestMode": {
+            "enum": [
+              "answer",
+              "request_action",
+              "clarify_previous",
+              "correct_previous",
+              "confirm_previous",
+              "cancel_previous",
+              "social"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "canonicalQuestionHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "relation": {
+            "enum": [
+              "new_topic",
+              "follow_up",
+              "repeat",
+              "refinement",
+              "correction",
+              "confirmation",
+              "cancellation"
+            ]
+          }
+        }
+      }
+    },
+    "suppressedUnits": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "reasonCode",
+          "coveredByQuestionKey"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "reasonCode": {
+            "enum": [
+              "same_source_duplicate",
+              "same_turn_duplicate",
+              "overlapping_duplicate_span",
+              "covered_by_existing_task",
+              "media_observation_not_task",
+              "invalid_source_span"
+            ]
+          },
+          "coveredByQuestionKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^Q[1-9][0-9]*$"
+          }
+        }
+      }
+    },
+    "groupHints": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hintKey",
+          "questionKeys",
+          "reasonCode"
+        ],
+        "properties": {
+          "hintKey": {
+            "type": "string",
+            "pattern": "^H[1-9][0-9]*$"
+          },
+          "questionKeys": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^Q[1-9][0-9]*$"
+            }
+          },
+          "reasonCode": {
+            "enum": [
+              "same_source_parallel_questions",
+              "same_intent_same_answerability",
+              "clarification_bundle"
+            ]
+          }
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "accepted",
+        "repaired",
+        "degraded_single_task",
+        "rejected"
+      ]
+    }
+  }
+}

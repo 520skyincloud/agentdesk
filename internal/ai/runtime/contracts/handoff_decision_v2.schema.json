@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/handoff_decision.v2.json",
+  "title": "HandoffDecisionV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "tenantId",
+    "storeId",
+    "storeStaffBindingId",
+    "protocolInstanceId",
+    "conversationId",
+    "sessionNo",
+    "turnId",
+    "turnVersion",
+    "taskKeys",
+    "originType",
+    "mode",
+    "reasonCode",
+    "failureClass",
+    "decidedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "handoff_decision.v2"
+    },
+    "tenantId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "storeId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "storeStaffBindingId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "protocolInstanceId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "conversationId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sessionNo": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "turnId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "turnVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "taskKeys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "originType": {
+      "enum": [
+        "business_handoff",
+        "safety_handoff",
+        "knowledge_gap",
+        "technical_failure"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "none",
+        "confirm",
+        "dispatch"
+      ]
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "failureClass": {
+      "type": "string",
+      "maxLength": 80
+    },
+    "decidedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

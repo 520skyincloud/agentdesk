@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/message_analysis.v2.json",
+  "title": "MessageAnalysisV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "messageId",
+    "sourceRevision",
+    "contentFingerprint",
+    "status",
+    "mediaType",
+    "analyzer",
+    "normalizedText",
+    "quality",
+    "observations",
+    "error",
+    "analyzedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "message_analysis.v2"
+    },
+    "messageId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "sourceRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contentFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "processing",
+        "ready",
+        "failed_retryable",
+        "failed_terminal",
+        "stale"
+      ]
+    },
+    "mediaType": {
+      "enum": [
+        "none",
+        "image",
+        "voice",
+        "attachment"
+      ]
+    },
+    "analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "version",
+        "provider",
+        "model"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "rule",
+            "vision",
+            "asr",
+            "file_parser",
+            "import"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 120
+        }
+      }
+    },
+    "normalizedText": {
+      "type": "string",
+      "maxLength": 4000
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overallConfidence",
+        "completeness",
+        "fallbackUsed",
+        "warnings",
+        "uncertainRanges"
+      ],
+      "properties": {
+        "overallConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "completeness": {
+          "enum": [
+            "complete",
+            "partial",
+            "empty"
+          ]
+        },
+        "fallbackUsed": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "low_audio_quality",
+              "uncertain_critical_entity",
+              "truncated",
+              "language_mismatch",
+              "low_image_resolution",
+              "provider_fallback_used"
+            ]
+          }
+        },
+        "uncertainRanges": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start",
+              "end",
+              "reason"
+            ],
+            "properties": {
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "reason": {
+                "enum": [
+                  "audio_unclear",
+                  "critical_entity",
+                  "number",
+                  "time",
+                  "negation",
+                  "proper_noun"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref",
+          "sourceMessageId",
+          "sourceRevision",
+          "status",
+          "sourceType",
+          "observationType",
+          "text",
+          "confidence",
+          "allowedUses",
+          "forbiddenUses"
+        ],
+        "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^O[1-9][0-9]*$"
+          },
+          "sourceMessageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sourceRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "failed"
+            ]
+          },
+          "sourceType": {
+            "enum": [
+              "image",
+              "voice",
+              "video",
+              "gif",
+              "attachment",
+              "text",
+              "history"
+            ]
+          },
+          "observationType": {
+            "enum": [
+              "scene_description",
+              "ocr_text",
+              "document_text",
+              "error_ui",
+              "transcript",
+              "audio_quality",
+              "uncertain_span",
+              "entity",
+              "historical_statement"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "allowedUses": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "describe_media",
+                "resolve_reference",
+                "build_knowledge_query",
+                "quote_document"
+              ]
+            }
+          },
+          "forbiddenUses": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "store_identity",
+                "store_address",
+                "store_phone",
+                "store_policy",
+                "resource_eligibility",
+                "handoff_decision"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "class",
+            "code",
+            "retryable"
+          ],
+          "properties": {
+            "class": {
+              "enum": [
+                "protocol_unavailable",
+                "media_download_failed",
+                "vision_failed",
+                "asr_failed",
+                "file_unsupported",
+                "invalid_payload",
+                "scope_invalid",
+                "timeout"
+              ]
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "analyzedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  }
+}

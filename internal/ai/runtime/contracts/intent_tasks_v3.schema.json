@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/intent_tasks.v3.json",
+  "title": "IntentTasksV3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "dialogueAct",
+    "tasks"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "intent_tasks.v3"
+    },
+    "dialogueAct": {
+      "enum": [
+        "new_topic",
+        "follow_up",
+        "repeat",
+        "refinement",
+        "correction",
+        "confirmation",
+        "cancellation",
+        "greeting",
+        "thanks",
+        "closing",
+        "unknown"
+      ]
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "intent",
+          "subIntent",
+          "sourceRefs",
+          "sourceSpans",
+          "dependsOnObservationRefs",
+          "normalizedText",
+          "requestMode",
+          "confidence"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "intent": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "subIntent": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "sourceRefs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^U[1-9][0-9]*$"
+            }
+          },
+          "sourceSpans": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sourceRef",
+                "start",
+                "end",
+                "quote"
+              ],
+              "properties": {
+                "sourceRef": {
+                  "type": "string",
+                  "pattern": "^U[1-9][0-9]*$"
+                },
+                "start": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                }
+              }
+            }
+          },
+          "dependsOnObservationRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^O[1-9][0-9]*$"
+            }
+          },
+          "normalizedText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "requestMode": {
+            "enum": [
+              "answer",
+              "request_action",
+              "clarify_previous",
+              "correct_previous",
+              "confirm_previous",
+              "cancel_previous",
+              "social"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    }
+  }
+}
