@@ -40,6 +40,17 @@ type AIReplyTurnTaskInput struct {
 	RelatedTaskID   int64
 	ResourceAction  string
 	QuestionText    string
+	// 多模态契约 3.2/22.11：QuestionUnit 持久来源绑定与摘要；临时 SourceRef 不入库。
+	AnalysisRevision      int
+	SourceSpanStart       int
+	SourceSpanEnd         int
+	SourceBindingsJSON    string
+	SourceSetFingerprint  string
+	CanonicalQuestionHash string
+	CapabilityCode        string
+	CapabilityRoute       string
+	CapabilityFingerprint string
+	AnswerGroupKey        string
 }
 
 type AIReplyTurnTaskKnowledgeUpdate struct {
@@ -58,13 +69,31 @@ func (s *aiReplyTurnTaskService) Enabled() bool {
 }
 
 func (s *aiReplyTurnTaskService) StableTaskKey(input AIReplyTurnTaskInput) string {
+	// 契约 3.2.3：稳定键不再包含 OccurrenceIndex。优先使用 QuestionUnit 的
+	// canonical hash + 来源集合 fingerprint；旧输入缺这些字段时回退到语义
+	// fingerprint（同样不带 occurrence）。
+	canonicalHash := strings.TrimSpace(input.CanonicalQuestionHash)
+	sourceSetFingerprint := strings.TrimSpace(input.SourceSetFingerprint)
+	if input.TenantID > 0 && input.TurnID > 0 && input.SourceMessageID > 0 && input.AnalysisRevision > 0 &&
+		canonicalHash != "" && sourceSetFingerprint != "" {
+		taskType := strings.TrimSpace(string(input.TaskType))
+		if taskType == "" {
+			taskType = string(enums.AIReplyTurnTaskTypeText)
+		}
+		raw := fmt.Sprintf(
+			"%d/%d/%d/%d/%s/%s/%s",
+			input.TenantID, input.TurnID, input.SourceMessageID, input.AnalysisRevision,
+			sourceSetFingerprint, taskType, canonicalHash,
+		)
+		sum := sha256.Sum256([]byte(raw))
+		return "turn_task_" + hex.EncodeToString(sum[:16])
+	}
 	fingerprint := s.SemanticQuestionFingerprint(input)
-	occurrence := input.OccurrenceIndex
-	if occurrence <= 0 {
-		occurrence = 1
+	if fingerprint == "" {
+		fingerprint = canonicalHash
 	}
 	if input.TenantID > 0 && input.TurnID > 0 && fingerprint != "" {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/%d", input.TenantID, input.TurnID, fingerprint, occurrence)))
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/1", input.TenantID, input.TurnID, fingerprint)))
 		encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
 		return "turn_task_" + strings.ToLower(encoded[:26])
 	}
@@ -120,14 +149,10 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	seen := make(map[string]struct{}, len(inputs))
 	existingTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
 	existingBySourceSequence := make(map[string]*models.AIReplyTurnTask, len(existingTasks))
-	occurrences := make(map[string]int, len(existingTasks)+len(inputs))
 	for index := range existingTasks {
 		existing := &existingTasks[index]
 		identity := aiReplyTurnTaskSourceIdentity(existing.SourceMessageID, existing.SequenceNo, existing.TaskType)
 		existingBySourceSequence[identity] = existing
-		if existing.QuestionFingerprint != "" {
-			occurrences[existing.QuestionFingerprint]++
-		}
 	}
 	for index, input := range inputs {
 		if input.SourceMessageID <= 0 {
@@ -147,19 +172,36 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		input.TenantID = turn.TenantID
 		input.TurnID = turn.ID
 		fingerprint := s.SemanticQuestionFingerprint(input)
+		// 契约 3.2.2：canonical hash 非空时写入 CanonicalQuestionHash，
+		// QuestionFingerprint 作为兼容副本。
+		canonicalHash := strings.TrimSpace(input.CanonicalQuestionHash)
+		if canonicalHash == "" && fingerprint != "" {
+			canonicalHash = fingerprint
+		}
 		identity := aiReplyTurnTaskSourceIdentity(input.SourceMessageID, input.SequenceNo, input.TaskType)
 		existingIdentity := existingBySourceSequence[identity]
 		if existingIdentity != nil {
 			fingerprint = existingIdentity.QuestionFingerprint
-		} else if input.OccurrenceIndex <= 0 {
-			occurrences[fingerprint]++
-			input.OccurrenceIndex = occurrences[fingerprint]
+			if canonicalHash == "" {
+				canonicalHash = existingIdentity.CanonicalQuestionHash
+			}
 		}
 		taskKey := ""
 		if existingIdentity != nil {
 			taskKey = existingIdentity.TaskKey
 		} else {
 			taskKey = s.StableTaskKey(input)
+			// 稳定键不含 occurrence：同轮次语义/来源相同的第二个 QuestionUnit
+			// 会得到相同 key。为保证物理行唯一，用 sequence 做 salt 生成
+			// 去重副本行，随后由 canonical 去重收敛为 covered。
+			for {
+				owner := s.taskKeyOwner(db, turn, taskKey)
+				if owner == nil || (owner.SourceMessageID == input.SourceMessageID && owner.SequenceNo == input.SequenceNo) {
+					break
+				}
+				sum := sha256.Sum256([]byte(taskKey + "\x1f" + fmt.Sprintf("%d", input.SequenceNo)))
+				taskKey = "turn_task_" + hex.EncodeToString(sum[:16])
+			}
 		}
 		if _, exists := seen[taskKey]; exists {
 			continue
@@ -186,7 +228,18 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 			Intent: limitText(strings.TrimSpace(input.Intent), 80), SubIntent: limitText(strings.TrimSpace(input.SubIntent), 120),
 			ResourceAction: limitText(strings.TrimSpace(input.ResourceAction), 80), QuestionFingerprint: fingerprint,
 			RelationType: limitText(strings.TrimSpace(input.RelationType), 24), RelatedTaskID: input.RelatedTaskID,
-			Stage: stage, Status: status, KnowledgeStatus: knowledgeStatus,
+			AnalysisRevision:      input.AnalysisRevision,
+			SourceSpanStart:       input.SourceSpanStart,
+			SourceSpanEnd:         input.SourceSpanEnd,
+			SourceBindingsJSON:    strings.TrimSpace(input.SourceBindingsJSON),
+			SourceSetFingerprint:  limitText(strings.TrimSpace(input.SourceSetFingerprint), 64),
+			CanonicalQuestionHash: limitText(canonicalHash, 64),
+			RequestMode:           limitText(strings.TrimSpace(input.RequestMode), 24),
+			CapabilityCode:        limitText(strings.TrimSpace(input.CapabilityCode), 120),
+			CapabilityRoute:       limitText(strings.TrimSpace(input.CapabilityRoute), 40),
+			CapabilityFingerprint: limitText(strings.TrimSpace(input.CapabilityFingerprint), 64),
+			AnswerGroupKey:        limitText(strings.TrimSpace(input.AnswerGroupKey), 128),
+			Stage:                 stage, Status: status, KnowledgeStatus: knowledgeStatus,
 			AuditFields: models.AuditFields{
 				CreatedAt: now, CreateUserName: "ai_reply_task",
 				UpdatedAt: now, UpdateUserName: "ai_reply_task",
@@ -207,15 +260,33 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 			item = existing
 			if !aiReplyTurnTaskTerminal(existing.Status) {
 				updates := map[string]any{
-					"introduced_version":   turn.Version,
-					"intent":               limitText(strings.TrimSpace(input.Intent), 80),
-					"sub_intent":           limitText(strings.TrimSpace(input.SubIntent), 120),
-					"resource_action":      limitText(strings.TrimSpace(input.ResourceAction), 80),
-					"question_fingerprint": fingerprint,
-					"relation_type":        limitText(strings.TrimSpace(input.RelationType), 24),
-					"related_task_id":      input.RelatedTaskID,
-					"updated_at":           now,
-					"update_user_name":     "ai_reply_task",
+					"introduced_version":      turn.Version,
+					"intent":                  limitText(strings.TrimSpace(input.Intent), 80),
+					"sub_intent":              limitText(strings.TrimSpace(input.SubIntent), 120),
+					"resource_action":         limitText(strings.TrimSpace(input.ResourceAction), 80),
+					"question_fingerprint":    fingerprint,
+					"canonical_question_hash": limitText(canonicalHash, 64),
+					"relation_type":           limitText(strings.TrimSpace(input.RelationType), 24),
+					"related_task_id":         input.RelatedTaskID,
+					"updated_at":              now,
+					"update_user_name":        "ai_reply_task",
+				}
+				if input.AnalysisRevision > 0 {
+					updates["analysis_revision"] = input.AnalysisRevision
+					updates["source_span_start"] = input.SourceSpanStart
+					updates["source_span_end"] = input.SourceSpanEnd
+					updates["source_set_fingerprint"] = limitText(strings.TrimSpace(input.SourceSetFingerprint), 64)
+					if strings.TrimSpace(input.SourceBindingsJSON) != "" {
+						updates["source_bindings_json"] = strings.TrimSpace(input.SourceBindingsJSON)
+					}
+				}
+				if strings.TrimSpace(input.CapabilityRoute) != "" {
+					updates["capability_code"] = limitText(strings.TrimSpace(input.CapabilityCode), 120)
+					updates["capability_route"] = limitText(strings.TrimSpace(input.CapabilityRoute), 40)
+					updates["capability_fingerprint"] = limitText(strings.TrimSpace(input.CapabilityFingerprint), 64)
+				}
+				if strings.TrimSpace(input.AnswerGroupKey) != "" {
+					updates["answer_group_key"] = limitText(strings.TrimSpace(input.AnswerGroupKey), 128)
 				}
 				if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, existing.ID, existing.TenantID, updates); err != nil {
 					return nil, err
@@ -232,28 +303,41 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		if created && fingerprint != "" && status != enums.AIReplyTurnTaskStatusHandoffPending {
 			canonical := s.findCanonicalDuplicate(db, turn, item)
 			if canonical != nil {
-				if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, item.ID, item.TenantID, map[string]any{
-					"stage":              enums.AIReplyTurnTaskStageComplete,
-					"status":             enums.AIReplyTurnTaskStatusCovered,
-					"covered_by_task_id": canonical.ID,
-					"result_code":        "covered_by_existing_task",
-					"completed_at":       now,
-					"updated_at":         now,
-					"update_user_name":   "ai_reply_task",
-				}); err != nil {
+				covered, err := s.markCoveredByExisting(db, canonical, item, now)
+				if err != nil {
 					return nil, err
 				}
-				item.Stage = enums.AIReplyTurnTaskStageComplete
-				item.Status = enums.AIReplyTurnTaskStatusCovered
-				item.CoveredByTaskID = canonical.ID
-				item.ResultCode = "covered_by_existing_task"
-				item.CompletedAt = &now
+				item = covered
 			}
 		}
 		ret = append(ret, *item)
 	}
 	sortAIReplyTurnTasks(ret)
 	return ret, nil
+}
+
+// markCoveredByExisting 把 current 任务标记为被 canonical 任务覆盖。
+func (s *aiReplyTurnTaskService) markCoveredByExisting(db *gorm.DB, canonical, current *models.AIReplyTurnTask, now time.Time) (*models.AIReplyTurnTask, error) {
+	if canonical == nil || current == nil || canonical.ID <= 0 || canonical.ID == current.ID {
+		return current, nil
+	}
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, current.ID, current.TenantID, map[string]any{
+		"stage":              enums.AIReplyTurnTaskStageComplete,
+		"status":             enums.AIReplyTurnTaskStatusCovered,
+		"covered_by_task_id": canonical.ID,
+		"result_code":        "covered_by_existing_task",
+		"completed_at":       now,
+		"updated_at":         now,
+		"update_user_name":   "ai_reply_task",
+	}); err != nil {
+		return nil, err
+	}
+	current.Stage = enums.AIReplyTurnTaskStageComplete
+	current.Status = enums.AIReplyTurnTaskStatusCovered
+	current.CoveredByTaskID = canonical.ID
+	current.ResultCode = "covered_by_existing_task"
+	current.CompletedAt = &now
+	return current, nil
 }
 
 func aiReplyTurnTaskSourceIdentity(sourceMessageID int64, sequenceNo int, taskType enums.AIReplyTurnTaskType) string {
@@ -266,17 +350,25 @@ func normalizeTaskFingerprintPart(value string) string {
 }
 
 func (s *aiReplyTurnTaskService) findCanonicalDuplicate(db *gorm.DB, turn *models.AIReplyTurn, current *models.AIReplyTurnTask) *models.AIReplyTurnTask {
+	// 契约 22.11：不再跳过同 SourceMessageID；同源精确重复（canonical hash 相同）
+	// 也必须收敛到既有 canonical Task。
 	if current == nil || current.QuestionFingerprint == "" {
 		return nil
 	}
 	items := repositories.AIReplyTurnTaskRepository.FindByFingerprintInTurn(
 		db, turn.TenantID, turn.ID, current.QuestionFingerprint, current.TaskType,
 	)
+	canonicalHash := strings.TrimSpace(current.CanonicalQuestionHash)
 	for index := range items {
 		candidate := &items[index]
-		if candidate.ID == current.ID || candidate.SourceMessageID == current.SourceMessageID ||
+		if candidate.ID == current.ID ||
 			candidate.Status == enums.AIReplyTurnTaskStatusSuperseded || candidate.Status == enums.AIReplyTurnTaskStatusSkipped ||
 			candidate.Status == enums.AIReplyTurnTaskStatusFailed {
+			continue
+		}
+		// 同 canonical hash 时同源重复也覆盖；hash 缺失时保守只合并跨源重复。
+		if candidate.SourceMessageID == current.SourceMessageID &&
+			(canonicalHash == "" || strings.TrimSpace(candidate.CanonicalQuestionHash) != canonicalHash) {
 			continue
 		}
 		return candidate
@@ -834,4 +926,136 @@ func sortAIReplyTurnTasks(tasks []models.AIReplyTurnTask) {
 		}
 		return tasks[i].SequenceNo < tasks[j].SequenceNo
 	})
+}
+
+// MarkTechnicalFailureDB 记录 Task 技术失败。契约 22.11：技术失败绝不改写为
+// handoff_pending，只做退避重试或终态 failed，人工兜底由业务侧单独决定。
+func (s *aiReplyTurnTaskService) MarkTechnicalFailureDB(
+	db *gorm.DB,
+	turn *models.AIReplyTurn,
+	taskKey string,
+	failureClass string,
+	maxAttempts int,
+	now time.Time,
+) error {
+	if db == nil || turn == nil || turn.ID <= 0 || turn.TenantID <= 0 {
+		return errorsx.InvalidParam("AI 回复任务技术失败缺少范围")
+	}
+	taskKey = strings.TrimSpace(taskKey)
+	if taskKey == "" {
+		return errorsx.InvalidParam("AI 回复任务技术失败缺少任务键")
+	}
+	task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, turn.TenantID, turn.ID, taskKey)
+	if err != nil {
+		return err
+	}
+	if task == nil || aiReplyTurnTaskTerminal(task.Status) {
+		return nil
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = aiReplyJobMaxAttempts
+	}
+	nextAttempt := task.AttemptCount + 1
+	updates := map[string]any{
+		"failure_class":     limitText(strings.TrimSpace(failureClass), 40),
+		"attempt_count":     gorm.Expr("attempt_count + 1"),
+		"claimed_by_job_id": 0,
+		"claimed_version":   0,
+		"next_retry_at":     nil,
+		"updated_at":        now,
+		"update_user_name":  "ai_reply_task_failure",
+	}
+	if nextAttempt >= maxAttempts {
+		updates["stage"] = enums.AIReplyTurnTaskStageComplete
+		updates["status"] = enums.AIReplyTurnTaskStatusFailed
+		updates["result_code"] = controlledResultCode("technical_failure", "technical_failure")
+		updates["completed_at"] = now
+	} else {
+		updates["stage"] = enums.AIReplyTurnTaskStageIntent
+		updates["status"] = enums.AIReplyTurnTaskStatusPending
+		nextRetry := aiReplyTaskRetryAt(now, nextAttempt)
+		updates["next_retry_at"] = nextRetry
+	}
+	return repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates)
+}
+
+// AttachKnowledgeCheckpointDB 持久化知识阶段检查点：一次成功检索的
+// retrieveLogID 与 evidence fingerprint，阶段恢复时按 fingerprint 复用。
+func (s *aiReplyTurnTaskService) AttachKnowledgeCheckpointDB(
+	db *gorm.DB,
+	tenantID, turnID int64,
+	taskKey string,
+	retrieveLogID int64,
+	evidenceFingerprint string,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || turnID <= 0 {
+		return errorsx.InvalidParam("AI 回复知识检查点缺少范围")
+	}
+	taskKey = strings.TrimSpace(taskKey)
+	if taskKey == "" {
+		return errorsx.InvalidParam("AI 回复知识检查点缺少任务键")
+	}
+	task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, tenantID, turnID, taskKey)
+	if err != nil {
+		return err
+	}
+	if task == nil || aiReplyTurnTaskTerminal(task.Status) {
+		return nil
+	}
+	return repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+		"knowledge_retrieve_log_id": retrieveLogID,
+		"evidence_fingerprint":      limitText(strings.TrimSpace(evidenceFingerprint), 64),
+		"updated_at":                now,
+		"update_user_name":          "ai_reply_knowledge_checkpoint",
+	})
+}
+
+// CancelHandoffDecisionDB 事务化关闭误判的人工兜底：把 handoff_pending 任务
+// 回退为可执行 pending，而不是留下半开的人工接管状态。
+func (s *aiReplyTurnTaskService) CancelHandoffDecisionDB(
+	db *gorm.DB,
+	tenantID, turnID int64,
+	taskKeys []string,
+	resultCode string,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || turnID <= 0 {
+		return errorsx.InvalidParam("AI 回复取消人工兜底缺少范围")
+	}
+	keys := uniqueTaskKeys(taskKeys)
+	if len(keys) == 0 {
+		return nil
+	}
+	for _, taskKey := range keys {
+		task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, tenantID, turnID, taskKey)
+		if err != nil {
+			return err
+		}
+		if task == nil || task.Status != enums.AIReplyTurnTaskStatusHandoffPending {
+			continue
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+			"stage":             enums.AIReplyTurnTaskStageGenerate,
+			"status":            enums.AIReplyTurnTaskStatusPending,
+			"result_code":       controlledResultCode(resultCode, "handoff_cancelled"),
+			"claimed_by_job_id": 0,
+			"claimed_version":   0,
+			"completed_at":      nil,
+			"next_retry_at":     nil,
+			"updated_at":        now,
+			"update_user_name":  "ai_reply_handoff_cancel",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// taskKeyOwner 返回占用该 TaskKey 的既有任务（可能为 nil）。
+func (s *aiReplyTurnTaskService) taskKeyOwner(db *gorm.DB, turn *models.AIReplyTurn, taskKey string) *models.AIReplyTurnTask {
+	if taskKey == "" {
+		return nil
+	}
+	return repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, turn.TenantID, turn.ID, taskKey)
 }

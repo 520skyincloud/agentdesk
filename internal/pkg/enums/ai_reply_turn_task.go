@@ -12,13 +12,14 @@ const (
 type AIReplyTurnTaskStage string
 
 const (
-	AIReplyTurnTaskStageIntent    AIReplyTurnTaskStage = "intent"
-	AIReplyTurnTaskStageKnowledge AIReplyTurnTaskStage = "knowledge"
-	AIReplyTurnTaskStageGenerate  AIReplyTurnTaskStage = "generate"
-	AIReplyTurnTaskStageCommit    AIReplyTurnTaskStage = "commit"
-	AIReplyTurnTaskStageDelivery  AIReplyTurnTaskStage = "delivery"
-	AIReplyTurnTaskStageHandoff   AIReplyTurnTaskStage = "handoff"
-	AIReplyTurnTaskStageComplete  AIReplyTurnTaskStage = "complete"
+	AIReplyTurnTaskStageIntent     AIReplyTurnTaskStage = "intent"
+	AIReplyTurnTaskStageCapability AIReplyTurnTaskStage = "capability"
+	AIReplyTurnTaskStageKnowledge  AIReplyTurnTaskStage = "knowledge"
+	AIReplyTurnTaskStageGenerate   AIReplyTurnTaskStage = "generate"
+	AIReplyTurnTaskStageCommit     AIReplyTurnTaskStage = "commit"
+	AIReplyTurnTaskStageDelivery   AIReplyTurnTaskStage = "delivery"
+	AIReplyTurnTaskStageHandoff    AIReplyTurnTaskStage = "handoff"
+	AIReplyTurnTaskStageComplete   AIReplyTurnTaskStage = "complete"
 )
 
 type AIReplyTurnTaskStatus string
