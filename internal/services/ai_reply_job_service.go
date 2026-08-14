@@ -377,9 +377,15 @@ func (s *aiReplyJobService) processClaimed(job *models.AIReplyJob, owner string)
 			return
 		}
 		if !claimed {
-			if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), job.TurnID, job.TenantID); turn != nil &&
-				job.TurnVersion > 0 && job.TurnVersion < turn.Version {
+			turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), job.TurnID, job.TenantID)
+			if turn != nil && job.TurnVersion > 0 && job.TurnVersion < turn.Version {
 				s.markTerminal(job, owner, enums.AIReplyJobStatusSuperseded, "stale_turn_version", "", time.Now())
+				return
+			}
+			// turn 已是终态（closed/interrupted/failed）时，job 再重试也永远 claim 不到，
+			// 只会 turn_busy 死循环占满 worker。直接 superseded，别让它无限重试。
+			if turn != nil && aiReplyTurnTerminalStatus(turn.Status) {
+				s.markTerminal(job, owner, enums.AIReplyJobStatusSuperseded, "turn_terminal", "", time.Now())
 				return
 			}
 			_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), job.ID, job.TenantID, owner,
