@@ -172,6 +172,11 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	if err != nil || !ok {
 		return false, err
 	}
+	// 这条消息是转人工二次确认的「确认/取消」，已被确定性消费，不再走 AI 生成。
+	// 否则 job worker 会把它当成普通诉求重新走意图/转人工，造成反复触发。
+	if skipErr := AIReplyJobService.SkipPendingForMessage(conversation.TenantID, conversation.ID, message.ID, "consumed_by_handoff_confirmation"); skipErr != nil {
+		slog.Warn("skip handoff confirmation reply job failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", skipErr)
+	}
 	if decision == humanHandoffConfirmationCancel {
 		// 闭合链路：把触发本次确认的 handoff_pending 任务标记 skipped，
 		// 避免后续 job 为同一诉求反复触发转人工确认造成死循环。

@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -177,6 +178,30 @@ func (r *aiReplyJobRepository) SupersedeOlderTurnVersions(db *gorm.DB, tenantID,
 		"updated_at":       now,
 		"update_user_name": "ai_reply_turn",
 	}).Error
+}
+
+// SkipPendingByMessageInTenant 把某条客户消息尚未开始执行的 AI Reply Job 标记为 skipped。
+// 用于客户消息已被确定性消费（例如转人工二次确认的"取消/确认"），不再需要 AI 生成回复，
+// 避免 job worker 后续又把这条消息当成普通诉求重新走意图/转人工。
+func (r *aiReplyJobRepository) SkipPendingByMessageInTenant(db *gorm.DB, tenantID, conversationID, messageID int64, resultCode string, now time.Time) error {
+	if db == nil || tenantID <= 0 || conversationID <= 0 || messageID <= 0 {
+		return nil
+	}
+	return db.Model(&models.AIReplyJob{}).
+		Where("tenant_id = ? AND conversation_id = ? AND message_id = ?", tenantID, conversationID, messageID).
+		Where("status IN ?", []enums.AIReplyJobStatus{
+			enums.AIReplyJobStatusPending,
+			enums.AIReplyJobStatusRetry,
+		}).
+		Updates(map[string]any{
+			"status":           enums.AIReplyJobStatusSkipped,
+			"result_code":      strings.TrimSpace(resultCode),
+			"last_error_class": "",
+			"next_retry_at":    nil,
+			"completed_at":     now,
+			"updated_at":       now,
+			"update_user_name": "ai_reply_handoff",
+		}).Error
 }
 
 func (r *aiReplyJobRepository) FindMessagesMissingJobs(db *gorm.DB, cutoff time.Time, limit int) ([]models.Message, error) {

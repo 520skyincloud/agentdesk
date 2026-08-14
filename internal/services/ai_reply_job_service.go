@@ -310,6 +310,16 @@ func (s *aiReplyJobService) NotifyNewerMessage(conversationID, messageID int64) 
 	}
 }
 
+// SkipPendingForMessage 把某条客户消息尚未执行的 AI Reply Job 标记为 skipped。
+// 用于该消息已被确定性消费（例如转人工二次确认的"取消/确认"），不需要再走 AI 生成，
+// 避免 job worker 把确认/取消消息当成普通诉求重新触发意图或转人工。
+func (s *aiReplyJobService) SkipPendingForMessage(tenantID, conversationID, messageID int64, resultCode string) error {
+	if tenantID <= 0 || conversationID <= 0 || messageID <= 0 {
+		return nil
+	}
+	return repositories.AIReplyJobRepository.SkipPendingByMessageInTenant(sqls.DB(), tenantID, conversationID, messageID, resultCode, time.Now())
+}
+
 func (s *aiReplyJobService) registerActiveExecution(job *models.AIReplyJob, cancel context.CancelFunc) func() {
 	if job == nil || job.ConversationID <= 0 || job.MessageID <= 0 || cancel == nil {
 		return func() {}
