@@ -50,6 +50,11 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 		return markRuntimeGenerationError(summary, collector, time.Now(), err)
 	}
 	startedAt := time.Now()
+	// P9 门禁快照：按当前请求范围计算，Validator 按此启用/跳过（默认全开）。
+	summary.ValidationGates = ReplyValidationGates{
+		FactSourceBoundary: gateEnabled(gateFactSourceBoundary, req),
+		UnsupportedDomain:  gateEnabled(gateEvidenceQuality, req),
+	}
 
 	// 阶段一（取数）：若有可用工具，先用不带结构化输出的模型跑工具循环，
 	// 把工具调用与结果以 Tool 消息追加进上下文；无工具则跳过，保持单次 Generate。
@@ -177,6 +182,7 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	}
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 		Output: parsed, Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
+		Gates: summary.ValidationGates,
 	})
 	summary.ValidationResult = &validation
 	if collector != nil {

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/runtime_context_snapshot.v2.json",
+  "title": "RuntimeContextSnapshotV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "conversationMode", "dialogueAct", "focus", "tasks", "observations", "preparedActions", "responsePolicy"],
+  "properties": {
+    "schemaVersion": {"const": "runtime_context_snapshot.v2"},
+    "conversationMode": {"enum": ["ai_serving", "resume"]},
+    "dialogueAct": {
+      "enum": ["new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "greeting", "thanks", "closing", "unknown"]
+    },
+    "focus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topic", "relationToPrior", "resolvedTaskKeys"],
+      "properties": {
+        "topic": {"type": "string", "maxLength": 120},
+        "relationToPrior": {
+          "enum": ["new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "unknown"]
+        },
+        "resolvedTaskKeys": {
+          "type": "array", "maxItems": 12, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["taskKey", "sequence", "objective", "outputMode", "knowledgeStatus", "evidenceRefs", "requiredFactRefs", "actionRefs", "constraints"],
+        "properties": {
+          "taskKey": {"type": "string", "minLength": 1, "maxLength": 128},
+          "sequence": {"type": "integer", "minimum": 1, "maximum": 12},
+          "objective": {"type": "string", "minLength": 1, "maxLength": 500},
+          "outputMode": {"enum": ["text", "text_and_resource", "clarification"]},
+          "knowledgeStatus": {"enum": ["not_needed", "has_context", "no_context", "unanswerable", "unavailable"]},
+          "evidenceRefs": {
+            "type": "array", "maxItems": 12, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[KSM][1-9][0-9]*$"}
+          },
+          "requiredFactRefs": {
+            "type": "array", "maxItems": 4, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^S[1-9][0-9]*$"}
+          },
+          "actionRefs": {
+            "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128}
+          },
+          "constraints": {
+            "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 80}
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "sourceClass", "content", "allowedUses", "forbiddenUses"],
+        "properties": {
+          "ref": {"type": "string", "pattern": "^[OM][1-9][0-9]*$"},
+          "sourceClass": {
+            "enum": ["customer_assertion", "conversation_history", "human_history", "customer_media_ocr", "system_event", "compressed_memory"]
+          },
+          "sourceId": {"type": "string", "maxLength": 128},
+          "speaker": {"enum": ["customer", "ai", "agent", "system"]},
+          "content": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "allowedUses": {
+            "type": "array", "maxItems": 4, "uniqueItems": true,
+            "items": {"enum": ["resolve_reference", "describe_media", "answer_customer_assertion", "context_only"]}
+          },
+          "forbiddenUses": {
+            "type": "array", "maxItems": 5, "uniqueItems": true,
+            "items": {"enum": ["assert_store_fact", "recommend", "send_resource", "answer_text", "prepare_resource"]}
+          }
+        }
+      }
+    },
+    "preparedActions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["actionRef", "taskKey", "type", "status"],
+        "properties": {
+          "actionRef": {"type": "string", "minLength": 1, "maxLength": 128},
+          "taskKey": {"type": "string", "minLength": 1, "maxLength": 128},
+          "type": {"enum": ["send_location", "send_mini_program", "send_phone", "send_knowledge_image"]},
+          "status": {"const": "prepared"}
+        }
+      }
+    },
+    "responsePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxParts", "style", "mustNotMentionInternalState", "mustNotClaimUncommittedActions", "mustCiteProtectedFacts"],
+      "properties": {
+        "maxParts": {"type": "integer", "minimum": 1, "maximum": 3},
+        "style": {"const": "concise_wechat_service"},
+        "mustNotMentionInternalState": {"const": true},
+        "mustNotClaimUncommittedActions": {"const": true},
+        "mustCiteProtectedFacts": {"const": true}
+      }
+    }
+  }
+}

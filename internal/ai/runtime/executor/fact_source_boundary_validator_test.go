@@ -96,7 +96,7 @@ func TestRuntimeActionInputsForbidImageForAddressTasks(t *testing.T) {
 	plans := []callbacks.ReplyTaskPlanTraceData{
 		{TaskKey: "t1", Intent: "hotel_info", SubIntent: "address", Text: "你们店地址在哪"},
 	}
-	inputs := runtimeActionInputs(plans, evidence)
+	inputs := runtimeActionInputs(plans, evidence, true)
 	for _, in := range inputs {
 		if in.ActionType == "send_knowledge_image" {
 			t.Fatalf("address task must not auto-send images: %+v", in)
@@ -115,7 +115,7 @@ func TestRuntimeActionInputsAllowImageForFacilityTasks(t *testing.T) {
 	plans := []callbacks.ReplyTaskPlanTraceData{
 		{TaskKey: "t1", Intent: "hotel_info", SubIntent: "laundry", Text: "洗衣房在哪"},
 	}
-	inputs := runtimeActionInputs(plans, evidence)
+	inputs := runtimeActionInputs(plans, evidence, true)
 	found := false
 	for _, in := range inputs {
 		if in.ActionType == "send_knowledge_image" {

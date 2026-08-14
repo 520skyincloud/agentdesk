@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/evidence_bundle.v2.json",
+  "title": "EvidenceBundleV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scopeFingerprint", "retrievalStatus", "items", "resources"],
+  "properties": {
+    "schemaVersion": {"const": "evidence_bundle.v2"},
+    "scopeFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "retrievalStatus": {
+      "enum": ["not_needed", "has_context", "no_context", "unanswerable", "unavailable"]
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "sourceType", "sourceClass", "taskKeys", "title", "content", "score", "factScope", "claimType", "trustLevel", "freshness", "topicMatch", "answerability", "allowedUses", "blockedReasons", "resourceRefs"],
+        "properties": {
+          "ref": {"type": "string", "pattern": "^[KSM][1-9][0-9]*$"},
+          "sourceType": {"enum": ["fastgpt", "store_fact", "customer_media", "tool_result"]},
+          "sourceClass": {
+            "enum": ["store_authored", "imported_faq", "derived_qa", "customer_content", "unknown", "authoritative_store_fact", "customer_media_ocr"]
+          },
+          "sourceRecordId": {"type": "string", "maxLength": 255},
+          "factKey": {"type": "string", "maxLength": 80},
+          "taskKeys": {
+            "type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128}
+          },
+          "title": {"type": "string", "maxLength": 200},
+          "content": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "score": {"type": "number", "minimum": 0, "maximum": 1},
+          "factScope": {"enum": ["store", "nearby", "general"]},
+          "claimType": {"enum": ["fact", "recommendation", "procedure", "policy", "meta"]},
+          "trustLevel": {"enum": ["authoritative", "supported", "weak", "blocked"]},
+          "freshness": {"enum": ["current", "stale", "unknown"]},
+          "topicLabels": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 40}},
+          "topicMatch": {"enum": ["exact", "related", "mismatch"]},
+          "answerability": {"enum": ["supporting", "context_only", "blocked"]},
+          "allowedUses": {
+            "type": "array", "maxItems": 5, "uniqueItems": true,
+            "items": {"enum": ["answer_text", "resolve_reference", "describe_media", "recommend", "prepare_resource"]}
+          },
+          "blockedReasons": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 80}},
+          "resourceRefs": {
+            "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^R[1-9][0-9]*$"}
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "type", "assetId", "title", "taskKeys"],
+        "properties": {
+          "ref": {"type": "string", "pattern": "^R[1-9][0-9]*$"},
+          "type": {"enum": ["image", "file", "location", "mini_program", "phone"]},
+          "assetId": {"type": ["string", "null"], "maxLength": 128},
+          "title": {"type": "string", "maxLength": 200},
+          "taskKeys": {
+            "type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128}
+          }
+        }
+      }
+    }
+  }
+}

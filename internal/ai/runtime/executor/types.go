@@ -84,6 +84,8 @@ type RunResult struct {
 	ReplyModelAttempted        bool
 	RuntimeValidatorMode       string
 	ActionLedgerAuthoritative  bool
+	// ValidationGates 是 P9 门禁开关快照（生成前按 req 计算；零值默认全开）。
+	ValidationGates ReplyValidationGates
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally

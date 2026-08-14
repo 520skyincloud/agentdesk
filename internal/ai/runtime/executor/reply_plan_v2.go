@@ -173,7 +173,7 @@ func ensureRuntimeActionLedger(req RunInput, taskState runtimeTaskBatchState, pl
 		turnVersion = 1
 	}
 	ledger := contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: turnVersion, Actions: []contracts.ActionLedgerItemV1{}}
-	inputs := runtimeActionInputs(plans, evidence)
+	inputs := runtimeActionInputs(plans, evidence, gateEnabled(gateResourceEligibility, req))
 	if len(inputs) == 0 {
 		return ledger, nil
 	}
@@ -208,7 +208,7 @@ func ensureRuntimeActionLedger(req RunInput, taskState runtimeTaskBatchState, pl
 	return ledger, nil
 }
 
-func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *contracts.EvidenceBundleV1) []services.AIReplyTurnActionInput {
+func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *contracts.EvidenceBundleV1, resourceGate bool) []services.AIReplyTurnActionInput {
 	ret := make([]services.AIReplyTurnActionInput, 0)
 	seen := make(map[string]struct{})
 	add := func(input services.AIReplyTurnActionInput) {
@@ -228,7 +228,7 @@ func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *con
 			add(services.AIReplyTurnActionInput{TaskKey: plan.TaskKey, ActionType: actionType, ResourceType: resourceType})
 		}
 	}
-	if evidence != nil {
+	if evidence != nil && resourceGate {
 		for _, resource := range evidence.Resources {
 			if resource.Type != "image" {
 				continue

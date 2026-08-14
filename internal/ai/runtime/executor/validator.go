@@ -12,6 +12,20 @@ type ReplyValidationInput struct {
 	Plan         contracts.ReplyPlanV2
 	Evidence     contracts.EvidenceBundleV1
 	ActionLedger contracts.ActionLedgerV1
+	// Gates 是 P9 灰度开关快照（构造时按 RunInput 计算）；零值默认全开，
+	// 保证纯函数测试与未接线的调用方保持门禁开启的安全默认。
+	Gates ReplyValidationGates
+}
+
+// ReplyValidationGates 是校验期门禁开关快照。
+type ReplyValidationGates struct {
+	FactSourceBoundary bool
+	UnsupportedDomain  bool
+}
+
+// DefaultReplyValidationGates 返回全开的默认门禁（安全默认）。
+func DefaultReplyValidationGates() ReplyValidationGates {
+	return ReplyValidationGates{FactSourceBoundary: true, UnsupportedDomain: true}
 }
 
 type ReplyValidator interface {
@@ -41,6 +55,10 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		Errors: []contracts.ValidationIssueV1{}, Warnings: []contracts.ValidationIssueV1{},
 	}
 	input.Output.Parts = result.NormalizedParts
+	gates := input.Gates
+	if !gates.FactSourceBoundary && !gates.UnsupportedDomain {
+		gates = DefaultReplyValidationGates() // 零值视为未接线，安全默认全开
+	}
 	coverageErrors, repairable := validateReplyTaskCoverage(input)
 	if len(coverageErrors) > 0 {
 		result.Checks.TaskCoverage = "failed"
@@ -64,17 +82,21 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		}
 	}
 	// 领域硬约束（房态/会员）：系统无数据源，任何断言都是编造，一票否决，不修复。
-	if issues := validateReplyUnsupportedDomain(input); len(issues) > 0 {
-		result.Checks.FactGrounding = "failed"
-		result.Errors = append(result.Errors, issues...)
-		result.Status = "rejected"
+	if gates.UnsupportedDomain {
+		if issues := validateReplyUnsupportedDomain(input); len(issues) > 0 {
+			result.Checks.FactGrounding = "failed"
+			result.Errors = append(result.Errors, issues...)
+			result.Status = "rejected"
+		}
 	}
 	// FactSourceBoundary Phase1（文档 15.2）：地址类任务的地址断言必须与权威门店地址一致，
 	// 客户 OCR/历史里的地址（壹间公寓）一律 rejected。业务事实错误不可协议修复。
-	if issues := validateReplyFactSourceBoundary(input); len(issues) > 0 {
-		result.Checks.FactGrounding = "failed"
-		result.Errors = append(result.Errors, issues...)
-		result.Status = "rejected"
+	if gates.FactSourceBoundary {
+		if issues := validateReplyFactSourceBoundary(input); len(issues) > 0 {
+			result.Checks.FactGrounding = "failed"
+			result.Errors = append(result.Errors, issues...)
+			result.Status = "rejected"
+		}
 	}
 	if issues := validateReplyActionReferences(input); len(issues) > 0 {
 		result.Checks.ActionReferences = "failed"

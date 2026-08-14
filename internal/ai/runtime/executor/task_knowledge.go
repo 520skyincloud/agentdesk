@@ -202,7 +202,13 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 		// 不得成为客户可见答案——先从候选中剔除，再构建证据。全部为元问题时任务降为
 		// no_context（reasonCode=knowledge_meta_content），按“资料未写明”澄清处理，
 		// 不默认转人工。判定来源：侧车表 metadata（claimType=meta）+ 确定性模式兜底。
-		kept, droppedMeta := filterKnowledgeMetaEvidence(req, results)
+		var kept []rag.RetrieveResult
+		droppedMeta := 0
+		if gateEnabled(gateEvidenceQuality, req) {
+			kept, droppedMeta = filterKnowledgeMetaEvidence(req, results)
+		} else {
+			kept = results
+		}
 		if len(kept) == 0 && droppedMeta > 0 && outcome.Status == "has_context" {
 			outcome.Status = "no_context"
 			outcome.ReasonCode = "knowledge_meta_content"

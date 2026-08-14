@@ -20,6 +20,12 @@ const (
 	SchemaValidationResultV1       = "validation_result.v1"
 	SchemaReplyTagContextV1        = "reply_tag_context.v1"
 	SchemaRuntimeTraceV2           = "runtime_trace.v2"
+	// 分层上下文隔离计划 P6 新增契约（先登记校验，生产路径按灰度切换）。
+	SchemaEvidenceBundleV2         = "evidence_bundle.v2"
+	SchemaReplyPlanV3              = "reply_plan.v3"
+	SchemaResourceEligibilityV1    = "resource_eligibility.v1"
+	SchemaValidationResultV2       = "validation_result.v2"
+	SchemaRuntimeContextSnapshotV2 = "runtime_context_snapshot.v2"
 )
 
 //go:embed *.schema.json
@@ -37,6 +43,11 @@ var schemaFilenameByName = map[string]string{
 	SchemaValidationResultV1:       "validation_result_v1.schema.json",
 	SchemaReplyTagContextV1:        "reply_tag_context_v1.schema.json",
 	SchemaRuntimeTraceV2:           "runtime_trace_v2.schema.json",
+	SchemaEvidenceBundleV2:         "evidence_bundle_v2.schema.json",
+	SchemaReplyPlanV3:              "reply_plan_v3.schema.json",
+	SchemaResourceEligibilityV1:    "resource_eligibility_v1.schema.json",
+	SchemaValidationResultV2:       "validation_result_v2.schema.json",
+	SchemaRuntimeContextSnapshotV2: "runtime_context_snapshot_v2.schema.json",
 }
 
 func Schema(name string) ([]byte, error) {

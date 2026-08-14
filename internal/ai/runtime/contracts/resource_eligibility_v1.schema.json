@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/resource_eligibility.v1.json",
+  "title": "ResourceEligibilityV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "items"],
+  "properties": {
+    "schemaVersion": {"const": "resource_eligibility.v1"},
+    "items": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resourceRef", "taskKey", "resourceType", "resourcePurpose", "topicMatch", "requestMatch", "autoAttach", "decision", "reasonCode"],
+        "properties": {
+          "resourceRef": {"type": "string", "pattern": "^R[1-9][0-9]*$"},
+          "taskKey": {"type": "string", "minLength": 1, "maxLength": 128},
+          "sourceEvidenceRef": {"type": "string", "maxLength": 8},
+          "sourceRecordId": {"type": "string", "maxLength": 255},
+          "resourceType": {"enum": ["image", "file", "location", "mini_program", "phone"]},
+          "resourcePurpose": {
+            "enum": ["entrance_photo", "map_image", "address_image", "facility_photo", "room_photo", "menu", "instruction", "unknown"]
+          },
+          "topicMatch": {"enum": ["exact", "related", "mismatch"]},
+          "requestMatch": {"enum": ["explicit", "implicit_allowed", "not_requested"]},
+          "autoAttach": {"type": "boolean"},
+          "decision": {"enum": ["eligible", "blocked"]},
+          "reasonCode": {
+            "enum": [
+              "eligible_explicit_request", "eligible_auto_attach",
+              "source_evidence_not_supporting", "resource_topic_mismatch",
+              "resource_purpose_mismatch", "resource_not_requested",
+              "resource_metadata_missing", "resource_scope_mismatch"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

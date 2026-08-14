@@ -35,7 +35,7 @@ func prepareRuntimeActions(
 		if !runtimeActionRequiresOutboundMessage(action.ActionType) {
 			continue
 		}
-		item, err := buildPreparedRuntimeAction(req, action, sequenceByTask[action.TaskKey], evidence)
+		item, err := buildPreparedRuntimeAction(req, action, sequenceByTask[action.TaskKey], evidence, plan)
 		if err != nil {
 			if taskState.Enabled && taskState.TurnID > 0 {
 				markErr := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -109,6 +109,7 @@ func buildPreparedRuntimeAction(
 	action contracts.ActionLedgerItemV1,
 	sequence int,
 	evidence contracts.EvidenceBundleV1,
+	plan contracts.ReplyPlanV2,
 ) (contracts.PreparedActionV1, error) {
 	resourceType := ""
 	if action.ResourceType != nil {
@@ -121,6 +122,15 @@ func buildPreparedRuntimeAction(
 	instance, err := resolvePreparedActionInstance(req)
 	if err != nil {
 		return contracts.PreparedActionV1{}, err
+	}
+	// P8 Prepare 最终门禁（文档 17.2）：地址文字类任务的图片 Action 在 Prepare 阶段二次拒绝，
+	// 防止 ActionLedger 构建与 Prepare 之间规则漂移；拒绝即 resource invariant broken。
+	if action.ActionType == "send_knowledge_image" && gateEnabled(gateResourceEligibility, req) {
+		for _, task := range plan.Tasks {
+			if task.TaskKey == action.TaskKey && isAddressTextSubIntent(task.SubIntent) {
+				return contracts.PreparedActionV1{}, fmt.Errorf("resource eligibility invariant broken: address text task %s must not send images", action.TaskKey)
+			}
+		}
 	}
 	switch action.ActionType {
 	case "send_location":
