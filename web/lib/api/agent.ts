@@ -81,9 +81,12 @@ export type AgentConversationTakeoverState = {
   canDirectTakeover: boolean
   canReview: boolean
   canResumeAi: boolean
+  canActivateTakeover: boolean
   isCurrentAssignee: boolean
   pendingForMe: boolean
   pendingForAnother: boolean
+  authorizedForMe: boolean
+  authorizedForAnother: boolean
 }
 
 export type AgentConversation = {
@@ -381,6 +384,16 @@ export function reviewAgentConversationTakeover(payload: {
   remark?: string
 }) {
   return request<void>("/api/dashboard/conversation/takeover/review", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export function activateAgentConversationTakeover(payload: {
+  requestId: number
+  reason?: string
+}) {
+  return request<void>("/api/dashboard/conversation/takeover/activate", {
     method: "POST",
     body: JSON.stringify(payload),
   })

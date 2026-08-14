@@ -238,9 +238,9 @@ shiftDebt = shiftWorkloadWeight / max(MaxConcurrentCount, 1)
 
 会话工作台对所有未关闭会话保留正常编辑器，不再用大面积“接管”占位替换回复框。编辑内容可以在未获得发送资格时保留；真正发送前，前端提示接管流程，后端在消息事务中重新锁定并核验会话和路由，前端状态不能绕过服务端权限。
 
-普通客服或门店员工主动接管未分配会话时，先创建 `ConversationTakeoverRequest`，审批前不改变 `Conversation.CurrentAssigneeID`，也不创建 Message 或 Outbox。申请人必须具备 `conversation.view`、`conversation.send`，并仍属于该会话唯一负责的综合客服组或有效门店员工绑定；账号同时持有客服和门店员工角色时按 OR 语义校验，任一合法业务范围通过即可申请。相同 Session 只允许一个待审批申请；同一申请人重复提交返回原申请。
+普通客服或门店员工主动接管未分配会话时，先创建 `ConversationTakeoverRequest`，审批前不改变 `Conversation.CurrentAssigneeID`，也不创建 Message 或 Outbox。申请人必须具备 `conversation.view`、`conversation.send`，并仍属于该会话唯一负责的综合客服组或有效门店员工绑定；账号同时持有客服和门店员工角色时按 OR 语义校验，任一合法业务范围通过即可申请。相同 Session 只允许一个活动申请；同一申请人重复提交返回原申请。组长审批通过后申请进入 `authorized`，只授予申请人一次确认接管的资格，不立即创建 Assignment；申请人再次点击原 `AI回复` Switch 并确认后，服务端在同一事务中消费授权、创建 Assignment、更新 Conversation/Route 并进入 `approved`。
 
-客服组长、租户管理员和平台管理员在切入有效租户后，可以审核接管申请。组长只能审核自己负责的综合客服组；管理员可审核当前租户全部组。批准时重新校验申请人账号、角色、权限和服务范围，并将会话原子分配给申请人；拒绝不改变会话指派关系。会话已关闭、Session 已变化、已被派单或转派、已由其他人接管时，旧申请立即进入 `cancelled`，不能继续批准。
+客服组长、租户管理员、平台管理员和超级管理员在切入有效租户后，可以审核接管申请或直接接管权限范围内的待人工会话。组长只能审核/接管自己负责的综合客服组；管理员可审核/接管当前租户全部组。批准时重新校验申请人账号、角色、权限和服务范围，但不立即分配；申请人再次确认后才原子创建 Assignment。拒绝不改变会话指派关系。会话已关闭、Session 已变化、已被派单或转派、已由其他人接管时，旧申请立即进入 `cancelled`，不能继续批准或确认。
 
 客服组长、租户管理员和平台管理员也可直接接管待总部人工会话。直接接管必须同时满足 `conversation.view`、`conversation.send`、`conversation.assign`，会话仍为待接入且未分配，路由为 `HQ_AGENTDESK_PENDING`、`NeedHumanFollowUp=true`，并且只能解析出一个启用的综合客服组。组长只能接管自己负责的组；管理员可管理当前租户全部组。主管接管不要求创建 `AgentProfile`，成功后当前指派关系本身即赋予会话可见和回复资格。已分配给其他客服的会话不能抢占，继续使用既有转派流程。
 
@@ -277,7 +277,7 @@ DDL 继续由 AutoMigrate 完成，兼容 SQLite 和 MySQL：
 - `AgentTeamSchedule.ExcludedAgentProfileIDs`：本班请假/临时排除。
 - `Conversation.DispatchWeight` 和 `ConversationAssignment.WorkloadWeight`：规则工作量快照。
 - `ConversationAssignment.DispatchMode`：新记录只写 `manual/rule`。
-- `ConversationTakeoverRequest`：保存同一会话 Session 的主动接管申请、审核人与终态；nullable `ActiveKey` 保证最多一个待审批申请，同时保留不可变历史。
+- `ConversationTakeoverRequest`：保存同一会话 Session 的主动接管申请、审核人与终态；状态包括 `pending/authorized/approved/rejected/cancelled`；nullable `ActiveKey` 保证最多一个活动申请，同时保留不可变历史。
 
 `AgentProfile.ServiceStatus`、`ReceiveOfflineMessage` 和 `LastStatusAt` 已从运行模型、DTO 和页面删除。在线状态统一由 `AgentPresenceSession` 表达，但仅用于展示和分析；数据库历史列由 AutoMigrate 保留，不再读写。
 
@@ -291,7 +291,7 @@ Migration 65：同步现有客服角色的会话查看/回复权限，更新派�
 
 历史 `ConversationAssignment.DecisionConfidence`、历史 `DispatchMode=intelligent`、旧 DecisionLog 和旧模型 usage 作为审计事实保留，不物理篡改。新运行链路不写置信度，Analytics 回填只在旧值大于 0 时保留历史快照。
 
-接管申请不增加 DML migration，不修改公开 WebSocket payload。会话详情兼容新增 `takeoverState`，并新增四个 dashboard 动作接口：`/conversation/takeover/request`、`/conversation/takeover/direct`、`/conversation/takeover/review`、`/conversation/resume_ai`。
+接管申请不增加 DML migration，不修改公开 WebSocket payload。会话详情兼容新增 `takeoverState`，并新增五个 dashboard 动作接口：`/conversation/takeover/request`、`/conversation/takeover/direct`、`/conversation/takeover/review`、`/conversation/takeover/activate`、`/conversation/resume_ai`。
 
 本节只定义人工接管、审批、发送和交还 AI。自动转人工为何触发、模型失败转人工、人工池进入条件和 Handoff 决策规则不在本次变更范围。
 

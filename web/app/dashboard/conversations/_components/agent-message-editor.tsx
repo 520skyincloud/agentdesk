@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
 import {
@@ -13,28 +13,32 @@ import { fetchQuickReplyListAll, type AdminQuickReply } from "@/lib/api/admin"
 type AgentMessageEditorProps = {
   disabled?: boolean
   uploadingAsset?: boolean
+  aiReplyEnabled?: boolean
   canAgentReply?: boolean
   disabledReason?: string
   replyPermissionHint?: string
-  agentAction?: ReactNode
+  aiReplyToggleDisabled?: boolean
   onSend: (html: string) => Promise<boolean | void>
   onUploadImage: (file: File) => Promise<UploadedMessageEditorImage | null>
   onSendImage?: (file: File) => Promise<void>
   onSendAttachment: (file: File) => Promise<void>
+  onToggleAIReply?: (enabled: boolean) => Promise<void> | void
   onOpenGroupInvite?: () => void
 }
 
 export function AgentMessageEditor({
   disabled = false,
   uploadingAsset = false,
+  aiReplyEnabled = true,
   canAgentReply = !disabled,
   disabledReason,
   replyPermissionHint,
-  agentAction,
+  aiReplyToggleDisabled = false,
   onSend,
   onUploadImage,
   onSendImage,
   onSendAttachment,
+  onToggleAIReply,
   onOpenGroupInvite,
 }: AgentMessageEditorProps) {
   const t = useI18n()
@@ -76,14 +80,16 @@ export function AgentMessageEditor({
         items: quickReplies,
         onOpenChange: setQuickReplyPickerOpen,
       }}
+      aiReplyEnabled={aiReplyEnabled}
       canAgentReply={canAgentReply}
       disabledReason={disabledReason}
       replyPermissionHint={replyPermissionHint}
-      agentAction={agentAction}
+      aiReplyToggleDisabled={aiReplyToggleDisabled}
       onSend={onSend}
       onUploadImage={onUploadImage}
       onSendImage={onSendImage}
       onSendAttachment={onSendAttachment}
+      onToggleAIReply={onToggleAIReply}
       onOpenGroupInvite={onOpenGroupInvite}
     />
   )

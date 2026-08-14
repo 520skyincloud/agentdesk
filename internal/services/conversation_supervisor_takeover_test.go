@@ -130,6 +130,30 @@ func TestConversationPlatformAdminTakeoverRequiresActiveTenant(t *testing.T) {
 	}
 }
 
+func TestConversationPlatformAdminResolveStateAndDirectTakeover(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	conversation := fixture.createPendingConversation(t, fixture.teamB.ID, enums.ConversationRouteStatusHQAgentDeskPending, true)
+
+	state := ConversationTakeoverService.ResolveState(conversation, fixture.platformAdmin)
+	if !state.CanDirectTakeover || state.CanRequest {
+		t.Fatalf("platform admin did not receive direct takeover state: %+v", state)
+	}
+	if err := ConversationTakeoverService.DirectTakeover(request.RequestConversationTakeoverRequest{
+		ConversationID: conversation.ID,
+		Reason:         "超管直接接管",
+	}, fixture.platformAdmin); err != nil {
+		t.Fatalf("platform admin direct takeover: %v", err)
+	}
+
+	current := ConversationService.GetByTenantID(conversation.ID, fixture.tenantID)
+	if current == nil || current.CurrentAssigneeID != fixture.platformAdmin.UserID || current.Status != enums.IMConversationStatusActive {
+		t.Fatalf("unexpected platform admin direct takeover result: %+v", current)
+	}
+	if _, err := MessageService.ValidateConversationSender(conversation.ID, enums.IMSenderTypeAgent, fixture.platformAdmin, nil); err != nil {
+		t.Fatalf("platform admin cannot reply after direct takeover: %v", err)
+	}
+}
+
 func TestConversationSupervisorTakeoverRequiresPendingHumanRoute(t *testing.T) {
 	fixture := setupConversationSupervisorTakeoverFixture(t)
 	tests := []struct {
