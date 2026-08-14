@@ -552,6 +552,9 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果当前问题里某一项知识库没有明确写明，只能说“当前资料没写明”并追问一个关键点。")
 	}
+	if instruction := buildStoreAddressTextInstruction(req, intent); instruction != "" {
+		parts = append(parts, instruction)
+	}
 	if len(intent.IntentTasks) > 1 {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答，缺资料时逐项说明“当前资料没写明”，不能说“帮你查/我查一下”。")
 	}
@@ -582,6 +585,47 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 func isSocialCorrectionSubIntent(subIntent string) bool {
 	switch strings.TrimSpace(subIntent) {
 	case "correction", "clarification", "misunderstanding", "deny_voice", "voice_correction":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildStoreAddressTextInstruction 当本轮意图是「要门店地址文字」类子意图（如外卖地址/收货地址）
+// 时，注入系统权威门店地址文本，让模型直接回答文字、不发定位、不抓客户图片 OCR 里的地址。
+func buildStoreAddressTextInstruction(req RunInput, intent callbacks.IntentTraceData) string {
+	if intent.PrimaryIntent != "hotel_info" {
+		return ""
+	}
+	if !isAddressTextRequestSubIntent(intent.SubIntent) {
+		// 也检查多任务里是否有地址文字类任务
+		found := false
+		for _, task := range intent.IntentTasks {
+			if task.Intent == "hotel_info" && isAddressTextRequestSubIntent(task.SubIntent) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ""
+		}
+	}
+	instance := findRuntimeWxWorkInstance(req)
+	if instance == nil {
+		return "门店地址类问题：当前账号暂未配置门店地址，只能说明未配置或追问，不能编造、不能把客户图片里出现的地址当门店地址。"
+	}
+	address := strings.TrimSpace(instance.StoreAddress)
+	if address == "" {
+		return "门店地址类问题：当前账号暂未配置门店地址，只能说明未配置或追问，不能编造、不能把客户图片里出现的地址当门店地址。"
+	}
+	name := firstNonEmpty(instance.StoreNavigationName, instance.EmployeeName, "当前门店")
+	return "门店地址文字：" + name + "，地址：" + address + "。这是系统权威门店地址，直接用它回答客户“外卖地址/收货地址/酒店地址”这类要地址文字的问题；不要发定位、不要编造、不要把客户图片 OCR 里的地址当成门店地址。"
+}
+
+// isAddressTextRequestSubIntent 判断子意图是否属于「要地址文字」这一类（不是发定位）。
+func isAddressTextRequestSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "address_for_delivery", "delivery_address", "address":
 		return true
 	default:
 		return false
