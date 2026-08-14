@@ -35,7 +35,12 @@ func TestCompilerGenerateHasHardBudgetAndFixedOrder(t *testing.T) {
 		t.Fatalf("stable policy lacks reply contract: %q", result.Messages[0].Content)
 	}
 	var snapshot contracts.RuntimeContextSnapshotV1
-	if err := json.Unmarshal([]byte(result.Messages[1].Content), &snapshot); err != nil {
+	// P1 分层块头：snapshot 消息带 [RUNTIME_CONTRACT] 前缀，JSON 从第一个 '{' 开始。
+	snapshotJSON := result.Messages[1].Content
+	if idx := strings.Index(snapshotJSON, "{"); idx > 0 {
+		snapshotJSON = snapshotJSON[idx:]
+	}
+	if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
 		t.Fatalf("runtime snapshot: %v", err)
 	}
 	if snapshot.SchemaVersion != contracts.RuntimeContextSnapshotV1SchemaVersion || len(snapshot.Tasks) != 1 {

@@ -74,7 +74,31 @@ func historyMessageVisible(item models.Message) bool {
 }
 
 func visibleMessageContent(item models.Message) string {
+	// P2 Observation 来源隔离（执行计划 7.3）：客户媒体理解文本不再裸进历史，
+	// 必须包成 [媒体观察] 块并声明「禁止当作门店事实」，防止 OCR 地址污染酒店事实。
+	if isObservationMediaMessage(item) {
+		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
+		if strings.TrimSpace(status) == "understood" {
+			if text := strings.TrimSpace(mediaText); text != "" {
+				return RenderMediaObservation(text)
+			}
+			if summary := strings.TrimSpace(mediaSummary); summary != "" {
+				return RenderMediaObservation(summary)
+			}
+		}
+	}
 	return strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload))
+}
+
+// isObservationMediaMessage 判断消息是否是需要观察块包裹的客户媒体消息。
+func isObservationMediaMessage(item models.Message) bool {
+	switch item.MessageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo,
+		enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		return item.SenderType == enums.IMSenderTypeCustomer
+	default:
+		return false
+	}
 }
 
 func setHistoryTurnRange(turn *HistoryTurn, item models.Message) {

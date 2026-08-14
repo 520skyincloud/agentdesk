@@ -304,16 +304,23 @@ func buildIntentPolicy(input CompileInput) string {
 }
 
 func buildGeneratePolicy(input CompileInput) string {
-	parts := make([]string, 0, 7)
+	parts := make([]string, 0, 8)
+	// L2 契约块头：整条 policy 消息先声明自己是运行时契约（执行计划 3.3/4.3）。
+	parts = append(parts, RenderRuntimeContractHeader())
 	if value := strings.TrimSpace(input.StablePolicy); value != "" {
 		parts = append(parts, value)
 	} else {
+		personaSource := ""
 		if systemPrompt := strings.TrimSpace(input.Agent.SystemPrompt); systemPrompt != "" {
-			parts = append(parts, systemPrompt)
+			personaSource = systemPrompt
 		} else if persona := strings.TrimSpace(input.Instance.PersonaPrompt); persona != "" {
 			// 防御兜底：正常链路 SystemPrompt 已由 BuildRuntimeAIAgent 合并过 personaPrompt，
 			// 此处只在 SystemPrompt 缺失时退而取原始人设，避免同一人设被重复塞入两遍。
-			parts = append(parts, persona)
+			personaSource = persona
+		}
+		// L1 人设块：先清洗操作性指令，再标注「仅语气风格」（执行计划 7.2）。
+		if sanitized := SanitizePersonaPrompt(personaSource); sanitized != "" {
+			parts = append(parts, RenderPersonaBlock(sanitized))
 		}
 	}
 	if value := strings.TrimSpace(input.GenerationInstruction); value != "" {
@@ -351,7 +358,7 @@ func snapshotSystemMessage(snapshot contracts.RuntimeContextSnapshotV1) (*schema
 	if err != nil {
 		return nil, fmt.Errorf("marshal runtime context snapshot: %w", err)
 	}
-	return schema.SystemMessage(string(raw)), nil
+	return schema.SystemMessage(BlockRuntimeContract + "（当前轮状态 JSON，data_only）\n" + string(raw)), nil
 }
 
 func evidenceSystemMessage(evidence contracts.EvidenceBundleV1) (*schema.Message, error) {
@@ -359,7 +366,7 @@ func evidenceSystemMessage(evidence contracts.EvidenceBundleV1) (*schema.Message
 	if err != nil {
 		return nil, fmt.Errorf("marshal evidence bundle: %w", err)
 	}
-	return schema.SystemMessage(string(raw)), nil
+	return schema.SystemMessage(RenderEvidenceHeader() + "\n" + string(raw)), nil
 }
 
 func assembleIntentMessages(policy, state *schema.Message, turns []HistoryTurn, repair, current *schema.Message) []*schema.Message {
