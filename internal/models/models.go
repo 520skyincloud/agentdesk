@@ -132,6 +132,7 @@ var Models = []any{
 	&ReplyIntentConfig{},
 	&ReplyActionDefinition{},
 	&KnowledgeActionBinding{},
+	&KnowledgeEvidenceMetadata{},
 	&ConversationInterrupt{},
 	&SystemConfig{},
 }

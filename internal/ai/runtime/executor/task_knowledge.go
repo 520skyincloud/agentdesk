@@ -198,6 +198,16 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				results = item.Result.Hits
 			}
 		}
+		// Evidence Judge Phase1（文档 7.5/判定矩阵）：派生元问题（出题式/审题式内容）
+		// 不得成为客户可见答案——先从候选中剔除，再构建证据。全部为元问题时任务降为
+		// no_context（reasonCode=knowledge_meta_content），按“资料未写明”澄清处理，
+		// 不默认转人工。判定来源：侧车表 metadata（claimType=meta）+ 确定性模式兜底。
+		kept, droppedMeta := filterKnowledgeMetaEvidence(req, results)
+		if len(kept) == 0 && droppedMeta > 0 && outcome.Status == "has_context" {
+			outcome.Status = "no_context"
+			outcome.ReasonCode = "knowledge_meta_content"
+		}
+		results = kept
 		for _, result := range results {
 			if len(bundle.Items) >= 24 || strings.TrimSpace(result.Content) == "" {
 				break
@@ -573,4 +583,48 @@ func mergeRuntimeTaskKnowledge(items []runtimeTaskKnowledgeItem, knowledgeBaseID
 // 避免把"让客户打客服电话"这类知识误判成要转接。
 func knowledgeContentRequiresHandoff(content string) bool {
 	return strings.Contains(strings.TrimSpace(content), "转接")
+}
+
+// filterKnowledgeMetaEvidence 是 Evidence Judge 的元问题过滤（文档 7.5 判定矩阵）。
+// 判定双来源：KnowledgeEvidenceMetadata 侧车表（claimType=meta）命中即剔除；
+// 无侧车记录时用确定性模式（DetectKnowledgeMetaContent）兜底，覆盖未回填数据。
+func filterKnowledgeMetaEvidence(req RunInput, results []rag.RetrieveResult) (kept []rag.RetrieveResult, droppedMeta int) {
+	if len(results) == 0 {
+		return results, 0
+	}
+	recordIDs := make([]string, 0, len(results))
+	kbIDs := make(map[int64]struct{}, 1)
+	for _, r := range results {
+		if r.KnowledgeBaseID > 0 && strings.TrimSpace(r.SourceRecordID) != "" {
+			recordIDs = append(recordIDs, r.SourceRecordID)
+			kbIDs[r.KnowledgeBaseID] = struct{}{}
+		}
+	}
+	metaSet := make(map[string]struct{}, len(recordIDs))
+	if req.Conversation.TenantID > 0 && req.Conversation.StoreID > 0 && len(recordIDs) > 0 && len(kbIDs) == 1 {
+		var kbID int64
+		for id := range kbIDs {
+			kbID = id
+		}
+		for _, meta := range services.KnowledgeEvidenceMetadataService.JudgeBySourceRecords(
+			req.Conversation.TenantID, req.Conversation.StoreID, kbID, recordIDs) {
+			if meta.ClaimType == "meta" || meta.TrustLevel == "blocked" {
+				metaSet[meta.SourceRecordID] = struct{}{}
+			}
+		}
+	}
+	kept = make([]rag.RetrieveResult, 0, len(results))
+	for _, r := range results {
+		if _, blocked := metaSet[strings.TrimSpace(r.SourceRecordID)]; blocked {
+			droppedMeta++
+			continue
+		}
+		title := firstNonEmpty(r.Title, r.DocumentTitle)
+		if services.DetectKnowledgeMetaContent(title, r.Content) {
+			droppedMeta++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, droppedMeta
 }
