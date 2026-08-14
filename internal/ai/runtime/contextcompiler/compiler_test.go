@@ -192,3 +192,31 @@ func buildCompilerHistory(turnCount int) []models.Message {
 	}
 	return ret
 }
+
+func TestBuildGeneratePolicyDoesNotDuplicatePersonaPrompt(t *testing.T) {
+	// SystemPrompt 已合并过 personaPrompt（BuildRuntimeAIAgent 行为），
+	// buildGeneratePolicy 不应再单独追加一次 Instance.PersonaPrompt。
+	persona := "专属人设：说话简短。"
+	policy := buildGeneratePolicy(CompileInput{
+		Agent:                 models.AIAgent{SystemPrompt: "你是酒店客服。\n\n员工号专属人格提示词：\n" + persona},
+		Instance:              models.WxWorkProtocolInstance{PersonaPrompt: persona},
+		GenerationInstruction: "只回答知识库有的内容。",
+		ReplyContract:         ReplyContractV2,
+	})
+	if count := strings.Count(policy, persona); count != 1 {
+		t.Fatalf("persona prompt duplicated %d times, want 1:\n%s", count, policy)
+	}
+}
+
+func TestBuildGeneratePolicyFallsBackToPersonaWhenSystemPromptMissing(t *testing.T) {
+	persona := "专属人设：说话简短。"
+	policy := buildGeneratePolicy(CompileInput{
+		Agent:                 models.AIAgent{},
+		Instance:              models.WxWorkProtocolInstance{PersonaPrompt: persona},
+		GenerationInstruction: "只回答知识库有的内容。",
+		ReplyContract:         ReplyContractV2,
+	})
+	if !strings.Contains(policy, persona) {
+		t.Fatalf("expected persona fallback when system prompt missing, got:\n%s", policy)
+	}
+}

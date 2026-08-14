@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/pkg/enums"
 )
 
 type testRuntimeTaskKnowledgeRetriever struct {
@@ -153,6 +154,47 @@ func TestRuntimeKnowledgeAnswerGroupUsesTopHitBeforeContextSelection(t *testing.
 	})
 	if got := runtimeKnowledgeAnswerGroup(result); got == "" || got != want {
 		t.Fatalf("answer group must follow the ranked top hit, got=%q want=%q", got, want)
+	}
+}
+
+func TestBuildRuntimeEvidenceBundleServiceRequestNoContextHandsOff(t *testing.T) {
+	// 要动作（service_request）且知识库无答案（no_context）→ 转人工二次确认，不再模型自由发挥。
+	items := []runtimeTaskKnowledgeItem{
+		{TaskKey: "t-change-room", Intent: "service_request", Query: "换1203", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit},
+	}
+	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
+	if got := actionCodes["t-change-room"]; got != "human_handoff" {
+		t.Fatalf("expected service_request no_context to hand off, got %q", got)
+	}
+}
+
+func TestBuildRuntimeEvidenceBundleInfoNoContextDoesNotHandOff(t *testing.T) {
+	// 要信息（hotel_info）且知识库无答案 → 不转人工，继续追问澄清。
+	items := []runtimeTaskKnowledgeItem{
+		{TaskKey: "t-wifi", Intent: "hotel_info", Query: "wifi怎么连", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit},
+	}
+	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
+	if got := actionCodes["t-wifi"]; got != "" {
+		t.Fatalf("expected hotel_info no_context not to hand off, got %q", got)
+	}
+}
+
+func TestBuildRuntimeEvidenceBundleServiceRequestHitWithoutHandoffKeywordAnswersDirectly(t *testing.T) {
+	// 要动作 + 知识库命中但 top-1 不含"转接" → 直接按知识回答，不转人工。
+	hit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "bed", Content: "本店不提供加床", Score: 0.9}
+	items := []runtimeTaskKnowledgeItem{
+		{
+			TaskKey: "t-bed", Intent: "service_request", Query: "加床",
+			Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+			Result: &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit},
+				ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+			},
+		},
+	}
+	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
+	if got := actionCodes["t-bed"]; got != "" {
+		t.Fatalf("expected service_request with concrete answer not to hand off, got %q", got)
 	}
 }
 

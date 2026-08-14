@@ -308,11 +308,12 @@ func buildGeneratePolicy(input CompileInput) string {
 	if value := strings.TrimSpace(input.StablePolicy); value != "" {
 		parts = append(parts, value)
 	} else {
-		if value := strings.TrimSpace(input.Agent.SystemPrompt); value != "" {
-			parts = append(parts, value)
-		}
-		if value := strings.TrimSpace(input.Instance.PersonaPrompt); value != "" {
-			parts = append(parts, value)
+		if systemPrompt := strings.TrimSpace(input.Agent.SystemPrompt); systemPrompt != "" {
+			parts = append(parts, systemPrompt)
+		} else if persona := strings.TrimSpace(input.Instance.PersonaPrompt); persona != "" {
+			// 防御兜底：正常链路 SystemPrompt 已由 BuildRuntimeAIAgent 合并过 personaPrompt，
+			// 此处只在 SystemPrompt 缺失时退而取原始人设，避免同一人设被重复塞入两遍。
+			parts = append(parts, persona)
 		}
 	}
 	if value := strings.TrimSpace(input.GenerationInstruction); value != "" {

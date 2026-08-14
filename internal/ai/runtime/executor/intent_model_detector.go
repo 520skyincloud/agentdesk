@@ -375,7 +375,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
 		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
 		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",
-		"【问信息 vs 要动作边界】“怎么办/怎么弄/怎么操作/能不能/在哪里/多久/几点/密码多少/流程是什么”都是问信息，归 hotel_info；“要人来/送/修/打扫/叫醒/搬行李/现场处理”才是要动作，归 service_request。例：“空调不制冷怎么办”是 hotel_info，“叫人来看看空调”才是 service_request。",
+		"【问信息 vs 要动作边界】判断标准是客户想不想要现状发生改变、或想不想要真人来做一件事：只是问“是什么/能不能/怎么弄/在哪/多久/几点/多少钱/流程是什么”，现状不变，都是要信息，归 hotel_info；“换/改/调/取消/退/升/降/送/修/加/订/办/打扫/叫醒/搬/拿/联系人来”等想改变现状或要真人介入的诉求，才是要动作，归 service_request。例：“空调不制冷怎么办”是 hotel_info，“叫人来看看空调”是 service_request。",
 		"【定位对象判断·关键】客户明确要其他地点（菜市场/超市/厕所/游乐场/银行/机场/景点/商场等）的定位或导航时，绝不能归 hotel_variable：在问酒店周边/前文推荐地点归 hotel_info（subIntent=surrounding_facilities），其他外部地点归 interaction（subIntent=clarify）。只有明确索要当前酒店位置（“酒店在哪/你们店定位发我/门店地址发我/导航到酒店”）才是 hotel_variable + subIntent=location。",
 		"【hotel_info 与 hotel_variable 边界】WiFi/停车/早餐/发票/电视/空调/用品/入住退房流程都是 hotel_info，不是 hotel_variable。电话/定位/小程序才 hotel_variable。例：“停车在哪里”是 hotel_info+parking，“定位发我/酒店地址发我”才是 hotel_variable+location。",
 		"【多任务】当前消息有多个问题或动作时，intentTasks 必须逐项拆分、按用户原顺序排列；不能只输出主意图或最后一句。",

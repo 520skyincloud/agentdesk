@@ -52,40 +52,9 @@ func validateReplySafety(input ReplyValidationInput) []contracts.ValidationIssue
 	return issues
 }
 
-// validateReplyFutureCommitClaims 单独校验"未来承诺"表达。它只给一次协议修复机会
-// （repairable），而不是像 safety 其它硬伤那样一票否决。因为模型表达"我看看/先确认"
-// 等中性短语并不一定构成承诺执行，直接 rejected 会误杀正常回复并触发转人工。
+// validateReplyFutureCommitClaims 单独校验"承诺去做 / 正在做 / 已经做了"的越权承诺。
+// 采用白名单判定（见 promise_allowlist.go）：句子出现承诺语态却未落到白名单动作上，
+// 属于硬伤，直接 rejected，由人工兜底；中性短语（我看看/我确认）不含承诺语态，不受影响。
 func validateReplyFutureCommitClaims(input ReplyValidationInput) []contracts.ValidationIssueV1 {
-	issues := make([]contracts.ValidationIssueV1, 0)
-	for partIndex, part := range input.Output.Parts {
-		if futureCommitPhrase(strings.TrimSpace(part.Content)) {
-			issues = append(issues, validationIssue("future_commit_claim", "$.parts", "reply promises a pending staff action without an action ledger entry"))
-		}
-		_ = partIndex
-	}
-	return issues
-}
-
-// futureCommitPhrase 识别“未落地就口头承诺后续动作”的表述。
-// 这些动作必须由 ActionLedger/工具链落地，模型不能口头承诺“我去查/我帮你问/记下了”。
-func futureCommitPhrase(content string) bool {
-	compact := compactReplyText(content)
-	if compact == "" {
-		return false
-	}
-	for _, phrase := range futureCommitPhrases() {
-		if strings.Contains(compact, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func futureCommitPhrases() []string {
-	return []string{
-		"我帮你查", "我查一下", "我先查", "我去查", "这就去查", "我去查一下",
-		"我帮你问", "我去问", "我帮你确认", "我确认一下", "我去确认",
-		"我帮你记下", "我记下了", "帮你记下", "我这边先确认", "确认下再回复",
-		"等下给你信", "稍后回复你", "稍后给你", "晚点回复", "我再去查",
-	}
+	return validateReplyPromiseAllowlist(input)
 }

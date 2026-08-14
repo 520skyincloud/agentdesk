@@ -265,6 +265,7 @@ func buildCompiledGenerationInstruction(ctx context.Context, req RunInput, histo
 		plan.Prompt,
 		buildWeatherToolInstruction(plan.Intent),
 		buildAutoHandoffDisabledInstruction(req, plan.Intent),
+		buildDisabledActionInstruction(),
 	}
 	if modes.ReplyContract == runtimeReplyContractLegacy {
 		parts = append(parts,

@@ -37,6 +37,7 @@ type runtimeTaskKnowledgeOutcome struct {
 type runtimeTaskKnowledgeItem struct {
 	TaskKey     string
 	Query       string
+	Intent      string
 	AnswerGroup string
 	Result      *retrievers.KnowledgeRetrieveResult
 	Status      enums.AIReplyTurnTaskKnowledgeStatus
@@ -77,7 +78,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	semaphore := make(chan struct{}, runtimeKnowledgeTaskConcurrency)
 	var wg sync.WaitGroup
 	for index, plan := range knowledgePlans {
-		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan)}
+		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent}
 		if index == 0 && len(knowledgePlans) == 1 && probe != nil {
 			items[index].Result = probe
 			items[index].Status = runtimeKnowledgeStatus(probe, nil)
@@ -217,6 +218,11 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			} else if knowledgeContentRequiresHandoff(top.Content) {
 				taskActionCodes[item.TaskKey] = "human_handoff"
 			}
+		}
+		// 要动作（service_request）但知识库没有任何答案（no_context）：系统没有自动执行能力，
+		// 统一转人工二次确认，不再让模型在"没答案"时自由发挥、口头编造"帮你办/改成1203"。
+		if outcome.Status == "no_context" && strings.TrimSpace(item.Intent) == "service_request" {
+			taskActionCodes[item.TaskKey] = "human_handoff"
 		}
 		if outcome.Status == "has_context" && len(outcome.SupportingRefs) == 0 {
 			outcome.Status = "unanswerable"
