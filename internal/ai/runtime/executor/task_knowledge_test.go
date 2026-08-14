@@ -225,3 +225,51 @@ func testKnowledgeTaskResults(plans []callbacks.ReplyTaskPlanTraceData) map[stri
 	}
 	return results
 }
+
+func TestRuntimeTaskKnowledgeQueryUsesAnchorForMultiTopicText(t *testing.T) {
+	plan := callbacks.ReplyTaskPlanTraceData{
+		Text:      "我饿了 有啥吃的推荐没 以及明天要去附近玩 你知道哪里好玩吗 还有啊 我怎么把门打开啊",
+		SubIntent: "door_access",
+	}
+	got := runtimeTaskKnowledgeQuery(plan)
+	if got != "开门 刷脸 房门 门锁 人脸 房卡" {
+		t.Fatalf("expected door_access anchor for multi-topic text, got %q", got)
+	}
+}
+
+func TestRuntimeTaskKnowledgeQueryKeepsSingleTopicText(t *testing.T) {
+	plan := callbacks.ReplyTaskPlanTraceData{Text: "怎么把门打开", SubIntent: "door_access"}
+	if got := runtimeTaskKnowledgeQuery(plan); got != "怎么把门打开" {
+		t.Fatalf("expected single-topic text unchanged, got %q", got)
+	}
+}
+
+func TestKnowledgeEvidenceMatchesTopicRejectsMismatch(t *testing.T) {
+	if knowledgeEvidenceMatchesTopic("door_access", []string{"周边推荐有骆岗公园、逍遥津公园、罍街"}) {
+		t.Fatal("expected door_access topic mismatch against surrounding content")
+	}
+	if !knowledgeEvidenceMatchesTopic("door_access", []string{"房门一般是刷脸开门"}) {
+		t.Fatal("expected door_access topic match against 刷脸开门 content")
+	}
+	if !knowledgeEvidenceMatchesTopic("surrounding_facilities", []string{"附近有骆岗公园、逍遥津公园"}) {
+		t.Fatal("expected surrounding_facilities topic match")
+	}
+}
+
+func TestBuildRuntimeEvidenceBundleDowngradesTopicMismatch(t *testing.T) {
+	hit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "play", Content: "周边推荐有骆岗公园、逍遥津公园", Score: 0.8}
+	items := []runtimeTaskKnowledgeItem{
+		{
+			TaskKey: "t-door", Intent: "hotel_info", SubIntent: "door_access", Query: "开门",
+			Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+			Result: &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit},
+				ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+			},
+		},
+	}
+	_, byTask, _ := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
+	if byTask["t-door"].Status != "no_context" {
+		t.Fatalf("expected topic mismatch downgrade to no_context, got %+v", byTask["t-door"])
+	}
+}

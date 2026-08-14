@@ -38,6 +38,7 @@ type runtimeTaskKnowledgeItem struct {
 	TaskKey     string
 	Query       string
 	Intent      string
+	SubIntent   string
 	AnswerGroup string
 	Result      *retrievers.KnowledgeRetrieveResult
 	Status      enums.AIReplyTurnTaskKnowledgeStatus
@@ -78,7 +79,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	semaphore := make(chan struct{}, runtimeKnowledgeTaskConcurrency)
 	var wg sync.WaitGroup
 	for index, plan := range knowledgePlans {
-		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent}
+		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent}
 		if index == 0 && len(knowledgePlans) == 1 && probe != nil {
 			items[index].Result = probe
 			items[index].Status = runtimeKnowledgeStatus(probe, nil)
@@ -184,6 +185,20 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			results = item.Result.ContextResults
 			if len(results) == 0 {
 				results = item.Result.Hits
+			}
+		}
+		// 证据主题校验兜底：逐任务检索即使命中，若命中内容全是别的主题（如“开门”任务却命中周边游玩），
+		// 也视为错配，降级 no_context，走转接/追问，而不是让模型拿错误证据自由发挥。
+		if outcome.Status == "has_context" && len(results) > 0 {
+			contents := make([]string, 0, len(results))
+			for _, r := range results {
+				contents = append(contents, strings.TrimSpace(r.Content))
+			}
+			if !knowledgeEvidenceMatchesTopic(item.SubIntent, contents) {
+				outcome.Status = "no_context"
+				outcome.ReasonCode = "knowledge_topic_mismatch"
+				outcome.SupportingRefs = nil
+				results = nil
 			}
 		}
 		for _, result := range results {
@@ -418,13 +433,95 @@ func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData,
 }
 
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
-	if text := strings.TrimSpace(currentTurnDisplayText(plan.Text)); text != "" {
+	text := strings.TrimSpace(currentTurnDisplayText(plan.Text))
+	// 意图模型把 task.text 填成整句原文（含多个主题）时，逐任务检索会错配到别的主题。
+	// 此时用 subIntent 的锚点词检索，保证每个子任务拿到自己的证据（例如“怎么开门”命中刷脸开门）。
+	if text != "" && isMultiTopicText(text) {
+		if anchor := knowledgeSubIntentAnchor(plan.SubIntent); anchor != "" {
+			return anchor
+		}
+	}
+	if text != "" {
 		return text
 	}
 	if subIntent := strings.TrimSpace(plan.SubIntent); subIntent != "" {
 		return subIntent
 	}
 	return strings.TrimSpace(plan.Intent)
+}
+
+// isMultiTopicText 判断 text 是否是「多主题整句」：含多个疑问语气词，或含明显的并列/追加连接词。
+// 单主题子句（如“怎么把门打开”）不命中，仍直接用原话检索。
+func isMultiTopicText(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" {
+		return false
+	}
+	questionCount := 0
+	for _, r := range compact {
+		switch r {
+		case '？', '?', '吗', '啊', '呢':
+			questionCount++
+		}
+	}
+	if questionCount >= 2 {
+		return true
+	}
+	return containsAny(compact, []string{"以及", "还有", "另外", "再加上", "顺便", "还有啊"})
+}
+
+// knowledgeSubIntentAnchor 是酒店信息子意图的检索锚点（核心主题词，空格分隔）。
+// 当 task.text 不可靠（整句多主题）时，用锚点词检索，保证每个子任务拿到自己的证据。
+// 这是「主题锚点」而非「动作黑名单」：每个已定义 subIntent 对应少量核心词，数量有限。
+func knowledgeSubIntentAnchor(subIntent string) string {
+	switch strings.TrimSpace(subIntent) {
+	case "door_access", "open_door", "door_lock":
+		return "开门 刷脸 房门 门锁 人脸 房卡"
+	case "network_wifi":
+		return "wifi 无线网 网络 密码"
+	case "tv_cast":
+		return "投屏 电视"
+	case "air_conditioner":
+		return "空调 制冷 制热"
+	case "checkin_process", "check_in":
+		return "入住 办理入住"
+	case "checkout_process":
+		return "退房 退房流程"
+	case "supplies_self_help":
+		return "拖鞋 牙刷 毛巾 用品 领取"
+	case "laundry":
+		return "洗衣 洗衣机"
+	case "parking":
+		return "停车 车位 停车场"
+	case "breakfast":
+		return "早餐 早饭"
+	case "invoice":
+		return "发票 报销 抬头"
+	case "surrounding_facilities":
+		return "附近 周边 景点 公园 街 推荐"
+	case "discount":
+		return "优惠 折扣 续住"
+	default:
+		return ""
+	}
+}
+
+// knowledgeEvidenceMatchesTopic 判断证据内容是否命中该 subIntent 的主题词。
+// 用于兜底：即使逐任务检索命中了内容，若这些内容全是别的主题（例如“开门”任务却命中周边游玩），
+// 也视为错配，降级 no_context，走转接/追问，而不是让模型拿错误证据自由发挥。
+func knowledgeEvidenceMatchesTopic(subIntent string, contents []string) bool {
+	anchor := knowledgeSubIntentAnchor(subIntent)
+	if anchor == "" {
+		return true // 无主题锚点的 subIntent 不做主题校验，避免误伤
+	}
+	terms := strings.Fields(anchor)
+	joined := strings.ToLower(strings.Join(contents, " "))
+	for _, term := range terms {
+		if strings.Contains(joined, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeKnowledgeStatus(result *retrievers.KnowledgeRetrieveResult, err error) enums.AIReplyTurnTaskKnowledgeStatus {

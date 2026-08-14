@@ -381,6 +381,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"【紧邻追问继承】若紧邻的上一条 AI 客服消息正在追问某业务问题的偏好、条件、范围或选项，客户当前的短回答就是该业务的连续补充，不是独立闲聊。必须继承该业务 intent/subIntent，并把 text 写成“上一轮业务主题 + 当前补充条件”的完整检索问题。例：AI 问附近餐饮口味、客户答“麻辣口味的”，应输出 hotel_info/surrounding_facilities。没有紧邻业务追问时，独立短语不得从更早历史强行继承旧主题。",
 		"【hotel_info 与 hotel_variable 边界】WiFi/停车/早餐/发票/电视/空调/用品/入住退房流程都是 hotel_info，不是 hotel_variable。电话/定位/小程序才 hotel_variable。例：“停车在哪里”是 hotel_info+parking，“定位发我/酒店地址发我”才是 hotel_variable+location。",
 		"【多任务】当前消息有多个问题或动作时，intentTasks 必须逐项拆分、按用户原顺序排列；不能只输出主意图或最后一句。",
+		"【task.text 纪律】intentTasks[].text 必须只写该任务对应的原话子句（如“怎么把门打开”“附近有什么好玩的”），禁止把整句原文复制到每个任务；整句包含多个主题时，必须按主题拆成多个 text，每个 text 只承载一个主题，否则知识检索会错配到别的主题。",
 		"【subIntent 纪律】subIntent 写具体业务子意图，不要空泛写 store_knowledge。hotel_info 常用：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、surrounding_facilities、discount。human_complaint_risk 常用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。",
 	}
 	if profile != nil {
