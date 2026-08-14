@@ -1675,23 +1675,6 @@ func TestRuntimePipelineLegacyHandoffIntentCanonicalizesToFiveCategory(t *testin
 	}
 }
 
-func TestRuntimePipelineWeatherQueryStaysSocialConfirmAndUsesTool(t *testing.T) {
-	setupRuntimeIntentConfigTestDB(t)
-	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
-	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "interaction", Name: "互动", Priority: 90, MatchMode: "hybrid", Status: enums.StatusOk})
-	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "帮我查一下合肥今天的天气"}}
-	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "interaction", SubIntent: "weather_query", IntentConfidence: 0.88, ShouldReply: true, NeedsTool: true, ResourceAction: "get_weather", Reason: "模型识别为天气闲聊查询"}})
-	if plan.Intent.PrimaryIntent != "interaction" || plan.Intent.SubIntent != "weather_query" {
-		t.Fatalf("expected weather query under interaction, got %#v", plan.Intent)
-	}
-	if !plan.Intent.NeedsTool || plan.Intent.NeedsKnowledge || plan.Intent.ResourceAction != "get_weather" {
-		t.Fatalf("expected weather tool only, got %#v", plan.Intent)
-	}
-	if !plan.ToolKnowledge.ToolTriggered || plan.ToolKnowledge.KnowledgeTriggered {
-		t.Fatalf("expected tool trace without knowledge, got %#v", plan.ToolKnowledge)
-	}
-}
-
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

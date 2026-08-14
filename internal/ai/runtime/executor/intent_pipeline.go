@@ -390,9 +390,6 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 			goal = "接住客户对上一轮误会的纠正"
 			useContext = []string{"currentTurn", "immediatelyPreviousAssistantMessage"}
 			doNot = append(doNot, "不要补答旧主题", "不要解释系统内部原因", "不要追问旧业务问题")
-		} else if intent.SubIntent == "weather_query" || intent.ResourceAction == "get_weather" {
-			goal = "调用天气工具回答闲聊型天气查询"
-			doNot = append(doNot, "不要说查不到", "不要让用户自己看手机天气")
 		} else if intent.SubIntent == "frustration" {
 			goal = "接住客户不满，回到当前问题继续解决"
 			doNot = append(doNot, "不要主动转人工", "不要反复确认转人工")

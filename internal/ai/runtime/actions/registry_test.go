@@ -11,7 +11,6 @@ func TestRegistryRegistersBuiltinActions(t *testing.T) {
 		"provide_location":     KindBuiltin,
 		"provide_mini_program": KindBuiltin,
 		"provide_phone":        KindBuiltin,
-		"query_weather":        KindTool,
 		"query_room_status":    KindExternal,
 		"query_member_level":   KindExternal,
 	}

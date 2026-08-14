@@ -27,7 +27,6 @@ func promiseActionSurface() []string {
 		"定位", "地址", "导航",
 		"小程序",
 		"电话", "号码", "联系电话",
-		"天气",
 	}
 }
 

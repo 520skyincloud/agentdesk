@@ -155,7 +155,6 @@ func buildLegacyGenerateMessagesStrict(
 	messages = append(messages, history.Messages...)
 	for _, instruction := range []string{
 		buildRecentMediaContextInstruction(req, history, plan.Intent),
-		buildWeatherToolInstruction(plan.Intent),
 		buildCurrentTurnBoundaryInstruction(req, history, plan.Intent),
 		buildRecentAnsweredTurnInstruction(req, history),
 		generationGuardInstruction(ctx),
@@ -263,7 +262,6 @@ func buildCompiledGenerationInstruction(ctx context.Context, req RunInput, histo
 	parts := []string{
 		generationGuardInstruction(ctx),
 		plan.Prompt,
-		buildWeatherToolInstruction(plan.Intent),
 		buildAutoHandoffDisabledInstruction(req, plan.Intent),
 		buildDisabledActionInstruction(),
 	}
@@ -607,13 +605,6 @@ func looksLikeReturningCustomerTurn(text string) bool {
 		return false
 	}
 	return replyengine.ContainsAny(compact, "三天后", "两天后", "几天后", "隔天", "过几天", "又来了", "我又来了", "回来继续", "再次咨询")
-}
-
-func buildWeatherToolInstruction(intent callbacks.IntentTraceData) string {
-	if strings.TrimSpace(intent.SubIntent) != "weather_query" && strings.TrimSpace(intent.ResourceAction) != "get_weather" {
-		return ""
-	}
-	return "当前阶段已识别为天气查询。你必须调用 get_weather 工具获取真实天气后再回复；不要直接说你查不到、以手机天气为准。若当前消息没有明确城市或地点，先简短追问城市；若有城市或地点，直接把它作为 location 调用工具。"
 }
 
 func buildRecentMediaContextInstruction(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) string {

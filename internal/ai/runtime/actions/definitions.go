@@ -45,14 +45,6 @@ func init() {
 		DefaultEnabled: true,
 	})
 	Register(Definition{
-		Code:           "query_weather",
-		Name:           "查天气",
-		Kind:           KindTool,
-		Description:    "查询指定城市天气。",
-		ExecutorRef:    "builtin/get_weather",
-		DefaultEnabled: true,
-	})
-	Register(Definition{
 		Code:           "query_room_status",
 		Name:           "查房态",
 		Kind:           KindExternal,

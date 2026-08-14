@@ -18,7 +18,6 @@ func init() {
 	actions.RegisterExecutor("provide_location", declarativeActionExecutor{})
 	actions.RegisterExecutor("provide_mini_program", declarativeActionExecutor{})
 	actions.RegisterExecutor("provide_phone", declarativeActionExecutor{})
-	actions.RegisterExecutor("query_weather", declarativeActionExecutor{})
 	actions.RegisterExecutor("create_ticket", declarativeActionExecutor{})
 }
 

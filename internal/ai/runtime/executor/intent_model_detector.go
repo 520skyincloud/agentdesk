@@ -18,7 +18,6 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/strictjson"
-	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
@@ -700,15 +699,8 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		if intent.NeedsClarification && strings.TrimSpace(intent.SubIntent) == "chat" {
 			intent.SubIntent = "clarify"
 		}
-		if strings.TrimSpace(intent.SubIntent) == "weather_query" || strings.TrimSpace(intent.ResourceAction) == "get_weather" {
-			intent.NeedsClarification = false
-			intent.NeedsKnowledge = false
-			intent.NeedsTool = true
-			intent.NeedsResource = false
-			intent.NeedsHumanRoute = false
-			intent.ResourceAction = "get_weather"
-			intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinWeather.Code)
-		}
+		// 天气查询能力已下线（后续作为技能重新接入）。天气诉求按普通互动自然接话，
+		// 不再触发 NeedsTool / 工具调用链路。
 	case "human_complaint_risk":
 		intent.NeedsKnowledge = false
 		intent.NeedsResource = false
