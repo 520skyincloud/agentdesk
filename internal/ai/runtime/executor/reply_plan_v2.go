@@ -234,11 +234,36 @@ func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *con
 				continue
 			}
 			for _, taskKey := range resource.TaskKeys {
+				// ResourceEligibility Phase1（文档 10.3 规则 7）：地址文字类任务的
+				// 资源诉求是文字，默认禁止自动附图，即使检索命中了带图记录。
+				if planByTask := planByTaskKey(plans, taskKey); planByTask != nil && isAddressTextSubIntent(planByTask.SubIntent) {
+					continue
+				}
 				add(services.AIReplyTurnActionInput{TaskKey: taskKey, ActionType: "send_knowledge_image", ResourceType: "image:" + resource.Ref})
 			}
 		}
 	}
 	return ret
+}
+
+func planByTaskKey(plans []callbacks.ReplyTaskPlanTraceData, taskKey string) *callbacks.ReplyTaskPlanTraceData {
+	for index := range plans {
+		if plans[index].TaskKey == taskKey {
+			return &plans[index]
+		}
+	}
+	return nil
+}
+
+// isAddressTextSubIntent 判断子意图是否属于「要地址文字」类。
+// 地址文字任务的 resource demand 是 text，图片默认禁止（文档 10.3）。
+func isAddressTextSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "address", "address_for_delivery", "delivery_address", "store_address", "order_food_delivery":
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeActionTypeFromPlan(plan callbacks.ReplyTaskPlanTraceData) (string, string) {

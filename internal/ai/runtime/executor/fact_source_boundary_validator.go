@@ -1,0 +1,154 @@
+package executor
+
+import (
+	"strings"
+
+	"agent-desk/internal/ai/runtime/contracts"
+)
+
+// authoritativeStoreAddress 返回当前门店的权威地址（hydrate 后实例 → Store 表）。
+// 这是 protected store fact（文档 5.4）：只能来自 Store 表，
+// 不得来自知识库、客户陈述、客户图片 OCR、历史 AI 回复或模型推断。
+func authoritativeStoreAddress(req RunInput) string {
+	instance := findRuntimeWxWorkInstance(req)
+	if instance == nil {
+		return ""
+	}
+	return strings.TrimSpace(instance.StoreAddress)
+}
+
+// validateReplyFactSourceBoundary 是 FactSourceBoundary 的 Phase1 落地（文档 7/15.2）：
+// 对「受保护门店地址」做确定性值比对。
+//
+// 规则：地址类任务（reply 中 part 的 task 对应地址子意图）若声明了地址值，
+// 该值必须与权威门店地址一致（领域规范化后比较，允许格式差异）；
+// 出现任何与权威值不一致的地址断言（如客户 OCR 里的“壹间公寓高新社区”）直接 rejected。
+// 这是业务事实错误，不可走协议修复。
+func validateReplyFactSourceBoundary(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	planByTask := make(map[string]contracts.ReplyPlanTaskV2, len(input.Plan.Tasks))
+	for _, task := range input.Plan.Tasks {
+		planByTask[task.TaskKey] = task
+	}
+	issues := make([]contracts.ValidationIssueV1, 0)
+	for _, part := range input.Output.Parts {
+		content := strings.TrimSpace(part.Content)
+		if content == "" {
+			continue
+		}
+		addressTask := false
+		for _, taskKey := range part.TaskKeys {
+			if task, ok := planByTask[taskKey]; ok && isAddressTextSubIntent(task.SubIntent) {
+				addressTask = true
+				break
+			}
+		}
+		if !addressTask {
+			continue
+		}
+		// 找到本轮证据中的权威地址值（S* store_fact）。
+		authoritative := ""
+		for _, item := range input.Evidence.Items {
+			if item.SourceType == "store_fact" && strings.Contains(item.Title, "门店地址") {
+				authoritative = strings.TrimSpace(item.Content)
+				break
+			}
+		}
+		if authoritative == "" {
+			// 权威地址未配置：地址类任务不得下确定性地址断言（只能说明未配置或追问）。
+			if assertedAddressAssertion(content) {
+				issues = append(issues, validationIssue(
+					"protected_fact_source_violation",
+					"$.parts",
+					"address task asserts a concrete address while the authoritative store address is unconfigured",
+				))
+			}
+			continue
+		}
+		// 正文包含具体地址断言但与权威值不一致 → 拒绝（壹间公寓场景）。
+		if asserted := assertedAddressAssertion(content); asserted {
+			if !addressMatchesAuthoritative(content, authoritative) {
+				issues = append(issues, validationIssue(
+					"protected_fact_source_violation",
+					"$.parts",
+					"address assertion does not match the authoritative store address",
+				))
+			}
+		}
+	}
+	return issues
+}
+
+// assertedAddressAssertion 粗判正文是否包含具体地址断言：
+// 中文地址特征 = “路/街/道/号/层/楼/座/栋/室”等地标 + 数字（阿拉伯或中文数字），
+// 或出现“社区/公寓/大厦/广场/小区”类场所词（如“壹间公寓高新社区”，常无阿拉伯数字）。
+func assertedAddressAssertion(content string) bool {
+	compact := strings.TrimSpace(content)
+	if compact == "" {
+		return false
+	}
+	hasLandmark := strings.ContainsAny(compact, "路街道号层楼座栋室")
+	hasPlace := strings.ContainsAny(compact, "社区公寓大厦广场小区")
+	hasDigits := strings.ContainsAny(compact, "0123456789一二三四五六七八九十百千壹贰叁肆伍陆柒捌玖")
+	return (hasLandmark && hasDigits) || hasPlace
+}
+
+// addressMatchesAuthoritative 判断正文中的地址断言是否与权威地址一致。
+// 关键信号是「路/街/道 + 门牌号」：权威地址中的道路+门牌核心（如“路392”）
+// 必须出现在正文中；“12-15层/12至15层”这类楼层格式差异不影响判定。
+// 权威地址没有道路+门牌信号时，退化为规范化全文包含比较。
+func addressMatchesAuthoritative(content, authoritative string) bool {
+	normContent := normalizeAddressForCompare(content)
+	normAuth := normalizeAddressForCompare(authoritative)
+	if normAuth == "" {
+		return true
+	}
+	if key, ok := roadHouseNumberKey(normAuth); ok {
+		return strings.Contains(normContent, key)
+	}
+	return strings.Contains(normContent, normAuth) || strings.Contains(normAuth, normContent)
+}
+
+// roadHouseNumberKey 从规范化地址中提取「道路字 + 紧随的门牌数字」关键信号。
+// 例：“合肥市包河区水阳江路392号职工之家1215整层” -> “路392”。
+func roadHouseNumberKey(normAuth string) (string, bool) {
+	runes := []rune(normAuth)
+	for i, r := range runes {
+		if r != '路' && r != '街' && r != '道' {
+			continue
+		}
+		digits := 0
+		for j := i + 1; j < len(runes) && digits < 6; j++ {
+			if runes[j] >= '0' && runes[j] <= '9' {
+				digits++
+				continue
+			}
+			break
+		}
+		if digits > 0 {
+			return string(runes[i : i+1+digits]), true
+		}
+	}
+	return "", false
+}
+
+// normalizeAddressForCompare 保留汉字与数字，丢弃其余字符；
+// 同时把“至/到/-”统一删掉，使“12至15层”与“12-15层”等价。
+func normalizeAddressForCompare(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 0x4e00 && r <= 0x9fff: // CJK 统一汉字
+			switch r {
+			case '至', '到':
+				// 连接词归一：丢弃
+			default:
+				b.WriteRune(r)
+			}
+		default:
+			// 标点、字母、空白丢弃
+		}
+	}
+	return b.String()
+}

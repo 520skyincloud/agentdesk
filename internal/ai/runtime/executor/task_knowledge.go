@@ -173,7 +173,15 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 		RetrievalStatus:  "not_needed", Items: []contracts.EvidenceItemV1{}, Resources: []contracts.EvidenceResourceV1{},
 	}
 	indexes := make(map[string]runtimeEvidenceIndex)
+	storeFactSeq := 0
+	addressTaskKeys := make([]string, 0, len(items))
 	for _, item := range items {
+		// ProtectedFact Phase1（文档 9.3/18.2）：地址类任务的 store.address 是权威事实，
+		// 从 hydrate 后实例确定性取值注入 S* 证据。Generate 只能用它声明酒店地址，
+		// FactSourceBoundaryValidator 拒绝任何与它不一致的地址断言（如客户 OCR 里的壹间公寓）。
+		if isAddressTextSubIntent(item.SubIntent) {
+			addressTaskKeys = append(addressTaskKeys, item.TaskKey)
+		}
 		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
 		switch item.Status {
 		case enums.AIReplyTurnTaskKnowledgeStatusFailed:
@@ -233,6 +241,30 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			outcome.ReasonCode = "knowledge_context_not_supporting"
 		}
 		byTask[item.TaskKey] = outcome
+	}
+
+	// ProtectedFact Phase1：地址类任务注入 store.address 权威 S* 证据（文档 9.3）。
+	// 有值时地址任务至少 has_context 且 S ref 进入 SupportingRefs；
+	// 未配置时不伪造，地址断言由边界校验兜底（禁止从 OCR/历史猜地址）。
+	if len(addressTaskKeys) > 0 {
+		if address := authoritativeStoreAddress(req); address != "" {
+			storeFactSeq++
+			ref := fmt.Sprintf("S%d", storeFactSeq)
+			bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
+				Ref: ref, SourceType: "store_fact", TaskKeys: append([]string(nil), addressTaskKeys...),
+				Title: "当前门店地址（系统权威）", Content: address, Score: 1,
+				Answerability: "supporting", ResourceRefs: []string{},
+			})
+			for _, taskKey := range addressTaskKeys {
+				outcome := byTask[taskKey]
+				outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, ref)
+				if outcome.Status == "no_context" {
+					outcome.Status = "has_context"
+					outcome.ReasonCode = "authoritative_store_fact_available"
+				}
+				byTask[taskKey] = outcome
+			}
+		}
 	}
 
 	if merged != nil {
@@ -324,6 +356,9 @@ func runtimeEvidenceResourceTaskKeys(items []runtimeTaskKnowledgeItem) map[strin
 		if item.Result == nil {
 			continue
 		}
+		// 检索与回答保持 top 多条；此处只是记录「哪个命中记录关联哪些任务」，
+		// 图片是否真的发送由 runtimeActionInputs 的 ResourceEligibility 门禁决定
+		//（如地址文字任务禁图），不在绑定层做限制。
 		results := append([]rag.RetrieveResult(nil), item.Result.ContextResults...)
 		results = append(results, item.Result.Hits...)
 		for _, result := range results {

@@ -69,6 +69,13 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		result.Errors = append(result.Errors, issues...)
 		result.Status = "rejected"
 	}
+	// FactSourceBoundary Phase1（文档 15.2）：地址类任务的地址断言必须与权威门店地址一致，
+	// 客户 OCR/历史里的地址（壹间公寓）一律 rejected。业务事实错误不可协议修复。
+	if issues := validateReplyFactSourceBoundary(input); len(issues) > 0 {
+		result.Checks.FactGrounding = "failed"
+		result.Errors = append(result.Errors, issues...)
+		result.Status = "rejected"
+	}
 	if issues := validateReplyActionReferences(input); len(issues) > 0 {
 		result.Checks.ActionReferences = "failed"
 		result.Errors = append(result.Errors, issues...)
