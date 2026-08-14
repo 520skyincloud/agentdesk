@@ -540,7 +540,6 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 		"历史消息已用[历史消息][说话人][时间]标注；必须分清客户、AI客服、人工客服分别说了什么，不能把 AI 或人工客服说过的话当成客户新诉求。",
 		"最近原始消息、媒体理解和长期记忆只用于解释指代、补足背景或避免重复询问；如果当前消息是新主题，禁止补答上一轮早餐、停车、投诉、安全、转人工等旧主题。",
 		"知识库或变量结果只在命中当前问题时使用；检索结果里出现了当前问题没问的早餐、停车、电视、发票、定位、小程序等内容时，禁止拼进回复。",
-		"事实来源分级·关键：门店地址/电话/导航名/定位/房态/会员等级属于「系统事实」，只能用系统门店配置或知识库证据回答，绝不能从客户原话、客户图片OCR、客户语音转写里抓一个看着像的地址/电话来补；这些客户输入只用于理解客户意图，不是门店事实。系统事实缺失时只能说明未配置或追问，禁止编造。",
 		"最终回复只输出给客人的话，不得输出思考过程、规则复述、判断依据或“我先看看/从历史来看/按当前规则”这类内部分析，也不得输出“店助补充/若不确定请先问同事”等内部知识治理备注。",
 		"动作安全：没有工具、资源提交、接待路由或明确系统执行结果时，不能承诺或暗示任何真实动作、内部核实、通知转告、登记安排、现场查看、后续跟进或已完成状态。知识库没写明时，只能说当前资料没写明并追问一个关键点；真要人工时必须进入人工意图/接待路由，不能口头假装后续有人处理。",
 	}
@@ -551,9 +550,6 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	parts = append(parts, currentLine+"："+preview(boundaryText, 240))
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果当前问题里某一项知识库没有明确写明，只能说“当前资料没写明”并追问一个关键点。")
-	}
-	if instruction := buildStoreAddressTextInstruction(req, intent); instruction != "" {
-		parts = append(parts, instruction)
 	}
 	if len(intent.IntentTasks) > 1 {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答，缺资料时逐项说明“当前资料没写明”，不能说“帮你查/我查一下”。")
@@ -585,47 +581,6 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 func isSocialCorrectionSubIntent(subIntent string) bool {
 	switch strings.TrimSpace(subIntent) {
 	case "correction", "clarification", "misunderstanding", "deny_voice", "voice_correction":
-		return true
-	default:
-		return false
-	}
-}
-
-// buildStoreAddressTextInstruction 当本轮意图是「要门店地址文字」类子意图（如外卖地址/收货地址）
-// 时，注入系统权威门店地址文本，让模型直接回答文字、不发定位、不抓客户图片 OCR 里的地址。
-func buildStoreAddressTextInstruction(req RunInput, intent callbacks.IntentTraceData) string {
-	if intent.PrimaryIntent != "hotel_info" {
-		return ""
-	}
-	if !isAddressTextRequestSubIntent(intent.SubIntent) {
-		// 也检查多任务里是否有地址文字类任务
-		found := false
-		for _, task := range intent.IntentTasks {
-			if task.Intent == "hotel_info" && isAddressTextRequestSubIntent(task.SubIntent) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return ""
-		}
-	}
-	instance := findRuntimeWxWorkInstance(req)
-	if instance == nil {
-		return "门店地址类问题：当前账号暂未配置门店地址，只能说明未配置或追问，不能编造、不能把客户图片里出现的地址当门店地址。"
-	}
-	address := strings.TrimSpace(instance.StoreAddress)
-	if address == "" {
-		return "门店地址类问题：当前账号暂未配置门店地址，只能说明未配置或追问，不能编造、不能把客户图片里出现的地址当门店地址。"
-	}
-	name := firstNonEmpty(instance.StoreNavigationName, instance.EmployeeName, "当前门店")
-	return "门店地址文字：" + name + "，地址：" + address + "。这是系统权威门店地址，直接用它回答客户“外卖地址/收货地址/酒店地址”这类要地址文字的问题；不要发定位、不要编造、不要把客户图片 OCR 里的地址当成门店地址。"
-}
-
-// isAddressTextRequestSubIntent 判断子意图是否属于「要地址文字」这一类（不是发定位）。
-func isAddressTextRequestSubIntent(subIntent string) bool {
-	switch strings.TrimSpace(subIntent) {
-	case "address_for_delivery", "delivery_address", "address":
 		return true
 	default:
 		return false
@@ -672,7 +627,6 @@ func buildRecentMediaContextInstruction(req RunInput, history adapter.HistoryBui
 		return ""
 	}
 	return "本轮图片/文件上下文：当前用户问题是在追问最近一条已解析的图片或文件文本。请直接结合下面内容回答当前问法，不要把图片/文件当成无关历史，不要机械复述整段内容，不要说系统识别。语音仍按既有语转文文本链路处理。\n" +
-		"【事实来源边界·关键】下面这段是「客户发来的图片/文件内容」，不是门店资料：里面的地址、电话、价格、订单等文字都只是客户自己的输入，只能用来理解客户意图，绝不能当作酒店自身的事实回给客户。酒店地址/电话/定位等门店事实必须用系统门店配置，客户图片里出现这些字段时禁止采信。\n" +
 		preview(mediaText, 1200)
 }
 

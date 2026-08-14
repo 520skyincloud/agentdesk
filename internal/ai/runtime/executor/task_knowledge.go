@@ -501,6 +501,8 @@ func knowledgeSubIntentAnchor(subIntent string) string {
 		return "附近 周边 景点 公园 街 推荐"
 	case "discount":
 		return "优惠 折扣 续住"
+	case "address", "address_for_delivery", "delivery_address", "store_address":
+		return "地址 位置 收货 外卖地址 酒店地址 大厦 大楼 街道 路"
 	default:
 		return ""
 	}
