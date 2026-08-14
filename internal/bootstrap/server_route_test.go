@@ -71,6 +71,7 @@ func TestNewServerRegistersGinRoutes(t *testing.T) {
 		http.MethodPost + " /api/dashboard/conversation/takeover/request",
 		http.MethodPost + " /api/dashboard/conversation/takeover/direct",
 		http.MethodPost + " /api/dashboard/conversation/takeover/review",
+		http.MethodPost + " /api/dashboard/conversation/takeover/activate",
 		http.MethodPost + " /api/dashboard/conversation/resume_ai",
 		http.MethodGet + " /api/dashboard/conversation/customer_tag/options",
 		http.MethodGet + " /api/dashboard/conversation/customer_tag/change_log",

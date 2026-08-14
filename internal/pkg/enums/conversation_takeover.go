@@ -3,10 +3,11 @@ package enums
 type ConversationTakeoverRequestStatus string
 
 const (
-	ConversationTakeoverRequestStatusPending   ConversationTakeoverRequestStatus = "pending"
-	ConversationTakeoverRequestStatusApproved  ConversationTakeoverRequestStatus = "approved"
-	ConversationTakeoverRequestStatusRejected  ConversationTakeoverRequestStatus = "rejected"
-	ConversationTakeoverRequestStatusCancelled ConversationTakeoverRequestStatus = "cancelled"
+	ConversationTakeoverRequestStatusPending    ConversationTakeoverRequestStatus = "pending"
+	ConversationTakeoverRequestStatusAuthorized ConversationTakeoverRequestStatus = "authorized"
+	ConversationTakeoverRequestStatusApproved   ConversationTakeoverRequestStatus = "approved"
+	ConversationTakeoverRequestStatusRejected   ConversationTakeoverRequestStatus = "rejected"
+	ConversationTakeoverRequestStatusCancelled  ConversationTakeoverRequestStatus = "cancelled"
 )
 
 func IsTerminalConversationTakeoverRequestStatus(status ConversationTakeoverRequestStatus) bool {

@@ -546,10 +546,12 @@ type Conversation struct {
 }
 
 // ConversationTakeoverRequest records one active request to take over an
-// unassigned conversation from AI or the human pool. Assigned conversations
-// continue through the existing transfer flow. ActiveKey is nullable so
-// completed requests remain immutable history while a unique key prevents
-// duplicate pending requests for the same conversation session.
+// unassigned conversation from AI or the human pool. An authorized request
+// has passed supervisor review but still requires the requester to confirm
+// the conversation switch before an assignment is created. Assigned
+// conversations continue through the existing transfer flow. ActiveKey is
+// nullable so completed requests remain immutable history while a unique key
+// prevents duplicate active requests for the same conversation session.
 type ConversationTakeoverRequest struct {
 	ID                int64                                   `gorm:"primaryKey;autoIncrement"`
 	TenantID          int64                                   `gorm:"type:bigint;not null;default:0;index"`
