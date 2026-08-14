@@ -841,7 +841,13 @@ type AIReplyJob struct {
 	LeaseExpiresAt      *time.Time                  `gorm:"type:datetime;index"`
 	ResultCode          string                      `gorm:"type:varchar(80);not null;default:'';index"`
 	LastErrorClass      string                      `gorm:"type:varchar(80);not null;default:'';index"`
-	StartedAt           *time.Time                  `gorm:"type:datetime;index"`
+	// 多模态契约 3.3：阶段恢复。ResumeStage 是最早恢复入口；Checkpoint 只
+	// 证明 scope/Task/Evidence/Plan 未变化，不保存模型正文。
+	ResumeStage             string     `gorm:"type:varchar(24);not null;default:'intent';index"`
+	StageAttemptCount       int        `gorm:"type:int;not null;default:0"`
+	CheckpointFingerprint   string     `gorm:"type:varchar(64);not null;default:'';index"`
+	ProgressNoticeMessageID int64      `gorm:"type:bigint;not null;default:0;index"`
+	StartedAt               *time.Time `gorm:"type:datetime;index"`
 	CompletedAt         *time.Time                  `gorm:"type:datetime;index"`
 	AuditFields
 }

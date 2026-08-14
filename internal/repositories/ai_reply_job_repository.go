@@ -231,3 +231,30 @@ func (r *aiReplyJobRepository) FindMessagesMissingJobs(db *gorm.DB, cutoff time.
 		Order("message.id ASC").Limit(limit).Find(&ret).Error
 	return ret, err
 }
+
+// CASAdvanceStage 契约 22.16：阶段推进时归零 StageAttemptCount 并写入
+// checkpoint fingerprint。只在当前 ResumeStage 与 from 匹配时生效。
+func (r *aiReplyJobRepository) CASAdvanceStage(db *gorm.DB, id int64, from, to, checkpoint string, now time.Time) (bool, error) {
+	result := db.Model(&models.AIReplyJob{}).
+		Where("id = ? AND resume_stage = ?", id, from).
+		Updates(map[string]any{
+			"resume_stage":           to,
+			"stage_attempt_count":    0,
+			"checkpoint_fingerprint": checkpoint,
+			"updated_at":             now,
+			"update_user_name":       "ai_reply_stage",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// IncrementStageAttempt 同一阶段编排级重入时 +1。
+func (r *aiReplyJobRepository) IncrementStageAttempt(db *gorm.DB, id int64, now time.Time) (bool, error) {
+	result := db.Model(&models.AIReplyJob{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"stage_attempt_count": gorm.Expr("stage_attempt_count + 1"),
+			"updated_at":          now,
+			"update_user_name":    "ai_reply_stage",
+		})
+	return result.RowsAffected == 1, result.Error
+}
