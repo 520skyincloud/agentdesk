@@ -194,7 +194,7 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 		if normalizeRuntimeTaskText(plan.Text) == "" {
 			continue
 		}
-		sourceMessageID := matchRuntimeTaskSourceMessage(plan, fallbackMessageID, sourceMessages, usedSourceMessageIDs)
+		sourceMessageID, spanStart, spanEnd := matchRuntimeTaskSourceMessageWithSpan(plan, fallbackMessageID, sourceMessages, usedSourceMessageIDs)
 		if sourceMessageID <= 0 {
 			return nil, nil, fmt.Errorf("AI reply task source message unavailable")
 		}
@@ -209,6 +209,9 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			RelationType:    plan.RelationType,
 			ResourceAction:  plan.ResourceAction,
 			QuestionText:    plan.Text,
+			// 契约 10.2：来源片段确定性绑定，防止正文与意图跨消息串线。
+			SourceSpanStart: spanStart,
+			SourceSpanEnd:   spanEnd,
 		}
 		taskKey := services.AIReplyTurnTaskService.StableTaskKey(input)
 		plan.TaskKey = taskKey
@@ -260,6 +263,40 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 		plannedBySourceMessageID[source.ID] = duplicatePlan
 	}
 	return inputs, plannedByKey, nil
+}
+
+// matchRuntimeTaskSourceMessageWithSpan 契约 10.2/4.14：来源绑定按
+// 1) 归一化全文相等；2) 归一化包含（正文片段真实存在于该消息，返回 rune span）；
+// 3) sequence/最后消息兜底（span 为 0，视为无证明）。
+// 包含式绑定取代纯 sequence 优先级，修复 U1 正文配 U2 意图的串线。
+func matchRuntimeTaskSourceMessageWithSpan(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) (int64, int, int) {
+	needle := normalizeRuntimeTaskText(plan.Text)
+	if needle != "" {
+		for _, message := range messages {
+			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+			candidate := normalizeRuntimeTaskText(raw)
+			if _, alreadyUsed := used[message.ID]; alreadyUsed || candidate == "" {
+				continue
+			}
+			if candidate == needle {
+				return message.ID, 0, len([]rune(raw))
+			}
+		}
+		// 包含式：fragment 必须真实存在于该消息原文（去运输包装后）。
+		for _, message := range messages {
+			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+			candidate := normalizeRuntimeTaskText(raw)
+			if _, alreadyUsed := used[message.ID]; alreadyUsed || candidate == "" || len(candidate) < len(needle) {
+				continue
+			}
+			if strings.Contains(candidate, needle) {
+				runes := []rune(raw)
+				return message.ID, 0, len(runes)
+			}
+		}
+	}
+	messageID := matchRuntimeTaskSourceMessage(plan, fallbackMessageID, messages, used)
+	return messageID, 0, 0
 }
 
 func matchRuntimeTaskSourceMessage(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) int64 {
