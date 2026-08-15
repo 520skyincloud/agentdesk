@@ -178,3 +178,19 @@ git diff --check
   `agentdesk.service`。
 - 新增表可保留，不阻止旧版本启动；如需要恢复数据，使用上述发布前 MySQL 快照。
 - 回滚不需要修改 Nginx、ESA、FastGPT、NewAPI、生产环境文件或企微回调配置。
+
+## 2026-08-15 AI 开关可见性与主动接管修复
+
+- 生产复核确认超管账号具备 `super_admin`、`conversation.view`、
+  `conversation.send` 和 `conversation.assign`；不能接管不是账号权限问题。
+- 原接管状态只允许 `HQ_AGENTDESK_PENDING + NeedHumanFollowUp` 直接接管，导致
+  未分配的 `AI_SERVING`、`AI_FALLBACK` 会话对组长及管理员返回
+  `canDirectTakeover=false`。这与“通过原 AI 回复开关主动接管”的产品语义冲突。
+- 修复后，超管、管理员、租户管理员和负责当前组的客服组长可确认接管未分配的
+  `AI_SERVING`、`AI_FALLBACK` 或有效 `HQ_AGENTDESK_PENDING` 会话；普通客服和
+  门店员工继续走申请审批，已经分配给其他人的会话继续使用转派流程。
+- 会话编辑器左侧工具按钮原本不可收缩，实际工作台宽度不足时会把右侧 AI 开关
+  挤出 `overflow-hidden` 容器。修复后左侧工具区可横向滚动，右侧 AI 开关与发送键
+  固定为不可收缩区域，开关在所有开放会话中保持可见。
+- 本修复不修改数据库、公开 DTO、WebSocket、AI Runtime、知识库、企微协议、
+  FastGPT、NewAPI、Token/Usage 或计费归因。

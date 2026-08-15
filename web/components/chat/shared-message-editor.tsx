@@ -375,7 +375,13 @@ export function SharedMessageEditor({
         </div>
       ) : null}
       <div className={getToolbarClassName(variant)}>
-        <div className={isCustomer ? "flex items-center gap-1.5" : "flex items-center gap-1"}>
+        <div
+          className={
+            isCustomer
+              ? "flex items-center gap-1.5"
+              : "agent-desk-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+          }
+        >
           <Popover open={emojiPickerOpen} onOpenChange={setEmojiPickerOpen}>
             <PopoverTrigger
               render={
@@ -509,13 +515,13 @@ export function SharedMessageEditor({
             </Button>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className={isCustomer ? "flex items-center gap-2" : "flex shrink-0 items-center gap-2 pl-2"}>
           {isCustomer ? (
             <p className="hidden text-[10px] text-muted-foreground sm:block">
               {t("conversation.enterToSend")}
             </p>
           ) : (
-            <label className="flex items-center gap-2 text-sm text-foreground">
+            <label className="flex shrink-0 items-center gap-2 text-sm text-foreground">
               <span>{t("conversation.aiReply")}</span>
               <Switch
                 checked={aiReplyEnabled}
@@ -584,7 +590,7 @@ function getToolbarClassName(variant: SharedMessageEditorVariant) {
   if (variant === "customer") {
     return "mt-2 flex items-center justify-between"
   }
-  return "flex items-center justify-between border-t border-border bg-muted/30 px-5 py-3"
+  return "flex min-w-0 items-center justify-between gap-2 border-t border-border bg-muted/30 px-5 py-3"
 }
 
 function getIconButtonClassName(variant: SharedMessageEditorVariant) {

@@ -154,14 +154,84 @@ func TestConversationPlatformAdminResolveStateAndDirectTakeover(t *testing.T) {
 	}
 }
 
-func TestConversationSupervisorTakeoverRequiresPendingHumanRoute(t *testing.T) {
+func TestConversationPlatformAdminCanDirectTakeoverAIConversation(t *testing.T) {
 	fixture := setupConversationSupervisorTakeoverFixture(t)
+	for _, routeStatus := range []enums.ConversationRouteStatus{
+		enums.ConversationRouteStatusAIServing,
+		enums.ConversationRouteStatusAIFallback,
+	} {
+		t.Run(string(routeStatus), func(t *testing.T) {
+			conversation := fixture.createPendingConversation(t, fixture.teamB.ID, routeStatus, false)
+
+			state := ConversationTakeoverService.ResolveState(conversation, fixture.platformAdmin)
+			if !state.CanDirectTakeover || state.CanRequest {
+				t.Fatalf("platform admin did not receive AI direct takeover state: %+v", state)
+			}
+			if err := ConversationTakeoverService.DirectTakeover(request.RequestConversationTakeoverRequest{
+				ConversationID: conversation.ID,
+				Reason:         "超管从AI接管",
+			}, fixture.platformAdmin); err != nil {
+				t.Fatalf("platform admin direct takeover from %s: %v", routeStatus, err)
+			}
+
+			current := ConversationService.GetByTenantID(conversation.ID, fixture.tenantID)
+			if current == nil || current.CurrentAssigneeID != fixture.platformAdmin.UserID || current.Status != enums.IMConversationStatusActive {
+				t.Fatalf("unexpected conversation after AI direct takeover: %+v", current)
+			}
+			route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, fixture.tenantID)
+			if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskServing {
+				t.Fatalf("unexpected route after AI direct takeover: %+v", route)
+			}
+		})
+	}
+}
+
+func TestConversationPlatformAdminDirectTakeoverRejectsUnsupportedRoute(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	for _, tt := range []struct {
+		name         string
+		routeStatus  enums.ConversationRouteStatus
+		needFollowUp bool
+	}{
+		{name: "store manual", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: true},
+		{name: "cleared human pool", routeStatus: enums.ConversationRouteStatusHQAgentDeskPending, needFollowUp: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conversation := fixture.createPendingConversation(t, fixture.teamA.ID, tt.routeStatus, tt.needFollowUp)
+			state := ConversationTakeoverService.ResolveState(conversation, fixture.platformAdmin)
+			if state.CanDirectTakeover {
+				t.Fatalf("unsupported route exposed direct takeover: %+v", state)
+			}
+			if err := ConversationTakeoverService.DirectTakeover(request.RequestConversationTakeoverRequest{
+				ConversationID: conversation.ID,
+				Reason:         "错误状态直接接管",
+			}, fixture.platformAdmin); err == nil || !strings.Contains(err.Error(), "状态不允许") {
+				t.Fatalf("unsupported route unexpectedly accepted direct takeover: %v", err)
+			}
+		})
+	}
+}
+
+func TestConversationSupervisorTakeoverAllowsAIAndRejectsUnsupportedRoutes(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	aiConversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusAIServing, false)
+	if err := ConversationService.AssignConversation(request.AssignConversationRequest{
+		ConversationID: aiConversation.ID,
+		AssigneeID:     fixture.leaderA.UserID,
+		Reason:         "组长从AI接管",
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("team leader cannot take over AI conversation: %v", err)
+	}
+	current := ConversationService.GetByTenantID(aiConversation.ID, fixture.tenantID)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != fixture.leaderA.UserID {
+		t.Fatalf("unexpected AI conversation after team leader takeover: %+v", current)
+	}
+
 	tests := []struct {
 		name         string
 		routeStatus  enums.ConversationRouteStatus
 		needFollowUp bool
 	}{
-		{name: "ai serving", routeStatus: enums.ConversationRouteStatusAIServing, needFollowUp: true},
 		{name: "follow up cleared", routeStatus: enums.ConversationRouteStatusHQAgentDeskPending, needFollowUp: false},
 		{name: "store manual", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: true},
 	}
@@ -173,7 +243,7 @@ func TestConversationSupervisorTakeoverRequiresPendingHumanRoute(t *testing.T) {
 				AssigneeID:     fixture.leaderA.UserID,
 				Reason:         "错误路由接管",
 			}, fixture.leaderA)
-			if err == nil || !strings.Contains(err.Error(), "等待总部人工处理") {
+			if err == nil || !strings.Contains(err.Error(), "状态不允许") {
 				t.Fatalf("expected route rejection, got %v", err)
 			}
 		})
