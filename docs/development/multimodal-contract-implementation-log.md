@@ -61,3 +61,13 @@
 | bea9294 | §3.3 | 企微语音翻译主路径（apply_voice_id/query_voice_text）接入 Channel Breaker：按租户连续失败 5 次熔断 60s，直接使用已配置 ASR，不再每条语音重复 -5103017 失败 |
 
 验证：全仓 build/vet/test 绿（含 AnswerGroup 证据集合、协议短预算、非权威历史标签回归）。
+
+## 2026-08-15 第五轮：热修复 + §10.2 串线修复 + §17 元数据回填（deb8c63 已部署 test-2）
+
+| 提交 | 内容 |
+|---|---|
+| bc8bf3f | **生产事故热修复**：补 `AIReplyTurnTask.KnowledgeQueryFingerprint` model 字段（前次脚本替换因 gofmt 对齐静默失败，service 写列但 AutoMigrate 未建列 → MySQL 1054 → 知识阶段全失败 → Job 终态不回复）；同时把 MessageAnalysis EnsurePending 的 MarkStale 移出插入事务，消除并发死锁 1213。恢复 Job 639/640 重排队后正常回复 |
+| f6757eb | §17.3.1 知识质量元数据离线回填：`BackfillFromRetrieveHits` 从历史检索命中按 (tenant,kb,sourceRecordID) 幂等回填（不覆盖人工审核），cron @every 5m；**生产已回填 200 行，18 条元问题标记 claimType=meta，17.2 运行时门禁（meta/blocked 拦截）从此有数据支撑** |
+| deb8c63 | §10.2/4.14 串线修复：来源绑定改「全文相等 → 归一化包含（返回 rune span）→ sequence 兜底」，包含式优先于 sequence，U1 正文不再可能配 U2 意图（1399/1400 场景）；Task 持久化 SourceSpan |
+
+验证：全仓 build/vet/test 绿；生产 deb8c63 active/http200；metadata 回填 cron 生效（count=200）。
