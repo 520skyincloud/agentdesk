@@ -169,7 +169,15 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return fmt.Errorf("reply_output.v2 validation context is incomplete")
 	}
-	parsed, err := parseRuntimeReplyOutputV2(raw)
+	var parsed contracts.ReplyOutputV2
+	var err error
+	if multimodalV3Enabled() {
+		// 契约 22.14/15：成组开关下模型只输出 groupKey+taskKeys+content；
+		// Evidence/Action 引用由服务端 deterministic autofix 派生。
+		parsed, err = parseRuntimeReplyOutputV3AsV2(raw)
+	} else {
+		parsed, err = parseRuntimeReplyOutputV2(raw)
+	}
 	if err != nil {
 		if collector != nil {
 			collector.Data.Pipeline.Validate.Status = "failed"
@@ -199,6 +207,33 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	default:
 		return fmt.Errorf("reply_output.v2 rejected: %s", validationResultReason(validation))
 	}
+}
+
+// parseRuntimeReplyOutputV3AsV2 解码 reply_output.v3 并映射到 V2 校验输入；
+// groupKey 仅审计不作为权威（分组由服务端知识层证据集合决定）。
+func parseRuntimeReplyOutputV3AsV2(raw string) (contracts.ReplyOutputV2, error) {
+	parsed, err := strictjson.DecodeObject[contracts.ReplyOutputV3]([]byte(raw), strictjson.DecodeOptions{
+		MaxBytes: 64 * 1024, Schema: contracts.MustSchema(contracts.SchemaReplyOutputV3),
+	})
+	if err != nil {
+		return contracts.ReplyOutputV2{}, err
+	}
+	if parsed.SchemaVersion != contracts.ReplyOutputV3SchemaVersion {
+		return contracts.ReplyOutputV2{}, fmt.Errorf("reply_output.v3 schema version mismatch")
+	}
+	ret := contracts.ReplyOutputV2{Parts: make([]contracts.ReplyPartV2, 0, len(parsed.Parts))}
+	seenGroups := make(map[string]struct{}, len(parsed.Parts))
+	for _, part := range parsed.Parts {
+		if _, dup := seenGroups[part.GroupKey]; dup {
+			return contracts.ReplyOutputV2{}, fmt.Errorf("reply_output.v3 group %s split across parts", part.GroupKey)
+		}
+		seenGroups[part.GroupKey] = struct{}{}
+		ret.Parts = append(ret.Parts, contracts.ReplyPartV2{
+			TaskKeys: part.TaskKeys, Content: strings.TrimSpace(part.Content),
+			EvidenceRefs: nil, ActionRefs: nil,
+		})
+	}
+	return ret, nil
 }
 
 func compileRuntimeReplyOutputRepairMessages(ctx context.Context, summary *RunResult, protocolErr *replyOutputProtocolError) ([]*schema.Message, error) {

@@ -66,3 +66,28 @@ func autofixTestContains(value string, items []string) bool {
 	}
 	return false
 }
+
+// 契约 22.14/15：V3 输出只含 groupKey+taskKeys+content，服务端派生引用；
+// 同组拆分多个 part 必须拒绝。
+func TestParseReplyOutputV3AsV2DerivesRefsServerSide(t *testing.T) {
+	raw := `{"schemaVersion":"reply_output.v3","parts":[{"groupKey":"grp_a","taskKeys":["t1"],"content":"在的。"}]}`
+	parsed, err := parseRuntimeReplyOutputV3AsV2(raw)
+	if err != nil {
+		t.Fatalf("v3 decode: %v", err)
+	}
+	if len(parsed.Parts) != 1 || parsed.Parts[0].TaskKeys[0] != "t1" || parsed.Parts[0].Content != "在的。" {
+		t.Fatalf("v3 mapping: %+v", parsed)
+	}
+	if len(parsed.Parts[0].EvidenceRefs) != 0 || len(parsed.Parts[0].ActionRefs) != 0 {
+		t.Fatalf("v3 model must not carry refs: %+v", parsed.Parts[0])
+	}
+}
+
+func TestParseReplyOutputV3RejectsSplitGroup(t *testing.T) {
+	raw := `{"schemaVersion":"reply_output.v3","parts":[` +
+		`{"groupKey":"grp_a","taskKeys":["t1"],"content":"有咖啡。"},` +
+		`{"groupKey":"grp_a","taskKeys":["t2"],"content":"有剃须刀。"}]}`
+	if _, err := parseRuntimeReplyOutputV3AsV2(raw); err == nil {
+		t.Fatal("same group split across parts must be rejected")
+	}
+}
