@@ -56,8 +56,14 @@ func detectRuntimeIntentWithModelStrict(ctx context.Context, req RunInput, histo
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
-	if resolveRuntimeFeatureModes(req).IntentContract == runtimeIntentContractV1 {
+	modes := resolveRuntimeFeatureModes(req)
+	if modes.IntentContract == runtimeIntentContractV1 {
 		return detectRuntimeIntentLegacy(ctx, req, history, configs)
+	}
+	// 契约 2.1 成组灰度：AI_RUNTIME_MULTIMODAL_V3=on 时 Intent 走 V3 主链
+	// （Envelope + SourceSpan + utteranceCoverage + QuestionUnit Normalize）。
+	if modes.IntentContract == runtimeIntentContractV3 {
+		return detectRuntimeIntentV3(ctx, req, history, configs)
 	}
 	resolved, err := resolveRuntimeIntentDetectModelCall(req)
 	if err != nil {

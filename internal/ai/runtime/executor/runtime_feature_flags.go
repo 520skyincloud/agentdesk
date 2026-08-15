@@ -14,6 +14,7 @@ const (
 
 	runtimeIntentContractV1 = "v1"
 	runtimeIntentContractV2 = "v2"
+	runtimeIntentContractV3 = "v3"
 
 	runtimeReplyContractLegacy = "legacy"
 	runtimeReplyContractV2     = "v2"
@@ -39,13 +40,28 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	}
 	// V2 已是默认主链：未显式设置环境变量时，全部落到 v2/authoritative。
 	// legacyRuntimeFeatureModes() 仅在 runtimeV2ScopeEnabled 白名单排除时作为回退手段保留。
-	return runtimeFeatureModes{
+	modes := runtimeFeatureModes{
 		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerV2, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
-		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2),
+		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2, runtimeIntentContractV3),
 		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2),
 		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2),
 		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
 	}
+	// 成组开关：V3 只允许整组启用（Intent V3 + Context V2），
+	// 禁止单独打开 IntentTasksV3 而其它部分仍为 legacy。
+	if multimodalV3Enabled() {
+		modes.IntentContract = runtimeIntentContractV3
+		modes.ContextCompiler = runtimeContextCompilerV2
+	}
+	return modes
+}
+
+// multimodalV3Enabled 契约 2.1 成组总开关：AI_RUNTIME_MULTIMODAL_V3=on 时
+// Intent 必须走 intent_tasks.v3（Envelope + SourceSpan + QuestionUnit）。
+// Reply/Validator 侧的 V3 语义（服务端派生引用、组覆盖）已在 V2 主链通过
+// deterministic autofix 与 AnswerGroup 落地；OutputV3 传输协议切换保持灰度。
+func multimodalV3Enabled() bool {
+	return strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on"
 }
 
 func legacyRuntimeFeatureModes() runtimeFeatureModes {
@@ -65,6 +81,9 @@ func validateRuntimeFeatureModes(modes runtimeFeatureModes) error {
 	}
 	if modes.ActionLedger == runtimeActionLedgerAuthoritative && modes.ReplyContract != runtimeReplyContractV2 {
 		return fmt.Errorf("AI runtime authoritative action ledger requires reply contract v2")
+	}
+	if modes.IntentContract == runtimeIntentContractV3 && modes.ContextCompiler != runtimeContextCompilerV2 {
+		return fmt.Errorf("AI runtime intent contract v3 requires context compiler v2")
 	}
 	return nil
 }
