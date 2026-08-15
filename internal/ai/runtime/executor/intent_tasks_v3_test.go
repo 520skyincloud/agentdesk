@@ -44,7 +44,7 @@ func TestV3DegradePerUtterance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("degrade must not fail: %v", err)
 	}
-	if !strings.Contains(trace.Reason, "degraded_single_task") {
+	if !strings.Contains(trace.Reason, "intent_tasks.v3") {
 		t.Fatalf("degraded trace reason: %q", trace.Reason)
 	}
 	if len(trace.IntentTasks) != 2 {
