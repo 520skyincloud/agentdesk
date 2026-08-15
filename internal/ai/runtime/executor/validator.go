@@ -130,12 +130,75 @@ func normalizeReplyParts(parts []contracts.ReplyPartV2, plan *contracts.ReplyPla
 		part.TaskKeys = uniqueTrimmedStrings(part.TaskKeys)
 		part.EvidenceRefs = uniqueTrimmedStrings(part.EvidenceRefs)
 		part.ActionRefs = uniqueTrimmedStrings(part.ActionRefs)
+		// 契约 12.1/13.2 deterministic_autofix：Evidence/Action 引用由服务端
+		// 按计划派生。模型漏回显不得触发 rejected 与整链重试（生产
+		// missing_task_evidence 根因）；模型多回显的未知引用仍在
+		// evidence_reference_validator 中拒绝。
+		part.EvidenceRefs = unionStringSets(part.EvidenceRefs, planEvidenceRefsForTasks(plan, part.TaskKeys))
+		part.ActionRefs = unionStringSets(part.ActionRefs, planActionRefsForTasks(plan, part.TaskKeys))
 		ret = append(ret, part)
 	}
 	sort.SliceStable(ret, func(i, j int) bool {
 		return minimumTaskSequence(ret[i].TaskKeys, plan) < minimumTaskSequence(ret[j].TaskKeys, plan)
 	})
 	return ret
+}
+
+func planEvidenceRefsForTasks(plan *contracts.ReplyPlanV2, taskKeys []string) []string {
+	if plan == nil || len(taskKeys) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(taskKeys)*4)
+	for _, task := range plan.Tasks {
+		if !taskKeyCovered(taskKeys, task.TaskKey) {
+			continue
+		}
+		refs = append(refs, task.EvidenceRefs...)
+	}
+	return refs
+}
+
+func planActionRefsForTasks(plan *contracts.ReplyPlanV2, taskKeys []string) []string {
+	if plan == nil || len(taskKeys) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(taskKeys)*2)
+	for _, task := range plan.Tasks {
+		if !taskKeyCovered(taskKeys, task.TaskKey) {
+			continue
+		}
+		refs = append(refs, task.ActionRefs...)
+	}
+	return refs
+}
+
+func unionStringSets(first, second []string) []string {
+	merged := uniqueTrimmedStrings(first)
+	seen := make(map[string]struct{}, len(merged))
+	for _, item := range merged {
+		seen[item] = struct{}{}
+	}
+	for _, item := range second {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		merged = append(merged, item)
+	}
+	return merged
+}
+
+func taskKeyCovered(taskKeys []string, value string) bool {
+	for _, item := range taskKeys {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func uniqueTrimmedStrings(items []string) []string {
