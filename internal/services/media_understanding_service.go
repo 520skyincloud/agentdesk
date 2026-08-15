@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -256,10 +257,17 @@ func (s *mediaUnderstandingService) transcribeVoice(ctx context.Context, message
 		return "", fmt.Errorf("语音 payload 为空")
 	}
 	var protocolErr error
-	if text, err := s.transcribeWxWorkVoice(ctx, message, payload); err == nil && strings.TrimSpace(text) != "" {
+	// 契约 3.3：企微语音翻译主路径连续失败时熔断，直接使用已配置 ASR，
+	// 不再每条语音重复失败（-5103017 场景）。
+	voiceStage := "wxwork_voice_translate_" + strconv.FormatInt(message.TenantID, 10)
+	if open, _ := channelbreaker.IsOpen(voiceStage, "protocol", time.Now()); open {
+		protocolErr = fmt.Errorf("企微语音翻译通道熔断中")
+	} else if text, err := s.transcribeWxWorkVoice(ctx, message, payload); err == nil && strings.TrimSpace(text) != "" {
+		channelbreaker.RecordSuccess(voiceStage, "protocol")
 		return text, nil
 	} else if err != nil {
 		protocolErr = err
+		channelbreaker.RecordFailure(voiceStage, "protocol", time.Now())
 	}
 	asset := AssetService.GetByAssetIDInTenant(payload.AssetID, message.TenantID)
 	data, _, err := s.readAssetBytes(message, asset, payload)
