@@ -37,6 +37,38 @@ const (
 
 var aiReplyJobRetryDelays = []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
 
+// aiReplyJobProtocolRetryDelays 契约 14.3：协议/验证类失败（Intent JSON、
+// Generate JSON、Validator 拒绝）不再使用 15s/1m/3m 通用退避；改用短预算，
+// 耗尽后确定性终态。长退避只保留给上游网络/知识不可用类。
+var aiReplyJobProtocolRetryDelays = []time.Duration{800 * time.Millisecond, 1500 * time.Millisecond}
+
+// aiReplyJobRetryDelayFor 按失败类别选择退避表。
+func aiReplyJobRetryDelayFor(errorClass string, attempt int) time.Duration {
+	delays := aiReplyJobRetryDelays
+	if isAIReplyProtocolOrContentFailure(errorClass) {
+		delays = aiReplyJobProtocolRetryDelays
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(delays) {
+		attempt = len(delays) - 1
+	}
+	return delays[attempt]
+}
+
+// isAIReplyProtocolOrContentFailure 判定协议/内容类失败（本地可修复，
+// 不值得长退避）。计划 3.5：generation_failed 实际多为本地 validation 拒绝。
+func isAIReplyProtocolOrContentFailure(errorClass string) bool {
+	switch strings.TrimSpace(errorClass) {
+	case "intent_detect_failed", "generation_failed", "empty_output",
+		"resource_invariant_broken", "runtime_result_invalid", "protocol_error":
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	AIReplyJobService                  = newAIReplyJobService()
 	errAIReplyMediaUnderstandingFailed = errors.New("media understanding failed")
@@ -708,14 +740,7 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 			}
 			consumeAttempt := runErr != nil
 			if consumeAttempt && job.AttemptCount < aiReplyJobMaxAttempts {
-				delayIndex := job.AttemptCount - 1
-				if delayIndex < 0 {
-					delayIndex = 0
-				}
-				if delayIndex >= len(aiReplyJobRetryDelays) {
-					delayIndex = len(aiReplyJobRetryDelays) - 1
-				}
-				modelRetryAt := now.Add(aiReplyJobRetryDelays[delayIndex])
+				modelRetryAt := now.Add(aiReplyJobRetryDelayFor(classifyTaskFailure(runErr), job.AttemptCount-1))
 				if modelRetryAt.After(nextRetryAt) {
 					nextRetryAt = modelRetryAt
 				}
@@ -881,15 +906,9 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 		return
 	}
 	if current.AttemptCount < aiReplyJobMaxAttempts {
-		delayIndex := current.AttemptCount - 1
-		if delayIndex < 0 {
-			delayIndex = 0
-		}
-		if delayIndex >= len(aiReplyJobRetryDelays) {
-			delayIndex = len(aiReplyJobRetryDelays) - 1
-		}
+		delay := aiReplyJobRetryDelayFor(errorClass, current.AttemptCount-1)
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), current.ID, current.TenantID, owner,
-			"runtime_retry", errorClass, now.Add(aiReplyJobRetryDelays[delayIndex]), now, true)
+			"runtime_retry", errorClass, now.Add(delay), now, true)
 		return
 	}
 	state, decision := s.inspectExecutionState(current, true)
