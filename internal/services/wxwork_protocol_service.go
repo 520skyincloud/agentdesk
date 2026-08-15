@@ -3136,6 +3136,12 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return true, err
 	}
+	// 契约 5.1/3.9.10：出站回显先做来源对账。能与平台已发送的 AI 消息精确
+	// 匹配时按 ai_outbox_echo 处理：补齐渠道送达证据，不创建 Agent Message、
+	// 不打断 Turn、不切人工路由。只有无法对账的员工出站才走人工语义。
+	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, content, rawPayload); reconciled {
+		return true, nil
+	}
 	message, err := MessageService.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo", sessionNo)
 	if err != nil {
 		_ = s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
@@ -3149,6 +3155,60 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 		return true, err
 	}
 	return true, nil
+}
+
+// reconcileAIOutboxEcho 在同会话、同 session 的短时间窗内寻找与回显内容完全
+// 一致的平台 AI 出站消息。命中则把 MessageRef 绑定到原 AI Message 并记录
+// 送达同步日志；未命中返回 false（保持原人工出站语义）。
+func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, content, rawPayload string) bool {
+	if instance == nil || conversationID <= 0 {
+		return false
+	}
+	normalized := normalizeEchoCompareText(content)
+	if normalized == "" {
+		return false
+	}
+	windowStart := time.Now().Add(-5 * time.Minute)
+	candidates := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", instance.TenantID).
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeAI).
+		Eq("message_type", messageType).
+		Eq("content", content).
+		Gte("created_at", windowStart).
+		Desc("id").
+		Limit(5))
+	var matched *models.Message
+	for index := range candidates {
+		candidate := &candidates[index]
+		if sessionNo > 0 && candidate.SessionNo > 0 && candidate.SessionNo != sessionNo {
+			continue
+		}
+		if normalizeEchoCompareText(candidate.Content) == normalized {
+			matched = candidate
+			break
+		}
+	}
+	if matched == nil {
+		return false
+	}
+	if err := s.createMessageRef(conversationID, matched.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
+		return false
+	}
+	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, matched.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "ai_outbox_echo_reconciled")
+	return true
+}
+
+// normalizeEchoCompareText 做回显比对的确定性归一（去空白；不改写正文）。
+func normalizeEchoCompareText(content string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(content) {
+		if r == ' ' || r == '\n' || r == '\t' || r == '\r' {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String()
 }
 
 func (s *wxWorkProtocolService) findProtocolConversationMapping(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, externalID string) *models.WxWorkKFConversation {
