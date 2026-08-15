@@ -105,11 +105,13 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			}
 			options := retrievers.DefaultKnowledgeRetrieveOptions()
 			options.QueryPreview = preview(items[itemIndex].Query, 120)
-			if options.MaxContextItems <= 0 || options.MaxContextItems > 2 {
-				options.MaxContextItems = 2
+			// 契约 4.12/3.9.5：不得固定截断前两条；按 top-multi 预算保留
+			// 排名靠后但必要的证据（剃须刀排第 4 名必须有资格进入 Generate）。
+			if options.MaxContextItems <= 0 || options.MaxContextItems > knowledgeContextItemBudget {
+				options.MaxContextItems = knowledgeContextItemBudget
 			}
-			if options.TopK <= 0 || options.TopK > 4 {
-				options.TopK = 4
+			if options.TopK <= 0 || options.TopK > knowledgeTopKBudget {
+				options.TopK = knowledgeTopKBudget
 			}
 			result, err := retriever.RetrieveContextByOptions(ctx, options, items[itemIndex].Query)
 			items[itemIndex].Result = result
@@ -473,7 +475,9 @@ func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData,
 }
 
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
-	if text := strings.TrimSpace(currentTurnDisplayText(plan.Text)); text != "" {
+	// 契约 4.11/22.12：知识 Query 只使用规范化业务文本；[语音]/[图片]/文件名
+	// 等运输包装与 merge 前缀禁止进入检索文本。
+	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
 		return text
 	}
 	if subIntent := strings.TrimSpace(plan.SubIntent); subIntent != "" {
@@ -499,7 +503,11 @@ func redistributeMultiTopicClauses(plans []callbacks.ReplyTaskPlanTraceData) []c
 			return plans
 		}
 	}
-	clauses := splitMultiTopicClauses(firstText)
+	clauses := dedupeAdjacentClauses(splitMultiTopicClauses(firstText))
+	if len(clauses) != len(plans) {
+		// 二级拆分：口语停顿逗号；仍不匹配则保持原样，避免错误分配。
+		clauses = dedupeAdjacentClauses(splitBySeparators([]string{firstText}, []string{"，", ","}))
+	}
 	if len(clauses) != len(plans) {
 		return plans
 	}
@@ -511,15 +519,32 @@ func redistributeMultiTopicClauses(plans []callbacks.ReplyTaskPlanTraceData) []c
 	return ret
 }
 
-// splitMultiTopicClauses 按并列/追加连接词把整句拆成子句，确定性、通用，不依赖 subIntent。
+// splitMultiTopicClauses 按并列/追加连接词和语音自然停顿标点把整句拆成子句，
+// 确定性、通用，不依赖 subIntent。契约 3.9.4：问号、句号和感叹号是语音多题的
+// 真实边界；逗号仅在子句数不足时作为二级拆分尝试。
 func splitMultiTopicClauses(text string) []string {
-	separators := []string{"还有啊", "还有", "以及", "另外", "再加上", "顺便"}
-	parts := []string{text}
+	parts := splitBySeparators([]string{text}, []string{"还有啊", "还有", "以及", "另外", "再加上", "顺便"})
+	parts = splitBySeparators(parts, []string{"？", "?", "。", "！", "!", "；", ";"})
+	return parts
+}
+
+// dedupeAdjacentClauses 去掉 ASR 口语连续重复（“都可以，都可以”）。
+func dedupeAdjacentClauses(clauses []string) []string {
+	ret := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		if len(ret) > 0 && ret[len(ret)-1] == clause {
+			continue
+		}
+		ret = append(ret, clause)
+	}
+	return ret
+}
+
+func splitBySeparators(parts []string, separators []string) []string {
 	for _, sep := range separators {
 		next := make([]string, 0, len(parts))
 		for _, part := range parts {
-			segments := strings.Split(part, sep)
-			for _, seg := range segments {
+			for _, seg := range strings.Split(part, sep) {
 				if s := strings.TrimSpace(seg); s != "" {
 					next = append(next, s)
 				}
@@ -529,6 +554,54 @@ func splitMultiTopicClauses(text string) []string {
 	}
 	return parts
 }
+
+// stripKnowledgeQueryTransportWrapper 去除 Query 文本中的运输包装：
+// “[语音] 文件名”、“语音内容是：”、burst merge 前缀与编号行首。
+func stripKnowledgeQueryTransportWrapper(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return text
+	}
+	for _, prefix := range []string{"[语音]", "[图片]", "[文件]", "[附件]", "[视频]"} {
+		if strings.HasPrefix(text, prefix) {
+			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
+			// 去掉紧随的文件名 token（无空格的中文场景按常见扩展名切）。
+			for _, ext := range []string{".mp3", ".amr", ".wav", ".jpg", ".jpeg", ".png", ".pdf", ".docx"} {
+				if idx := strings.Index(text, ext); idx >= 0 && idx <= 120 {
+					text = strings.TrimSpace(text[idx+len(ext):])
+					break
+				}
+			}
+		}
+	}
+	for _, lead := range []string{"语音内容是：", "语音内容是:", "图片内容是：", "图片内容是:", "文件内容是："} {
+		text = strings.TrimSpace(strings.TrimPrefix(text, lead))
+	}
+	if strings.HasPrefix(text, "本轮客户连续消息") {
+		if idx := strings.Index(text, "\n"); idx >= 0 {
+			text = text[idx:]
+		}
+		lines := strings.Split(text, "\n")
+		body := make([]string, 0, len(lines))
+		for _, line := range lines {
+			line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "0123456789.、"))
+			line = strings.TrimSpace(strings.TrimPrefix(line, "[消息]"))
+			line = strings.TrimSpace(strings.TrimPrefix(line, "[语音]"))
+			if line != "" {
+				body = append(body, line)
+			}
+		}
+		text = strings.Join(body, "；")
+	}
+	return strings.TrimSpace(text)
+}
+
+const (
+	// knowledgeContextItemBudget 是进入 Generate 的上下文条数预算（top-multi）。
+	knowledgeContextItemBudget = 5
+	// knowledgeTopKBudget 是单次检索的召回条数预算。
+	knowledgeTopKBudget = 5
+)
 
 func runtimeKnowledgeStatus(result *retrievers.KnowledgeRetrieveResult, err error) enums.AIReplyTurnTaskKnowledgeStatus {
 	if err != nil {

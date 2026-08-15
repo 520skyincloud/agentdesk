@@ -251,11 +251,12 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 			defer wg.Done()
 			questionOpts := opts
 			questionOpts.QueryPreview = preview(query, 120)
-			if questionOpts.MaxContextItems <= 0 || questionOpts.MaxContextItems > 2 {
-				questionOpts.MaxContextItems = 2
+			// 契约 4.12：与 task_knowledge.go 统一预算，禁止独立压到前两条。
+			if questionOpts.MaxContextItems <= 0 || questionOpts.MaxContextItems > knowledgeContextItemBudget {
+				questionOpts.MaxContextItems = knowledgeContextItemBudget
 			}
-			if questionOpts.TopK <= 0 || questionOpts.TopK > 4 {
-				questionOpts.TopK = 4
+			if questionOpts.TopK <= 0 || questionOpts.TopK > knowledgeTopKBudget {
+				questionOpts.TopK = knowledgeTopKBudget
 			}
 			result, err := retriever.RetrieveContextByOptions(ctx, questionOpts, query)
 			if err != nil {
