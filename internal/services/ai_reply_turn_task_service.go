@@ -795,6 +795,81 @@ func (s *aiReplyTurnTaskService) MarkTurnHandoffDB(db *gorm.DB, tenantID, turnID
 	})
 }
 
+// CancelHandoffTransactionDB 契约 16.3：客户取消转人工时事务闭合整个 Handoff。
+// 覆盖：payload.taskKeys 中的 handoff_pending/handoff 任务（新 V2 负载）、
+// 同来源消息的派生 pending/running 任务（superseded），不再只按单个
+// OriginMessageID + handoff_pending 做局部清理。
+func (s *aiReplyTurnTaskService) CancelHandoffTransactionDB(
+	db *gorm.DB,
+	tenantID, conversationID, originMessageID int64,
+	taskKeys []string,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || conversationID <= 0 || originMessageID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+		return nil
+	}
+	msg := repositories.MessageRepository.GetInTenant(db, originMessageID, tenantID)
+	if msg == nil || msg.AIReplyTurnID <= 0 {
+		return nil
+	}
+	turnID := msg.AIReplyTurnID
+	// 0) V2 负载绑定的任务集合：无论 handoff_pending 还是 handoff，都按取消
+	//    语义标记 skipped（不进入 CancelHandoffDecisionDB 的“回退可执行”路径）。
+	for _, taskKey := range uniqueTaskKeys(taskKeys) {
+		task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, tenantID, turnID, taskKey)
+		if err != nil {
+			return err
+		}
+		if task == nil || aiReplyTurnTaskTerminal(task.Status) {
+			continue
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+			"stage":             enums.AIReplyTurnTaskStageComplete,
+			"status":            enums.AIReplyTurnTaskStatusSkipped,
+			"result_code":       "human_handoff_cancelled",
+			"claimed_by_job_id": 0, "claimed_version": 0,
+			"completed_at": now, "next_retry_at": nil,
+			"updated_at": now, "update_user_name": "ai_reply_handoff_cancel",
+		}); err != nil {
+			return err
+		}
+	}
+	// 1) 同轮剩余 handoff_pending（含 V2 负载未列出、由同一确认产生的）。
+	if err := db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND status = ?", tenantID, turnID, enums.AIReplyTurnTaskStatusHandoffPending).
+		Updates(map[string]any{
+			"stage": enums.AIReplyTurnTaskStageComplete, "status": enums.AIReplyTurnTaskStatusSkipped,
+			"result_code": "human_handoff_cancelled", "claimed_by_job_id": 0, "claimed_version": 0,
+			"completed_at": now, "next_retry_at": nil, "updated_at": now, "update_user_name": "ai_reply_handoff_cancel",
+		}).Error; err != nil {
+		return err
+	}
+	// 2) 已进入 handoff 的原始人工任务：取消语义是“不进入人工池”，任务不再
+	//    代表待办；标记 skipped 保留审计。
+	if err := db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND status = ?", tenantID, turnID, enums.AIReplyTurnTaskStatusHandoff).
+		Updates(map[string]any{
+			"status": enums.AIReplyTurnTaskStatusSkipped, "result_code": "human_handoff_cancelled",
+			"updated_at": now, "update_user_name": "ai_reply_handoff_cancel",
+		}).Error; err != nil {
+		return err
+	}
+	// 3) 同来源消息派生的 pending/running 任务：superseded，Worker 不再运行。
+	if err := db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND source_message_id = ? AND status IN ?",
+			tenantID, turnID, originMessageID,
+			[]enums.AIReplyTurnTaskStatus{enums.AIReplyTurnTaskStatusPending, enums.AIReplyTurnTaskStatusReady, enums.AIReplyTurnTaskStatusRunning},
+		).
+		Updates(map[string]any{
+			"stage": enums.AIReplyTurnTaskStageComplete, "status": enums.AIReplyTurnTaskStatusSuperseded,
+			"result_code": "superseded_by_handoff_cancel", "claimed_by_job_id": 0, "claimed_version": 0,
+			"completed_at": now, "next_retry_at": nil, "updated_at": now, "update_user_name": "ai_reply_handoff_cancel",
+		}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
 // CancelHandoffPendingBySourceMessageDB 在客户取消转人工后，把该来源消息触发的
 // handoff_pending 任务标记为 skipped，闭合确认链路：否则任务仍挂在 handoff_pending，
 // 后续 job 会为同一个诉求反复触发转人工确认，造成死循环。
