@@ -117,7 +117,9 @@ func historyTurnMessages(turn HistoryTurn) []*schema.Message {
 	}
 	for _, item := range turn.AssistantMessages {
 		if content := visibleMessageContent(item); content != "" {
-			messages = append(messages, schema.AssistantMessage(content, nil))
+			// 契约 4.6/4.15：历史 AI/客服回复带非权威标签进入上下文，
+			// 禁止被当成当前门店事实或知识证据复用。
+			messages = append(messages, schema.AssistantMessage(RenderHistoricalAssistant(content), nil))
 		}
 	}
 	return messages

@@ -23,8 +23,12 @@ func TestBuildHistoryTurnsUsesRawVisibleContentAndCompleteTurns(t *testing.T) {
 		t.Fatalf("turns=%d want=1", len(turns))
 	}
 	messages := historyTurnMessages(turns[0])
-	if len(messages) != 2 || messages[0].Content != "停车在哪" || messages[1].Content != "入口在东侧" {
+	if len(messages) != 2 || messages[0].Content != "停车在哪" {
 		t.Fatalf("messages=%+v", messages)
+	}
+	// 契约 4.6/4.15：历史 AI 回复必须带非权威标签，且保留原文。
+	if !strings.Contains(messages[1].Content, "[NON_AUTHORITATIVE_ASSISTANT_HISTORY]") || !strings.Contains(messages[1].Content, "入口在东侧") {
+		t.Fatalf("historical assistant must carry non-authoritative label: %q", messages[1].Content)
 	}
 	for _, message := range messages {
 		if strings.Contains(message.Content, "[客户]") || strings.Contains(message.Content, "AI客服") || strings.Contains(message.Content, "202") {

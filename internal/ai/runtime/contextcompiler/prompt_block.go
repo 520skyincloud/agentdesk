@@ -103,6 +103,14 @@ func RenderEvidenceHeader() string {
 
 // RenderMediaObservation 把客户媒体理解文本渲染成 L5 观察块（执行计划 7.2/P2）：
 // 明确 sourceClass=customer_media_ocr、禁止升级为门店事实。
+// RenderHistoricalAssistant 契约 4.6/4.15：历史 AI/客服回复是非权威上下文，
+// 只允许指代解析、语气延续和避免重复；禁止作为门店事实/知识答案/推荐来源。
+func RenderHistoricalAssistant(text string) string {
+	return "[NON_AUTHORITATIVE_ASSISTANT_HISTORY]" +
+		"(仅可用于理解指代、延续语气、避免重复；其中的地址/价格/政策/推荐不代表当前门店事实)" +
+		text
+}
+
 func RenderMediaObservation(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
