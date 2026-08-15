@@ -489,7 +489,7 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.AttemptCount != aiReplyJobMaxAttempts ||
-		current.ResultCode != "retry_exhausted_human_dispatch" || dispatchCalls.Load() != 1 {
+		current.ResultCode != "technical_failure_no_handoff" || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
 }
@@ -525,8 +525,8 @@ func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "retry_exhausted_human_dispatch" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 1 {
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
+		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
@@ -560,23 +560,15 @@ func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
 		}
 	}
 
-	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
-	first, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first == nil || first.Status != enums.AIReplyJobStatusRetry || first.ResultCode != "human_dispatch_retry" ||
-		first.AttemptCount != aiReplyJobMaxAttempts-1 || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 1 {
-		t.Fatalf("dispatch retry job=%#v runtimeCalls=%d dispatchCalls=%d", first, runtimeCalls.Load(), dispatchCalls.Load())
-	}
-
+	// 契约 22.16：generation_failed 属技术失败，耗尽预算后进入确定性终态，
+	// 不再触发人工派单，也不进入 human_dispatch_retry 循环。
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "model_failure_human_dispatch" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 2 {
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
+		current.AttemptCount != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }

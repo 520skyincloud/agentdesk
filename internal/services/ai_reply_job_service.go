@@ -685,14 +685,22 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 	if hasActiveTasks && !hasFailureHandoff {
 		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr)
 		if runErr != nil && (!retryable || job.AttemptCount >= aiReplyJobMaxAttempts) {
-			if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-				return AIReplyTurnTaskService.MarkUnfinishedHandoffPendingDB(
-					ctx.Tx, job.TenantID, job.TurnID, job.ID, classifyTaskFailure(runErr), now,
-				)
-			}); err != nil {
-				return false
+			failureClass := classifyTaskFailure(runErr)
+			if failureClassAllowsHumanHandoff(failureClass) {
+				if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+					return AIReplyTurnTaskService.MarkUnfinishedHandoffPendingDB(
+						ctx.Tx, job.TenantID, job.TurnID, job.ID, failureClass, now,
+					)
+				}); err != nil {
+					return false
+				}
+				hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+			} else {
+				// 契约 22.16：技术失败走 Task 技术终态，不进入 handoff_pending。
+				if err := s.markUnfinishedTasksTechnicalFailure(job, failureClass, now); err != nil {
+					return false
+				}
 			}
-			hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 		} else {
 			nextRetryAt := now.Add(aiReplyJobContinuationDelay)
 			if taskRetryAt := AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID); taskRetryAt != nil && taskRetryAt.After(nextRetryAt) {
@@ -756,6 +764,12 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "scope_invalid", "scope_invalid", now)
 		return true
 	}
+	if !failureClassAllowsHumanHandoff(classifyTaskFailure(runErr)) {
+		slog.Warn("ai reply partial failure kept technical without handoff",
+			"job_id", current.ID, "blocked_transition", "handoff_technical_failure_blocked")
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", classifyTaskFailure(runErr), now)
+		return true
+	}
 	if err := s.dispatchHuman(state, current, "AI 部分问题自动处理失败，需要人工跟进"); err != nil {
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(
 			sqls.DB(), current.ID, current.TenantID, owner,
@@ -802,6 +816,18 @@ func controlledExecutionErrorShouldRetry(err error) bool {
 		AIReplyExecutionErrorEmptyOutput,
 		AIReplyExecutionErrorResourceInvariantBroken,
 		AIReplyExecutionErrorCommitFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// failureClassAllowsHumanHandoff 契约 22.16：技术失败（协议/网络/数据库/
+// 内容/知识/范围）绝不允许进入人工兜底；只有业务能力路由或安全政策明确
+// 要求时才可以派单。违反迁移记录 handoff_technical_failure_blocked。
+func failureClassAllowsHumanHandoff(errorClass string) bool {
+	switch NormalizeAIReplyFailureClass(errorClass) {
+	case FailureBusiness, FailureSafety:
 		return true
 	default:
 		return false
@@ -875,12 +901,38 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "scope_invalid", "scope_invalid", now)
 		return
 	}
+	if !failureClassAllowsHumanHandoff(errorClass) {
+		// 契约 22.16：技术失败耗尽预算后进入确定性终态并告警，
+		// 不伪装成“客户需要人工”。
+		slog.Warn("ai reply job technical failure exhausted without handoff",
+			"job_id", current.ID, "error_class", errorClass, "blocked_transition", "handoff_technical_failure_blocked")
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", errorClass, now)
+		return
+	}
 	if err := s.dispatchHuman(state, current, "AI 自动回复连续失败，需要人工跟进"); err != nil {
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), current.ID, current.TenantID, owner,
 			"human_dispatch_retry", "human_dispatch_failed", now.Add(time.Minute), now, false)
 		return
 	}
 	s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "retry_exhausted_human_dispatch", errorClass, now)
+}
+
+// markUnfinishedTasksTechnicalFailure 把未完成 Task 逐个标记为技术终态
+// failed（FailureClass=technical），不创建 handoff_pending。
+func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIReplyJob, failureClass string, now time.Time) error {
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID)
+	for index := range tasks {
+		task := &tasks[index]
+		if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || aiReplyTurnTaskTerminal(task.Status) {
+			continue
+		}
+		if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(sqls.DB(), &models.AIReplyTurn{
+			ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID, SessionNo: job.SessionNo,
+		}, task.TaskKey, failureClass, 0, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *aiReplyJobService) markTerminal(job *models.AIReplyJob, owner string, status enums.AIReplyJobStatus, resultCode, errorClass string, now time.Time) {
