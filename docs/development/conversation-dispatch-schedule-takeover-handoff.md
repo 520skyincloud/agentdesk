@@ -192,5 +192,13 @@ git diff --check
 - 会话编辑器左侧工具按钮原本不可收缩，实际工作台宽度不足时会把右侧 AI 开关
   挤出 `overflow-hidden` 容器。修复后左侧工具区可横向滚动，右侧 AI 开关与发送键
   固定为不可收缩区域，开关在所有开放会话中保持可见。
+- 生产会话 `来一杯生椰拿铁` 与 `其风` 的真实组合为
+  `Conversation.Status=AI_SERVING`、`RouteStatus=STORE_WECOM_MANUAL`、
+  `NeedHumanFollowUp=true`、`CurrentAssigneeID=0`。接管门禁现按“未分配且明确待人工”
+  判断，允许超管、管理员、租户管理员和负责组长直接接管；`NeedHumanFollowUp=false`
+  时仍拒绝，避免接管已经清除人工关注的会话。
+- 服务器 release 的前端由 `web/out` 嵌入 Go 二进制。发布时必须先执行全新的
+  `pnpm build`，再构建 Go 二进制；禁止只更新提交标识或复用旧 `web/out`，否则源码
+  已恢复 Switch 但线上仍会显示旧接管图标。
 - 本修复不修改数据库、公开 DTO、WebSocket、AI Runtime、知识库、企微协议、
   FastGPT、NewAPI、Token/Usage 或计费归因。

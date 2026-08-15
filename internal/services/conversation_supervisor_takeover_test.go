@@ -186,6 +186,48 @@ func TestConversationPlatformAdminCanDirectTakeoverAIConversation(t *testing.T) 
 	}
 }
 
+func TestConversationManagersCanDirectTakeoverStoreManualFollowUpWithAIServingStatus(t *testing.T) {
+	fixture := setupConversationSupervisorTakeoverFixture(t)
+	for _, tt := range []struct {
+		name     string
+		teamID   int64
+		operator *dto.AuthPrincipal
+	}{
+		{name: "platform admin", teamID: fixture.teamB.ID, operator: fixture.platformAdmin},
+		{name: "team leader", teamID: fixture.teamA.ID, operator: fixture.leaderA},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conversation := fixture.createPendingConversation(t, tt.teamID, enums.ConversationRouteStatusStoreWecomManual, true)
+			if err := fixture.db.Model(&models.Conversation{}).
+				Where("tenant_id = ? AND id = ?", fixture.tenantID, conversation.ID).
+				Update("status", enums.IMConversationStatusAIServing).Error; err != nil {
+				t.Fatalf("mark store manual conversation as AI serving: %v", err)
+			}
+			conversation.Status = enums.IMConversationStatusAIServing
+
+			state := ConversationTakeoverService.ResolveState(conversation, tt.operator)
+			if !state.CanDirectTakeover || state.CanRequest {
+				t.Fatalf("manager did not receive store manual direct takeover state: %+v", state)
+			}
+			if err := ConversationTakeoverService.DirectTakeover(request.RequestConversationTakeoverRequest{
+				ConversationID: conversation.ID,
+				Reason:         "主管接管门店待跟进会话",
+			}, tt.operator); err != nil {
+				t.Fatalf("direct takeover store manual follow-up: %v", err)
+			}
+
+			current := ConversationService.GetByTenantID(conversation.ID, fixture.tenantID)
+			if current == nil || current.CurrentAssigneeID != tt.operator.UserID || current.Status != enums.IMConversationStatusActive {
+				t.Fatalf("unexpected conversation after store manual takeover: %+v", current)
+			}
+			route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, fixture.tenantID)
+			if route == nil || route.RouteStatus != enums.ConversationRouteStatusHQAgentDeskServing {
+				t.Fatalf("unexpected route after store manual takeover: %+v", route)
+			}
+		})
+	}
+}
+
 func TestConversationPlatformAdminDirectTakeoverRejectsUnsupportedRoute(t *testing.T) {
 	fixture := setupConversationSupervisorTakeoverFixture(t)
 	for _, tt := range []struct {
@@ -193,7 +235,7 @@ func TestConversationPlatformAdminDirectTakeoverRejectsUnsupportedRoute(t *testi
 		routeStatus  enums.ConversationRouteStatus
 		needFollowUp bool
 	}{
-		{name: "store manual", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: true},
+		{name: "store manual follow-up cleared", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: false},
 		{name: "cleared human pool", routeStatus: enums.ConversationRouteStatusHQAgentDeskPending, needFollowUp: false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -212,7 +254,7 @@ func TestConversationPlatformAdminDirectTakeoverRejectsUnsupportedRoute(t *testi
 	}
 }
 
-func TestConversationSupervisorTakeoverAllowsAIAndRejectsUnsupportedRoutes(t *testing.T) {
+func TestConversationSupervisorTakeoverAllowsAIAndStoreManualFollowUp(t *testing.T) {
 	fixture := setupConversationSupervisorTakeoverFixture(t)
 	aiConversation := fixture.createAIConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusAIServing)
 	if err := ConversationService.AssignConversation(request.AssignConversationRequest{
@@ -227,13 +269,32 @@ func TestConversationSupervisorTakeoverAllowsAIAndRejectsUnsupportedRoutes(t *te
 		t.Fatalf("unexpected AI conversation after team leader takeover: %+v", current)
 	}
 
+	storeManual := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusStoreWecomManual, true)
+	if err := fixture.db.Model(&models.Conversation{}).
+		Where("tenant_id = ? AND id = ?", fixture.tenantID, storeManual.ID).
+		Update("status", enums.IMConversationStatusAIServing).Error; err != nil {
+		t.Fatalf("mark store manual conversation as AI serving: %v", err)
+	}
+	storeManual.Status = enums.IMConversationStatusAIServing
+	if err := ConversationService.AssignConversation(request.AssignConversationRequest{
+		ConversationID: storeManual.ID,
+		AssigneeID:     fixture.leaderA.UserID,
+		Reason:         "组长接管门店待跟进会话",
+	}, fixture.leaderA); err != nil {
+		t.Fatalf("team leader cannot take over store manual follow-up: %v", err)
+	}
+	current = ConversationService.GetByTenantID(storeManual.ID, fixture.tenantID)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != fixture.leaderA.UserID {
+		t.Fatalf("unexpected store manual conversation after team leader takeover: %+v", current)
+	}
+
 	tests := []struct {
 		name         string
 		routeStatus  enums.ConversationRouteStatus
 		needFollowUp bool
 	}{
 		{name: "follow up cleared", routeStatus: enums.ConversationRouteStatusHQAgentDeskPending, needFollowUp: false},
-		{name: "store manual", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: true},
+		{name: "store manual follow up cleared", routeStatus: enums.ConversationRouteStatusStoreWecomManual, needFollowUp: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

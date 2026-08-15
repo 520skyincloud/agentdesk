@@ -881,8 +881,10 @@ func (s *conversationTakeoverService) directTakeoverRouteAllowed(conversation *m
 	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
 		return conversation.Status == enums.IMConversationStatusAIServing ||
 			conversation.Status == enums.IMConversationStatusPending
-	case enums.ConversationRouteStatusHQAgentDeskPending:
-		return conversation.Status == enums.IMConversationStatusPending && route.NeedHumanFollowUp
+	case enums.ConversationRouteStatusHQAgentDeskPending, enums.ConversationRouteStatusStoreWecomManual:
+		return route.NeedHumanFollowUp &&
+			(conversation.Status == enums.IMConversationStatusAIServing ||
+				conversation.Status == enums.IMConversationStatusPending)
 	default:
 		return false
 	}
