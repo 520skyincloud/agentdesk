@@ -28,3 +28,14 @@
 - 生产 Generate/Commit 链仍走 V2；契约 §22.14 要求 PlanV4+OutputV3+ValidatorV3 成组灰度切换（AI_REPLY_PROMPT_LAYER_V2 同款 env 开关模式），尚未接线到 `executeClaimed` 主链路。
 - task_knowledge.go 的批量 metadata join（§22.12 BuildEvidenceForTaskBatch）与 AnswerGroup Reconcile 尚未接线。
 - Migration：新增字段均带 default，AutoMigrate 兼容 SQLite/MySQL；与并行分支无共享契约冲突（models.go AIReply* 为本分支独有域）。
+
+## 2026-08-15 第二轮：按计划 §19 逐 Phase 落地生产主链修复（58079b0 已部署 test-2）
+
+| 提交 | Phase | 生产根因修复 |
+|---|---|---|
+| e133854 | Phase 1 MessageAnalysis | RecordMediaReady 改写 message_analysis.v2（analyzer.kind=asr/vision 合法），CompleteReadyV2/ReadyForMessage 双读；生产 Analysis 行不再停在 pending |
+| c47e92c | Phase 2 Knowledge Query | 知识 Query 剥离 [语音]/文件名运输包装；多题按问号/句号/感叹号真实停顿拆分子句（含逗号二级兜底与 ASR 口语重复去重）；MaxContextItems 2→5、TopK 4→5 且 task_knowledge/answerability_gate 统一预算（剃须刀排第 4 必须进入 Generate） |
+| 89e9d38 | Phase 3 Echo 对账 | 出站回显先对账：同会话 5 分钟窗内与平台 AI 消息精确匹配 → ai_outbox_echo 补齐送达证据，不创建 Agent Message、不打断 Turn、不切人工（1403/1404-1406 场景） |
+| 58079b0 | Phase 4 Validator | Evidence/Action 引用改服务端 deterministic_autofix 派生；模型漏回显不再 rejected + 15s/1m/3m 整链重试；未知引用仍拒绝 |
+
+验证：全仓 build/vet/test 绿；回归测试覆盖 1392 四题语音、1362 口语重复、1399 排名第 4 证据、1403 自回显、missing_task_evidence 五个生产回放。
