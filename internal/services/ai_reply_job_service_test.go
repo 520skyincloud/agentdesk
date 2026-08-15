@@ -588,8 +588,9 @@ func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 契约 22.16：commit_failed 属技术失败，不触发人工派单。
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "commit_failed_human_dispatch" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 1 {
+		current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
 }
@@ -681,8 +682,8 @@ func TestAIReplyJobRejectsInvalidTurnHashCompletionEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-				current.ResultCode != "commit_failed_human_dispatch" || current.LastErrorClass != "commit_failed" ||
-				dispatchCalls.Load() != 1 {
+				current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" ||
+				dispatchCalls.Load() != 0 {
 				t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 			}
 		})

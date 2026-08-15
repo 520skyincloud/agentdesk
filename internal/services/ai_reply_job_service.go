@@ -893,6 +893,15 @@ func (s *aiReplyJobService) dispatchControlledFailure(job *models.AIReplyJob, ow
 		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "scope_invalid", "scope_invalid", now)
 		return
 	}
+	// 契约 22.16：受控失败同样按失败类别门禁——generation_failed 等技术类
+	// 失败不得触发人工派单（生产 1473 场景根因：本路径漏设闸）。
+	if !failureClassAllowsHumanHandoff(controlledErrorClass(errorClass)) {
+		slog.Warn("controlled model failure kept technical without handoff",
+			"job_id", current.ID, "error_class", errorClass, "blocked_transition", "handoff_technical_failure_blocked")
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", controlledErrorClass(errorClass), now)
+		s.sendTechnicalFailureNotice(state, current)
+		return
+	}
 	if err := s.dispatchHuman(state, current, "AI 自动回复失败，需要人工跟进"); err != nil {
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), current.ID, current.TenantID, owner,
 			"human_dispatch_retry", controlledErrorClass(errorClass), now.Add(time.Minute), now, false)

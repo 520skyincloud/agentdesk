@@ -174,7 +174,12 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	if multimodalV3Enabled() {
 		// 契约 22.14/15：成组开关下模型只输出 groupKey+taskKeys+content；
 		// Evidence/Action 引用由服务端 deterministic autofix 派生。
+		// 模型仍按 v2 形态输出时兼容解析（引用一律由服务端覆盖派生），
+		// 避免协议切换期回复中断。
 		parsed, err = parseRuntimeReplyOutputV3AsV2(raw)
+		if err != nil {
+			parsed, err = parseRuntimeReplyOutputV2(raw)
+		}
 	} else {
 		parsed, err = parseRuntimeReplyOutputV2(raw)
 	}
