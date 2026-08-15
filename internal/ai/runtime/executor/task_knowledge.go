@@ -116,7 +116,10 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			if options.TopK <= 0 || options.TopK > knowledgeTopKBudget {
 				options.TopK = knowledgeTopKBudget
 			}
-			result, err := retriever.RetrieveContextByOptions(ctx, options, items[itemIndex].Query)
+			// 契约 4.18/22.12：统一执行器——checkpoint 复用 + 租约 + 有界并发。
+			plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
+				items[itemIndex].Query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
+			result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
 			items[itemIndex].Result = result
 			items[itemIndex].Err = err
 			items[itemIndex].Status = runtimeKnowledgeStatus(result, err)

@@ -25,6 +25,7 @@ type IntentTaskV3 struct {
 	NormalizedText string
 	RequestMode    string
 	Confidence     float64
+	Requirements   []RequirementSeed
 }
 
 // IntentSourceSpan 是一个来源片段：sourceRef + 0-based rune offset（end exclusive）+ 原文 quote。
@@ -112,8 +113,16 @@ type QuestionUnit struct {
 	SubIntent              string
 	RequestMode            string
 	Text                   string // 检索/表达用规范化文本（有限改写）
+	Requirements           []RequirementSeed
 	CanonicalQuestionHash  string
 	Relation               string
+}
+
+// RequirementSeed 是模型建议的答案义务（契约 10.8），ID 与状态机由服务端负责。
+type RequirementSeed struct {
+	Kind     string
+	Required bool
+	Sequence int
 }
 
 // TaskNormalizationResult 记录规范化结果：接受的 QuestionUnit 与被抑制的重复项。
@@ -190,6 +199,7 @@ func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []In
 	seenHash := make(map[string]string, len(deduped))
 	for index, task := range deduped {
 		unit := buildQuestionUnit(index+1, task, utteranceByRef)
+		unit.Requirements = task.Requirements
 		if covered, exists := seenHash[unit.CanonicalQuestionHash]; exists {
 			result.SuppressedUnits = append(result.SuppressedUnits, SuppressedUnit{
 				Sequence: task.Sequence, ReasonCode: "same_source_duplicate", CoveredByQuestionKey: covered,

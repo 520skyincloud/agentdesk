@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"agent-desk/internal/ai/runtime/contracts"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
@@ -120,6 +123,10 @@ func persistAndSelectRuntimeTaskBatch(req RunInput, intent callbacks.IntentTrace
 		if lockErr != nil {
 			return lockErr
 		}
+		// 契约 10.7：覆盖标签与 Task 创建同事务持久化。
+		if coverErr := services.AIReplyTurnTaskService.RecordResolvedCoverageDB(ctx.Tx, req.ToJobRef(), lockedTurn, ensured, time.Now()); coverErr != nil {
+			return coverErr
+		}
 		batch, hasMore, lockErr = services.AIReplyTurnTaskService.ClaimBatchDB(ctx.Tx, lockedTurn, req.JobID)
 		return lockErr
 	})
@@ -212,6 +219,10 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			// 契约 10.2：来源片段确定性绑定，防止正文与意图跨消息串线。
 			SourceSpanStart: spanStart,
 			SourceSpanEnd:   spanEnd,
+		}
+		// 契约 10.8：把 Intent 建议的答案义务固化为 answer_requirement_set.v1。
+		if requirementsJSON := buildAnswerRequirementsJSON(plan, spanStart, spanEnd); requirementsJSON != "" {
+			input.AnswerRequirementsJSON = requirementsJSON
 		}
 		taskKey := services.AIReplyTurnTaskService.StableTaskKey(input)
 		plan.TaskKey = taskKey
@@ -484,4 +495,45 @@ func sortReplyTaskPlansByKeyOrder(plans []callbacks.ReplyTaskPlanTraceData, keys
 		return order[plans[i].TaskKey] < order[plans[j].TaskKey]
 	})
 	return plans
+}
+
+// ToJobRef 把 RunInput 投影为 Job 引用（供覆盖标签写入）。
+func (r RunInput) ToJobRef() *models.JobRef {
+	if r.JobID <= 0 {
+		return nil
+	}
+	return &models.JobRef{ID: r.JobID, TenantID: r.Conversation.TenantID}
+}
+
+// buildAnswerRequirementsJSON 由 trace Requirements（"kind|required"）构造
+// 服务端分配 Key 的义务集合；subject span 由 Task 主来源字段承载。
+func buildAnswerRequirementsJSON(plan callbacks.ReplyTaskPlanTraceData, spanStart, spanEnd int) string {
+	if len(plan.Requirements) == 0 {
+		return ""
+	}
+	set := contracts.AnswerRequirementSetV1{
+		SchemaVersion: contracts.AnswerRequirementSetV1SchemaVersion,
+	}
+	for index, encoded := range plan.Requirements {
+		kind, required := decodeRequirementSeed(encoded)
+		set.Requirements = append(set.Requirements, contracts.AnswerRequirementItemV1{
+			Key: fmt.Sprintf("R%d", index+1), Kind: kind, Required: required,
+			Sequence: index + 1,
+		})
+	}
+	raw, err := json.Marshal(set)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func decodeRequirementSeed(encoded string) (string, bool) {
+	parts := strings.SplitN(encoded, "|", 2)
+	kind := strings.TrimSpace(parts[0])
+	required := len(parts) == 2 && parts[1] == "true"
+	if kind == "" {
+		kind = "other"
+	}
+	return kind, required
 }

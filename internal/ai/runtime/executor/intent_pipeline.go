@@ -584,6 +584,7 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		SubIntent:      task.SubIntent,
 		Text:           task.Text,
 		RequestMode:    task.RequestMode,
+		Requirements:   task.Requirements,
 		Output:         output,
 		ResourceAction: task.ResourceAction,
 	}

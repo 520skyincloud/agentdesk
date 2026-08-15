@@ -185,31 +185,33 @@ type NormalizeTraceData struct {
 }
 
 type IntentTraceData struct {
-	DetectedIntent       string                `json:"detectedIntent,omitempty"`
-	MatchedIntentCode    string                `json:"matchedIntentCode,omitempty"`
-	PrimaryIntent        string                `json:"primaryIntent,omitempty"`
-	SubIntent            string                `json:"subIntent,omitempty"`
-	DialogueAct          string                `json:"dialogueAct,omitempty"`
-	SecondaryIntents     []string              `json:"secondaryIntents,omitempty"`
-	SecondaryIntentCodes []string              `json:"secondaryIntentCodes,omitempty"`
-	IntentConfidence     float64               `json:"intentConfidence,omitempty"`
-	ShouldReply          bool                  `json:"shouldReply,omitempty"`
-	NeedsClarification   bool                  `json:"needsClarification,omitempty"`
-	NeedsKnowledge       bool                  `json:"needsKnowledge,omitempty"`
-	NeedsTool            bool                  `json:"needsTool,omitempty"`
-	NeedsResource        bool                  `json:"needsResource,omitempty"`
-	NeedsHumanRoute      bool                  `json:"needsHumanRoute,omitempty"`
-	ResourceType         string                `json:"resourceType,omitempty"`
-	ResourceAction       string                `json:"resourceAction,omitempty"`
-	ResourceActions      []string              `json:"resourceActions,omitempty"`
-	MixedSubTasks        []string              `json:"mixedSubTasks,omitempty"`
-	IntentTasks          []IntentTaskTraceData `json:"intentTasks,omitempty"`
-	ToolCodes            []string              `json:"toolCodes,omitempty"`
-	HumanRoutePolicy     string                `json:"humanRoutePolicy,omitempty"`
-	MatchedConfigID      int64                 `json:"matchedConfigId,omitempty"`
-	MatchedConfig        string                `json:"matchedConfig,omitempty"`
-	MatchMode            string                `json:"matchMode,omitempty"`
-	Reason               string                `json:"reason,omitempty"`
+	DetectedIntent       string   `json:"detectedIntent,omitempty"`
+	MatchedIntentCode    string   `json:"matchedIntentCode,omitempty"`
+	PrimaryIntent        string   `json:"primaryIntent,omitempty"`
+	SubIntent            string   `json:"subIntent,omitempty"`
+	DialogueAct          string   `json:"dialogueAct,omitempty"`
+	SecondaryIntents     []string `json:"secondaryIntents,omitempty"`
+	SecondaryIntentCodes []string `json:"secondaryIntentCodes,omitempty"`
+	IntentConfidence     float64  `json:"intentConfidence,omitempty"`
+	ShouldReply          bool     `json:"shouldReply,omitempty"`
+	NeedsClarification   bool     `json:"needsClarification,omitempty"`
+	NeedsKnowledge       bool     `json:"needsKnowledge,omitempty"`
+	NeedsTool            bool     `json:"needsTool,omitempty"`
+	NeedsResource        bool     `json:"needsResource,omitempty"`
+	NeedsHumanRoute      bool     `json:"needsHumanRoute,omitempty"`
+	ResourceType         string   `json:"resourceType,omitempty"`
+	ResourceAction       string   `json:"resourceAction,omitempty"`
+	ResourceActions      []string `json:"resourceActions,omitempty"`
+	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"），服务端负责 ID 与状态机。
+	Requirements     []string              `json:"requirements,omitempty"`
+	MixedSubTasks    []string              `json:"mixedSubTasks,omitempty"`
+	IntentTasks      []IntentTaskTraceData `json:"intentTasks,omitempty"`
+	ToolCodes        []string              `json:"toolCodes,omitempty"`
+	HumanRoutePolicy string                `json:"humanRoutePolicy,omitempty"`
+	MatchedConfigID  int64                 `json:"matchedConfigId,omitempty"`
+	MatchedConfig    string                `json:"matchedConfig,omitempty"`
+	MatchMode        string                `json:"matchMode,omitempty"`
+	Reason           string                `json:"reason,omitempty"`
 }
 
 type IntentTaskTraceData struct {
@@ -225,7 +227,9 @@ type IntentTaskTraceData struct {
 	NeedsHumanRoute bool    `json:"needsHumanRoute,omitempty"`
 	ResourceAction  string  `json:"resourceAction,omitempty"`
 	MatchedConfigID int64   `json:"matchedConfigId,omitempty"`
-	Reason          string  `json:"reason,omitempty"`
+	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
+	Requirements []string `json:"requirements,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
 }
 
 type CommitMessageTraceData struct {
@@ -315,6 +319,8 @@ type ReplyTaskPlanTraceData struct {
 	RelationType   string `json:"relationType,omitempty"`
 	Output         string `json:"output,omitempty"`
 	ResourceAction string `json:"resourceAction,omitempty"`
+	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
+	Requirements []string `json:"requirements,omitempty"`
 }
 
 func (d ReplyPlanTraceData) HasMultipleTasks() bool {

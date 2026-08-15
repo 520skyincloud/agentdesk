@@ -41,15 +41,22 @@ type intentCoverageItemWire struct {
 }
 
 type intentTaskV3Wire struct {
-	Sequence     int              `json:"sequence"`
-	Intent       string           `json:"intent"`
-	SubIntent    string           `json:"subIntent"`
-	SourceRefs   []string         `json:"sourceRefs"`
-	SourceSpans  []intentSpanWire `json:"sourceSpans"`
-	DependsOnObs []string         `json:"dependsOnObservationRefs"`
-	Normalized   string           `json:"normalizedQuestion"`
-	RequestMode  string           `json:"requestMode"`
-	Confidence   float64          `json:"confidence"`
+	Sequence     int               `json:"sequence"`
+	Intent       string            `json:"intent"`
+	SubIntent    string            `json:"subIntent"`
+	SourceRefs   []string          `json:"sourceRefs"`
+	SourceSpans  []intentSpanWire  `json:"sourceSpans"`
+	DependsOnObs []string          `json:"dependsOnObservationRefs"`
+	Normalized   string            `json:"normalizedQuestion"`
+	Requirements []requirementWire `json:"answerRequirements"`
+	RequestMode  string            `json:"requestMode"`
+	Confidence   float64           `json:"confidence"`
+}
+
+type requirementWire struct {
+	Sequence int    `json:"sequence"`
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
 }
 
 type intentSpanWire struct {
@@ -163,6 +170,11 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 			SourceRefs: task.SourceRefs, SourceSpans: spans, DependsOnObs: task.DependsOnObs,
 			NormalizedText: task.Normalized, RequestMode: task.RequestMode, Confidence: task.Confidence,
 		})
+		for _, requirement := range task.Requirements {
+			tasks[len(tasks)-1].Requirements = append(tasks[len(tasks)-1].Requirements, RequirementSeed{
+				Kind: requirement.Kind, Required: requirement.Required, Sequence: requirement.Sequence,
+			})
+		}
 	}
 	if issues := validateV3UtteranceCoverage(envelope, parsed.UtteranceCoverage); len(issues) > 0 {
 		return callbacks.IntentTraceData{}, false, &strictjson.ProtocolError{
@@ -184,11 +196,13 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 	}
 	// 复用 V2 适配：QuestionUnit -> IntentTaskV2 -> 能力派生 -> legacy trace。
 	v2Tasks := make([]contracts.IntentTaskV2, 0, len(units))
+	unitRequirements := make(map[int][]RequirementSeed, len(units))
 	for _, unit := range units {
 		v2Tasks = append(v2Tasks, contracts.IntentTaskV2{
 			Sequence: unit.Sequence, Intent: unit.Intent, SubIntent: unit.SubIntent,
 			Text: unit.Text, RequestMode: unit.RequestMode, Confidence: 0.9,
 		})
+		unitRequirements[unit.Sequence] = unit.Requirements
 	}
 	v2 := contracts.IntentTasksV2{SchemaVersion: contracts.SchemaIntentTasksV2, DialogueAct: parsed.DialogueAct, Tasks: v2Tasks}
 	derived, deriveErr := DeriveRuntimeIntentCapabilities(v2, configs)
@@ -208,6 +222,12 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 		}
 	} else {
 		trace = AdaptIntentV2ToLegacyTrace(v2, derived)
+	}
+	for index := range trace.IntentTasks {
+		for _, seed := range unitRequirements[trace.IntentTasks[index].Sequence] {
+			trace.IntentTasks[index].Requirements = append(trace.IntentTasks[index].Requirements,
+				fmt.Sprintf("%s|%t", seed.Kind, seed.Required))
+		}
 	}
 	trace.MatchMode = "intent_tasks.v3"
 	trace.Reason = "intent_tasks.v3 envelope+span normalized"

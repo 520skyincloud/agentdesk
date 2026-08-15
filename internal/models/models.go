@@ -813,11 +813,20 @@ type AIReplyTurnTask struct {
 	AnswerGroupKey            string     `gorm:"type:varchar(128);not null;default:'';index"`
 	KnowledgeRetrieveLogID    int64      `gorm:"type:bigint;not null;default:0;index"`
 	KnowledgeQueryFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
+	QuestionUnitKey           string     `gorm:"type:varchar(128);not null;default:'';index"`
+	AnswerRequirementsJSON    string     `gorm:"type:text"`
+	RequirementStateJSON      string     `gorm:"type:text"`
 	EvidenceFingerprint       string     `gorm:"type:varchar(64);not null;default:'';index"`
 	FailureClass              string     `gorm:"type:varchar(40);not null;default:'';index"`
 	NextRetryAt               *time.Time `gorm:"type:datetime;index;index:idx_ai_reply_turn_task_due,priority:2"`
 	CompletedAt               *time.Time `gorm:"type:datetime;index"`
 	AuditFields
+}
+
+// JobRef 是 Job 的轻量引用（跨层传递，避免循环依赖）。
+type JobRef struct {
+	ID       int64
+	TenantID int64
 }
 
 // AIReplyJob persists one recoverable AI reply trigger for a committed
@@ -846,12 +855,14 @@ type AIReplyJob struct {
 	LastErrorClass      string                      `gorm:"type:varchar(80);not null;default:'';index"`
 	// 多模态契约 3.3：阶段恢复。ResumeStage 是最早恢复入口；Checkpoint 只
 	// 证明 scope/Task/Evidence/Plan 未变化，不保存模型正文。
-	ResumeStage             string     `gorm:"type:varchar(24);not null;default:'intent';index"`
-	StageAttemptCount       int        `gorm:"type:int;not null;default:0"`
-	CheckpointFingerprint   string     `gorm:"type:varchar(64);not null;default:'';index"`
-	ProgressNoticeMessageID int64      `gorm:"type:bigint;not null;default:0;index"`
-	StartedAt               *time.Time `gorm:"type:datetime;index"`
-	CompletedAt             *time.Time `gorm:"type:datetime;index"`
+	ResumeStage                 string     `gorm:"type:varchar(24);not null;default:'intent';index"`
+	StageAttemptCount           int        `gorm:"type:int;not null;default:0"`
+	CheckpointFingerprint       string     `gorm:"type:varchar(64);not null;default:'';index"`
+	ProgressNoticeMessageID     int64      `gorm:"type:bigint;not null;default:0;index"`
+	ResolvedCoverageJSON        string     `gorm:"type:text"`
+	ResolvedCoverageFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
+	StartedAt                   *time.Time `gorm:"type:datetime;index"`
+	CompletedAt                 *time.Time `gorm:"type:datetime;index"`
 	AuditFields
 }
 
@@ -1373,12 +1384,19 @@ type KnowledgeRetrieveLog struct {
 	CompletionTokens int     `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
 	ModelName        string  `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
 	// 契约 3.3.1/4.17：Task↔RetrieveLog 持久审计关联。
-	TurnID           int64     `gorm:"type:bigint;not null;default:0;index"`
-	TaskID           int64     `gorm:"type:bigint;not null;default:0;index"`
-	TaskKey          string    `gorm:"type:varchar(128);not null;default:'';index"`
-	QueryFingerprint string    `gorm:"type:varchar(64);not null;default:'';index"`
-	TraceData        string    `gorm:"type:text"` // TraceData 为链路追踪数据JSON。
-	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
+	TurnID           int64      `gorm:"type:bigint;not null;default:0;index"`
+	TaskID           int64      `gorm:"type:bigint;not null;default:0;index"`
+	TaskKey          string     `gorm:"type:varchar(128);not null;default:'';index"`
+	QueryFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
+	QueryKey         string     `gorm:"type:varchar(128);not null;default:'';index"`
+	QueryPurpose     string     `gorm:"type:varchar(32);not null;default:'answer';index"`
+	ScopeFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
+	ExecutionStatus  string     `gorm:"type:varchar(32);not null;default:'pending';index"`
+	LeaseOwner       string     `gorm:"type:varchar(128);not null;default:'';index"`
+	LeaseExpiresAt   *time.Time `gorm:"type:datetime;index"`
+	CompletedAt      *time.Time `gorm:"type:datetime;index"`
+	TraceData        string     `gorm:"type:text"` // TraceData 为链路追踪数据JSON。
+	CreatedAt        time.Time  `gorm:"type:datetime;not null;index"`
 }
 
 // KnowledgeRetrieveHit 检索命中详情表。
