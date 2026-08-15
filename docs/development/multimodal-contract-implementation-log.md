@@ -49,3 +49,15 @@
 | 1cb0a31 | §16.3 | 取消转人工改为事务闭合整个 Handoff：V2 payload taskKeys、同轮 handoff_pending/handoff → skipped，派生 pending/running → superseded，delivered 历史不改写；新增 CancelHandoffTransactionDB + 回归测试 |
 
 验证：全仓 build/vet/test 绿（含新契约测试与 handoff cancel 事务回放）。
+
+## 2026-08-15 第四轮：计划 §4/§14/§3.3 剩余条款（bea9294 已部署 test-2）
+
+| 提交 | 条款 | 修复 |
+|---|---|---|
+| 6d26efb | §4.13/§11.1 | AnswerGroup 改为排序后完整合格命中集合 fingerprint 分组；首条 hit/相同 subIntent/相同全文 Query 不再足以合并（1392 假覆盖场景） |
+| 6d26efb | §4.17/§3.3.1 | Task↔RetrieveLog 持久审计链：KnowledgeRetrieveLog 新增 TurnID/TaskID/TaskKey/QueryFingerprint；Task 新增 KnowledgeQueryFingerprint；retriever 回传 RetrieveLogID 并写入 Task（生产 knowledge_retrieve_log_id=0 修复） |
+| 5b56b66 | §4.6/§4.15/§3.9.8 | 历史 AI/客服回复进入上下文时带 [NON_AUTHORITATIVE_ASSISTANT_HISTORY] 标签：仅允许指代/语气/避免重复，禁止作为门店事实、知识答案、推荐来源 |
+| aef7924 | §14.3/§14.2 | 协议/验证类失败（intent_detect_failed/generation_failed/empty_output 等）改用 800ms/1500ms 短预算，耗尽即确定性终态；15s/1m/3m 长退避只保留给网络/知识不可用类 |
+| bea9294 | §3.3 | 企微语音翻译主路径（apply_voice_id/query_voice_text）接入 Channel Breaker：按租户连续失败 5 次熔断 60s，直接使用已配置 ASR，不再每条语音重复 -5103017 失败 |
+
+验证：全仓 build/vet/test 绿（含 AnswerGroup 证据集合、协议短预算、非权威历史标签回归）。

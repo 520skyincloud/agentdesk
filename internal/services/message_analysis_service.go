@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -55,11 +56,13 @@ func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRe
 	}
 	fingerprint := s.ContentFingerprint(message)
 	now := time.Now()
+	// 生产死锁修复（Error 1213）：MarkStale 的 UPDATE 与并发 INSERT 在唯一
+	// 索引上互取间隙锁。stale 标记是幂等副词操作，移出插入事务，失败仅告警。
+	if err := repositories.MessageAnalysisRepository.MarkStaleByMessageInTenant(sqls.DB(), message.TenantID, message.ID, fingerprint, now); err != nil {
+		slog.Warn("message analysis mark stale failed", "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
+	}
 	var item *models.MessageAnalysis
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.MessageAnalysisRepository.MarkStaleByMessageInTenant(ctx.Tx, message.TenantID, message.ID, fingerprint, now); err != nil {
-			return err
-		}
 		item = repositories.MessageAnalysisRepository.GetByRevisionInTenant(ctx.Tx, message.TenantID, message.ID, sourceRevision)
 		if item != nil {
 			if item.ContentFingerprint == fingerprint && item.AnalyzerKind == analyzer.Kind && item.AnalyzerName == analyzer.Name && item.AnalyzerVersion == analyzer.Version {

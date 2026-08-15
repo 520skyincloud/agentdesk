@@ -800,22 +800,23 @@ type AIReplyTurnTask struct {
 	ResultCode          string                               `gorm:"type:varchar(80);not null;default:'';index"`
 	CommittedMessageID  int64                                `gorm:"type:bigint;not null;default:0;index"`
 	// 多模态契约 3.2 兼容新增：QuestionUnit 来源绑定与能力/分组持久摘要。
-	AnalysisRevision       int        `gorm:"type:int;not null;default:0;index"`
-	SourceSpanStart        int        `gorm:"type:int;not null;default:0"`
-	SourceSpanEnd          int        `gorm:"type:int;not null;default:0"`
-	SourceBindingsJSON     string     `gorm:"type:text"`
-	SourceSetFingerprint   string     `gorm:"type:varchar(64);not null;default:'';index"`
-	CanonicalQuestionHash  string     `gorm:"type:varchar(64);not null;default:'';index"`
-	RequestMode            string     `gorm:"type:varchar(24);not null;default:'answer';index"`
-	CapabilityCode         string     `gorm:"type:varchar(120);not null;default:'';index"`
-	CapabilityRoute        string     `gorm:"type:varchar(40);not null;default:'';index"`
-	CapabilityFingerprint  string     `gorm:"type:varchar(64);not null;default:'';index"`
-	AnswerGroupKey         string     `gorm:"type:varchar(128);not null;default:'';index"`
-	KnowledgeRetrieveLogID int64      `gorm:"type:bigint;not null;default:0;index"`
-	EvidenceFingerprint    string     `gorm:"type:varchar(64);not null;default:'';index"`
-	FailureClass           string     `gorm:"type:varchar(40);not null;default:'';index"`
-	NextRetryAt            *time.Time `gorm:"type:datetime;index;index:idx_ai_reply_turn_task_due,priority:2"`
-	CompletedAt            *time.Time `gorm:"type:datetime;index"`
+	AnalysisRevision          int        `gorm:"type:int;not null;default:0;index"`
+	SourceSpanStart           int        `gorm:"type:int;not null;default:0"`
+	SourceSpanEnd             int        `gorm:"type:int;not null;default:0"`
+	SourceBindingsJSON        string     `gorm:"type:text"`
+	SourceSetFingerprint      string     `gorm:"type:varchar(64);not null;default:'';index"`
+	CanonicalQuestionHash     string     `gorm:"type:varchar(64);not null;default:'';index"`
+	RequestMode               string     `gorm:"type:varchar(24);not null;default:'answer';index"`
+	CapabilityCode            string     `gorm:"type:varchar(120);not null;default:'';index"`
+	CapabilityRoute           string     `gorm:"type:varchar(40);not null;default:'';index"`
+	CapabilityFingerprint     string     `gorm:"type:varchar(64);not null;default:'';index"`
+	AnswerGroupKey            string     `gorm:"type:varchar(128);not null;default:'';index"`
+	KnowledgeRetrieveLogID    int64      `gorm:"type:bigint;not null;default:0;index"`
+	KnowledgeQueryFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
+	EvidenceFingerprint       string     `gorm:"type:varchar(64);not null;default:'';index"`
+	FailureClass              string     `gorm:"type:varchar(40);not null;default:'';index"`
+	NextRetryAt               *time.Time `gorm:"type:datetime;index;index:idx_ai_reply_turn_task_due,priority:2"`
+	CompletedAt               *time.Time `gorm:"type:datetime;index"`
 	AuditFields
 }
 
