@@ -71,3 +71,13 @@
 | deb8c63 | §10.2/4.14 串线修复：来源绑定改「全文相等 → 归一化包含（返回 rune span）→ sequence 兜底」，包含式优先于 sequence，U1 正文不再可能配 U2 意图（1399/1400 场景）；Task 持久化 SourceSpan |
 
 验证：全仓 build/vet/test 绿；生产 deb8c63 active/http200；metadata 回填 cron 生效（count=200）。
+
+## 2026-08-15 第六轮：V3 主链成组灰度——IntentTasksV3 接线（48a10cf 已部署，默认关）
+
+- 成组总开关 `AI_RUNTIME_MULTIMODAL_V3=on`：强制 Intent=intent_tasks.v3 + Context=v2；validateRuntimeFeatureModes 校验 v3 依赖成组，禁止单独打开。
+- `intent_tasks_v3.go`：TurnInputEnvelope 构建（当前消息+紧邻客户连续段）→ 契约 9.3 V3 System Prompt + 9.4 Envelope User Prompt → 严格 strictjson 解码（SchemaIntentTasksV3）→ utteranceCoverage 集合等式校验（§10.7）→ ValidateIntentTaskSources rune span 校验（§10）→ NormalizeIntentTasks QuestionUnit 收敛（§12，同源去重/degraded_single_task）→ 适配 V2 下游（能力派生+任务账本，span 经 containment 绑定持久化）。
+- 协议失败：一次修复 → 仍失败降级为逐唯一非空 utterance 全文 QuestionUnit，不转人工（§10.5）；能力目录缺失时降级仍产出可回复 trace。
+- Channel Breaker 键 `intent_detect_v3` 独立计数。
+- 测试：覆盖率集合等式（1399/1400 串线场景）、降级逐 utterance、成组开关强制。
+- 生产：48a10cf 已部署，`AI_RUNTIME_MULTIMODAL_V3` 未设置（默认 V2 主链不变）；开启方式：在 runtime-production.env 增加 `AI_RUNTIME_MULTIMODAL_V3=on` 后 restart。
+- 边界说明：Reply/Validator 侧的 V3 语义（服务端派生 Evidence/Action 引用、AnswerGroup 分组）已通过前几轮在 V2 主链生效；正式 reply_output.v3 传输协议与 validation_result.v3 切换为下一步灰度项。
