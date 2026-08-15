@@ -161,7 +161,7 @@ func TestConversationPlatformAdminCanDirectTakeoverAIConversation(t *testing.T) 
 		enums.ConversationRouteStatusAIFallback,
 	} {
 		t.Run(string(routeStatus), func(t *testing.T) {
-			conversation := fixture.createPendingConversation(t, fixture.teamB.ID, routeStatus, false)
+			conversation := fixture.createAIConversation(t, fixture.teamB.ID, routeStatus)
 
 			state := ConversationTakeoverService.ResolveState(conversation, fixture.platformAdmin)
 			if !state.CanDirectTakeover || state.CanRequest {
@@ -214,7 +214,7 @@ func TestConversationPlatformAdminDirectTakeoverRejectsUnsupportedRoute(t *testi
 
 func TestConversationSupervisorTakeoverAllowsAIAndRejectsUnsupportedRoutes(t *testing.T) {
 	fixture := setupConversationSupervisorTakeoverFixture(t)
-	aiConversation := fixture.createPendingConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusAIServing, false)
+	aiConversation := fixture.createAIConversation(t, fixture.teamA.ID, enums.ConversationRouteStatusAIServing)
 	if err := ConversationService.AssignConversation(request.AssignConversationRequest{
 		ConversationID: aiConversation.ID,
 		AssigneeID:     fixture.leaderA.UserID,
@@ -494,5 +494,17 @@ func (f conversationSupervisorTakeoverFixture) createPendingConversation(t *test
 	if err := f.db.Create(route).Error; err != nil {
 		t.Fatalf("create pending route: %v", err)
 	}
+	return conversation
+}
+
+func (f conversationSupervisorTakeoverFixture) createAIConversation(t *testing.T, teamID int64, routeStatus enums.ConversationRouteStatus) *models.Conversation {
+	t.Helper()
+	conversation := f.createPendingConversation(t, teamID, routeStatus, false)
+	if err := f.db.Model(&models.Conversation{}).
+		Where("tenant_id = ? AND id = ?", f.tenantID, conversation.ID).
+		Update("status", enums.IMConversationStatusAIServing).Error; err != nil {
+		t.Fatalf("mark conversation as AI serving: %v", err)
+	}
+	conversation.Status = enums.IMConversationStatusAIServing
 	return conversation
 }
