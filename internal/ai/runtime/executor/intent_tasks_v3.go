@@ -210,6 +210,7 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 		trace = AdaptIntentV2ToLegacyTrace(v2, derived)
 	}
 	trace.MatchMode = "intent_tasks.v3"
+	trace.Reason = "intent_tasks.v3 envelope+span normalized"
 	if degraded {
 		trace.Reason = "intent_tasks.v3 degraded_single_task"
 	}
