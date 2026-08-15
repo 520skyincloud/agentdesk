@@ -390,7 +390,7 @@ export default function ConversationsPage() {
           manualAttentionCount={manualAttentionCount}
         />
       ) : (
-      <div className="flex w-72 shrink-0 flex-col border-r border-border bg-background/95 xl:w-80">
+      <div className="hidden w-72 shrink-0 flex-col border-r border-border bg-background/95 sm:flex xl:w-80">
         <div className="border-b border-border bg-background/95 px-4 py-4">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
@@ -652,7 +652,7 @@ export default function ConversationsPage() {
           <Button
             variant="ghost"
             size="icon"
-            className={`${workbenchIconButtonClassName} mt-0.5 shrink-0 lg:hidden`}
+            className={`${workbenchIconButtonClassName} mt-0.5 shrink-0 xl:hidden`}
             onClick={() => setMobileMenuOpen(false)}
           >
             <X className="size-4" />
@@ -672,14 +672,14 @@ export default function ConversationsPage() {
           <Button
             variant="ghost"
             size="icon"
-            className={`${workbenchIconButtonClassName} lg:hidden`}
+            className={`${workbenchIconButtonClassName} xl:hidden`}
             onClick={() => setMobileMenuOpen(true)}
           >
             <Menu className="size-4" />
           </Button>
           {conversation ? (
             <>
-              <Avatar className="size-10 shrink-0 rounded-xl lg:size-11">
+              <Avatar className="size-10 shrink-0 rounded-xl xl:size-11">
                 <AvatarImage src={conversation.customerAvatar || ""} />
                 <AvatarFallback className="rounded-xl bg-muted text-sm font-semibold text-muted-foreground">
                   {t("conversation.customerAvatar")}
@@ -708,10 +708,10 @@ export default function ConversationsPage() {
               <p className="truncate font-semibold text-[14px] leading-tight text-foreground">
                 {t("conversation.workbenchTitle")}
               </p>
-              <p className="mt-0.5 truncate text-[14px] text-muted-foreground sm:text-[14px] lg:hidden">
+              <p className="mt-0.5 truncate text-[14px] text-muted-foreground sm:text-[14px] xl:hidden">
                 {t("conversation.openMenuSelectConversation")}
               </p>
-              <p className="mt-0.5 hidden truncate text-[12px] text-muted-foreground lg:block">
+              <p className="mt-0.5 hidden truncate text-[12px] text-muted-foreground xl:block">
                 {t("conversation.selectConversationFromSidebar")}
               </p>
             </div>
@@ -752,7 +752,7 @@ export default function ConversationsPage() {
           <Button
             variant="ghost"
             size="icon"
-            className={`${workbenchIconButtonClassName} lg:hidden`}
+            className={`${workbenchIconButtonClassName} xl:hidden`}
             disabled={!conversation}
             aria-label={t("conversation.conversationInfo")}
             onClick={() => setMobileCustomerSheetOpen(true)}
@@ -830,7 +830,7 @@ export default function ConversationsPage() {
           <Button
             variant="ghost"
             size="icon"
-            className={`${workbenchIconButtonClassName} hidden lg:flex`}
+            className={`${workbenchIconButtonClassName} hidden xl:flex`}
             disabled={!conversation}
             onClick={() => setDetailSheetOpen(true)}
             aria-label={t("conversation.conversationInfo")}
@@ -850,17 +850,17 @@ export default function ConversationsPage() {
   );
 
   return (
-    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden bg-muted/30 p-0 lg:h-full lg:p-3">
+    <div className="flex h-[calc(100dvh-var(--header-height))] min-h-0 w-full min-w-0 flex-col overflow-hidden bg-muted/30 p-0 xl:h-full xl:p-3">
       {mobileMenuOpen && (
         <button
           type="button"
           aria-label={t("conversation.closeConversationList")}
-          className="fixed top-12 right-0 bottom-0 left-0 z-30 bg-black/50 lg:hidden"
+          className="fixed top-12 right-0 bottom-0 left-0 z-30 bg-black/50 xl:hidden"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
       <div
-        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(22rem,calc(100vw-0.75rem))] max-w-[min(22rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-border bg-background text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] lg:hidden ${
+        className={`fixed top-12 bottom-0 left-0 z-40 flex w-[min(42rem,calc(100vw-0.75rem))] max-w-[min(42rem,calc(100vw-0.75rem))] flex-col overflow-hidden border-r border-border bg-background text-card-foreground shadow-xl transition-transform duration-300 ease-out will-change-transform touch-manipulation overscroll-contain supports-[padding:max(0px)]:pb-[env(safe-area-inset-bottom)] xl:hidden ${
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"
         }`}
         aria-hidden={!mobileMenuOpen}
@@ -870,10 +870,10 @@ export default function ConversationsPage() {
         })}
       </div>
 
-      <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden lg:hidden">
+      <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden xl:hidden">
         {workspaceContent}
       </div>
-      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(0,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-sm lg:grid xl:grid-cols-[320px_390px_minmax(0,1fr)]">
+      <div className="hidden min-h-0 w-full flex-1 grid-cols-[288px_360px_minmax(360px,1fr)] overflow-hidden rounded-lg border border-border bg-background shadow-sm xl:grid 2xl:grid-cols-[320px_390px_minmax(0,1fr)]">
         <div className="col-span-2 min-h-0 border-r border-border bg-background">
           {renderConversationSidebar()}
         </div>

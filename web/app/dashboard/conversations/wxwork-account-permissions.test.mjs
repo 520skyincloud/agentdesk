@@ -39,6 +39,14 @@ test("conversation workbench preserves all conversations while gating account na
   assert.match(pageSource, /canViewWxWorkAccounts && filteredInstances\.length === 0/)
 })
 
+test("conversation workbench keeps the chat usable at tablet and small laptop widths", () => {
+  assert.match(pageSource, /hidden w-72[\s\S]*sm:flex xl:w-80/)
+  assert.match(pageSource, /w-\[min\(42rem,calc\(100vw-0\.75rem\)\)\][\s\S]*xl:hidden/)
+  assert.match(pageSource, /flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden xl:hidden/)
+  assert.match(pageSource, /grid-cols-\[288px_360px_minmax\(360px,1fr\)\][\s\S]*xl:grid[\s\S]*2xl:grid-cols/)
+  assert.doesNotMatch(pageSource, /lg:grid xl:grid-cols/)
+})
+
 test("store staff conversation mode uses the current binding workbench instead of the tenant account pool", () => {
   assert.match(pageSource, /fetchStoreWorkbench\(\)/)
   assert.match(pageSource, /<StoreStaffConversationIdentity/)
