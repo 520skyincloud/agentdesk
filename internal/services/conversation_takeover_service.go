@@ -234,10 +234,10 @@ func (s *conversationTakeoverService) DirectTakeover(req request.RequestConversa
 			return nil
 		}
 		if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID != 0 {
-			return errorsx.InvalidParam("只有尚未分配的待人工会话允许直接接管，已分配会话请使用转派")
+			return errorsx.InvalidParam("只有尚未分配的开放会话允许直接接管，已分配会话请使用转派")
 		}
 		if !s.directTakeoverRouteAllowed(conversation, route) {
-			return errorsx.InvalidParam("只有等待总部人工处理的会话允许直接接管")
+			return errorsx.InvalidParam("当前会话状态不允许直接接管")
 		}
 		scope, err := s.resolveScopeDB(ctx.Tx, conversation, route)
 		if err != nil {
@@ -874,10 +874,17 @@ func (s *conversationTakeoverService) hasTakeoverTable(db *gorm.DB) bool {
 }
 
 func (s *conversationTakeoverService) directTakeoverRouteAllowed(conversation *models.Conversation, route *models.ConversationRouteState) bool {
-	return conversation != nil && route != nil &&
-		conversation.Status == enums.IMConversationStatusPending &&
-		route.RouteStatus == enums.ConversationRouteStatusHQAgentDeskPending &&
-		route.NeedHumanFollowUp
+	if conversation == nil || route == nil || conversation.Status != enums.IMConversationStatusPending {
+		return false
+	}
+	switch route.RouteStatus {
+	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
+		return true
+	case enums.ConversationRouteStatusHQAgentDeskPending:
+		return route.NeedHumanFollowUp
+	default:
+		return false
+	}
 }
 
 func (s *conversationTakeoverService) findPendingDB(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) *models.ConversationTakeoverRequest {

@@ -11,6 +11,10 @@ const chatPanelSource = await readFile(
   new URL("./_components/chat-panel.tsx", import.meta.url),
   "utf8",
 )
+const sharedMessageEditorSource = await readFile(
+  new URL("../../../components/chat/shared-message-editor.tsx", import.meta.url),
+  "utf8",
+)
 const managerSource = await readFile(
   new URL("../../../components/wxwork-protocol/wxwork-protocol-instance-manager.tsx", import.meta.url),
   "utf8",
@@ -61,6 +65,9 @@ test("store staff conversation mode uses the current binding workbench instead o
   assert.match(chatPanelSource, /handleInviteGroupMembers[\s\S]*ensureReplyPermission\(\)/)
   assert.match(chatPanelSource, /conversationId: conversation\.id/)
   assert.match(chatPanelSource, /onOpenGroupInvite=\{\(\) => \{[\s\S]*ensureReplyPermission\(\)/)
+  assert.match(sharedMessageEditorSource, /flex min-w-0 flex-1 items-center gap-1 overflow-x-auto/)
+  assert.match(sharedMessageEditorSource, /flex shrink-0 items-center gap-2 pl-2/)
+  assert.match(sharedMessageEditorSource, /label className="flex shrink-0 items-center gap-2 text-sm text-foreground"/)
 })
 
 test("conversation workbench separates account creation from account management", () => {
