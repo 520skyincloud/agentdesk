@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -26,6 +27,15 @@ type compiledStageResult struct {
 	categoryTokens      map[string]int
 	pruned              []PrunedContextItem
 	evidence            *contracts.EvidenceBundleV1
+}
+
+// replyTransportContractNote 契约 22.14：成组开关下 Generate 传输协议切换为
+// reply_output.v3（模型只输出 groupKey/taskKeys/content，引用由服务端派生）。
+func replyTransportContractNote() string {
+	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on" {
+		return "本批次改用 reply_output.v3：只输出 {\"schemaVersion\":\"reply_output.v3\",\"parts\":[{\"groupKey\":\"组键\",\"taskKeys\":[\"...\"]},\"content\":\"给客户的话\"]}；不要输出 evidenceRefs/actionRefs。"
+	}
+	return ""
 }
 
 func New(estimatorRegistry *EstimatorRegistry) *Compiler {
@@ -335,6 +345,7 @@ func buildGeneratePolicy(input CompileInput) string {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话","evidenceRefs":[],"actionRefs":[]}]}`,
+			replyTransportContractNote(),
 		)
 	} else {
 		parts = append(parts, "只输出客户可见的最终回复正文；不得输出思考过程、内部字段、JSON 协议说明或动作执行状态。")

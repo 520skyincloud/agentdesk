@@ -81,3 +81,15 @@
 - 测试：覆盖率集合等式（1399/1400 串线场景）、降级逐 utterance、成组开关强制。
 - 生产：48a10cf 已部署，`AI_RUNTIME_MULTIMODAL_V3` 未设置（默认 V2 主链不变）；开启方式：在 runtime-production.env 增加 `AI_RUNTIME_MULTIMODAL_V3=on` 后 restart。
 - 边界说明：Reply/Validator 侧的 V3 语义（服务端派生 Evidence/Action 引用、AnswerGroup 分组）已通过前几轮在 V2 主链生效；正式 reply_output.v3 传输协议与 validation_result.v3 切换为下一步灰度项。
+
+## 2026-08-15 第七轮（终）：ReplyOutputV3 传输协议接入，V3 成组灰度完成（2b2f8be 已部署，默认关）
+
+- `applyRuntimeReplyOutputV2` 增加成组开关分支：`AI_RUNTIME_MULTIMODAL_V3=on` 时 Generate 输出按 `reply_output.v3` 严格解码（模型只输出 groupKey+taskKeys+content），映射到 V2 校验输入；Evidence/Action 引用全部由服务端 deterministic autofix 派生（契约 12.1/15）。
+- 同组拆分校验：同一 groupKey 出现在多个 part 直接协议拒绝（契约 13.1-4）。
+- ContextCompiler 传输契约注记：成组开关下 Generate 指令切换为 reply_output.v3 格式说明（不输出 evidenceRefs/actionRefs）。
+- 测试：V3 解码映射（引用必须为空、由服务端派生）、同组拆分拒绝；全仓 build/vet/test 绿。
+- 至此契约 2.1 `multimodal_v3` 成组组合（Envelope + IntentTasksV3 + QuestionUnit + AnswerGroup + OutputV3 + 服务端引用派生）代码全部就绪；生产 2b2f8be 默认 V2 主链不变，开启 = runtime-production.env 加 `AI_RUNTIME_MULTIMODAL_V3=on` 后 restart，支持按 Tenant/Store/Binding 白名单逐步放量。
+
+## 计划全量完成状态（最终）
+
+根因 #1-#13 全部修复；§7 媒体就绪、§8 媒体分层、§9 等待协议（含 3.3 熔断）、§10 QuestionUnit/UtteranceCoverage/Capability、§11 AnswerGroup/DeliveryPart 规则、§12 服务端引用、§13 Validator（V3 + V2 autofix）、§14 阶段重试/Attempt 边界、§16 人工路由（HandoffDecisionV2/事务闭合）、§17 知识门禁（回填+shadow）全部落地。建议生产验证期：V2 稳定 24-48h 后开 `AI_RUNTIME_MULTIMODAL_V3` 按白名单灰度。
