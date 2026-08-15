@@ -39,3 +39,13 @@
 | 58079b0 | Phase 4 Validator | Evidence/Action 引用改服务端 deterministic_autofix 派生；模型漏回显不再 rejected + 15s/1m/3m 整链重试；未知引用仍拒绝 |
 
 验证：全仓 build/vet/test 绿；回归测试覆盖 1392 四题语音、1362 口语重复、1399 排名第 4 证据、1403 自回显、missing_task_evidence 五个生产回放。
+
+## 2026-08-15 第三轮：Phase 5-7（1cb0a31 已部署 test-2）
+
+| 提交 | Phase | 修复 |
+|---|---|---|
+| d67b701 | §14.5/§22.16 | 技术失败（protocol/network/db/content/knowledge/scope/safety）耗尽预算后进入确定性终态 `technical_failure_no_handoff`，三处 dispatchHuman 入口全部按 failure class 门禁；Task 层走 MarkTechnicalFailureDB 终态 failed。测试改按新契约：技术失败 dispatchCalls=0 |
+| 592b74e | §3.9.11 | 媒体分析独立于路由：入站即异步触发 UnderstandInboundMessage（幂等），人工接待/知识未配置下 ASR/OCR/文件解析仍完成（1404-1406 场景） |
+| 1cb0a31 | §16.3 | 取消转人工改为事务闭合整个 Handoff：V2 payload taskKeys、同轮 handoff_pending/handoff → skipped，派生 pending/running → superseded，delivered 历史不改写；新增 CancelHandoffTransactionDB + 回归测试 |
+
+验证：全仓 build/vet/test 绿（含新契约测试与 handoff cancel 事务回放）。
