@@ -8,7 +8,9 @@ import (
 )
 
 type ReplyValidationInput struct {
-	Output       contracts.ReplyOutputV2
+	Output contracts.ReplyOutputV2
+	// Req 供受保护事实校验解析权威门店身份；零值时跳过名称门禁。
+	Req          RunInput
 	Plan         contracts.ReplyPlanV2
 	Evidence     contracts.EvidenceBundleV1
 	ActionLedger contracts.ActionLedgerV1

@@ -77,7 +77,7 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 		} else {
 			summary.RawReplyOutput = strings.TrimSpace(response.Content)
 		}
-		return applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector)
+		return applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector, req)
 	}
 
 	err = generate(messages)
@@ -165,7 +165,7 @@ func runRuntimeToolCollection(
 	return loopMessages
 }
 
-func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callbacks.RuntimeTraceCollector) error {
+func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callbacks.RuntimeTraceCollector, req RunInput) error {
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return fmt.Errorf("reply_output.v2 validation context is incomplete")
 	}
@@ -194,7 +194,7 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 		return err
 	}
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
-		Output: parsed, Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
+		Req: req, Output: parsed, Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
 		Gates: summary.ValidationGates,
 	})
 	summary.ValidationResult = &validation

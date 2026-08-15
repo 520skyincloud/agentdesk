@@ -34,7 +34,9 @@ type InterruptContextSummary struct {
 }
 
 type RunResult struct {
-	RunID                      string
+	RunID string
+	// RunRequest 保留本次运行输入，供受保护事实校验解析权威门店。
+	RunRequest                 RunInput
 	Status                     string
 	ReplyText                  string
 	RawReplyOutput             string

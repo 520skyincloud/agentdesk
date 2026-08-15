@@ -36,6 +36,7 @@ func NewService() *Service {
 func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, error) {
 	summary := &RunResult{
 		RunID:            uuid.NewString(),
+		RunRequest:       req,
 		Status:           "started",
 		ToolCodes:        make([]string, 0),
 		InvokedToolCodes: make([]string, 0),
@@ -468,7 +469,7 @@ func finishRuntimeGeneration(
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	summary.ModelName = modelName
 	if summary.UseRuntimeV2Generate {
-		if err := applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector); err != nil {
+		if err := applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector, summary.RunRequest); err != nil {
 			var protocolErr *replyOutputProtocolError
 			if errors.As(err, &protocolErr) {
 				return err

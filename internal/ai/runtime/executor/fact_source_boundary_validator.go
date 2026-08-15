@@ -2,13 +2,131 @@ package executor
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/repositories"
+	"github.com/mlogclub/simple/sqls"
 )
 
 // authoritativeStoreAddress 返回当前门店的权威地址（hydrate 后实例 → Store 表）。
 // 这是 protected store fact（文档 5.4）：只能来自 Store 表，
 // 不得来自知识库、客户陈述、客户图片 OCR、历史 AI 回复或模型推断。
+// validateStoreNameAssertions 任何 part 声明的场所名必须匹配权威门店名。
+// 命中客户注入名（如“壹间公寓”）直接 rejected，不进入地址子意图分支。
+func validateStoreNameAssertions(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	authoritative := authoritativeStoreNames(input.Req)
+	if len(authoritative) == 0 {
+		return nil
+	}
+	issues := make([]contracts.ValidationIssueV1, 0)
+	for _, part := range input.Output.Parts {
+		content := strings.TrimSpace(part.Content)
+		if content == "" {
+			continue
+		}
+		for _, name := range extractAssertedPlaceNames(content) {
+			if placeNameAuthorized(name, authoritative) {
+				continue
+			}
+			issues = append(issues, validationIssue(
+				"protected_fact_source_violation",
+				"$.parts",
+				"reply asserts an unauthorized store place name: "+name,
+			))
+			break
+		}
+	}
+	return issues
+}
+
+// authoritativeStoreNames 契约 4.9/13.1-7：门店名称是受保护事实。权威集合
+// 来自门店记录（Name/BrandName/NavigationName）；客户口述的“XX公寓/酒店”
+// 不得被确认或复述（生产 1518/1521 注入场景）。
+func authoritativeStoreNames(req RunInput) []string {
+	instance := findRuntimeWxWorkInstance(req)
+	if instance == nil || instance.StoreID <= 0 {
+		return nil
+	}
+	store := repositories.StoreRepository.Get(sqls.DB(), instance.StoreID)
+	if store == nil || store.TenantID != req.Conversation.TenantID {
+		return nil
+	}
+	names := make([]string, 0, 3)
+	for _, name := range []string{store.Name, store.BrandName, store.NavigationName} {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			names = append(names, trimmed)
+		}
+	}
+	return names
+}
+
+// extractAssertedPlaceNames 抓取回复中声明的场所名（…公寓/酒店/宾馆/大厦/旅店/民宿）。
+// 使用字节索引扫描，回溯时按 UTF-8 前导字节恢复 rune 边界。
+func extractAssertedPlaceNames(content string) []string {
+	suffixes := []string{"公寓", "酒店", "宾馆", "大厦", "旅店", "民宿"}
+	found := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	for _, suffix := range suffixes {
+		from := 0
+		for from <= len(content) {
+			idx := strings.Index(content[from:], suffix)
+			if idx < 0 {
+				break
+			}
+			endByte := from + idx + len(suffix)
+			startByte := endByte
+			maxBack := endByte - 36 // ≈12 个 CJK rune
+			if maxBack < from {
+				maxBack = from
+			}
+			for startByte > maxBack {
+				r, size := decodeLastRune(content[maxBack:startByte])
+				if isPlaceNameBoundary(r) {
+					break
+				}
+				startByte -= size
+			}
+			name := strings.TrimSpace(content[startByte:endByte])
+			if utf8.RuneCountInString(name) >= 3 {
+				if _, dup := seen[name]; !dup {
+					seen[name] = struct{}{}
+					found = append(found, name)
+				}
+			}
+			from = endByte
+		}
+	}
+	return found
+}
+
+// decodeLastRune 返回 s 中最后一个 rune 及其字节长度。
+func decodeLastRune(s string) (rune, int) {
+	if len(s) == 0 {
+		return 0, 0
+	}
+	return utf8.DecodeLastRuneInString(s)
+}
+
+// isPlaceNameBoundary 判定场所名左边界：标点、空白或引导词。
+func isPlaceNameBoundary(r rune) bool {
+	switch r {
+	case '，', ',', '。', '；', ';', '：', ':', '？', '?', '！', '!', ' ', '\n', '\t', '“', '”', '"', '\'', '（', '）', '(', ')', '、', '的', '是', '叫', '在', '填', '去', '到', '住', '订', '找':
+		return true
+	}
+	return false
+}
+
+// placeNameAuthorized 场所名与权威名集合比对（互为包含视为一致）。
+func placeNameAuthorized(name string, authoritative []string) bool {
+	for _, allowed := range authoritative {
+		if strings.Contains(allowed, name) || strings.Contains(name, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
 func authoritativeStoreAddress(req RunInput) string {
 	instance := findRuntimeWxWorkInstance(req)
 	if instance == nil {
@@ -25,11 +143,15 @@ func authoritativeStoreAddress(req RunInput) string {
 // 出现任何与权威值不一致的地址断言（如客户 OCR 里的“壹间公寓高新社区”）直接 rejected。
 // 这是业务事实错误，不可走协议修复。
 func validateReplyFactSourceBoundary(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	issues := validateStoreNameAssertions(input)
+	if len(issues) > 0 {
+		return issues
+	}
 	planByTask := make(map[string]contracts.ReplyPlanTaskV2, len(input.Plan.Tasks))
 	for _, task := range input.Plan.Tasks {
 		planByTask[task.TaskKey] = task
 	}
-	issues := make([]contracts.ValidationIssueV1, 0)
+	issues = append(issues, make([]contracts.ValidationIssueV1, 0)...)
 	for _, part := range input.Output.Parts {
 		content := strings.TrimSpace(part.Content)
 		if content == "" {
