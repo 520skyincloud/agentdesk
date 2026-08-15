@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -120,4 +121,82 @@ func DetectKnowledgeMetaContent(question, answer string) bool {
 		}
 	}
 	return false
+}
+
+// BackfillFromRetrieveHits 契约 17.3.1：从历史检索命中的 sourceRecord 快照
+// 离线回填质量元数据（在线零模型调用）。按 (tenant,kb,sourceRecordID) 去重，
+// 只回填尚无元数据行的记录；幂等，可周期执行。
+func (s *knowledgeEvidenceMetadataService) BackfillFromRetrieveHits(limit int) (int, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows := make([]knowledgeMetadataHitRow, 0, limit)
+	err := sqls.DB().Raw(`
+		SELECT h.tenant_id, h.knowledge_base_id, h.source_record_id,
+		       MAX(h.title) AS title, MAX(h.snippet) AS snippet
+		FROM t_knowledge_retrieve_hit h
+		JOIN t_knowledge_base kb ON kb.id = h.knowledge_base_id AND kb.tenant_id = h.tenant_id
+		WHERE h.source_record_id <> '' AND kb.store_id > 0
+		GROUP BY h.tenant_id, h.knowledge_base_id, h.source_record_id
+		ORDER BY MAX(h.id) DESC
+		LIMIT ?`, limit).Scan(&rows).Error
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	// 按 (tenant,kb) 分组批量回填；storeID 从知识库行解析。
+	type kbKey struct{ tenant, kb int64 }
+	storeByKB := map[kbKey]int64{}
+	kbs := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().
+		In("tenant_id", distinctTenants(rows)))
+	for _, kb := range kbs {
+		storeByKB[kbKey{kb.TenantID, kb.ID}] = kb.StoreID
+	}
+	grouped := map[kbKey][]MetadataCandidate{}
+	for _, row := range rows {
+		key := kbKey{row.TenantID, row.KnowledgeBaseID}
+		grouped[key] = append(grouped[key], MetadataCandidate{
+			KnowledgeBaseID: row.KnowledgeBaseID,
+			SourceRecordID:  row.SourceRecordID,
+			Question:        row.Title,
+			Answer:          row.Snippet,
+		})
+	}
+	total := 0
+	for key, candidates := range grouped {
+		storeID := storeByKB[key]
+		if storeID <= 0 {
+			continue
+		}
+		count, err := s.Backfill(key.tenant, storeID, candidates)
+		if err != nil {
+			slog.Warn("knowledge metadata backfill failed", "tenant_id", key.tenant, "knowledge_base_id", key.kb, "error", err)
+			continue
+		}
+		total += count
+	}
+	return total, nil
+}
+
+type knowledgeMetadataHitRow struct {
+	TenantID        int64
+	KnowledgeBaseID int64
+	SourceRecordID  string
+	Title           string
+	Snippet         string
+}
+
+func distinctTenants(rows []knowledgeMetadataHitRow) []int64 {
+	seen := map[int64]struct{}{}
+	ret := make([]int64, 0, 4)
+	for _, row := range rows {
+		if _, ok := seen[row.TenantID]; ok {
+			continue
+		}
+		seen[row.TenantID] = struct{}{}
+		ret = append(ret, row.TenantID)
+	}
+	return ret
 }

@@ -113,6 +113,16 @@ func Init() {
 		}
 	})
 
+	addFunc(c, "@every 5m", func() {
+		// 契约 17.3.1：从历史检索命中离线回填知识质量元数据（幂等，
+		// 不覆盖人工审核）。回填后 17.2 门禁按 claimType/trustLevel 生效。
+		if count, err := services.KnowledgeEvidenceMetadataService.BackfillFromRetrieveHits(200); err != nil {
+			slog.Warn("knowledge evidence metadata backfill failed", slog.Any("err", err))
+		} else if count > 0 {
+			slog.Info("knowledge evidence metadata backfilled", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 1m", func() {
 		managedFastGPTCount := services.FastGPTUsageSyncService.ProcessDue(50)
 		if managedFastGPTCount > 0 {
