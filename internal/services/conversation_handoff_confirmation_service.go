@@ -128,6 +128,24 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 	return true, err
 }
 
+// buildHandoffCancelReply 契约 16.4：取消提示按任务能力生成——办理类任务
+// 明确"不能代办但可告知规则"，信息类回到默认跟进，避免固定话术循环。
+func buildHandoffCancelReply(tenantID int64, payload handoffConfirmationPayload) string {
+	if len(payload.TaskKeys) > 0 && payload.OriginMessageID > 0 {
+		msg := repositories.MessageRepository.GetInTenant(sqls.DB(), payload.OriginMessageID, tenantID)
+		if msg != nil && msg.AIReplyTurnID > 0 {
+			tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), tenantID, msg.AIReplyTurnID)
+			for _, task := range tasks {
+				if task.TaskType == enums.AIReplyTurnTaskTypeHuman || task.TaskType == enums.AIReplyTurnTaskTypeResource ||
+					task.RequestMode == "request_action" {
+					return "好，这次先不转人工。这个操作我不能直接代办，但可以把办理规则和方式告诉你。"
+				}
+			}
+		}
+	}
+	return "好，那先不转人工。我继续帮您看这个问题。"
+}
+
 func handoffConfirmationToken(conversationID int64, requestID string) string {
 	normalizedRequestID := tracex.NormalizeRequestID(requestID)
 	if normalizedRequestID == "" {
@@ -192,7 +210,7 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 		}); cancelErr != nil {
 			slog.Warn("cancel handoff transaction failed", "conversation_id", conversation.ID, "origin_message_id", payload.OriginMessageID, "error", cancelErr)
 		}
-		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好，那先不转人工。我继续帮您看这个问题。", "", systemOperator(), message.RequestID)
+		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_cancel_"+strs.UUID(), enums.IMMessageTypeText, buildHandoffCancelReply(conversation.TenantID, payload), "", systemOperator(), message.RequestID)
 		return true, err
 	}
 	payload = handoffConfirmationPayload{}

@@ -258,3 +258,8 @@ func (r *aiReplyJobRepository) IncrementStageAttempt(db *gorm.DB, id int64, now 
 		})
 	return result.RowsAffected == 1, result.Error
 }
+
+// UpdateColumnsInTenant 更新 Job 指定列（如技术提示 MessageID）。
+func (r *aiReplyJobRepository) UpdateColumnsInTenant(db *gorm.DB, id, tenantID int64, columns map[string]any) error {
+	return db.Model(&models.AIReplyJob{}).Where("id = ? AND tenant_id = ?", id, tenantID).Updates(columns).Error
+}

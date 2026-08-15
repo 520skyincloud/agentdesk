@@ -793,6 +793,7 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		slog.Warn("ai reply partial failure kept technical without handoff",
 			"job_id", current.ID, "blocked_transition", "handoff_technical_failure_blocked")
 		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", classifyTaskFailure(runErr), now)
+		s.sendTechnicalFailureNotice(state, current)
 		return true
 	}
 	if err := s.dispatchHuman(state, current, "AI 部分问题自动处理失败，需要人工跟进"); err != nil {
@@ -926,6 +927,7 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 		slog.Warn("ai reply job technical failure exhausted without handoff",
 			"job_id", current.ID, "error_class", errorClass, "blocked_transition", "handoff_technical_failure_blocked")
 		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", errorClass, now)
+		s.sendTechnicalFailureNotice(state, current)
 		return
 	}
 	if err := s.dispatchHuman(state, current, "AI 自动回复连续失败，需要人工跟进"); err != nil {
@@ -952,6 +954,45 @@ func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIRe
 		}
 	}
 	return nil
+}
+
+// sendTechnicalFailureNotice 契约 14.5：技术终态至少向客户提交一条短提示
+// （不宣称需要人工），提示 MessageID 写入 ProgressNoticeMessageID；本轮已有
+// 提交消息（部分成功）或已发过提示时只告警不重发。
+func (s *aiReplyJobService) sendTechnicalFailureNotice(state *aiReplyJobExecutionState, job *models.AIReplyJob) {
+	if state == nil || state.Conversation == nil || job == nil {
+		return
+	}
+	if job.ProgressNoticeMessageID > 0 {
+		return
+	}
+	if tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID); len(tasks) > 0 {
+		for _, task := range tasks {
+			if task.CommittedMessageID > 0 || task.Status == enums.AIReplyTurnTaskStatusDelivered {
+				return // 部分成功：成功项已可见，不追加技术噪音
+			}
+		}
+	}
+	aiAgent, ok := WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(state.Conversation.ID)
+	if !ok || aiAgent.TenantID != state.Conversation.TenantID {
+		return
+	}
+	message, err := MessageService.SendAIMessageWithRequestID(
+		state.Conversation.ID, aiAgent.ID,
+		"ai_tech_notice_"+fmt.Sprintf("%d_%d", job.TurnID, job.ID),
+		enums.IMMessageTypeText,
+		"这条消息暂时没有处理成功，请稍后重发或换一种说法。",
+		"", systemOperator(), job.RequestID,
+	)
+	if err != nil {
+		slog.Warn("send technical failure notice failed", "job_id", job.ID, "error", err)
+		return
+	}
+	_ = repositories.AIReplyJobRepository.UpdateColumnsInTenant(sqls.DB(), job.ID, job.TenantID, map[string]any{
+		"progress_notice_message_id": message.ID,
+		"result_code":                "technical_failure_notified",
+		"updated_at":                 time.Now(), "update_user_name": "ai_reply_tech_notice",
+	})
 }
 
 func (s *aiReplyJobService) markTerminal(job *models.AIReplyJob, owner string, status enums.AIReplyJobStatus, resultCode, errorClass string, now time.Time) {
