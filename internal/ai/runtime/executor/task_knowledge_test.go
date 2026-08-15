@@ -140,20 +140,24 @@ func TestRetrieveRuntimeTaskKnowledgeGroupsTasksUsingSameTopKnowledgeRecord(t *t
 	}
 }
 
-func TestRuntimeKnowledgeAnswerGroupUsesTopHitBeforeContextSelection(t *testing.T) {
-	topHit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "coffee-top", Content: "咖啡信息", Score: 0.95}
-	contextFirst := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "parking-context", Content: "停车信息", Score: 0.8}
-	result := &retrievers.KnowledgeRetrieveResult{
-		Hits:           []rag.RetrieveResult{topHit, contextFirst},
-		ContextResults: []rag.RetrieveResult{contextFirst, topHit},
-		ContextText:    contextFirst.Content + "\n" + topHit.Content,
+func TestRuntimeKnowledgeAnswerGroupRequiresFullEvidenceSet(t *testing.T) {
+	// 契约 4.13：首条命中相同但完整命中集合不同，不得合并成一组。
+	shared := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "meta-question", Content: "元问题", Score: 0.95}
+	parking := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "parking-exact", Content: "停车入口", Score: 0.8}
+	quiet := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "quiet-room", Content: "安静房规则", Score: 0.8}
+	groupParking := runtimeKnowledgeAnswerGroup(&retrievers.KnowledgeRetrieveResult{Hits: []rag.RetrieveResult{shared, parking}, ContextText: "x"})
+	groupQuiet := runtimeKnowledgeAnswerGroup(&retrievers.KnowledgeRetrieveResult{Hits: []rag.RetrieveResult{shared, quiet}, ContextText: "x"})
+	if groupParking == "" || groupQuiet == "" {
+		t.Fatal("groups must be derivable")
 	}
-	want := runtimeKnowledgeAnswerGroup(&retrievers.KnowledgeRetrieveResult{
-		Hits:        []rag.RetrieveResult{topHit},
-		ContextText: topHit.Content,
-	})
-	if got := runtimeKnowledgeAnswerGroup(result); got == "" || got != want {
-		t.Fatalf("answer group must follow the ranked top hit, got=%q want=%q", got, want)
+	if groupParking == groupQuiet {
+		t.Fatalf("first-hit overlap must not merge different evidence sets: %s", groupParking)
+	}
+
+	// 完整命中集合一致（顺序不同也一致）时才允许同组。
+	groupParkingAgain := runtimeKnowledgeAnswerGroup(&retrievers.KnowledgeRetrieveResult{Hits: []rag.RetrieveResult{parking, shared}, ContextText: "x"})
+	if groupParking != groupParkingAgain {
+		t.Fatalf("identical evidence sets must produce identical group keys: %s vs %s", groupParking, groupParkingAgain)
 	}
 }
 

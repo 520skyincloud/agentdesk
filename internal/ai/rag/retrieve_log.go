@@ -46,6 +46,11 @@ type CreateRetrieveLogRequest struct {
 	PromptTokens     int
 	CompletionTokens int
 	ModelName        string
+	// TurnID/TaskID/TaskKey/QueryFingerprint 绑定 Task 审计链（契约 4.17）。
+	TurnID          int64
+	TaskID          int64
+	TaskKey         string
+	QueryFingerprint string
 }
 
 type retrieveTraceData struct {
@@ -142,6 +147,10 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 		PromptTokens:     req.PromptTokens,
 		CompletionTokens: req.CompletionTokens,
 		ModelName:        req.ModelName,
+		TurnID:           req.TurnID,
+		TaskID:           req.TaskID,
+		TaskKey:          req.TaskKey,
+		QueryFingerprint: req.QueryFingerprint,
 		TraceData:        traceData,
 		CreatedAt:        now,
 	}

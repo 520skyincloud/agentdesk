@@ -37,6 +37,10 @@ type KnowledgeRetrieveOptions struct {
 	TopK             int
 	ScoreThreshold   float64
 	QueryPreview     string
+	// TurnID/TaskID/TaskKey 绑定 Task↔RetrieveLog 审计链（契约 4.17）。
+	TurnID  int64
+	TaskID  int64
+	TaskKey string
 }
 
 type KnowledgeBaseRetrievePolicy struct {
@@ -47,17 +51,19 @@ type KnowledgeBaseRetrievePolicy struct {
 
 type KnowledgeRetrieveResult struct {
 	KnowledgeBaseIDs []int64
-	Query            string
-	Options          KnowledgeRetrieveOptions
-	Hits             []rag.RetrieveResult
-	ContextResults   []rag.RetrieveResult
-	ContextText      string
-	TopScore         float64
-	AnswerMode       enums.KnowledgeAnswerMode
-	Trace            *rag.RetrieveTrace
-	TraceItems       []callbacks.RetrieverTraceItem
-	TraceSummary     callbacks.RetrieverTraceSummary
-	Policies         []KnowledgeBaseRetrievePolicy
+	// RetrieveLogID 是本次检索的持久日志 ID（契约 4.17 审计链）。
+	RetrieveLogID  int64
+	Query          string
+	Options        KnowledgeRetrieveOptions
+	Hits           []rag.RetrieveResult
+	ContextResults []rag.RetrieveResult
+	ContextText    string
+	TopScore       float64
+	AnswerMode     enums.KnowledgeAnswerMode
+	Trace          *rag.RetrieveTrace
+	TraceItems     []callbacks.RetrieverTraceItem
+	TraceSummary   callbacks.RetrieverTraceSummary
+	Policies       []KnowledgeBaseRetrievePolicy
 }
 
 func NewKnowledgeRetriever(aiAgent models.AIAgent) *KnowledgeRetriever {
@@ -159,7 +165,7 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, results, r.AIAgent.TenantID)
 	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, ret.ContextResults, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
-	r.writeRuntimeRetrieveLog(ctx, query, retrieveMs, ret)
+	ret.RetrieveLogID = r.writeRuntimeRetrieveLog(ctx, opts, query, retrieveMs, ret)
 	r.writeKnowledgeUsageEvent(ctx, retrieveMs, ret)
 	return ret, nil
 }
@@ -214,9 +220,9 @@ func estimateKnowledgeContextTokens(text string) int {
 	return (runeCount + 1) / 2
 }
 
-func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query string, retrieveMs int64, result *KnowledgeRetrieveResult) {
+func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, opts KnowledgeRetrieveOptions, query string, retrieveMs int64, result *KnowledgeRetrieveResult) int64 {
 	if result == nil || len(result.KnowledgeBaseIDs) == 0 {
-		return
+		return 0
 	}
 	hits := buildKnowledgeSearchResults(result.Hits)
 	usedHits := buildKnowledgeSearchResults(result.ContextResults)
@@ -229,25 +235,39 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 	if requestID == "" {
 		requestID = strings.TrimSpace(scope.RequestID)
 	}
-	if _, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
-		KnowledgeBaseID: result.KnowledgeBaseIDs[0],
-		Channel:         string(enums.KnowledgeRetrieveChannelIM),
-		Scene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
-		ConversationID:  scope.ConversationID,
-		MessageID:       scope.MessageID,
-		RequestID:       requestID,
-		Question:        query,
-		AnswerStatus:    answerStatus,
-		RerankEnabled:   false,
-		Hits:            hits,
-		UsedHits:        usedHits,
-		UsedHitRankNos:  resolveUsedHitRankNos(result.Hits, result.ContextResults),
-		RetrieveMs:      retrieveMs,
-		LatencyMs:       retrieveMs,
-		ModelName:       "runtime-retriever",
+	if logItem, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
+		KnowledgeBaseID:  result.KnowledgeBaseIDs[0],
+		TurnID:           opts.TurnID,
+		TaskID:           opts.TaskID,
+		TaskKey:          opts.TaskKey,
+		QueryFingerprint: queryFingerprint(query),
+		Channel:          string(enums.KnowledgeRetrieveChannelIM),
+		Scene:            string(enums.KnowledgeRetrieveSceneFirstResponse),
+		ConversationID:   scope.ConversationID,
+		MessageID:        scope.MessageID,
+		RequestID:        requestID,
+		Question:         query,
+		AnswerStatus:     answerStatus,
+		RerankEnabled:    false,
+		Hits:             hits,
+		UsedHits:         usedHits,
+		UsedHitRankNos:   resolveUsedHitRankNos(result.Hits, result.ContextResults),
+		RetrieveMs:       retrieveMs,
+		LatencyMs:        retrieveMs,
+		ModelName:        "runtime-retriever",
 	}, nil); err != nil {
 		slog.Warn("runtime knowledge retrieve log failed", "error", err)
+		return 0
+	} else if logItem != nil {
+		return logItem.ID
 	}
+	return 0
+}
+
+// queryFingerprint 对 Query 文本计算稳定指纹（审计链去重键）。
+func queryFingerprint(query string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(query)))
+	return hex.EncodeToString(sum[:])
 }
 
 func buildKnowledgeSearchResults(items []rag.RetrieveResult) []response.KnowledgeSearchResult {

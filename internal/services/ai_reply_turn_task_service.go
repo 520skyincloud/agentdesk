@@ -58,6 +58,9 @@ type AIReplyTurnTaskKnowledgeUpdate struct {
 	Status     enums.AIReplyTurnTaskKnowledgeStatus
 	HitCount   int
 	ResultCode string
+	// RetrieveLogID/QueryFingerprint 绑定 Task↔RetrieveLog 审计链（契约 4.17）。
+	RetrieveLogID   int64
+	QueryFingerprint string
 }
 
 func newAIReplyTurnTaskService() *aiReplyTurnTaskService {
@@ -460,7 +463,7 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 				nextRetryAt = aiReplyTaskRetryAt(now, nextAttempt)
 			}
 		}
-		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+		updatesMap := map[string]any{
 			"knowledge_status":    update.Status,
 			"knowledge_hit_count": max(update.HitCount, 0),
 			"stage":               stage,
@@ -472,7 +475,15 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 			"next_retry_at":       nextRetryAt,
 			"updated_at":          now,
 			"update_user_name":    "ai_reply_knowledge",
-		}); err != nil {
+		}
+		// 契约 4.17：只在真实取得日志时写入，不覆盖重试前已绑定的 checkpoint。
+		if update.RetrieveLogID > 0 {
+			updatesMap["knowledge_retrieve_log_id"] = update.RetrieveLogID
+		}
+		if strings.TrimSpace(update.QueryFingerprint) != "" {
+			updatesMap["knowledge_query_fingerprint"] = limitText(strings.TrimSpace(update.QueryFingerprint), 64)
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updatesMap); err != nil {
 			return err
 		}
 	}

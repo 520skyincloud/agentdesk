@@ -105,6 +105,9 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			}
 			options := retrievers.DefaultKnowledgeRetrieveOptions()
 			options.QueryPreview = preview(items[itemIndex].Query, 120)
+			options.TurnID = taskState.TurnID
+			options.TaskID = taskState.TaskIDByTaskKey[items[itemIndex].TaskKey]
+			options.TaskKey = items[itemIndex].TaskKey
 			// 契约 4.12/3.9.5：不得固定截断前两条；按 top-multi 预算保留
 			// 排名靠后但必要的证据（剃须刀排第 4 名必须有资格进入 Generate）。
 			if options.MaxContextItems <= 0 || options.MaxContextItems > knowledgeContextItemBudget {
@@ -141,6 +144,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 		}
 		updates = append(updates, services.AIReplyTurnTaskKnowledgeUpdate{
 			TaskKey: item.TaskKey, Status: item.Status, HitCount: hitCount, ResultCode: resultCode,
+			RetrieveLogID: retrieveLogIDFor(item), QueryFingerprint: knowledgeQueryFingerprint(item.Query),
 		})
 	}
 	if taskState.Enabled && len(updates) > 0 {
@@ -433,24 +437,34 @@ func clampEvidenceScore(value float64) float64 {
 	return value
 }
 
+// runtimeKnowledgeAnswerGroup 契约 4.13/11.1：分组依据是排序后的完整合格
+// 命中集合 fingerprint，不是第一条 hit。首条 sourceRecordID 相同、相同全文
+// Query、相同 subIntent 都不足以合并；只有证据集合一致（答案语义相同的
+// 确定性代理）才允许一次自然回答。
 func runtimeKnowledgeAnswerGroup(result *retrievers.KnowledgeRetrieveResult) string {
 	if result == nil {
 		return ""
 	}
-	var item rag.RetrieveResult
-	switch {
-	case len(result.Hits) > 0:
-		item = result.Hits[0]
-	case len(result.ContextResults) > 0:
-		item = result.ContextResults[0]
-	default:
+	items := result.Hits
+	if len(items) == 0 {
+		items = result.ContextResults
+	}
+	if len(items) == 0 {
 		return ""
 	}
-	sourceRecordID := strings.TrimSpace(item.SourceRecordID)
-	if item.KnowledgeBaseID <= 0 || sourceRecordID == "" {
+	keys := make([]string, 0, len(items))
+	for _, item := range items {
+		sourceRecordID := strings.TrimSpace(item.SourceRecordID)
+		if item.KnowledgeBaseID <= 0 || sourceRecordID == "" {
+			continue
+		}
+		keys = append(keys, fmt.Sprintf("%d:%s", item.KnowledgeBaseID, sourceRecordID))
+	}
+	if len(keys) == 0 {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", item.KnowledgeBaseID, sourceRecordID)))
+	sort.Strings(keys)
+	sum := sha256.Sum256([]byte(strings.Join(keys, "|")))
 	return "knowledge_answer_" + hex.EncodeToString(sum[:8])
 }
 
@@ -602,6 +616,20 @@ const (
 	// knowledgeTopKBudget 是单次检索的召回条数预算。
 	knowledgeTopKBudget = 5
 )
+
+// retrieveLogIDFor 从检索结果提取持久日志 ID（契约 4.17 审计链）。
+func retrieveLogIDFor(item runtimeTaskKnowledgeItem) int64 {
+	if item.Result == nil {
+		return 0
+	}
+	return item.Result.RetrieveLogID
+}
+
+// knowledgeQueryFingerprint 对 Query 文本计算稳定指纹。
+func knowledgeQueryFingerprint(query string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(query)))
+	return hex.EncodeToString(sum[:])
+}
 
 func runtimeKnowledgeStatus(result *retrievers.KnowledgeRetrieveResult, err error) enums.AIReplyTurnTaskKnowledgeStatus {
 	if err != nil {

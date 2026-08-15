@@ -25,6 +25,8 @@ type runtimeTaskBatchState struct {
 	SelectedTaskKeys   []string
 	CommittedTaskCount int
 	CoveredByTaskID    int64
+	// TaskIDByTaskKey 绑定 Task 持久 ID（契约 4.17 审计链）。
+	TaskIDByTaskKey map[string]int64
 }
 
 func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, callbacks.ReplyPlanTraceData, runtimeTaskBatchState, bool, error) {
@@ -34,6 +36,12 @@ func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, cal
 		return callbacks.IntentTraceData{}, callbacks.ReplyPlanTraceData{}, state, false, nil
 	}
 	allTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID)
+	if len(allTasks) > 0 {
+		state.TaskIDByTaskKey = make(map[string]int64, len(allTasks))
+		for index := range allTasks {
+			state.TaskIDByTaskKey[allTasks[index].TaskKey] = allTasks[index].ID
+		}
+	}
 	if len(allTasks) == 0 || !runtimeTaskSourcesCovered(sourceMessages, allTasks) {
 		return callbacks.IntentTraceData{}, callbacks.ReplyPlanTraceData{}, state, false, nil
 	}

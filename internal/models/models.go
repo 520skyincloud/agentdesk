@@ -848,7 +848,7 @@ type AIReplyJob struct {
 	CheckpointFingerprint   string     `gorm:"type:varchar(64);not null;default:'';index"`
 	ProgressNoticeMessageID int64      `gorm:"type:bigint;not null;default:0;index"`
 	StartedAt               *time.Time `gorm:"type:datetime;index"`
-	CompletedAt         *time.Time                  `gorm:"type:datetime;index"`
+	CompletedAt             *time.Time `gorm:"type:datetime;index"`
 	AuditFields
 }
 
@@ -1343,33 +1343,38 @@ type KnowledgeCandidate struct {
 
 // KnowledgeRetrieveLog 检索日志表。
 type KnowledgeRetrieveLog struct {
-	ID               int64     `gorm:"primaryKey;autoIncrement"`                          // ID 为日志主键。
-	TenantID         int64     `gorm:"type:bigint;not null;default:0;index"`              // TenantID 为本次检索所属接入公司。
-	KnowledgeBaseID  int64     `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为知识库ID。
-	SourceType       string    `gorm:"type:varchar(30);not null;default:'fastgpt';index"` // SourceType 为检索来源；新记录固定为 fastgpt，历史值只读保留。
-	Channel          string    `gorm:"type:varchar(30);not null;default:'';index"`        // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
-	Scene            string    `gorm:"type:varchar(50);not null;default:'';index"`        // Scene 为场景：first_response首响, assist辅助, qa问答。
-	SessionID        string    `gorm:"type:varchar(64);not null;default:'';index"`        // SessionID 为会话ID。
-	ConversationID   int64     `gorm:"type:bigint;not null;default:0;index"`              // ConversationID 为会话ID。
-	RequestID        string    `gorm:"type:varchar(64);not null;default:'';index"`        // RequestID 为请求ID。
-	Question         string    `gorm:"type:text"`                                         // Question 为原始问题。
-	RewriteQuestion  string    `gorm:"type:text"`                                         // RewriteQuestion 为改写后问题。
-	Answer           string    `gorm:"type:text"`                                         // Answer 为生成的答案。
-	AnswerStatus     int       `gorm:"type:int;not null;default:1;index"`                 // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
-	HitCount         int       `gorm:"type:int;not null;default:0"`                       // HitCount 为命中数量。
-	TopScore         float64   `gorm:"type:decimal(5,4);not null;default:0"`              // TopScore 为最高相似度分数。
-	ChunkProvider    string    `gorm:"type:varchar(30);not null;default:'';index"`        // ChunkProvider 为检索提供方；新记录固定为托管 FastGPT。
-	RerankEnabled    bool      `gorm:"not null;default:false;index"`                      // RerankEnabled 是否启用 rerank。
-	RerankLimit      int       `gorm:"type:int;not null;default:0"`                       // RerankLimit 为 rerank 条数。
-	CitationCount    int       `gorm:"type:int;not null;default:0"`                       // CitationCount 为最终引用条数。
-	UsedChunkCount   int       `gorm:"type:int;not null;default:0"`                       // UsedChunkCount 为进入上下文的 chunk 数。
-	LatencyMs        int64     `gorm:"type:bigint;not null;default:0"`                    // LatencyMs 为总耗时毫秒。
-	RetrieveMs       int64     `gorm:"type:bigint;not null;default:0"`                    // RetrieveMs 为检索耗时毫秒。
-	GenerateMs       int64     `gorm:"type:bigint;not null;default:0"`                    // GenerateMs 为生成耗时毫秒。
-	PromptTokens     int       `gorm:"type:int;not null;default:0"`                       // PromptTokens 为prompt token数。
-	CompletionTokens int       `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
-	ModelName        string    `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
-	TraceData        string    `gorm:"type:text"`                                         // TraceData 为链路追踪数据JSON。
+	ID               int64   `gorm:"primaryKey;autoIncrement"`                          // ID 为日志主键。
+	TenantID         int64   `gorm:"type:bigint;not null;default:0;index"`              // TenantID 为本次检索所属接入公司。
+	KnowledgeBaseID  int64   `gorm:"type:bigint;not null;index"`                        // KnowledgeBaseID 为知识库ID。
+	SourceType       string  `gorm:"type:varchar(30);not null;default:'fastgpt';index"` // SourceType 为检索来源；新记录固定为 fastgpt，历史值只读保留。
+	Channel          string  `gorm:"type:varchar(30);not null;default:'';index"`        // Channel 为渠道：im会话, agent_assist坐席辅助, api开放接口, debug调试。
+	Scene            string  `gorm:"type:varchar(50);not null;default:'';index"`        // Scene 为场景：first_response首响, assist辅助, qa问答。
+	SessionID        string  `gorm:"type:varchar(64);not null;default:'';index"`        // SessionID 为会话ID。
+	ConversationID   int64   `gorm:"type:bigint;not null;default:0;index"`              // ConversationID 为会话ID。
+	RequestID        string  `gorm:"type:varchar(64);not null;default:'';index"`        // RequestID 为请求ID。
+	Question         string  `gorm:"type:text"`                                         // Question 为原始问题。
+	RewriteQuestion  string  `gorm:"type:text"`                                         // RewriteQuestion 为改写后问题。
+	Answer           string  `gorm:"type:text"`                                         // Answer 为生成的答案。
+	AnswerStatus     int     `gorm:"type:int;not null;default:1;index"`                 // AnswerStatus 为答案状态：1正常 2无答案 3兜底 4风控拦截。
+	HitCount         int     `gorm:"type:int;not null;default:0"`                       // HitCount 为命中数量。
+	TopScore         float64 `gorm:"type:decimal(5,4);not null;default:0"`              // TopScore 为最高相似度分数。
+	ChunkProvider    string  `gorm:"type:varchar(30);not null;default:'';index"`        // ChunkProvider 为检索提供方；新记录固定为托管 FastGPT。
+	RerankEnabled    bool    `gorm:"not null;default:false;index"`                      // RerankEnabled 是否启用 rerank。
+	RerankLimit      int     `gorm:"type:int;not null;default:0"`                       // RerankLimit 为 rerank 条数。
+	CitationCount    int     `gorm:"type:int;not null;default:0"`                       // CitationCount 为最终引用条数。
+	UsedChunkCount   int     `gorm:"type:int;not null;default:0"`                       // UsedChunkCount 为进入上下文的 chunk 数。
+	LatencyMs        int64   `gorm:"type:bigint;not null;default:0"`                    // LatencyMs 为总耗时毫秒。
+	RetrieveMs       int64   `gorm:"type:bigint;not null;default:0"`                    // RetrieveMs 为检索耗时毫秒。
+	GenerateMs       int64   `gorm:"type:bigint;not null;default:0"`                    // GenerateMs 为生成耗时毫秒。
+	PromptTokens     int     `gorm:"type:int;not null;default:0"`                       // PromptTokens 为prompt token数。
+	CompletionTokens int     `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
+	ModelName        string  `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
+	// 契约 3.3.1/4.17：Task↔RetrieveLog 持久审计关联。
+	TurnID           int64     `gorm:"type:bigint;not null;default:0;index"`
+	TaskID           int64     `gorm:"type:bigint;not null;default:0;index"`
+	TaskKey          string    `gorm:"type:varchar(128);not null;default:'';index"`
+	QueryFingerprint string    `gorm:"type:varchar(64);not null;default:'';index"`
+	TraceData        string    `gorm:"type:text"` // TraceData 为链路追踪数据JSON。
 	CreatedAt        time.Time `gorm:"type:datetime;not null;index"`
 }
 
