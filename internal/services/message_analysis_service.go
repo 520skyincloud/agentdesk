@@ -86,7 +86,19 @@ func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRe
 	return item, err
 }
 
+// CompleteReadyV1 兼容入口：按 message_analysis.v1 编码并完成。
 func (s *messageAnalysisService) CompleteReady(id, tenantID int64, analysis contracts.MessageAnalysisV1) error {
+	encode := func(analyzedAt time.Time) ([]byte, error) { return encodeReadyMessageAnalysis(analysis, analyzedAt) }
+	return s.completeReadyEncoded(id, tenantID, analysis.MessageID, analysis.SourceRevision, analysis.ContentFingerprint, encode)
+}
+
+// CompleteReadyV2 权威入口：按 message_analysis.v2 编码并完成。
+func (s *messageAnalysisService) CompleteReadyV2(id, tenantID int64, analysis contracts.MessageAnalysisV2) error {
+	encode := func(analyzedAt time.Time) ([]byte, error) { return encodeReadyMessageAnalysisV2(analysis, analyzedAt) }
+	return s.completeReadyEncoded(id, tenantID, analysis.MessageID, analysis.SourceRevision, analysis.ContentFingerprint, encode)
+}
+
+func (s *messageAnalysisService) completeReadyEncoded(id, tenantID, messageID int64, sourceRevision int, contentFingerprint string, encode func(time.Time) ([]byte, error)) error {
 	if id <= 0 || tenantID <= 0 {
 		return fmt.Errorf("message analysis scope is invalid")
 	}
@@ -95,7 +107,7 @@ func (s *messageAnalysisService) CompleteReady(id, tenantID int64, analysis cont
 		if err != nil {
 			return err
 		}
-		if item == nil || item.MessageID != analysis.MessageID || item.SourceRevision != analysis.SourceRevision || item.ContentFingerprint != analysis.ContentFingerprint {
+		if item == nil || item.MessageID != messageID || item.SourceRevision != sourceRevision || item.ContentFingerprint != contentFingerprint {
 			return fmt.Errorf("message analysis evidence no longer matches source")
 		}
 		analyzedAt := time.Now().UTC()
@@ -105,7 +117,7 @@ func (s *messageAnalysisService) CompleteReady(id, tenantID int64, analysis cont
 			}
 			analyzedAt = item.AnalyzedAt.UTC()
 		}
-		raw, err := encodeReadyMessageAnalysis(analysis, analyzedAt)
+		raw, err := encode(analyzedAt)
 		if err != nil {
 			return err
 		}
@@ -146,6 +158,38 @@ func encodeReadyMessageAnalysis(analysis contracts.MessageAnalysisV1, analyzedAt
 	return raw, nil
 }
 
+func encodeReadyMessageAnalysisV2(analysis contracts.MessageAnalysisV2, analyzedAt time.Time) ([]byte, error) {
+	analysis.SchemaVersion = contracts.MessageAnalysisV2SchemaVersion
+	analysis.Status = messageAnalysisStatusReady
+	analysis.Error = nil
+	analysis.AnalyzedAt = &analyzedAt
+	if analysis.MediaType == "" {
+		analysis.MediaType = "none"
+	}
+	if analysis.Quality.Warnings == nil {
+		analysis.Quality.Warnings = []string{}
+	}
+	if analysis.Quality.UncertainRanges == nil {
+		analysis.Quality.UncertainRanges = []contracts.MessageAnalysisUncertainV2{}
+	}
+	if analysis.Observations == nil {
+		analysis.Observations = []contracts.ObservationV2Item{}
+	}
+	if analysis.Quality.Completeness == "" {
+		analysis.Quality.Completeness = "complete"
+	}
+	raw, err := json.Marshal(analysis)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := strictjson.DecodeObject[contracts.MessageAnalysisV2](raw, strictjson.DecodeOptions{
+		MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV2),
+	}); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 func (s *messageAnalysisService) MarkFailed(id, tenantID int64, errorCode string) error {
 	errorCode = strings.TrimSpace(errorCode)
 	if id <= 0 || tenantID <= 0 || errorCode == "" {
@@ -173,16 +217,48 @@ func (s *messageAnalysisService) ReadyForMessage(message *models.Message) (*cont
 	if item == nil || item.AnalysisStatus != messageAnalysisStatusReady || item.ContentFingerprint != s.ContentFingerprint(message) || strings.TrimSpace(item.AnalysisJSON) == "" {
 		return nil, nil
 	}
-	decoded, err := strictjson.DecodeObject[contracts.MessageAnalysisV1]([]byte(item.AnalysisJSON), strictjson.DecodeOptions{
-		MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV1),
-	})
-	if err != nil {
-		return nil, err
+	var decoded contracts.MessageAnalysisV1
+	var decodedV2 *contracts.MessageAnalysisV2
+	if strings.Contains(item.AnalysisJSON, contracts.MessageAnalysisV2SchemaVersion) {
+		parsed, err := strictjson.DecodeObject[contracts.MessageAnalysisV2]([]byte(item.AnalysisJSON), strictjson.DecodeOptions{
+			MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV2),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if parsed.MessageID != message.ID || parsed.SourceRevision != item.SourceRevision ||
+			parsed.ContentFingerprint != item.ContentFingerprint || parsed.Status != messageAnalysisStatusReady {
+			return nil, fmt.Errorf("message analysis JSON does not match authoritative row")
+		}
+		decodedV2 = &parsed
+		// V1 兼容投影：老调用方继续读 V1 结构。
+		decoded = contracts.MessageAnalysisV1{
+			SchemaVersion: contracts.MessageAnalysisV1SchemaVersion,
+			MessageID:     parsed.MessageID, SourceRevision: parsed.SourceRevision,
+			ContentFingerprint: parsed.ContentFingerprint, Status: parsed.Status,
+			Analyzer: contracts.MessageAnalysisAnalyzer{Kind: parsed.Analyzer.Kind, Name: parsed.Analyzer.Name, Version: parsed.Analyzer.Version},
+			Result: &contracts.MessageAnalysisResult{
+				Language: "zh", DialogueAct: "other", RelationToPrior: "unknown",
+				NormalizedText: parsed.NormalizedText,
+				Entities:       []contracts.MessageAnalysisEntity{}, MentionedTagKeys: []string{},
+				RiskSignals: []string{"none"}, Confidence: parsed.Quality.OverallConfidence,
+			},
+			ErrorCode: nil,
+		}
+	} else {
+		parsed, err := strictjson.DecodeObject[contracts.MessageAnalysisV1]([]byte(item.AnalysisJSON), strictjson.DecodeOptions{
+			MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV1),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if parsed.MessageID != message.ID || parsed.SourceRevision != item.SourceRevision ||
+			parsed.ContentFingerprint != item.ContentFingerprint || parsed.Status != messageAnalysisStatusReady {
+			return nil, fmt.Errorf("message analysis JSON does not match authoritative row")
+		}
+		decoded = parsed
 	}
-	if decoded.MessageID != message.ID || decoded.SourceRevision != item.SourceRevision ||
-		decoded.ContentFingerprint != item.ContentFingerprint || decoded.Status != messageAnalysisStatusReady {
-		return nil, fmt.Errorf("message analysis JSON does not match authoritative row")
-	}
+	_ = decodedV2
 	return &decoded, nil
 }
 
@@ -190,9 +266,9 @@ func isRecordNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
-// RecordMediaReady 是媒体理解成功后的权威状态写入（多模态契约 7）：
-// Ensure pending revision -> CompleteReady。Payload 已由媒体服务先行更新为兼容投影，
-// 本方法在同一事务内 CAS ready 并标旧 revision stale；失败由调用方告警，不回滚 Payload。
+// RecordMediaReady 是媒体理解成功后的权威状态写入（多模态契约 7，V2 成组）：
+// Ensure pending revision -> CompleteReadyV2。analyzer.kind=vision/asr/file_parser
+// 由 message_analysis.v2 Schema 允许；V1 只保留只读兼容。
 func (s *messageAnalysisService) RecordMediaReady(message *models.Message, normalizedText string, analyzer MessageAnalyzerIdentity) error {
 	if message == nil || message.ID <= 0 || message.TenantID <= 0 {
 		return fmt.Errorf("message analysis scope is invalid")
@@ -210,25 +286,36 @@ func (s *messageAnalysisService) RecordMediaReady(message *models.Message, norma
 	if enums.NormalizeMessageAnalysisStatus(item.AnalysisStatus) == enums.MessageAnalysisStatusReady {
 		return nil
 	}
-	// 按 message_analysis.v1 合同写入：媒体理解产出 normalizedText 作为 result 主体；
-	// 使用权限由服务端投影（最小权限：只描述媒体/解析指代，禁止门店事实与动作）。
-	analysis := contracts.MessageAnalysisV1{
-		SchemaVersion: contracts.MessageAnalysisV1SchemaVersion,
+	mediaType := messageAnalysisMediaType(message.MessageType)
+	analysis := contracts.MessageAnalysisV2{
+		SchemaVersion: contracts.MessageAnalysisV2SchemaVersion,
 		MessageID:     message.ID, SourceRevision: item.SourceRevision,
 		ContentFingerprint: item.ContentFingerprint, Status: "ready",
-		Analyzer: contracts.MessageAnalysisAnalyzer{
+		MediaType: mediaType,
+		Analyzer: contracts.MessageAnalysisAnalyzerV2{
 			Kind: strings.TrimSpace(analyzer.Kind), Name: strings.TrimSpace(analyzer.Name), Version: strings.TrimSpace(analyzer.Version),
 		},
-		Result: &contracts.MessageAnalysisResult{
-			Language:         "zh",
-			DialogueAct:      "other",
-			RelationToPrior:  "unknown",
-			NormalizedText:   limitText(normalizedText, 4000),
-			Entities:         []contracts.MessageAnalysisEntity{},
-			MentionedTagKeys: []string{},
-			RiskSignals:      []string{"none"},
+		NormalizedText: limitText(normalizedText, 4000),
+		Quality: contracts.MessageAnalysisQualityV2{
+			OverallConfidence: 0.9, Completeness: "complete", FallbackUsed: false,
+			Warnings: []string{}, UncertainRanges: []contracts.MessageAnalysisUncertainV2{},
 		},
-		ErrorCode: nil,
+		Observations: []contracts.ObservationV2Item{},
+		Error:        nil,
 	}
-	return s.CompleteReady(item.ID, item.TenantID, analysis)
+	return s.CompleteReadyV2(item.ID, item.TenantID, analysis)
+}
+
+// messageAnalysisMediaType 把消息类型映射到 V2 mediaType 枚举。
+func messageAnalysisMediaType(messageType enums.IMMessageType) string {
+	switch messageType {
+	case enums.IMMessageTypeImage:
+		return "image"
+	case enums.IMMessageTypeVoice:
+		return "voice"
+	case enums.IMMessageTypeAttachment:
+		return "attachment"
+	default:
+		return "none"
+	}
 }
