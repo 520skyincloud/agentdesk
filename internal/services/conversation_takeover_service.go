@@ -233,7 +233,7 @@ func (s *conversationTakeoverService) DirectTakeover(req request.RequestConversa
 		if conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID {
 			return nil
 		}
-		if conversation.Status != enums.IMConversationStatusPending || conversation.CurrentAssigneeID != 0 {
+		if conversation.CurrentAssigneeID != 0 {
 			return errorsx.InvalidParam("只有尚未分配的开放会话允许直接接管，已分配会话请使用转派")
 		}
 		if !s.directTakeoverRouteAllowed(conversation, route) {
@@ -874,14 +874,15 @@ func (s *conversationTakeoverService) hasTakeoverTable(db *gorm.DB) bool {
 }
 
 func (s *conversationTakeoverService) directTakeoverRouteAllowed(conversation *models.Conversation, route *models.ConversationRouteState) bool {
-	if conversation == nil || route == nil || conversation.Status != enums.IMConversationStatusPending {
+	if conversation == nil || route == nil {
 		return false
 	}
 	switch route.RouteStatus {
 	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
-		return true
+		return conversation.Status == enums.IMConversationStatusAIServing ||
+			conversation.Status == enums.IMConversationStatusPending
 	case enums.ConversationRouteStatusHQAgentDeskPending:
-		return route.NeedHumanFollowUp
+		return conversation.Status == enums.IMConversationStatusPending && route.NeedHumanFollowUp
 	default:
 		return false
 	}
