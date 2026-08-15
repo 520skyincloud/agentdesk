@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -876,6 +877,31 @@ func (s *wxWorkProtocolService) logInboundMessageLatency(instance *models.WxWork
 	)
 }
 
+// triggerRouteIndependentMediaUnderstanding 异步启动媒体理解，不依赖 AI 回复
+// 路由；失败只告警不阻塞入站。UnderstandInboundMessage 幂等（understood 跳过）。
+func (s *wxWorkProtocolService) triggerRouteIndependentMediaUnderstanding(message *models.Message) {
+	if message == nil || message.SenderType != enums.IMSenderTypeCustomer {
+		return
+	}
+	switch message.MessageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
+	default:
+		return
+	}
+	go func(messageID int64) {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Warn("route independent media understanding panicked", "message_id", messageID)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := MediaUnderstandingService.UnderstandInboundMessage(ctx, messageID); err != nil {
+			slog.Warn("route independent media understanding failed", "message_id", messageID, "error", err)
+		}
+	}(message.ID)
+}
+
 func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
 	if !isActivatedCurrentWxWorkProtocolInstance(instance) {
 		return errorsx.InvalidParam("企微员工号实例未完成替换验证，不能接管会话消息")
@@ -952,6 +978,8 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 		}
 		s.logInboundMessageLatency(instance, message)
 		s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
+		// 契约 3.9.11：媒体分析是消息事实生产，独立于 AI/人工路由运行。
+		s.triggerRouteIndependentMediaUnderstanding(message)
 		_ = s.createMessageRef(conversation.ID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived)
 		_ = MessageSyncLogService.Create(conversation.ID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "message received; AI paused until store knowledge is configured")
 		return nil
@@ -966,6 +994,9 @@ func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtoco
 	}
 	s.logInboundMessageLatency(instance, message)
 	s.scheduleWxWorkContactProfileSync(instance, conversation, externalID)
+	// 契约 3.9.11：媒体分析独立于路由。人工接待下 ASR/OCR/文件解析仍完成，
+	// 供前端展示、审计与后续恢复使用；AI Job 的 prepareMedia 幂等复用结果。
+	s.triggerRouteIndependentMediaUnderstanding(message)
 	if created {
 		if err := WxWorkProtocolContactAutomationService.sendNewContactResources(
 			conversation,
