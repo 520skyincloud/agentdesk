@@ -252,20 +252,23 @@ func compileRuntimeReplyOutputRepairMessages(ctx context.Context, summary *RunRe
 
 func buildRuntimeReplyOutputRepairInstruction(protocolErr *replyOutputProtocolError) string {
 	reason := "invalid_protocol"
-	raw := ""
 	if protocolErr != nil {
 		reason = strings.TrimSpace(protocolErr.Reason)
-		raw = boundedRuntimeRepairText(protocolErr.RawResponse, 8*1024)
 	}
 	contract := contracts.ReplyOutputV2SchemaVersion
 	if protocolErr != nil && strings.TrimSpace(protocolErr.Contract) != "" {
 		contract = strings.TrimSpace(protocolErr.Contract)
 	}
 	return strings.Join([]string{
-		"上一版输出存在可修复的 " + contract + " 协议错误。只修复 JSON 结构和任务覆盖，不新增、删除或改写业务任务。",
-		"error=" + reason,
-		"第一次输出=" + raw,
-		"重新输出唯一一个严格 JSON Object；不得输出 Markdown、解释、注释或额外文本。",
+		"【协议修复，仅此一次】",
+		"上一版 " + contract + " 未通过服务端协议校验。",
+		"错误代码：" + reason,
+		"请根据同一条 generate_task_input.v2 重新输出完整 JSON。",
+		"不得新增、删除、改写任务或分组。",
+		"每个 required group 必须出现一次。",
+		"groupKey 必须逐字复制 groups[].groupKey。",
+		"taskKeys 必须逐字复制对应 group 的 taskKeys。",
+		"只输出 JSON Object，不输出解释、Markdown 或其他文本。",
 	}, "\n")
 }
 

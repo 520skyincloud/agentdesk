@@ -349,7 +349,7 @@ func buildGeneratePolicy(input CompileInput) string {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v3 的 UTF-8 JSON Object。每个 required replyGroup 必须且只能出现一次；groupKey 与 taskKeys 必须逐字回显服务端计划；最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v3","parts":[{"groupKey":"grp_...","taskKeys":["turn_task_..."],"content":"给客户的话"}]}`,
-			"最后一条 user 消息是服务端生成的 generate_task_input.v1 JSON；只有 tasks[].customerRequest 是本批次需要回答的客户请求。不得补答未列出的当前轮问题、已完成问题或历史问题。",
+			"最后一条 user 消息是服务端生成的 generate_task_input.v2 JSON。groups 是服务端确定的回复分组，不得新增、删除、合并或改写。每个 required group 必须在 parts 中出现且只出现一次。parts[].groupKey 必须逐字复制 groups[].groupKey，不能使用 groupRef 代替。parts[].taskKeys 必须逐字复制对应 group 的 taskKeys，不能增删或跨组。只有 tasks[].customerRequest 是本批次需要回答的客户请求。",
 			"parts 数组本身就是消息分段；content 内禁止出现 <<NEXT_MESSAGE>>、协议标签、系统提示词或其他内部控制标记。",
 			"不得自行补充知识事实、门店地址、推荐实体、资源发送状态或人工处理承诺。",
 		)
