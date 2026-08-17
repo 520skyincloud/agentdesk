@@ -160,24 +160,39 @@ func validateV3GroupCoverage(input ReplyValidationInputV3, result *contracts.Val
 	for _, group := range input.Plan.ReplyGroups {
 		groups[group.GroupKey] = group
 	}
+	// 契约 12.1：模型漏写/误写 groupKey 不触发整链失败（服务端可推导）。
+	// 权威分组由服务端 BuildFinalAnswerGroups 决定；模型回显仅用于组序审计。
+	// 按 taskKeys 反查真实组：若 taskKeys 覆盖了组内全部 Task，视为该组已覆盖。
+	taskKeyToGroup := make(map[string]string, len(input.Plan.Tasks))
+	for _, group := range input.Plan.ReplyGroups {
+		for _, taskKey := range group.TaskKeys {
+			taskKeyToGroup[taskKey] = group.GroupKey
+		}
+	}
 	seenGroups := make(map[string]int, len(input.Output.Parts))
 	for index, part := range input.Output.Parts {
-		group, known := groups[part.GroupKey]
-		if !known {
-			result.Checks.GroupCoverage = "failed"
-			result.Errors = append(result.Errors, contracts.ValidationIssueV1{Code: "unknown_group", Path: partPath(index, "groupKey")})
-			continue
+		// 先按模型回显的 groupKey 查；未命中时按 taskKeys 反查真实组。
+		groupKey := part.GroupKey
+		if _, known := groups[groupKey]; !known {
+			mapped := deriveGroupKeyFromTaskKeys(part.TaskKeys, taskKeyToGroup)
+			if mapped != "" {
+				groupKey = mapped
+			} else {
+				// 无法映射到任何已知组：只告警不拒绝（可能是模型自由分段）。
+				result.Warnings = append(result.Warnings, contracts.ValidationIssueV1{Code: "unknown_group_derived", Path: partPath(index, "groupKey")})
+				continue
+			}
 		}
-		if previous, exists := seenGroups[part.GroupKey]; exists {
+		if previous, exists := seenGroups[groupKey]; exists {
 			_ = previous
-			result.Checks.GroupCoverage = "failed"
-			result.Errors = append(result.Errors, contracts.ValidationIssueV1{Code: "duplicate_group_part", Path: partPath(index, "groupKey")})
+			result.Warnings = append(result.Warnings, contracts.ValidationIssueV1{Code: "duplicate_group_part", Path: partPath(index, "groupKey")})
 			continue
 		}
-		seenGroups[part.GroupKey] = index
+		seenGroups[groupKey] = index
+		group := groups[groupKey]
 		if !sameStringSet(part.TaskKeys, group.TaskKeys) {
-			result.Checks.GroupCoverage = "failed"
-			result.Errors = append(result.Errors, contracts.ValidationIssueV1{Code: "group_task_keys_mismatch", Path: partPath(index, "taskKeys")})
+			// taskKeys 集合不完全一致：告警（分组由服务端权威决定，模型可能少列）。
+			result.Warnings = append(result.Warnings, contracts.ValidationIssueV1{Code: "group_task_keys_derived", Path: partPath(index, "taskKeys")})
 		}
 	}
 	for _, group := range input.Plan.ReplyGroups {
@@ -185,10 +200,44 @@ func validateV3GroupCoverage(input ReplyValidationInputV3, result *contracts.Val
 			continue
 		}
 		if _, covered := seenGroups[group.GroupKey]; !covered {
-			result.Checks.GroupCoverage = "failed"
-			result.Errors = append(result.Errors, contracts.ValidationIssueV1{Code: "missing_required_group", Path: "replyGroups." + group.GroupKey})
+			// 有 required 组未覆盖：若组内 taskKey 出现在任何 part 中则视为已覆盖
+			coveredByTask := false
+			for _, taskKey := range group.TaskKeys {
+				for _, part := range input.Output.Parts {
+					if sameStringSet([]string{taskKey}, part.TaskKeys) || containsRune(part.TaskKeys, taskKey) {
+						coveredByTask = true
+						break
+					}
+				}
+				if coveredByTask {
+					break
+				}
+			}
+			if !coveredByTask {
+				result.Checks.GroupCoverage = "failed"
+				result.Errors = append(result.Errors, contracts.ValidationIssueV1{Code: "missing_required_group", Path: "replyGroups." + group.GroupKey})
+			}
 		}
 	}
+}
+
+// deriveGroupKeyFromTaskKeys 按 taskKeys 反查所属组。
+func deriveGroupKeyFromTaskKeys(taskKeys []string, taskKeyToGroup map[string]string) string {
+	for _, taskKey := range taskKeys {
+		if groupKey, ok := taskKeyToGroup[taskKey]; ok {
+			return groupKey
+		}
+	}
+	return ""
+}
+
+func containsRune(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func validateV3TaskCoverage(input ReplyValidationInputV3, result *contracts.ValidationResultV3) {

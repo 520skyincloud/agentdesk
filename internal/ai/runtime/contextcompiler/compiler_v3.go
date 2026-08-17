@@ -81,6 +81,7 @@ type generateTaskInputV1 struct {
 type generateTaskInputTaskV1 struct {
 	TaskKey         string `json:"taskKey"`
 	Sequence        int    `json:"sequence"`
+	AnswerGroupKey  string `json:"answerGroupKey"`
 	CustomerRequest string `json:"customerRequest"`
 }
 
@@ -108,7 +109,7 @@ func generateTaskInputTextV1(plan *contracts.ReplyPlanV4) (string, error) {
 			return "", fmt.Errorf("%w: V3 selected task lacks verified customer request", ErrMandatoryContextOverflow)
 		}
 		tasks = append(tasks, generateTaskInputTaskV1{
-			TaskKey: task.TaskKey, Sequence: task.Sequence, CustomerRequest: request,
+			TaskKey: task.TaskKey, Sequence: task.Sequence, AnswerGroupKey: task.AnswerGroupKey, CustomerRequest: request,
 		})
 	}
 	if len(tasks) == 0 {
