@@ -289,6 +289,8 @@ func buildRuntimeTaskInputs(
 ) ([]services.AIReplyTurnTaskInput, map[string]callbacks.ReplyTaskPlanTraceData, error) {
 	inputs := make([]services.AIReplyTurnTaskInput, 0, len(plans))
 	plannedByKey := make(map[string]callbacks.ReplyTaskPlanTraceData, len(plans))
+	parentKeyByTaskKey := make(map[string]string, len(plans))
+	taskKeyByQuestionUnitKey := make(map[string]string, len(plans))
 	representedSourceMessageIDs := make(map[int64]struct{}, len(sourceMessages))
 	plannedBySourceMessageID := make(map[int64]callbacks.ReplyTaskPlanTraceData, len(sourceMessages))
 	for index, plan := range plans {
@@ -350,6 +352,10 @@ func buildRuntimeTaskInputs(
 		}
 		taskKey := services.AIReplyTurnTaskService.StableTaskKey(input)
 		plan.TaskKey = taskKey
+		if questionUnitKey := strings.TrimSpace(plan.QuestionUnitKey); questionUnitKey != "" {
+			taskKeyByQuestionUnitKey[questionUnitKey] = taskKey
+		}
+		parentKeyByTaskKey[taskKey] = strings.TrimSpace(plan.ParentTaskKey)
 		// 契约 10.8：TaskKey 与来源身份确定后再固化答案义务，避免空 taskKey/sourceMessageId。
 		requirementsJSON, requirementsErr := buildAnswerRequirementsJSON(plan, taskKey, sourceMessageID, spanStart, spanEnd)
 		if requirementsErr != nil {
@@ -417,6 +423,7 @@ func buildRuntimeTaskInputs(
 		}
 		taskKey := services.AIReplyTurnTaskService.StableTaskKey(input)
 		duplicatePlan.TaskKey = taskKey
+		parentKeyByTaskKey[taskKey] = strings.TrimSpace(duplicatePlan.ParentTaskKey)
 		requirementsJSON, requirementsErr := buildAnswerRequirementsJSON(duplicatePlan, taskKey, source.ID, 0, len([]rune(sourceText)))
 		if requirementsErr != nil {
 			return nil, nil, requirementsErr
@@ -428,6 +435,20 @@ func buildRuntimeTaskInputs(
 		plannedByKey[taskKey] = duplicatePlan
 		representedSourceMessageIDs[source.ID] = struct{}{}
 		plannedBySourceMessageID[source.ID] = duplicatePlan
+	}
+	// QuestionUnit parent references are temporary within the current envelope
+	// (Q1/Q2) until stable TaskKeys are known. Resolve them before the service
+	// opens its transaction; durable parent TaskKeys pass through unchanged.
+	for index := range inputs {
+		taskKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[index])
+		parentKey := strings.TrimSpace(parentKeyByTaskKey[taskKey])
+		if mapped := strings.TrimSpace(taskKeyByQuestionUnitKey[parentKey]); mapped != "" {
+			parentKey = mapped
+		}
+		if parentKey == taskKey {
+			parentKey = ""
+		}
+		inputs[index].RelatedTaskKey = parentKey
 	}
 	return inputs, plannedByKey, nil
 }
@@ -681,8 +702,14 @@ func aiReplyTurnTaskLedgerTerminal(status enums.AIReplyTurnTaskStatus) bool {
 
 func replyTaskPlansFromLedger(tasks []models.AIReplyTurnTask, messages []models.Message) ([]callbacks.ReplyTaskPlanTraceData, error) {
 	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(tasks))
+	parentByID := make(map[int64]ledgerParentContext, len(tasks))
 	for _, task := range tasks {
-		plan, err := replyTaskPlanFromLedgerTask(task, messages)
+		if task.ID > 0 && strings.TrimSpace(task.TaskKey) != "" {
+			parentByID[task.ID] = ledgerParentContext{TaskKey: task.TaskKey, Topic: ledgerTaskContextText(task, messages)}
+		}
+	}
+	for _, task := range tasks {
+		plan, err := replyTaskPlanFromLedgerTaskWithParents(task, messages, parentByID)
 		if err != nil {
 			return nil, err
 		}
@@ -692,6 +719,30 @@ func replyTaskPlansFromLedger(tasks []models.AIReplyTurnTask, messages []models.
 }
 
 func replyTaskPlanFromLedgerTask(task models.AIReplyTurnTask, messages []models.Message) (callbacks.ReplyTaskPlanTraceData, error) {
+	parentByID := map[int64]ledgerParentContext{}
+	if task.RelatedTaskID > 0 && sqls.DB() != nil {
+		if parent, err := repositories.AIReplyTurnTaskRepository.GetForUpdateInTenant(sqls.DB(), task.RelatedTaskID, task.TenantID); err == nil && parent != nil {
+			parentByID[parent.ID] = ledgerParentContext{TaskKey: parent.TaskKey, Topic: ledgerTaskContextText(*parent, messages)}
+		}
+	}
+	return replyTaskPlanFromLedgerTaskWithParents(task, messages, parentByID)
+}
+
+type ledgerParentContext struct {
+	TaskKey string
+	Topic   string
+}
+
+func ledgerTaskContextText(task models.AIReplyTurnTask, messages []models.Message) string {
+	for _, message := range messages {
+		if message.ID == task.SourceMessageID {
+			return runtimeTaskSourceSpanText(runtimeTaskSourceText(message), task.SourceSpanStart, task.SourceSpanEnd)
+		}
+	}
+	return ""
+}
+
+func replyTaskPlanFromLedgerTaskWithParents(task models.AIReplyTurnTask, messages []models.Message, parentByID map[int64]ledgerParentContext) (callbacks.ReplyTaskPlanTraceData, error) {
 	text := ""
 	for _, message := range messages {
 		if message.ID == task.SourceMessageID {
@@ -717,6 +768,10 @@ func replyTaskPlanFromLedgerTask(task models.AIReplyTurnTask, messages []models.
 		SourceSpanEnd: task.SourceSpanEnd, SourceSetFingerprint: task.SourceSetFingerprint,
 		CanonicalQuestionHash: task.CanonicalQuestionHash,
 		Output:                output, ResourceAction: task.ResourceAction,
+	}
+	if parent, ok := parentByID[task.RelatedTaskID]; ok && strings.TrimSpace(parent.TaskKey) != "" {
+		plan.ParentTaskKey = strings.TrimSpace(parent.TaskKey)
+		plan.ResolvedTopic = firstNonEmptyQuestionTopic(parent.Topic, task.SubIntent, task.Intent)
 	}
 	if strings.TrimSpace(task.SourceBindingsJSON) != "" {
 		_ = json.Unmarshal([]byte(task.SourceBindingsJSON), &plan.SourceBindings)
@@ -775,6 +830,8 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 			SourceSpanEnd: plan.SourceSpanEnd, SourceBindings: append([]callbacks.TaskSourceBindingTraceData(nil), plan.SourceBindings...),
 			ObservationBindings:  append([]callbacks.TaskObservationBindingTraceData(nil), plan.ObservationBindings...),
 			SourceSetFingerprint: plan.SourceSetFingerprint, CanonicalQuestionHash: plan.CanonicalQuestionHash,
+			RelationType: plan.RelationType, ParentTaskKey: plan.ParentTaskKey,
+			ResolvedTopic: plan.ResolvedTopic, InheritedRequirements: append([]string(nil), plan.InheritedRequirements...),
 			Requirements: append([]string(nil), plan.Requirements...),
 		}
 		switch runtimeTaskTypeForPlan(plan) {

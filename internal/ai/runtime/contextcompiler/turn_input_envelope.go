@@ -63,10 +63,25 @@ type EnvelopePriorAssistant struct {
 }
 
 type EnvelopeUnresolvedTask struct {
-	TaskKey   string `json:"taskKey"`
-	Intent    string `json:"intent"`
-	SubIntent string `json:"subIntent"`
-	Status    string `json:"status"`
+	TaskKey               string                `json:"taskKey"`
+	SourceMessageID       int64                 `json:"sourceMessageId,omitempty"`
+	SequenceNo            int                   `json:"sequenceNo,omitempty"`
+	Intent                string                `json:"intent"`
+	SubIntent             string                `json:"subIntent"`
+	Status                string                `json:"status"`
+	QuestionText          string                `json:"questionText,omitempty"`
+	CanonicalQuestionHash string                `json:"canonicalQuestionHash,omitempty"`
+	ResolvedTopic         string                `json:"resolvedTopic,omitempty"`
+	Requirements          []EnvelopeRequirement `json:"requirements,omitempty"`
+}
+
+// EnvelopeRequirement is the small, optional requirement projection used when
+// an unfinished task is carried into a later intent turn. It deliberately
+// mirrors only the seed fields; requirement keys and state remain server-owned.
+type EnvelopeRequirement struct {
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
+	Sequence int    `json:"sequence"`
 }
 
 // BuildTurnInputEnvelope 从当前 Turn 的客户消息构建 Envelope：

@@ -43,8 +43,12 @@ type AIReplyTurnTaskInput struct {
 	RequestMode     string
 	RelationType    string
 	RelatedTaskID   int64
-	ResourceAction  string
-	QuestionText    string
+	// RelatedTaskKey is an ephemeral relation reference from the normalized
+	// QuestionUnit. It is resolved to RelatedTaskID only inside the turn
+	// transaction and is never part of the stable task identity.
+	RelatedTaskKey string
+	ResourceAction string
+	QuestionText   string
 	// 多模态契约 3.2/22.11：QuestionUnit 持久来源绑定与摘要；临时 SourceRef 不入库。
 	AnalysisRevision        int
 	AnswerRequirementsJSON  string
@@ -145,6 +149,7 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	seen := make(map[string]struct{}, len(inputs))
 	existingTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
 	existingByTaskKey := make(map[string]*models.AIReplyTurnTask, len(existingTasks))
+	resolvedTaskKeys := make([]string, len(inputs))
 	for index := range existingTasks {
 		existing := &existingTasks[index]
 		existingByTaskKey[existing.TaskKey] = existing
@@ -180,6 +185,7 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 			canonicalHash = fingerprint
 		}
 		taskKey := s.StableTaskKey(input)
+		resolvedTaskKeys[index] = taskKey
 		normalizedRequirements, requirementsErr := normalizeAnswerRequirementsForTask(input.AnswerRequirementsJSON, taskKey, input)
 		if requirementsErr != nil {
 			return nil, requirementsErr
@@ -365,7 +371,55 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		}
 		ret = append(ret, *item)
 	}
+	// Resolve ephemeral parent references only after every input has been
+	// created/loaded, so Q1 -> Q2 works even when the parent is created in this
+	// same call. The relation is an indexed ID inside the same tenant/turn;
+	// unknown or cross-scope references are cleared rather than failing the
+	// customer's whole reply.
+	for index := range inputs {
+		input := inputs[index]
+		taskKey := resolvedTaskKeys[index]
+		if taskKey == "" {
+			continue
+		}
+		child := existingByTaskKey[taskKey]
+		if child == nil {
+			continue
+		}
+		parentKey := strings.TrimSpace(input.RelatedTaskKey)
+		parentID := int64(0)
+		if parentKey != "" && parentKey != taskKey {
+			parent := existingByTaskKey[parentKey]
+			if parent == nil {
+				parent, _ = repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, turn.TenantID, turn.ID, parentKey)
+			}
+			if parent != nil && parent.ID != child.ID && parent.TenantID == turn.TenantID &&
+				parent.TurnID == turn.ID && parent.ConversationID == turn.ConversationID && parent.SessionNo == turn.SessionNo {
+				parentID = parent.ID
+			} else {
+				slog.Warn("AI reply task parent reference rejected", "turn_id", turn.ID, "task_key", taskKey, "reason", "parent_scope_or_identity_invalid")
+			}
+		}
+		if child.RelatedTaskID == parentID && (parentID > 0 || strings.TrimSpace(input.RelationType) != "new_topic") {
+			continue
+		}
+		updates := map[string]any{"related_task_id": parentID, "updated_at": now, "update_user_name": "ai_reply_task"}
+		if parentID > 0 && strings.TrimSpace(input.RelationType) == "" {
+			updates["relation_type"] = "follow_up"
+			child.RelationType = "follow_up"
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, child.ID, turn.TenantID, updates); err != nil {
+			return nil, err
+		}
+		child.RelatedTaskID = parentID
+	}
 	sortAIReplyTurnTasks(ret)
+	for index := range ret {
+		if item := existingByTaskKey[ret[index].TaskKey]; item != nil {
+			ret[index].RelatedTaskID = item.RelatedTaskID
+			ret[index].RelationType = item.RelationType
+		}
+	}
 	return ret, nil
 }
 
@@ -1874,7 +1928,7 @@ func (s *aiReplyTurnTaskService) requirementCommitEvidence(db *gorm.DB, task *mo
 		if retrieveLog.ExecutionStatus != "succeeded" || retrieveLog.HitCount <= 0 {
 			return "", "", fmt.Errorf("AI reply knowledge task %s no-context evidence is invalid", task.TaskKey)
 		}
-		return "no_hit", retrieveRef, nil
+		return "no_context", retrieveRef, nil
 	default:
 		return "", "", fmt.Errorf("AI reply knowledge task %s has unsupported status %s", task.TaskKey, task.KnowledgeStatus)
 	}

@@ -155,3 +155,71 @@ func TestReduceDialogueStateNormalizesRefinementToFollowUp(t *testing.T) {
 		t.Fatalf("refinement relation=%q want follow_up", got.Focus.RelationToPrior)
 	}
 }
+
+func TestReduceDialogueStateUsesBusinessOutcomeFromTaskResult(t *testing.T) {
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		status        enums.AIReplyTurnTaskStatus
+		knowledge     enums.AIReplyTurnTaskKnowledgeStatus
+		resultCode    string
+		wantOutcome   string
+		wantDelivered enums.AIReplyTurnTaskDeliveryOutcome
+	}{
+		{
+			name:   "delivered no context",
+			status: enums.AIReplyTurnTaskStatusDelivered, knowledge: enums.AIReplyTurnTaskKnowledgeStatusNoContext,
+			resultCode: enums.AIReplyTurnTaskResultCodeDeliveredNoContext, wantOutcome: "no_context",
+			wantDelivered: enums.AIReplyTurnTaskDeliveryOutcomeDelivered,
+		},
+		{
+			name:   "delivered no hit",
+			status: enums.AIReplyTurnTaskStatusDelivered, knowledge: enums.AIReplyTurnTaskKnowledgeStatusNoHit,
+			resultCode: enums.AIReplyTurnTaskResultCodeDeliveredNoHit, wantOutcome: "no_hit",
+			wantDelivered: enums.AIReplyTurnTaskDeliveryOutcomeDelivered,
+		},
+		{
+			name:   "technical failure",
+			status: enums.AIReplyTurnTaskStatusFailed, knowledge: enums.AIReplyTurnTaskKnowledgeStatusFailed,
+			resultCode: enums.AIReplyTurnTaskResultCodeTechnicalFailure, wantOutcome: "technical_failure",
+			wantDelivered: enums.AIReplyTurnTaskDeliveryOutcomeNotApplicable,
+		},
+		{
+			name:   "answered",
+			status: enums.AIReplyTurnTaskStatusDelivered, knowledge: enums.AIReplyTurnTaskKnowledgeStatusNone,
+			resultCode: "delivered", wantOutcome: "answered",
+			wantDelivered: enums.AIReplyTurnTaskDeliveryOutcomeDelivered,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := models.AIReplyTurnTask{
+				TaskKey: "task_result", TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+				Status: tt.status, KnowledgeStatus: tt.knowledge, ResultCode: tt.resultCode,
+				CommittedMessageID: 9001,
+			}
+			classified := enums.ClassifyAIReplyTurnTaskOutcome(task.Status, task.TaskType, task.KnowledgeStatus, task.ResultCode)
+			if classified.Delivery != tt.wantDelivered || classified.Business != enums.AIReplyTurnTaskBusinessOutcome(tt.wantOutcome) {
+				t.Fatalf("classified outcome=%+v want delivery=%q business=%q", classified, tt.wantDelivered, tt.wantOutcome)
+			}
+
+			got := ReduceDialogueState(contracts.DialogueStateSnapshotV1{
+				SchemaVersion: contracts.DialogueStateSnapshotV1SchemaVersion, ConversationID: 11, SessionNo: 2,
+				Focus:         contracts.DialogueStateFocus{RelationToPrior: "unknown", ActiveTaskKeys: []string{"task_result"}},
+				ResolvedTasks: []contracts.DialogueStateResolvedTask{}, OpenTasks: []contracts.DialogueStateOpenTask{{TaskKey: "task_result", Intent: "hotel_info", State: "ready_to_generate"}},
+				SessionFacts: []contracts.DialogueStateSessionFact{}, UpdatedAt: now.Add(-time.Second),
+			}, DialogueStateEvent{
+				Kind: DialogueStateEventAssistantCommitted, MessageID: 9001, TurnID: 22, TurnVersion: 1,
+				Tasks: []models.AIReplyTurnTask{task}, ResolvedTaskKeys: []string{"task_result"},
+				AssistantMessage: &models.Message{ID: 9001, SenderType: enums.IMSenderTypeAI}, Now: now,
+			})
+			if len(got.ResolvedTasks) != 1 || got.ResolvedTasks[0].Outcome != tt.wantOutcome {
+				t.Fatalf("resolved tasks=%+v want outcome=%q", got.ResolvedTasks, tt.wantOutcome)
+			}
+			if tt.wantOutcome != "answered" && got.ResolvedTasks[0].Outcome == "answered" {
+				t.Fatal("non-answer result was reduced to answered")
+			}
+		})
+	}
+}

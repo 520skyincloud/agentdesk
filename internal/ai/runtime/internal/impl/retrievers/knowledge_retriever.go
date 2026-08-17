@@ -54,6 +54,7 @@ type KnowledgeBaseRetrievePolicy struct {
 	KnowledgeBaseID int64
 	TopK            int
 	ScoreThreshold  float64
+	RerankLimit     int
 }
 
 type KnowledgeRetrieveResult struct {
@@ -279,7 +280,8 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, opts K
 		RequestID:        requestID,
 		Question:         query,
 		AnswerStatus:     answerStatus,
-		RerankEnabled:    false,
+		RerankEnabled:    runtimeRerankEnabled(result),
+		RerankLimit:      runtimeRerankLimit(result.Policies),
 		Hits:             hits,
 		UsedHits:         usedHits,
 		UsedHitRankNos:   resolveUsedHitRankNos(result.Hits, result.ContextResults),
@@ -360,6 +362,9 @@ func (r *KnowledgeRetriever) resolvePolicies(knowledgeBaseIDs []int64, opts Know
 			if knowledgeBase.DefaultScoreThreshold > 0 {
 				policy.ScoreThreshold = knowledgeBase.DefaultScoreThreshold
 			}
+			if knowledgeBase.DefaultRerankLimit > 0 {
+				policy.RerankLimit = knowledgeBase.DefaultRerankLimit
+			}
 		}
 		if opts.TopK > 0 {
 			policy.TopK = opts.TopK
@@ -370,6 +375,26 @@ func (r *KnowledgeRetriever) resolvePolicies(knowledgeBaseIDs []int64, opts Know
 		ret = append(ret, policy)
 	}
 	return ret
+}
+
+func runtimeRerankEnabled(result *KnowledgeRetrieveResult) bool {
+	if result == nil {
+		return false
+	}
+	if result.Trace != nil && result.Trace.RerankCount > 0 {
+		return true
+	}
+	return runtimeRerankLimit(result.Policies) > 0
+}
+
+func runtimeRerankLimit(policies []KnowledgeBaseRetrievePolicy) int {
+	limit := 0
+	for _, policy := range policies {
+		if policy.RerankLimit > limit {
+			limit = policy.RerankLimit
+		}
+	}
+	return limit
 }
 
 func resolveRuntimeAnswerMode(knowledgeBaseIDs []int64, results []rag.RetrieveResult, tenantID int64) enums.KnowledgeAnswerMode {

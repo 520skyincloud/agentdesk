@@ -42,15 +42,16 @@ type runtimeTaskKnowledgeOutcome struct {
 }
 
 type runtimeTaskKnowledgeItem struct {
-	TaskKey     string
-	Query       string
-	Intent      string
-	SubIntent   string
-	RequestMode string
-	AnswerGroup string
-	Result      *retrievers.KnowledgeRetrieveResult
-	Status      enums.AIReplyTurnTaskKnowledgeStatus
-	Err         error
+	TaskKey       string
+	Query         string
+	EvidenceQuery string
+	Intent        string
+	SubIntent     string
+	RequestMode   string
+	AnswerGroup   string
+	Result        *retrievers.KnowledgeRetrieveResult
+	Status        enums.AIReplyTurnTaskKnowledgeStatus
+	Err           error
 }
 
 type runtimeEvidenceIndex struct {
@@ -96,7 +97,7 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	semaphore := make(chan struct{}, knowledgeTaskConcurrencyForDB(sqls.DB()))
 	var wg sync.WaitGroup
 	for index, plan := range knowledgePlans {
-		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent, RequestMode: plan.RequestMode}
+		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), EvidenceQuery: runtimeTaskEvidenceQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent, RequestMode: plan.RequestMode}
 		if probe := probes[conditionalKnowledgeProbeIdentityForPlan(plan)]; probe != nil {
 			promoted, promoteErr := promoteConditionalProbeCheckpoint(req, taskState, items[index], probe)
 			items[index].Result = promoted
@@ -407,7 +408,10 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 			}
 			judgement := knowledgepolicy.Judge(knowledgepolicy.EvidenceJudgeInput{
 				TenantID: req.Conversation.TenantID, StoreID: req.Conversation.StoreID,
-				Task:      knowledgepolicy.Task{TaskKey: item.TaskKey, Intent: item.Intent, SubIntent: item.SubIntent, Query: item.Query, RequestMode: item.RequestMode},
+				Task: knowledgepolicy.Task{
+					TaskKey: item.TaskKey, Intent: item.Intent, SubIntent: item.SubIntent,
+					Query: item.Query, EvidenceQuery: item.EvidenceQuery, RequestMode: item.RequestMode,
+				},
 				Candidate: result, Metadata: metadataPtr,
 			})
 			if !gateEnabled(gateEvidenceQuality, req) {
@@ -835,13 +839,43 @@ func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData,
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 	// 契约 4.11/22.12：知识 Query 只使用规范化业务文本；[语音]/[图片]/文件名
 	// 等运输包装与 merge 前缀禁止进入检索文本。
-	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
+	if text := runtimeTaskEvidenceQuery(plan); text != "" {
+		if isContextualReplyRelation(plan.RelationType) {
+			parent := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.ResolvedTopic)))
+			if parent != "" && normalizeKnowledgeQueryText(parent) != normalizeKnowledgeQueryText(text) {
+				// The parent is a retrieval hint only. EvidenceJudge receives the
+				// source-bound current question separately and cannot authorize a
+				// result solely from this inherited context.
+				return parent + "；" + text
+			}
+		}
 		return text
 	}
 	if subIntent := strings.TrimSpace(plan.SubIntent); subIntent != "" {
 		return subIntent
 	}
 	return strings.TrimSpace(plan.Intent)
+}
+
+func runtimeTaskEvidenceQuery(plan callbacks.ReplyTaskPlanTraceData) string {
+	return strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text)))
+}
+
+func isContextualReplyRelation(relation string) bool {
+	switch strings.TrimSpace(relation) {
+	case "follow_up", "repeat", "correction", "confirmation", "cancellation":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeKnowledgeQueryText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Join(strings.Fields(value), "")
+	return strings.TrimRightFunc(value, func(r rune) bool {
+		return strings.ContainsRune("，。！？；：,.!?;: ", r)
+	})
 }
 
 // redistributeMultiTopicClauses 是意图模型没拆好 task.text 时的确定性兜底：

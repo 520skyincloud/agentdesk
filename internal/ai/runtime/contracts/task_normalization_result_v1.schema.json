@@ -131,6 +131,30 @@
             "minLength": 1,
             "maxLength": 1000
           },
+          "requirements": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "required", "sequence"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                }
+              }
+            }
+          },
           "canonicalQuestionHash": {
             "type": "string",
             "pattern": "^[a-f0-9]{64}$"
@@ -145,6 +169,39 @@
               "confirmation",
               "cancellation"
             ]
+          },
+          "parentTaskKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "resolvedTopic": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "inheritedRequirements": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "required", "sequence"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                }
+              }
+            }
           }
         }
       }

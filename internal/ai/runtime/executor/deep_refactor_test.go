@@ -35,7 +35,7 @@ func TestBuildAnswerRequirementsJSONAssignsServerKeys(t *testing.T) {
 
 // 契约 10.10：终态集合判定。
 func TestRequirementOutcomeTerminal(t *testing.T) {
-	for _, outcome := range []string{"answered", "no_hit", "failed_terminal", "covered", "superseded"} {
+	for _, outcome := range []string{"answered", "no_hit", "no_context", "technical_failure", "failed_terminal", "covered", "superseded"} {
 		if !contracts.RequirementOutcomeTerminal(outcome) {
 			t.Fatalf("%s must be terminal", outcome)
 		}

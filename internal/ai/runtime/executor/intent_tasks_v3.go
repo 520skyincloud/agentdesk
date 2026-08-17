@@ -171,7 +171,103 @@ func buildIntentV3Envelope(req RunInput, history adapter.HistoryBuildResult) (co
 	if err != nil {
 		return contextcompiler.TurnInputEnvelope{}, err
 	}
-	return contextcompiler.BuildTurnInputEnvelopeWithAnalyses(scope, messages, analyses), nil
+	envelope := contextcompiler.BuildTurnInputEnvelopeWithAnalyses(scope, messages, analyses)
+	populateIntentV3UnresolvedTasks(&envelope, req)
+	return envelope, nil
+}
+
+// populateIntentV3UnresolvedTasks projects only durable task metadata into the
+// current-turn envelope. Customer text remains source-bound and is never copied
+// from AIReplyTurnTask into the Intent prompt.
+func populateIntentV3UnresolvedTasks(envelope *contextcompiler.TurnInputEnvelope, req RunInput) {
+	if envelope == nil || req.UserMessage.AIReplyTurnID <= 0 || req.Conversation.TenantID <= 0 || sqls.DB() == nil {
+		return
+	}
+	all := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(
+		sqls.DB(), req.Conversation.TenantID, req.UserMessage.AIReplyTurnID,
+	)
+	tasks := make([]models.AIReplyTurnTask, 0, len(all))
+	questionTextByTaskID := make(map[int64]string, len(all))
+	for _, task := range all {
+		if !intentV3TaskCarriesFollowUpContext(task) {
+			continue
+		}
+		source := repositories.MessageRepository.GetInTenant(sqls.DB(), task.SourceMessageID, req.Conversation.TenantID)
+		if source == nil || source.ConversationID != req.Conversation.ID || source.SessionNo != req.UserMessage.SessionNo ||
+			source.AIReplyTurnID != req.UserMessage.AIReplyTurnID || source.SenderType != enums.IMSenderTypeCustomer {
+			continue
+		}
+		questionTextByTaskID[task.ID] = runtimeTaskSourceSpanText(
+			runtimeTaskSourceText(*source), task.SourceSpanStart, task.SourceSpanEnd,
+		)
+		tasks = append(tasks, task)
+	}
+	if len(tasks) > intentV3MaxUtterancesPerBatch*2 {
+		tasks = tasks[len(tasks)-intentV3MaxUtterancesPerBatch*2:]
+	}
+	appendIntentV3UnresolvedTasksWithQuestionText(envelope, tasks, questionTextByTaskID)
+}
+
+func intentV3TaskCarriesFollowUpContext(task models.AIReplyTurnTask) bool {
+	switch task.Status {
+	case enums.AIReplyTurnTaskStatusPending,
+		enums.AIReplyTurnTaskStatusRunning,
+		enums.AIReplyTurnTaskStatusReady,
+		enums.AIReplyTurnTaskStatusWaitingCoverage,
+		enums.AIReplyTurnTaskStatusCommitted,
+		enums.AIReplyTurnTaskStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func appendIntentV3UnresolvedTasks(envelope *contextcompiler.TurnInputEnvelope, tasks []models.AIReplyTurnTask) {
+	appendIntentV3UnresolvedTasksWithQuestionText(envelope, tasks, nil)
+}
+
+func appendIntentV3UnresolvedTasksWithQuestionText(
+	envelope *contextcompiler.TurnInputEnvelope,
+	tasks []models.AIReplyTurnTask,
+	questionTextByTaskID map[int64]string,
+) {
+	if envelope == nil || len(tasks) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(envelope.UnresolvedTasks)+len(tasks))
+	for _, task := range envelope.UnresolvedTasks {
+		if key := strings.TrimSpace(task.TaskKey); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, task := range tasks {
+		key := strings.TrimSpace(task.TaskKey)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		questionText := strings.TrimSpace(questionTextByTaskID[task.ID])
+		item := contextcompiler.EnvelopeUnresolvedTask{
+			TaskKey: key, SourceMessageID: task.SourceMessageID, SequenceNo: task.SequenceNo,
+			Intent: strings.TrimSpace(task.Intent), SubIntent: strings.TrimSpace(task.SubIntent),
+			Status: string(task.Status), CanonicalQuestionHash: strings.TrimSpace(task.CanonicalQuestionHash),
+			QuestionText:  questionText,
+			ResolvedTopic: firstNonEmptyQuestionTopic(questionText, task.SubIntent, task.Intent),
+		}
+		if raw := strings.TrimSpace(task.AnswerRequirementsJSON); raw != "" {
+			if set, err := contracts.DecodeAnswerRequirementSetV1([]byte(raw)); err == nil {
+				for _, requirement := range set.Requirements {
+					item.Requirements = append(item.Requirements, contextcompiler.EnvelopeRequirement{
+						Kind: requirement.Kind, Required: requirement.Required, Sequence: requirement.Sequence,
+					})
+				}
+			}
+		}
+		envelope.UnresolvedTasks = append(envelope.UnresolvedTasks, item)
+		seen[key] = struct{}{}
+	}
 }
 
 func authoritativeIntentTurnMessages(req RunInput) []models.Message {
@@ -439,7 +535,7 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 			Message: strings.Join(issues, "; "),
 		}
 	}
-	normalized := NormalizeIntentTasks(envelope, tasks)
+	normalized := NormalizeIntentTasksWithDialogueAct(envelope, tasks, parsed.DialogueAct)
 	units := normalized.AcceptedUnits
 	degraded := strings.HasPrefix(normalized.Status, "degraded_")
 	if len(units) == 0 {
@@ -491,6 +587,10 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 			}
 		}
 		trace.IntentTasks[index].QuestionUnitKey = unit.QuestionKey
+		trace.IntentTasks[index].RelationType = unit.Relation
+		trace.IntentTasks[index].ParentTaskKey = unit.ParentTaskKey
+		trace.IntentTasks[index].ResolvedTopic = unit.ResolvedTopic
+		trace.IntentTasks[index].InheritedRequirements = encodeRequirementSeeds(unit.InheritedRequirements)
 		trace.IntentTasks[index].SourceMessageID = unit.PrimarySourceMessageID
 		trace.IntentTasks[index].CanonicalQuestionHash = unit.CanonicalQuestionHash
 		trace.IntentTasks[index].SourceBindings, trace.IntentTasks[index].SourceSetFingerprint,
@@ -516,6 +616,17 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 		trace.Reason = "intent_tasks.v3 " + normalized.Status
 	}
 	return trace, degraded, nil
+}
+
+func encodeRequirementSeeds(seeds []RequirementSeed) []string {
+	if len(seeds) == 0 {
+		return nil
+	}
+	ret := make([]string, 0, len(seeds))
+	for _, seed := range seeds {
+		ret = append(ret, fmt.Sprintf("%s|%t", strings.TrimSpace(seed.Kind), seed.Required))
+	}
+	return ret
 }
 
 func buildIntentCoverageTrace(envelope contextcompiler.TurnInputEnvelope, coverage []intentCoverageItemWire) []callbacks.IntentCoverageTraceData {

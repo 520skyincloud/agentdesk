@@ -231,3 +231,115 @@ func TestFallbackClauseSplitterKeepsProductionVoiceQuestionsIndependent(t *testi
 		seen[span.Quote] = struct{}{}
 	}
 }
+
+func relationEnvelope(text string) contextcompiler.TurnInputEnvelope {
+	return contextcompiler.BuildTurnInputEnvelope(envelopeTestScope(), []models.Message{{
+		ID: 2001, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText,
+		Content: text,
+	}})
+}
+
+func relationTask(e contextcompiler.TurnInputEnvelope, intent, subIntent, requestMode string) IntentTaskV3 {
+	return IntentTaskV3{
+		Sequence: 1, Intent: intent, SubIntent: subIntent,
+		SourceRefs: []string{"U1"}, SourceSpans: []IntentSourceSpan{spanFor(e, e.Utterances[0].Text)},
+		RequestMode: requestMode, Requirements: []RequirementSeed{{Sequence: 1, Kind: "answer", Required: true}},
+	}
+}
+
+func TestNormalizeRelationSameTopicFollowUpInheritsUnresolvedTask(t *testing.T) {
+	e := relationEnvelope("收费呢？")
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{{
+		TaskKey: "task-parking", Intent: "hotel_info", SubIntent: "parking", Status: "pending",
+		ResolvedTopic: "parking", Requirements: []contextcompiler.EnvelopeRequirement{{
+			Sequence: 1, Kind: "parking_fee", Required: true,
+		}},
+	}}
+	result := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{relationTask(e, "hotel_info", "parking", "answer")}, "follow_up")
+	if len(result.AcceptedUnits) != 1 {
+		t.Fatalf("expected one unit, got %+v", result)
+	}
+	unit := result.AcceptedUnits[0]
+	if unit.Relation != "follow_up" || unit.ParentTaskKey != "task-parking" || unit.ResolvedTopic != "parking" {
+		t.Fatalf("unexpected follow-up relation: %+v", unit)
+	}
+	if len(unit.InheritedRequirements) != 1 || unit.InheritedRequirements[0].Kind != "parking_fee" {
+		t.Fatalf("inherited requirements=%+v", unit.InheritedRequirements)
+	}
+}
+
+func TestNormalizeRelationNewTopicDoesNotBorrowUnresolvedTopic(t *testing.T) {
+	e := relationEnvelope("早餐几点？")
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{{
+		TaskKey: "task-parking", Intent: "hotel_info", SubIntent: "parking", Status: "pending",
+	}}
+	result := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{relationTask(e, "hotel_info", "breakfast_time", "answer")}, "new_topic")
+	unit := result.AcceptedUnits[0]
+	if unit.Relation != "new_topic" || unit.ParentTaskKey != "" || unit.ResolvedTopic != "breakfast_time" {
+		t.Fatalf("new topic borrowed prior context: %+v", unit)
+	}
+	if len(unit.InheritedRequirements) != 0 {
+		t.Fatalf("new topic inherited requirements: %+v", unit.InheritedRequirements)
+	}
+}
+
+func TestNormalizeRelationRepeatMatchesUnresolvedQuestionHash(t *testing.T) {
+	e := relationEnvelope("停车怎么收费？")
+	task := relationTask(e, "hotel_info", "parking", "answer")
+	hash := CanonicalQuestionHash(task.Intent, task.SubIntent, []string{e.Utterances[0].Text}, task.RequestMode)
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{{
+		TaskKey: "task-parking", Intent: "hotel_info", SubIntent: "parking", Status: "pending",
+		CanonicalQuestionHash: hash,
+	}}
+	result := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{task}, "repeat")
+	unit := result.AcceptedUnits[0]
+	if unit.Relation != "repeat" || unit.ParentTaskKey != "task-parking" || unit.ResolvedTopic != "parking" {
+		t.Fatalf("unexpected repeat relation: %+v", unit)
+	}
+}
+
+func TestNormalizeRelationAmbiguousClarificationDoesNotInheritArbitraryTask(t *testing.T) {
+	e := relationEnvelope("可以吗？")
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{
+		{TaskKey: "task-parking", Intent: "hotel_info", SubIntent: "parking", Status: "pending"},
+		{TaskKey: "task-breakfast", Intent: "hotel_info", SubIntent: "breakfast_time", Status: "pending"},
+	}
+	task := relationTask(e, "interaction", "clarify", "clarify_previous")
+	result := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{task}, "follow_up")
+	unit := result.AcceptedUnits[0]
+	if unit.Relation != "follow_up" || unit.ParentTaskKey != "" || unit.ResolvedTopic != "" {
+		t.Fatalf("ambiguous clarification inherited a topic: %+v", unit)
+	}
+	if len(unit.InheritedRequirements) != 0 {
+		t.Fatalf("ambiguous clarification inherited requirements: %+v", unit.InheritedRequirements)
+	}
+}
+
+func TestNormalizeRelationRecoversEllipticalNewTopicFromLatestFailedTask(t *testing.T) {
+	e := relationEnvelope("送到哪里")
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{
+		{TaskKey: "task-old", SourceMessageID: 1990, SequenceNo: 1, Intent: "hotel_info", SubIntent: "parking", Status: "failed"},
+		{TaskKey: "task-takeout", SourceMessageID: 2000, SequenceNo: 1, Intent: "hotel_info", SubIntent: "takeout", Status: "failed", ResolvedTopic: "外卖怎么点"},
+	}
+	task := relationTask(e, "hotel_info", "delivery_location", "answer")
+	result := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{task}, "new_topic")
+	if len(result.AcceptedUnits) != 1 {
+		t.Fatalf("expected one accepted unit, got %+v", result)
+	}
+	unit := result.AcceptedUnits[0]
+	if unit.Relation != "follow_up" || unit.ParentTaskKey != "task-takeout" || unit.ResolvedTopic != "外卖怎么点" {
+		t.Fatalf("elliptical follow-up was not recovered: %+v", unit)
+	}
+}
+
+func TestNormalizeRelationDoesNotGuessWhenLatestSourceHasMultipleTasks(t *testing.T) {
+	e := relationEnvelope("送到哪里")
+	e.UnresolvedTasks = []contextcompiler.EnvelopeUnresolvedTask{
+		{TaskKey: "task-a", SourceMessageID: 2000, SequenceNo: 1, Intent: "hotel_info", SubIntent: "takeout", Status: "failed"},
+		{TaskKey: "task-b", SourceMessageID: 2000, SequenceNo: 2, Intent: "hotel_info", SubIntent: "parking", Status: "failed"},
+	}
+	unit := NormalizeIntentTasksWithDialogueAct(e, []IntentTaskV3{relationTask(e, "hotel_info", "delivery_location", "answer")}, "new_topic").AcceptedUnits[0]
+	if unit.Relation != "new_topic" || unit.ParentTaskKey != "" {
+		t.Fatalf("ambiguous same-message context was guessed: %+v", unit)
+	}
+}

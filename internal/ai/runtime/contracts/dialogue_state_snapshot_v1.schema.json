@@ -102,7 +102,10 @@
             "maxLength": 128
           },
           "outcome": {
-            "enum": ["answered", "resource_sent", "handoff", "cancelled", "superseded"]
+            "enum": [
+              "answered", "no_hit", "no_context", "technical_failure",
+              "resource_sent", "handoff", "cancelled", "superseded"
+            ]
           },
           "answerMessageId": {
             "type": "integer",

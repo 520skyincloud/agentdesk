@@ -11,11 +11,15 @@ import (
 )
 
 type Task struct {
-	TaskKey     string
-	Intent      string
-	SubIntent   string
-	Query       string
-	RequestMode string
+	TaskKey   string
+	Intent    string
+	SubIntent string
+	Query     string
+	// EvidenceQuery is the current task's own source-bound question. Query may
+	// include a bounded parent-topic hint for retrieval, but evidence approval
+	// must never be granted merely because that inherited hint matches a FAQ.
+	EvidenceQuery string
+	RequestMode   string
 }
 
 type EvidenceJudgeInput struct {
@@ -156,8 +160,16 @@ func metadataProjection(input EvidenceJudgeInput) EvidenceJudgeResult {
 		result.SourceClass = "imported_faq"
 	}
 	if input.Metadata == nil || (result.SourceClass == "unknown" && result.ReviewStatus == "pending") {
-		result.ClaimType = InferClaimType(input.Task.Query, input.Candidate.Title, input.Candidate.Content)
-		result.FactScope = InferFactScope(input.Task.Query, result.ClaimType)
+		// Query may contain a bounded parent-topic retrieval hint for an
+		// elliptical follow-up. Classification must remain bound to the current
+		// source question, otherwise the parent can turn a new question into the
+		// wrong claim type or fact scope.
+		query := strings.TrimSpace(input.Task.EvidenceQuery)
+		if query == "" {
+			query = input.Task.Query
+		}
+		result.ClaimType = InferClaimType(query, input.Candidate.Title, input.Candidate.Content)
+		result.FactScope = InferFactScope(query, result.ClaimType)
 	}
 	return result
 }
@@ -225,7 +237,10 @@ func LooksLikeMetaContent(title, content string) bool {
 }
 
 func topicMatch(task Task, candidate rag.RetrieveResult, labels []string) string {
-	query := normalizeText(task.Query)
+	query := normalizeText(task.EvidenceQuery)
+	if query == "" {
+		query = normalizeText(task.Query)
+	}
 	source := normalizeText(strings.Join([]string{candidate.Title, candidate.DocumentTitle, candidate.Content}, " "))
 	if query == "" || source == "" {
 		return "related"
@@ -261,10 +276,10 @@ func structuredQATopicMatch(task Task, normalizedQuery string, candidate rag.Ret
 	if queryType != titleType && titleType == "recommendation" && structuredTaskRequestsRecommendation(task, normalizedQuery) {
 		queryType = "recommendation"
 	}
-	if queryType != titleType {
-		return false
-	}
-	if queryType == "recommendation" {
+	if queryType == "recommendation" || titleType == "recommendation" {
+		if queryType != titleType {
+			return false
+		}
 		queryCategory := recommendationCategory(normalizedQuery)
 		titleCategory := recommendationCategory(title)
 		if queryCategory != "" && titleCategory != "" && queryCategory != titleCategory {
@@ -273,32 +288,66 @@ func structuredQATopicMatch(task Task, normalizedQuery string, candidate rag.Ret
 		return InferFactScope(normalizedQuery, queryType) == InferFactScope(candidate.Title, titleType) &&
 			bigramJaccard(normalizedQuery, title) >= 0.08
 	}
-	return candidate.Score >= 0.64 && businessTopicMatch(normalizedQuery, title)
+	// FAQ 标题的语法形式不是答案能力。相同业务主题可以用 policy/fact
+	// 回答 procedure 式口语问法，例如“外卖怎么点”可以使用“酒店可以点
+	// 外卖吗”的规则答案。向量分数仍不能单独授权，必须同时存在可验证的
+	// 业务主题片段，避免高分但跨主题的结果进入 Generate。
+	return candidate.Score >= 0.64 && businessTopicMatch(normalizedQuery, strings.Join([]string{candidate.Title, candidate.Content}, " "))
 }
 
-func businessTopicMatch(query, title string) bool {
+func businessTopicMatch(query, source string) bool {
 	queryCore := businessTopicCore(query)
-	titleCore := businessTopicCore(title)
-	if queryCore == "" || titleCore == "" {
+	sourceCore := businessTopicCore(source)
+	if queryCore == "" || sourceCore == "" {
 		return false
 	}
-	if strings.Contains(queryCore, titleCore) || strings.Contains(titleCore, queryCore) {
+	if strings.Contains(queryCore, sourceCore) || strings.Contains(sourceCore, queryCore) {
 		return true
 	}
-	return bigramJaccard(queryCore, titleCore) >= 0.22
+	if bigramJaccard(queryCore, sourceCore) >= 0.22 {
+		return true
+	}
+	common := longestCommonTopicRunes(queryCore, sourceCore)
+	return common >= 2 && float64(common)/float64(len([]rune(queryCore))) >= 0.5
 }
 
 func businessTopicCore(value string) string {
 	value = normalizeText(value)
 	replacer := strings.NewReplacer(
+		"酒店", "", "房间", "", "客人", "", "住客", "", "请问", "", "麻烦", "",
+		"帮我", "", "给我", "", "我要", "", "想要", "", "具体", "", "一下", "",
 		"可不可以", "", "可以不可以", "", "是否提供", "", "有没有", "", "是否有", "",
 		"使用方法", "", "怎么办", "", "咋开", "", "咋弄", "", "咋办", "", "怎么样", "", "怎样", "",
 		"在哪里", "", "在哪儿", "", "什么时间", "", "如何", "", "怎么", "", "能不能", "",
 		"开具", "", "申请", "", "办理", "", "操作", "", "流程", "", "步骤", "",
-		"是否", "", "提供", "", "位置", "", "时间", "", "几点", "", "在哪", "",
+		"是否", "", "提供", "", "位置", "", "时间", "", "几点", "", "在哪里", "", "哪里", "", "在哪", "",
 		"有吗", "", "可以吗", "", "吗", "", "呢", "", "呀", "", "啊", "",
 	)
 	return strings.TrimSpace(replacer.Replace(value))
+}
+
+func longestCommonTopicRunes(a, b string) int {
+	left := []rune(a)
+	right := []rune(b)
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	previous := make([]int, len(right)+1)
+	best := 0
+	for _, leftRune := range left {
+		current := make([]int, len(right)+1)
+		for index, rightRune := range right {
+			if leftRune != rightRune {
+				continue
+			}
+			current[index+1] = previous[index] + 1
+			if current[index+1] > best {
+				best = current[index+1]
+			}
+		}
+		previous = current
+	}
+	return best
 }
 
 func structuredTaskRequestsRecommendation(task Task, normalizedQuery string) bool {

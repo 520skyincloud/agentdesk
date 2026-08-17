@@ -330,6 +330,14 @@
             "minLength": 1,
             "maxLength": 128
           },
+          "sourceMessageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sequenceNo": {
+            "type": "integer",
+            "minimum": 1
+          },
           "intent": {
             "type": "string",
             "maxLength": 80
@@ -341,6 +349,42 @@
           "status": {
             "type": "string",
             "maxLength": 24
+          },
+          "questionText": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "canonicalQuestionHash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "resolvedTopic": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "requirements": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "required", "sequence"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8
+                }
+              }
+            }
           }
         }
       }

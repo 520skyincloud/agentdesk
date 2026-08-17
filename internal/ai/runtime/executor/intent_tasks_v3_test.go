@@ -8,6 +8,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/strictjson"
 )
 
@@ -42,6 +43,28 @@ func TestParseIntentTasksV3AcceptsSchemaNormalizedText(t *testing.T) {
 	}
 	if len(parsed.Tasks) != 1 || parsed.Tasks[0].Normalized != "有咖啡吗" {
 		t.Fatalf("normalized text not decoded: %+v", parsed.Tasks)
+	}
+}
+
+func TestAppendIntentV3UnresolvedTasksProjectsDurableContext(t *testing.T) {
+	envelope := contextcompiler.TurnInputEnvelope{UnresolvedTasks: []contextcompiler.EnvelopeUnresolvedTask{{TaskKey: "existing"}}}
+	appendIntentV3UnresolvedTasks(&envelope, []models.AIReplyTurnTask{
+		{
+			TaskKey: "task-parking", Intent: "hotel_info", SubIntent: "parking",
+			Status: enums.AIReplyTurnTaskStatusPending, CanonicalQuestionHash: strings.Repeat("a", 64),
+			AnswerRequirementsJSON: `{"schemaVersion":"answer_requirement_set.v1","taskKey":"task-parking","requirements":[{"key":"R1","kind":"parking_fee","sourceMessageId":1,"spanStart":0,"spanEnd":2,"required":true,"sequence":1}]}`,
+		},
+		{TaskKey: "existing", Intent: "hotel_info", SubIntent: "should_not_replace", Status: enums.AIReplyTurnTaskStatusPending},
+	})
+	if len(envelope.UnresolvedTasks) != 2 {
+		t.Fatalf("unexpected unresolved task count: %+v", envelope.UnresolvedTasks)
+	}
+	item := envelope.UnresolvedTasks[1]
+	if item.TaskKey != "task-parking" || item.ResolvedTopic != "parking" || item.CanonicalQuestionHash != strings.Repeat("a", 64) {
+		t.Fatalf("durable context projection=%+v", item)
+	}
+	if len(item.Requirements) != 1 || item.Requirements[0].Kind != "parking_fee" {
+		t.Fatalf("projected requirements=%+v", item.Requirements)
 	}
 }
 

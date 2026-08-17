@@ -335,6 +335,38 @@ func TestAIReplyTurnTaskStableKeySurvivesReanalysis(t *testing.T) {
 	}
 }
 
+func TestAIReplyTurnTaskPersistsSameTurnParentRelation(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	now := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	firstMessage := createAIReplyTurnCustomerMessage(t, db, conversation, "relation-source-1", "外卖怎么点", now)
+	turn := assignAIReplyTurnMessage(t, db, conversation, firstMessage)
+	first, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{
+		{SourceMessageID: firstMessage.ID, SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+			Intent: "hotel_info", SubIntent: "takeout", QuestionText: firstMessage.Content},
+	})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("create parent task: tasks=%+v err=%v", first, err)
+	}
+	secondMessage := createAIReplyTurnCustomerMessage(t, db, conversation, "relation-source-2", "送到哪里", now.Add(time.Second))
+	if err := db.Model(&models.Message{}).Where("id = ?", secondMessage.ID).Updates(map[string]any{
+		"ai_reply_turn_id": turn.ID, "ai_reply_turn_version": turn.Version,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	second, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{
+		{SourceMessageID: secondMessage.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+			Intent: "hotel_info", SubIntent: "delivery_location", RelationType: "follow_up",
+			RelatedTaskKey: first[0].TaskKey, QuestionText: secondMessage.Content},
+	})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("create child task: tasks=%+v err=%v", second, err)
+	}
+	stored := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, turn.TenantID, turn.ID, second[0].TaskKey)
+	if stored == nil || stored.RelatedTaskID != first[0].ID || stored.RelationType != "follow_up" {
+		t.Fatalf("parent relation was not persisted: parent=%+v child=%+v", first[0], stored)
+	}
+}
+
 func TestAIReplyTurnTaskFallbackStableKeyKeepsDuplicateSourcesSeparate(t *testing.T) {
 	base := AIReplyTurnTaskInput{
 		TenantID: 101, TurnID: 202, SourceMessageID: 303,

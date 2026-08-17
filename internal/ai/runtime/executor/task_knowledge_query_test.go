@@ -46,6 +46,19 @@ func TestKnowledgeQueryStripsVoiceTransportWrapper(t *testing.T) {
 	}
 }
 
+func TestKnowledgeQueryUsesParentOnlyAsRetrievalHint(t *testing.T) {
+	plan := callbacks.ReplyTaskPlanTraceData{
+		Text: "送到哪里", RelationType: "follow_up", ResolvedTopic: "外卖怎么点",
+	}
+	query := runtimeTaskKnowledgeQuery(plan)
+	if !strings.Contains(query, "外卖怎么点") || !strings.Contains(query, "送到哪里") {
+		t.Fatalf("follow-up retrieval query lost parent/current text: %q", query)
+	}
+	if got := runtimeTaskEvidenceQuery(plan); got != "送到哪里" {
+		t.Fatalf("evidence query must remain source-bound current question, got %q", got)
+	}
+}
+
 // 契约 3.9.2 回放（语音 1362）：口语重复“都可以”不得拆出重复子句。
 func TestSplitMultiTopicClausesDedupesRepeatedPhrases(t *testing.T) {
 	voice := "我要吃本地菜。都可以，都可以介绍一下呀。还有什么推荐？还有什么推荐？"

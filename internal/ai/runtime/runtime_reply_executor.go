@@ -113,10 +113,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 	if requestID == "" {
 		return
 	}
-	errorMessage := ""
-	if runErr != nil {
-		errorMessage = modelconfig.InvocationErrorClass(runErr)
-	}
+	errorClass, errorMessage := replyUsageErrorFields(runErr)
 	runID := ""
 	if summary != nil {
 		runID = strings.TrimSpace(summary.RunID)
@@ -134,7 +131,7 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 				ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
 				Stage: "reply_generate", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 				MetricSource: svc.AIUsageMetricSourceProviderOperation,
-				LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorMessage, ErrorMessage: errorMessage,
+				LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorClass, ErrorMessage: errorMessage,
 			}
 			svc.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 			applyReplyGatewayReceipt(&event, receiptAt(receipts, 0))
@@ -162,12 +159,54 @@ func (e *runtimeReplyExecutor) recordReplyModelUsage(conversation models.Convers
 			ConversationID: conversation.ID, MessageID: message.ID, RequestID: requestID,
 			Stage: "reply_generate", Provider: string(modelConfig.Provider), Model: modelConfig.ModelName,
 			MetricSource: svc.AIUsageMetricSourceProviderOperation,
-			LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorMessage, ErrorMessage: errorMessage,
+			LatencyMS:    latencyMS, Status: "failed", ErrorClass: errorClass, ErrorMessage: errorMessage,
 		}
 		svc.AIUsageEventService.ApplyModelCallAttribution(&event, resolved)
 		applyReplyGatewayReceipt(&event, receiptAt(receipts, 0))
 		_ = svc.AIUsageEventService.Record(event)
 	}
+}
+
+func replyUsageErrorFields(err error) (string, string) {
+	if err == nil {
+		return "", ""
+	}
+	errorClass := modelconfig.InvocationErrorClass(err)
+	details, ok := svc.AIReplyExecutionErrorDetailsOf(err)
+	if !ok {
+		return errorClass, errorClass
+	}
+	if strings.TrimSpace(details.CauseClass) != "" {
+		errorClass = strings.TrimSpace(details.CauseClass)
+	}
+	parts := []string{"code=" + string(details.Code), "cause=" + errorClass}
+	if details.ProtocolCode != "" {
+		parts = append(parts, "protocol="+boundedUsageDiagnostic(details.ProtocolCode, 80))
+	}
+	if details.JSONPath != "" {
+		parts = append(parts, "path="+boundedUsageDiagnostic(details.JSONPath, 120))
+	}
+	if details.HTTPStatus > 0 {
+		parts = append(parts, fmt.Sprintf("http=%d", details.HTTPStatus))
+	}
+	if details.ProviderStatus != "" {
+		parts = append(parts, "provider_status="+boundedUsageDiagnostic(details.ProviderStatus, 80))
+	}
+	if details.ProviderCode != "" {
+		parts = append(parts, "provider_code="+boundedUsageDiagnostic(details.ProviderCode, 80))
+	}
+	if details.RetryabilityKnown {
+		parts = append(parts, fmt.Sprintf("retryable=%t", details.Retryable))
+	}
+	return errorClass, strings.Join(parts, ";")
+}
+
+func boundedUsageDiagnostic(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit]
 }
 
 func receiptAt(receipts []usagex.Receipt, index int) *usagex.Receipt {

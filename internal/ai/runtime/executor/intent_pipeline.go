@@ -154,6 +154,11 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 			intent = markIntentAsKnowledgeHandoff(intent)
 		}
 	}
+	// Relation normalization is authoritative for every downstream artifact.
+	// Apply it before ReplyPlan, ContextCompiler, V3 plan, and Generate prompt
+	// construction; changing only the later dialogue-state catch-up would leave
+	// the actual model input on the stale model-provided relation.
+	intent.DialogueAct = effectiveRuntimeDialogueAct(intent.DialogueAct, activePlans)
 	actionLedgerV2, err := ensureRuntimeActionLedgerWithEligibility(req, taskState, replyPlan.TaskPlans, &evidence, &resourceEligibility)
 	if err != nil {
 		return runtimePipelinePlan{}, err
@@ -272,6 +277,41 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		DeferredTaskKeys:    deferredTaskKeys,
 		DeferredReason:      deferredReason,
 	}, nil
+}
+
+// effectiveRuntimeDialogueAct is the server-side relation projection used by
+// the state reducer and Generate compiler. The model's envelope label remains
+// auditable, but a single source-bound task relation is authoritative for the
+// current execution. This closes the gap where an elliptical follow-up was
+// classified as new_topic and therefore lost its bounded context.
+func effectiveRuntimeDialogueAct(modelAct string, plans []callbacks.ReplyTaskPlanTraceData) string {
+	modelAct = strings.TrimSpace(modelAct)
+	relation := ""
+	newTopicCount := 0
+	for _, plan := range plans {
+		candidate := strings.TrimSpace(plan.RelationType)
+		if candidate == "" {
+			continue
+		}
+		if candidate == "new_topic" {
+			newTopicCount++
+			continue
+		}
+		if relation == "" {
+			relation = candidate
+			continue
+		}
+		if relation != candidate {
+			return modelAct
+		}
+	}
+	if relation == "" {
+		return modelAct
+	}
+	if newTopicCount > 0 && len(plans) > 1 {
+		return modelAct
+	}
+	return relation
 }
 
 func intentContractFromTrace(intent callbacks.IntentTraceData) contracts.IntentTasksV2 {
@@ -754,7 +794,9 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 	}
 	for _, item := range intent.IntentTasks {
 		plan := replyTaskPlanFromIntentTask(item)
-		plan.RelationType = intent.DialogueAct
+		if strings.TrimSpace(plan.RelationType) == "" {
+			plan.RelationType = intent.DialogueAct
+		}
 		add(plan)
 	}
 	if len(tasks) == 0 {
@@ -816,6 +858,10 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		SubIntent:             task.SubIntent,
 		Text:                  task.Text,
 		RequestMode:           task.RequestMode,
+		RelationType:          task.RelationType,
+		ParentTaskKey:         task.ParentTaskKey,
+		ResolvedTopic:         task.ResolvedTopic,
+		InheritedRequirements: append([]string(nil), task.InheritedRequirements...),
 		QuestionUnitKey:       task.QuestionUnitKey,
 		SourceMessageID:       task.SourceMessageID,
 		AnalysisRevision:      task.AnalysisRevision,

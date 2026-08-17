@@ -33,7 +33,7 @@ type RequirementStateSetV1 struct {
 // RequirementStateItemV1 单条义务结果（10.10 状态机）。
 type RequirementStateItemV1 struct {
 	Key         string `json:"key"`
-	Outcome     string `json:"outcome"` // answered/no_hit/failed_retryable/failed_terminal/clarify/covered/superseded/handoff/skipped_policy
+	Outcome     string `json:"outcome"` // business outcome; execution and delivery are separate task facts
 	QueryKey    string `json:"queryKey"`
 	EvidenceRef string `json:"evidenceRef"`
 	ErrorCode   string `json:"errorCode"`
@@ -42,7 +42,7 @@ type RequirementStateItemV1 struct {
 // RequirementOutcomeTerminal 判定 10.10 终态集合。
 func RequirementOutcomeTerminal(outcome string) bool {
 	switch outcome {
-	case "answered", "no_hit", "failed_terminal", "clarify", "covered", "superseded", "handoff", "skipped_policy":
+	case "answered", "no_hit", "no_context", "technical_failure", "failed_terminal", "clarify", "covered", "superseded", "handoff", "skipped_policy":
 		return true
 	}
 	return false

@@ -132,3 +132,38 @@ func TestDirectQASharedGenericTimeWordDoesNotCrossTopics(t *testing.T) {
 		t.Fatalf("generic time wording must not cross business topics: %+v", artifacts.ByTask["t-breakfast"])
 	}
 }
+
+func TestDirectQAPolicyCanAnswerProcedureWordingOnSameTopic(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "delivery", Title: "酒店可以点外卖吗？",
+		Content: "问题：酒店可以点外卖吗？ 答案：可以自行点外卖，外卖员不能送到房门，需要前往一楼领取。", Score: 0.6991,
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-delivery", Intent: "hotel_info", SubIntent: "delivery_order", Query: "外卖怎么点",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+	if artifacts.ByTask["t-delivery"].Status != "has_context" {
+		t.Fatalf("same-topic policy FAQ must answer procedure wording: %+v", artifacts.ByTask["t-delivery"])
+	}
+	if len(artifacts.Quality.Items) != 1 || artifacts.Quality.Items[0].TopicMatch != "exact" {
+		t.Fatalf("same-topic FAQ must become exact evidence: %+v", artifacts.Quality.Items)
+	}
+}
+
+func TestDirectQASharedGenericHotelWordsDoNotCrossTopics(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "desk", Title: "房间有办公桌吗？",
+		Content: "问题：房间有办公桌吗？ 答案：部分房型配备办公桌。", Score: 0.91,
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-address", Intent: "hotel_info", SubIntent: "store_address", Query: "酒店房间地址在哪里",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+	if artifacts.ByTask["t-address"].Status != "no_context" {
+		t.Fatalf("generic hotel words must not authorize cross-topic evidence: %+v", artifacts.ByTask["t-address"])
+	}
+}

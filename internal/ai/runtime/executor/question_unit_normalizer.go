@@ -32,10 +32,10 @@ type IntentTaskV3 struct {
 
 // IntentSourceSpan 是一个来源片段：sourceRef + 0-based rune offset（end exclusive）+ 原文 quote。
 type IntentSourceSpan struct {
-	SourceRef string
-	Start     int
-	End       int
-	Quote     string
+	SourceRef string `json:"sourceRef"`
+	Start     int    `json:"start"`
+	End       int    `json:"end"`
+	Quote     string `json:"-"`
 }
 
 // SourceSpanIssue 是来源校验失败项。
@@ -106,26 +106,29 @@ func taskSourceIdentity(task IntentTaskV3) string {
 
 // QuestionUnit 是规范化后的独立问题（多模态契约 11）：带真实来源、canonical hash 和关系。
 type QuestionUnit struct {
-	QuestionKey            string // Q1..Qn，规范化产物
-	Sequence               int
-	PrimarySourceMessageID int64
-	AnalysisRevision       int
-	SourceSpans            []IntentSourceSpan
-	DependsOnObs           []string
-	Intent                 string
-	SubIntent              string
-	RequestMode            string
-	Text                   string // 检索/表达用规范化文本（有限改写）
-	Requirements           []RequirementSeed
-	CanonicalQuestionHash  string
-	Relation               string
+	QuestionKey            string             `json:"questionKey"` // Q1..Qn，规范化产物
+	Sequence               int                `json:"sequence"`
+	PrimarySourceMessageID int64              `json:"primarySourceMessageId"`
+	AnalysisRevision       int                `json:"analysisRevision"`
+	SourceSpans            []IntentSourceSpan `json:"sourceSpans"`
+	DependsOnObs           []string           `json:"dependsOnObservationRefs"`
+	Intent                 string             `json:"intent"`
+	SubIntent              string             `json:"subIntent"`
+	RequestMode            string             `json:"requestMode"`
+	Text                   string             `json:"text"` // 检索/表达用规范化文本（有限改写）
+	Requirements           []RequirementSeed  `json:"requirements,omitempty"`
+	CanonicalQuestionHash  string             `json:"canonicalQuestionHash"`
+	Relation               string             `json:"relation"`
+	ParentTaskKey          string             `json:"parentTaskKey,omitempty"`
+	ResolvedTopic          string             `json:"resolvedTopic,omitempty"`
+	InheritedRequirements  []RequirementSeed  `json:"inheritedRequirements,omitempty"`
 }
 
 // RequirementSeed 是模型建议的答案义务（契约 10.8），ID 与状态机由服务端负责。
 type RequirementSeed struct {
-	Kind     string
-	Required bool
-	Sequence int
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
+	Sequence int    `json:"sequence"`
 }
 
 // TaskNormalizationResult 记录规范化结果：接受的 QuestionUnit 与被抑制的重复项。
@@ -148,6 +151,13 @@ type SuppressedUnit struct {
 // Span 全部非法时按通用句末边界重建来源明确的澄清 QuestionUnit，
 // 不复制全文到多个 Task，也不转人工。
 func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []IntentTaskV3) TaskNormalizationResult {
+	return NormalizeIntentTasksWithDialogueAct(envelope, tasks, "")
+}
+
+// NormalizeIntentTasksWithDialogueAct keeps the V3 wire contract model-free:
+// relation is supplied by the server from dialogueAct plus the durable task
+// context, then projected onto QuestionUnit for downstream persistence.
+func NormalizeIntentTasksWithDialogueAct(envelope contextcompiler.TurnInputEnvelope, tasks []IntentTaskV3, dialogueAct string) TaskNormalizationResult {
 	result := TaskNormalizationResult{AcceptedUnits: make([]QuestionUnit, 0, len(tasks)), SuppressedUnits: []SuppressedUnit{}}
 
 	utteranceByRef := make(map[string]contextcompiler.EnvelopeUtterance, len(envelope.Utterances))
@@ -203,7 +213,8 @@ func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []In
 	seenHash := make(map[string]string, len(deduped))
 	for index, task := range deduped {
 		unit := buildQuestionUnit(index+1, task, utteranceByRef)
-		unit.Requirements = task.Requirements
+		unit.Requirements = cloneRequirementSeeds(task.Requirements)
+		applyQuestionUnitRelation(&unit, envelope, dialogueAct, result.AcceptedUnits)
 		if covered, exists := seenHash[unit.CanonicalQuestionHash]; exists {
 			result.SuppressedUnits = append(result.SuppressedUnits, SuppressedUnit{
 				Sequence: task.Sequence, ReasonCode: "same_source_duplicate", CoveredByQuestionKey: covered,
@@ -214,6 +225,272 @@ func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []In
 		result.AcceptedUnits = append(result.AcceptedUnits, unit)
 	}
 	return result
+}
+
+func applyQuestionUnitRelation(unit *QuestionUnit, envelope contextcompiler.TurnInputEnvelope, dialogueAct string, priorUnits []QuestionUnit) {
+	if unit == nil {
+		return
+	}
+	unit.Relation = normalizedQuestionRelation(dialogueAct, unit.RequestMode)
+	unit.ResolvedTopic = questionUnitTopic(*unit)
+
+	if unit.Relation == "new_topic" {
+		// Intent models occasionally classify an elliptical follow-up as a new
+		// topic (for example a predicate-only question with no explicit subject).
+		// Override that label only when the sentence is structurally dependent on
+		// context and exactly one same-scope parent exists. This is deliberately
+		// grammar-based rather than a hotel keyword whitelist.
+		if !looksContextDependentQuestionUnit(*unit) {
+			return
+		}
+		if parent, ok := findContextualTaskParent(*unit, envelope.UnresolvedTasks); ok {
+			unit.Relation = "follow_up"
+			bindQuestionUnitToEnvelopeParent(unit, parent)
+			return
+		}
+		if parent, ok := findContextualPriorUnit(*unit, priorUnits); ok {
+			unit.Relation = "follow_up"
+			bindQuestionUnitToPriorUnit(unit, parent)
+		}
+		return
+	}
+
+	if parent, ok := findUnresolvedTaskParent(*unit, envelope.UnresolvedTasks); ok {
+		bindQuestionUnitToEnvelopeParent(unit, parent)
+		return
+	}
+	if unit.RequestMode == "clarify_previous" {
+		unit.ResolvedTopic = ""
+		unit.InheritedRequirements = nil
+	}
+
+	// A same-turn short follow-up may refer to the immediately preceding unit.
+	// Only a single compatible candidate is accepted; ambiguity remains an
+	// explicit clarification instead of inheriting an arbitrary topic.
+	if isShortQuestionUnit(*unit) {
+		candidates := make([]QuestionUnit, 0, 2)
+		for _, prior := range priorUnits {
+			if questionUnitsCompatible(*unit, prior) {
+				candidates = append(candidates, prior)
+			}
+		}
+		if len(candidates) == 1 {
+			bindQuestionUnitToPriorUnit(unit, candidates[0])
+			return
+		}
+		if len(candidates) > 1 {
+			unit.ParentTaskKey = ""
+			unit.ResolvedTopic = ""
+			unit.InheritedRequirements = nil
+		}
+	}
+}
+
+func bindQuestionUnitToEnvelopeParent(unit *QuestionUnit, parent contextcompiler.EnvelopeUnresolvedTask) {
+	unit.ParentTaskKey = strings.TrimSpace(parent.TaskKey)
+	unit.ResolvedTopic = firstNonEmptyQuestionTopic(parent.ResolvedTopic, parent.QuestionText, parent.SubIntent, parent.Intent)
+	unit.InheritedRequirements = cloneEnvelopeRequirements(parent.Requirements)
+}
+
+func bindQuestionUnitToPriorUnit(unit *QuestionUnit, parent QuestionUnit) {
+	unit.ParentTaskKey = parent.QuestionKey
+	unit.ResolvedTopic = firstNonEmptyQuestionTopic(parent.ResolvedTopic, parent.Text, parent.SubIntent, parent.Intent)
+	unit.InheritedRequirements = cloneRequirementSeeds(parent.Requirements)
+}
+
+func normalizedQuestionRelation(dialogueAct, requestMode string) string {
+	switch strings.TrimSpace(requestMode) {
+	case "correct_previous":
+		return "correction"
+	case "confirm_previous":
+		return "confirmation"
+	case "cancel_previous":
+		return "cancellation"
+	}
+	switch strings.TrimSpace(dialogueAct) {
+	case "follow_up", "repeat", "refinement", "correction", "confirmation", "cancellation":
+		return strings.TrimSpace(dialogueAct)
+	default:
+		return "new_topic"
+	}
+}
+
+func findUnresolvedTaskParent(unit QuestionUnit, tasks []contextcompiler.EnvelopeUnresolvedTask) (contextcompiler.EnvelopeUnresolvedTask, bool) {
+	candidates := make([]contextcompiler.EnvelopeUnresolvedTask, 0, 2)
+	for _, task := range tasks {
+		if !isUnresolvedTaskActive(task.Status) || !questionTaskCompatible(unit, task) {
+			continue
+		}
+		if unit.Relation == "repeat" && !questionTaskRepeats(unit, task) {
+			continue
+		}
+		candidates = append(candidates, task)
+	}
+	if len(candidates) != 1 {
+		return contextcompiler.EnvelopeUnresolvedTask{}, false
+	}
+	return candidates[0], true
+}
+
+func findContextualTaskParent(unit QuestionUnit, tasks []contextcompiler.EnvelopeUnresolvedTask) (contextcompiler.EnvelopeUnresolvedTask, bool) {
+	candidates := make([]contextcompiler.EnvelopeUnresolvedTask, 0, 2)
+	for _, task := range tasks {
+		if !isUnresolvedTaskActive(task.Status) || !questionTaskBroadlyCompatible(unit, task) {
+			continue
+		}
+		candidates = append(candidates, task)
+	}
+	if len(candidates) == 0 {
+		return contextcompiler.EnvelopeUnresolvedTask{}, false
+	}
+	// Prefer the nearest preceding source event. If two candidate tasks came
+	// from the same source event and have the same order, the relation is
+	// genuinely ambiguous and must remain unbound.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].SourceMessageID != candidates[j].SourceMessageID {
+			return candidates[i].SourceMessageID > candidates[j].SourceMessageID
+		}
+		return candidates[i].SequenceNo > candidates[j].SequenceNo
+	})
+	if len(candidates) > 1 && candidates[0].SourceMessageID > 0 &&
+		candidates[0].SourceMessageID == candidates[1].SourceMessageID {
+		return contextcompiler.EnvelopeUnresolvedTask{}, false
+	}
+	return candidates[0], true
+}
+
+func findContextualPriorUnit(unit QuestionUnit, priorUnits []QuestionUnit) (QuestionUnit, bool) {
+	candidates := make([]QuestionUnit, 0, 2)
+	for _, prior := range priorUnits {
+		if questionUnitsBroadlyCompatible(unit, prior) {
+			candidates = append(candidates, prior)
+		}
+	}
+	if len(candidates) != 1 {
+		return QuestionUnit{}, false
+	}
+	return candidates[0], true
+}
+
+func isUnresolvedTaskActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "delivered", "answered", "resolved", "cancelled", "canceled", "closed", "superseded", "failed_terminal", "skipped":
+		return false
+	default:
+		return true
+	}
+}
+
+func questionTaskCompatible(unit QuestionUnit, task contextcompiler.EnvelopeUnresolvedTask) bool {
+	if strings.TrimSpace(unit.Intent) != "" && strings.TrimSpace(task.Intent) != "" &&
+		strings.TrimSpace(unit.Intent) != strings.TrimSpace(task.Intent) {
+		return unit.RequestMode == "clarify_previous"
+	}
+	if strings.TrimSpace(unit.SubIntent) != "" && strings.TrimSpace(task.SubIntent) != "" &&
+		strings.TrimSpace(unit.SubIntent) != strings.TrimSpace(task.SubIntent) {
+		return unit.RequestMode == "clarify_previous"
+	}
+	return true
+}
+
+func questionTaskBroadlyCompatible(unit QuestionUnit, task contextcompiler.EnvelopeUnresolvedTask) bool {
+	unitIntent := strings.TrimSpace(unit.Intent)
+	taskIntent := strings.TrimSpace(task.Intent)
+	if unitIntent == "interaction" && strings.TrimSpace(unit.SubIntent) == "clarify" {
+		return true
+	}
+	return unitIntent != "" && taskIntent != "" && unitIntent == taskIntent
+}
+
+func questionTaskRepeats(unit QuestionUnit, task contextcompiler.EnvelopeUnresolvedTask) bool {
+	if hash := strings.TrimSpace(task.CanonicalQuestionHash); hash != "" {
+		return hash == unit.CanonicalQuestionHash
+	}
+	text := strings.TrimSpace(task.QuestionText)
+	return text != "" && normalizeQuestionText(text) == normalizeQuestionText(unit.Text)
+}
+
+func isShortQuestionUnit(unit QuestionUnit) bool {
+	text := strings.TrimSpace(unit.Text)
+	return text != "" && len([]rune(normalizeQuestionText(text))) <= 24
+}
+
+func looksContextDependentQuestionUnit(unit QuestionUnit) bool {
+	if !isShortQuestionUnit(unit) {
+		return false
+	}
+	switch strings.TrimSpace(unit.RequestMode) {
+	case "clarify_previous", "correct_previous", "confirm_previous", "cancel_previous":
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(norm.NFKC.String(unit.Text)))
+	text = strings.TrimLeftFunc(text, unicode.IsPunct)
+	if text == "" {
+		return false
+	}
+	// These are language-level interrogative, deictic and predicate openings.
+	// They signal a missing subject without encoding any hotel/business topic.
+	prefixes := []string{
+		"怎么", "如何", "哪里", "哪儿", "哪边", "在哪", "几点", "多久", "多少", "什么时候",
+		"能否", "能不能", "可以", "可不可以", "是否", "要不要", "有没有", "还有", "然后",
+		"那", "这个", "那个", "它", "送到", "放到", "放哪", "给谁", "找谁",
+		"where ", "when ", "how ", "can ", "could ", "does ", "do ", "is it", "what about", "and ", "then ",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func questionUnitsCompatible(current, prior QuestionUnit) bool {
+	if current.RequestMode == "clarify_previous" {
+		return true
+	}
+	return strings.TrimSpace(current.Intent) == strings.TrimSpace(prior.Intent) &&
+		strings.TrimSpace(current.SubIntent) == strings.TrimSpace(prior.SubIntent)
+}
+
+func questionUnitsBroadlyCompatible(current, prior QuestionUnit) bool {
+	if current.Intent == "interaction" && current.SubIntent == "clarify" {
+		return true
+	}
+	return strings.TrimSpace(current.Intent) != "" && strings.TrimSpace(current.Intent) == strings.TrimSpace(prior.Intent)
+}
+
+func questionUnitTopic(unit QuestionUnit) string {
+	if strings.TrimSpace(unit.Intent) == "interaction" {
+		return strings.TrimSpace(unit.SubIntent)
+	}
+	return firstNonEmptyQuestionTopic(unit.SubIntent, unit.Intent)
+}
+
+func firstNonEmptyQuestionTopic(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func cloneRequirementSeeds(values []RequirementSeed) []RequirementSeed {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]RequirementSeed(nil), values...)
+}
+
+func cloneEnvelopeRequirements(values []contextcompiler.EnvelopeRequirement) []RequirementSeed {
+	if len(values) == 0 {
+		return nil
+	}
+	ret := make([]RequirementSeed, 0, len(values))
+	for _, value := range values {
+		ret = append(ret, RequirementSeed{Kind: value.Kind, Required: value.Required, Sequence: value.Sequence})
+	}
+	return ret
 }
 
 // degradedSingleTaskResult 保留旧函数名以减少调用面变更；实际按通用句末边界
@@ -243,6 +520,7 @@ func degradedSingleTaskResult(envelope contextcompiler.TurnInputEnvelope) TaskNo
 				Requirements:          []RequirementSeed{{Sequence: 1, Kind: "clarification", Required: true}},
 				CanonicalQuestionHash: CanonicalQuestionHash("interaction", "clarify", []string{clause.Quote}, "clarify_previous"),
 				Relation:              "new_topic",
+				ResolvedTopic:         "clarify",
 			})
 		}
 		nonEmptyRemaining--
@@ -344,6 +622,7 @@ func buildQuestionUnit(seq int, task IntentTaskV3, utteranceByRef map[string]con
 		Text:                  text,
 		CanonicalQuestionHash: CanonicalQuestionHash(task.Intent, task.SubIntent, quotes, task.RequestMode),
 		Relation:              "new_topic",
+		ResolvedTopic:         firstNonEmptyQuestionTopic(task.SubIntent, task.Intent),
 	}
 }
 

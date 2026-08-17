@@ -18,7 +18,7 @@
           "key": {"type": "string", "pattern": "^R[1-9][0-9]*$", "maxLength": 16},
           "outcome": {
             "enum": [
-              "answered", "no_hit", "failed_retryable", "failed_terminal", "clarify",
+              "answered", "no_hit", "no_context", "technical_failure", "failed_retryable", "failed_terminal", "clarify",
               "covered", "superseded", "handoff", "skipped_policy"
             ]
           },

@@ -89,8 +89,22 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 		applyDialogueActions(&current, event.Actions)
 	}
 	if len(event.ResolvedTaskKeys) > 0 {
+		tasksByKey := make(map[string]models.AIReplyTurnTask, len(event.Tasks))
+		for _, task := range event.Tasks {
+			if task.TaskKey != "" {
+				tasksByKey[task.TaskKey] = task
+			}
+		}
 		for _, taskKey := range event.ResolvedTaskKeys {
-			resolveDialogueTask(&current, taskKey, "answered", assistantMessageID(event.AssistantMessage), event.Now)
+			if task, ok := tasksByKey[taskKey]; ok {
+				if outcome, terminal := dialogueTaskOutcome(task); terminal {
+					resolveDialogueTask(&current, task.TaskKey, outcome, assistantMessageID(event.AssistantMessage), event.Now)
+				}
+				continue
+			}
+			// Preserve the legacy event-only path when no task ledger is
+			// available. A task ledger, when present, is authoritative.
+			resolveDialogueTask(&current, taskKey, string(enums.AIReplyTurnTaskBusinessOutcomeAnswered), assistantMessageID(event.AssistantMessage), event.Now)
 		}
 	}
 	if !lateForFocus && event.AssistantMessage != nil && event.AssistantMessage.ID > 0 {
@@ -164,7 +178,7 @@ func applyDialogueTasks(state *contracts.DialogueStateSnapshotV1, tasks []models
 		if task.TaskKey == "" {
 			continue
 		}
-		if outcome, terminal := dialogueTaskOutcome(task.Status); terminal {
+		if outcome, terminal := dialogueTaskOutcome(task); terminal {
 			resolveDialogueTask(state, task.TaskKey, outcome, task.CommittedMessageID, now)
 			continue
 		}
@@ -234,23 +248,12 @@ func upsertDialogueOpenTask(state *contracts.DialogueStateSnapshotV1, task contr
 	state.OpenTasks = append(state.OpenTasks, task)
 }
 
-func dialogueTaskOutcome(status enums.AIReplyTurnTaskStatus) (string, bool) {
-	switch status {
-	case enums.AIReplyTurnTaskStatusDelivered:
-		return "answered", true
-	case enums.AIReplyTurnTaskStatusCovered:
-		return "superseded", true
-	case enums.AIReplyTurnTaskStatusHandoff, enums.AIReplyTurnTaskStatusHandoffPending:
-		return "handoff", true
-	case enums.AIReplyTurnTaskStatusSkipped:
-		return "cancelled", true
-	case enums.AIReplyTurnTaskStatusSuperseded:
-		return "superseded", true
-	case enums.AIReplyTurnTaskStatusFailed:
-		return "cancelled", true
-	default:
+func dialogueTaskOutcome(task models.AIReplyTurnTask) (string, bool) {
+	outcome := enums.ClassifyAIReplyTurnTaskOutcome(task.Status, task.TaskType, task.KnowledgeStatus, task.ResultCode)
+	if !outcome.Terminal || outcome.Business == "" {
 		return "", false
 	}
+	return string(outcome.Business), true
 }
 
 func dialogueOpenTaskState(task models.AIReplyTurnTask) string {

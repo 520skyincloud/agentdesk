@@ -29,9 +29,11 @@ func TestStrictRuntimeContractsRoundTrip(t *testing.T) {
 
 	states := RequirementStateSetV1{
 		SchemaVersion: RequirementStateSetV1SchemaVersion,
-		States: []RequirementStateItemV1{{
-			Key: "R1", Outcome: "answered", EvidenceRef: "message:100",
-		}},
+		States: []RequirementStateItemV1{
+			{Key: "R1", Outcome: "answered", EvidenceRef: "message:100"},
+			{Key: "R2", Outcome: "no_context", EvidenceRef: "retrieve_log:101"},
+			{Key: "R3", Outcome: "technical_failure", ErrorCode: "generation_failed"},
+		},
 	}
 	if _, err := MarshalRequirementStateSetV1(states); err != nil {
 		t.Fatal(err)

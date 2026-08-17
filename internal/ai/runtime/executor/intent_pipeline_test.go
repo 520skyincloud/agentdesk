@@ -2088,3 +2088,18 @@ func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
 		t.Fatal(err)
 	}
 }
+
+func TestEffectiveRuntimeDialogueActIsAppliedFromTaskRelations(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{RelationType: "follow_up", Intent: "hotel_info"}}
+	if got := effectiveRuntimeDialogueAct("new_topic", plans); got != "follow_up" {
+		t.Fatalf("effective relation=%q, want follow_up", got)
+	}
+
+	mixed := []callbacks.ReplyTaskPlanTraceData{
+		{RelationType: "follow_up", Intent: "hotel_info"},
+		{RelationType: "new_topic", Intent: "hotel_info"},
+	}
+	if got := effectiveRuntimeDialogueAct("new_topic", mixed); got != "new_topic" {
+		t.Fatalf("mixed relation=%q, want model act new_topic", got)
+	}
+}

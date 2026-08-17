@@ -238,6 +238,10 @@ type IntentTaskTraceData struct {
 	Text                  string                            `json:"text,omitempty"`
 	RequestMode           string                            `json:"requestMode,omitempty"`
 	Confidence            float64                           `json:"confidence,omitempty"`
+	RelationType          string                            `json:"relationType,omitempty"`
+	ParentTaskKey         string                            `json:"parentTaskKey,omitempty"`
+	ResolvedTopic         string                            `json:"resolvedTopic,omitempty"`
+	InheritedRequirements []string                          `json:"inheritedRequirements,omitempty"`
 	QuestionUnitKey       string                            `json:"questionUnitKey,omitempty"`
 	SourceMessageID       int64                             `json:"sourceMessageId,omitempty"`
 	AnalysisRevision      int                               `json:"analysisRevision,omitempty"`
@@ -359,6 +363,9 @@ type ReplyTaskPlanTraceData struct {
 	Text                  string                            `json:"text,omitempty"`
 	RequestMode           string                            `json:"requestMode,omitempty"`
 	RelationType          string                            `json:"relationType,omitempty"`
+	ParentTaskKey         string                            `json:"parentTaskKey,omitempty"`
+	ResolvedTopic         string                            `json:"resolvedTopic,omitempty"`
+	InheritedRequirements []string                          `json:"inheritedRequirements,omitempty"`
 	QuestionUnitKey       string                            `json:"questionUnitKey,omitempty"`
 	SourceMessageID       int64                             `json:"sourceMessageId,omitempty"`
 	AnalysisRevision      int                               `json:"analysisRevision,omitempty"`

@@ -317,6 +317,12 @@ System/欢迎消息既不进入回答内容，也不切断承接关系。出现�
 该上下文只用于控制表达：重复事实应简短承接，增加条件时只回答新增差异，纠正答案时按本轮知识
 重新回答，新主题完全忽略旧答案。旧 FastGPT 答案不得直接复用，本轮仍执行正常知识检索。
 
+V3 不直接信任模型给出的 `new_topic/follow_up` 关系。服务端在同一 Tenant、Conversation、Session、Turn
+范围内，用持久化 Task 的稳定键、来源消息、CanonicalQuestionHash 和答案义务做唯一父任务归一化；只有
+结构上明显依赖上文且父任务唯一时才建立 `RelatedTaskID`。父问题可作为当前追问的检索提示，但证据审查、
+ClaimType 和 FactScope 仍绑定当前来源问题；关系结果必须在 ReplyPlan、ContextCompiler、Generate 和
+DialogueState 之前统一生效。歧义关系不猜测、不跨范围继承，也不以旧答案替代本轮知识检索。
+
 ### 5.4 Runtime V3 严格契约与 ContextCompiler
 
 Runtime V3 的内部交换数据只允许使用 `internal/ai/runtime/contracts/` 中嵌入的 Draft 2020-12
