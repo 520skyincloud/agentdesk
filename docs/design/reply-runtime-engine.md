@@ -2,17 +2,23 @@
 
 > 状态：当前统一项目权威设计
 >
-> 更新时间：2026-08-12
+> 更新时间：2026-08-15
 >
 > 适用分支：`weibao/main`
 >
-> AI 行为来源：`origin/codex/ai-billing@4db799363040a4478a5585e101d119de11a26f8e`
+> AI 行为来源：当前仓库 `internal/ai/runtime/`、`internal/services/ai_reply_*` 与本文件
 
-当前部署状态：Runtime V2 核心实现提交 `6a9ad46d2595cf212a90ec431e8307122852c227` 已集成到两个远端
-`main`，测试2服务器的 `/opt/agentdesk/current` 指向与仓库 HEAD 对齐的不可变发布目录。完整
-ContextCompiler、Intent、Reply、Validator 和 authoritative ActionLedger 仅对 Binding `1`
-（合肥南七）启用。FastGPT 与 NewAPI 是外部依赖，不属于测试2服务器的本次迁移范围。该灰度状态
-不代表其他 Binding 已启用，也不代表真实客户消息矩阵已经全部验收。
+2026-08-15 修复前生产基线为 `726b0f3`，测试2服务器
+`/opt/agentdesk/current -> /opt/agentdesk/releases/20260815-takeover-responsive-726b0f3`，
+`agentdesk.service=active`。环境变量 `AI_RUNTIME_MULTIMODAL_V3=on` 将 Intent、Reply、Validator
+和 authoritative ActionLedger 成组切换到 V3；单独设置某一 V3 模式不构成有效生产配置。
+FastGPT 与 NewAPI 是外部依赖，不部署在测试2服务器。本文件描述本次 V3 修复后的目标运行链；
+具体上线版本以发布目录内 `REVISION` 和仓库 Git SHA 为唯一证据。
+
+本轮生产审查使用的最新会话证据为：来一杯生椰拿铁 `conversation_id=2`，最新消息 `1559`、
+Turn `397`；其风 `conversation_id=3`，最新消息 `1557`、Turn `396`。审查同时覆盖 Message、
+MessageAnalysis、AIReplyTurn、AIReplyTurnTask、AIReplyJob、AgentRunLog、KnowledgeRetrieveLog/Hit、
+AIReplyTurnAction 与 Outbox，不能只根据截图或最终回复文本推断链路。
 
 本文只描述当前生产运行链。旧 AIConfig、独立 Agent 模型绑定、本地知识 ID、历史测试
 会话和旧 fallback 可从 Git 历史追溯，但不能作为当前接口、Schema 或行为依据。
@@ -114,20 +120,20 @@ DeepSeek V4 的 Chat Completions 调用必须同时显式携带 `thinking.type=d
 因此统一 NewAPI 网关、Runtime 主链、辅助 LLM 调用和九槽连通性验证必须保持一致。生产验收
 还需以成功用量记录中的 `reasoning_tokens=0` 确认上游真实执行结果。
 
-Runtime V2 的 IntentDetect 与 Generate 使用 NewAPI Responses API 的原生结构化输出，不再只靠
-Prompt 要求模型返回 JSON：Intent 调用附加 `text.format=json_schema`、`name=intent_tasks_v2`、
-`strict=true` 和嵌入的 `intent_tasks.v2` Schema；Generate 调用对应使用 `reply_output_v2` 和
-`reply_output.v2` Schema。结构化输出属于单次调用配置，不能写回九槽或全局套在 `reply_llm` 上，
-否则人工摘要、普通文本测试和其他复用槽会被错误约束。模型响应仍必须经过本地 `strictjson`、
-TaskCoverage、EvidenceReference、ActionReference、Safety 和 CommitInvariant 校验；上游 Schema
-不是替代本地验证的成功凭据。
+Runtime V3 的 IntentDetect 与 Generate 使用 NewAPI Responses API 原生结构化输出，不只依赖
+Prompt：Intent 调用附加 `text.format=json_schema`、`name=intent_tasks_v3`、`strict=true` 和嵌入的
+`intent_tasks.v3` Schema；Generate 使用 `reply_output_v3` 和 `reply_output.v3` Schema。结构化输出
+只属于当前调用，不能写回九槽或全局套在 `reply_llm` 上，否则普通文本测试、摘要和其他复用槽会被
+错误约束。模型响应仍必须经过本地 `strictjson`、SourceSpan、UtteranceCoverage、AnswerGroup、
+FactSource、KnowledgeQuality、ActionClaims、Safety 与 CommitInvariant 校验；HTTP 200、上游 Schema
+通过或非空 output 都不是可提交凭据。
 
 DeepSeek Responses 当前只允许精确模型名 `deepseek-v4-flash`。请求显式携带
 `reasoning.effort=none`。发送到 Responses 的 Schema 必须为 `const`、`enum` 等原本可推断的
 原始类型补齐显式 `type`，以满足 NewAPI/DeepSeek 对每个 Schema 节点必须声明 `type`、`anyOf`
 或 `$ref` 的要求；该处理只能等价显式化类型，不能删除约束或替代本地完整 Schema 校验。
-九槽真实测试必须让 `intent_detect_llm` 和 `reply_llm` 分别执行真实的 `intent_tasks.v2` 与
-`reply_output.v2` Schema，并验证输出通过对应本地 Schema，不能使用简化的连接测试 Schema，
+九槽真实测试必须让 `intent_detect_llm` 和 `reply_llm` 分别执行真实的 `intent_tasks.v3` 与
+`reply_output.v3` Schema，并验证输出通过对应本地 Schema，不能使用简化的连接测试 Schema，
 也不能只以 HTTP 200 或非空 `output` 判定通过。Responses 工具调用同时必须完整传递 `tools`、
 `tool_choice=auto`、模型返回的 `function_call.call_id` 以及后续 `function_call_output.call_id`，确保
 天气、工单和其他现有工具链在最终严格 JSON 输出前仍可正常执行。
@@ -179,7 +185,8 @@ IntentDetect、Knowledge、Generate、Validate 和 Commit 的运行错误只能�
 
 Runtime 的 `completed` 只表示返回了内部持久化证据：本轮已提交 AI Message ID 列表或已持久化
 Interrupt ID。Job 收到后还要按 Tenant、Conversation、源 Message、RequestID、Session 和稳定
-ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入人工兜底。AgentRunLog 仅记录
+ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入技术失败恢复，不能转成人工诉求。
+AgentRunLog 仅记录
 `committed`、`policy_skipped`、`interrupted`、`failed` 等诊断状态，空错误 RunLog 不是成功凭据。
 
 `provide_location` 是回复计划中的定位资源动作：只有 Store 已配置导航名、地址和有效经纬度
@@ -210,15 +217,15 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 - 每个模型阶段由当前九槽 `MaxRetryCount` 控制调用重试，默认 `2`，即初次调用加两次重试；
   Intent 严格 JSON 修复属于协议修复，不计作网络重试。Responses 结构化 Schema 被上游以确定性
   HTTP 400 拒绝时，归类为 `structured_output_schema_rejected`，同一非法请求不重复发送。
-- Job 最多 4 次 Claim 用于进程崩溃、租约、数据库和可重试 Runtime 失败的恢复，退避为 15 秒、
-  1 分钟、3 分钟。阶段重试耗尽后的技术错误仍先进入 Job 的受控重试预算；Job 重试只重新执行
-  尚未提交的 Runtime，不重建已经提交的 Message、Outbox、Usage 或人工任务。只有 Job 重试耗尽、
-  任务账本达到任务重试上限，或错误明确不可恢复时，才使用稳定键
-  `ai_reply_job_handoff_<jobID>` 进入现有人工任务池。
+- Job 最多 4 次 Claim 只用于进程崩溃、租约、数据库和 Commit 恢复，退避为 15 秒、1 分钟、3 分钟。
+  Intent、Generate 和 FastGPT 的网络/协议重试由九槽客户端或 Gateway 独占；外部阶段耗尽后进入
+  Task 技术终态并使用稳定 ClientMsgID 提交一次技术失败提示，不由 Job 重跑模型，也不进入人工池。
+  只有已经存在业务/安全人工 Task 时才使用稳定派单键进入现有人工任务池。
 - 人工派单失败时记录 `human_dispatch_retry`，后续 Claim 只重试派单，不再调用模型。
 - 知识任务失败会释放任务占用并写入 `next_retry_at`，不把整轮立即改成 `handoff_pending`；同轮已
-  成功的任务继续保留，只有该任务重试耗尽后才转人工。
-- 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。
+  成功的任务继续保留，该任务重试耗尽后进入技术终态并给出明确提示。
+- 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型；无持久业务/安全人工 Task 时收敛为
+  `expired_technical_failure`，不得把超时伪装成客户要求人工。
 - 最近 15 分钟补偿扫描只补非历史、未撤回、可触发且缺任务的客户消息，不扫描旧历史。
 - 同 Session 更新客户消息使旧任务 `superseded`；更新人工消息按人工接管处理；System、欢迎语、
   欢迎图片、小程序或绑定卡不能覆盖客户任务。Session 变化或已有回复按现有状态机收敛，关闭、
@@ -258,7 +265,7 @@ pending -> running -> ready -> committed -> delivered
 同一 Turn 通过租约保证只有一个 AI Job 执行；每批最多领取 6 个未完成 Task，余量由同一持久 Job
 自动续批。正常多题链路保持一次 Intent、知识 Task 最多 4 路并行检索、一次 Generate；Generate
 必须按 taskKey 覆盖所有成功文本 Task，最多拆成三条文本消息。知识 `no_hit` 明确禁止猜测，单项
-`failed` 只将对应 Task 转人工，不能清空其他成功结果或重跑完整模型链。
+`failed` 只关闭对应技术失败 Task 并给出明确结果，不能清空其他成功结果、重跑完整模型链或自动转人工。
 
 同批知识 Task 各自独立检索。两个及以上 Task 的排名第一命中同时指向相同
 `KnowledgeBaseID + SourceRecordID` 时，Runtime 生成内部 `AnswerGroup`，Generate 必须只输出一个
@@ -292,7 +299,7 @@ customer Message(sendtime)
   提前原任务重试，sent 视为已覆盖，不再调用模型。
 - 不同迟到问题从 `LastDeliveredVersion` 后开始构建输入，只回答新增问题。若最终批次与上一答案
   完全相同，允许一次带“只回答新增问题”生成约束的受控 Runtime 重跑；相关模型和知识调用继续
-  按本轮 RequestID 正常记录 Usage，仍相同则按 `generation_failed` 转人工。
+  按本轮 RequestID 正常记录 Usage，仍相同则按 `generation_failed` 进入技术终态，不提交重复答案。
 - 文本只做 Unicode NFKC、大小写、空格和结尾标点标准化后哈希；图片、定位、小程序沿用资源
   指纹。禁止模糊语义去重，避免吞掉真实不同问题。
 
@@ -310,72 +317,107 @@ System/欢迎消息既不进入回答内容，也不切断承接关系。出现�
 该上下文只用于控制表达：重复事实应简短承接，增加条件时只回答新增差异，纠正答案时按本轮知识
 重新回答，新主题完全忽略旧答案。旧 FastGPT 答案不得直接复用，本轮仍执行正常知识检索。
 
-### 5.4 Runtime V2 严格契约与 ContextCompiler
+### 5.4 Runtime V3 严格契约与 ContextCompiler
 
-Runtime V2 的内部交换数据只允许使用 `internal/ai/runtime/contracts/` 中嵌入的 Draft 2020-12
-Schema。进程启动时必须编译并验证全部 Schema；任一 Schema 无法加载时启动失败，不能在运行中
-降级为宽松 JSON。当前契约为：
+Runtime V3 的内部交换数据只允许使用 `internal/ai/runtime/contracts/` 中嵌入的 Draft 2020-12
+Schema，以及由已验证 ReplyPlan 派生的内部 Generate Task envelope。进程启动时必须编译并验证全部
+嵌入 Schema；任一 Schema 无法加载时启动失败，不能在运行时回退为宽松 JSON。核心契约为：
 
 ```text
-message_analysis.v1
-dialogue_state_snapshot.v1
-intent_tasks.v2
-reply_plan.v2
+message_analysis.v2
+turn_input_envelope.v1
+intent_tasks.v3
+question_unit.v1
+task_source_bindings.v1
+answer_requirement_set.v1
+resolved_turn_coverage.v1
+evidence_bundle.v2
+resource_eligibility.v1
 action_ledger.v1
-evidence_bundle.v1
-runtime_context_snapshot.v1
-reply_output.v2
-validation_result.v1
-reply_tag_context.v1
+reply_plan.v4
+runtime_context_snapshot.v2
+generate_task_input.v1        # 服务端派生传输对象，不是模型输出
+reply_output.v3
+validation_result.v3
 runtime_trace.v2
 ```
 
-所有模型 JSON 使用 `strictjson.DecodeObject`：只接受唯一 UTF-8 JSON Object，拒绝 Markdown
-代码块、前后解释、未知字段、重复键和超过预算的 payload。Intent 和 Generate 分别只允许一次
-协议修复；修复调用只能调整 JSON 结构和任务覆盖，不能新增、删除或改写业务任务。修复上下文
-必须保持相同 Context fingerprint，否则按协议失败处理。
+所有模型输出使用 `strictjson.DecodeObject`：只接受唯一 UTF-8 JSON Object，拒绝未知字段、重复键、
+尾随内容、任意 prose 包裹和超过预算的 payload。已知的 BOM、完整 JSON code fence、完整 `<think>`
+前缀或 JSON 字符串运输包装只允许由 `normalizeStructuredModelObject` 剥离；不得从任意自然语言中搜索
+花括号并把局部内容提升为协议成功。
 
-`ContextCompiler` 负责 Intent 和 Generate 的唯一模型输入构建，并按硬 Token 预算裁剪：当前任务
-和强约束优先，其次 Evidence、当前 Session 事实、紧邻完整轮次和压缩记忆。裁剪以完整消息或完整
-轮次为单位，不能截断 JSON、资源引用或把客户与回答拆开。编译结果包含 fingerprint；协议修复、
-Resume 和审计必须复用同一事实范围，不得重新扫描更晚消息或旧知识答案。
+Intent 和 Generate 分别最多一次协议修复。Intent 修复只能修复 JSON、SourceSpan、覆盖集合和允许
+枚举，不能新增、删除或改写客户任务；Generate 修复只能补齐或重写本批 required AnswerGroup，不能
+改变 groupKey、taskKeys、Evidence、Action 或事实范围。修复前后 Context fingerprint 必须相同。
 
-稳定规则和基础 Runtime Snapshot 属于强制上下文。各分类百分比只用于可选历史、记忆和 Evidence 的
-裁剪目标，不能单独作为强制上下文的失败门槛；只有完整强制输入超过真实 `AvailableInput` 时才返回
-`context_mandatory_overflow`。编译失败必须记录为 `context_build`，且未发起 Generate 时不得伪造
-`reply_generate` 用量事件。
+`ContextCompiler` 是 Intent 和 Generate 的唯一输入构建入口。V3 Generate 消息顺序固定为：
 
-V2 迁移使用五个内部模式：`ContextCompiler`、`IntentContract`、`ReplyContract`、`Validator`、
-`ActionLedger`。默认保持 legacy；只有 Tenant/Store/Binding 灰度范围命中，且环境变量组合满足依赖
-约束时才启用 V2。`reply_output.v2` 必须配合 V2 ContextCompiler；完整 Validator 必须配合 V2
-ReplyContract；authoritative ActionLedger 也必须配合 V2 ReplyContract。非法组合启动执行前直接
-失败，不能部分开启。
+```text
+system: Platform Runtime Contract + 清洗后 Persona style + 当前 Intent Prompt
+system: runtime_context_snapshot.v2（当前选中 Task、Observation、Store Fact、Prepared Action）
+system: evidence_bundle.v2（仅当前知识 Task 的 exact/supporting Evidence）
+system: protocol repair（仅修复调用存在）
+user:   generate_task_input.v1（仅本批选中 Task 的 customerRequest）
+```
 
-当 Runtime V2 命中灰度范围时，`intent_detect_llm` 和 `reply_llm` 对应 Profile 槽必须发布为
-`apiMode=responses`、`modelName=deepseek-v4-flash`。同一 Profile 的其他槽继续按各自用途选择
-Chat Completions 或 Responses；发布新 revision 前必须使用当前门店 active Credential 逐个真实
-测试全部启用槽，再通过 Assignment/Activation 原子切换，禁止直接覆盖 active revision。
+`generate_task_input.v1` 由已经通过 SourceMessageID、SourceSpan 和 ReplyPlan Schema 的 Task 派生：
 
-### 5.5 MessageAnalysis、DialogueState 与确定性 Validator
+```json
+{
+  "schemaVersion": "generate_task_input.v1",
+  "tasks": [
+    {
+      "taskKey": "turn_task_...",
+      "sequence": 1,
+      "customerRequest": "怎么办理入住"
+    }
+  ]
+}
+```
 
-`MessageAnalysis` 是按 `TenantID + MessageID + SourceRevision` 保存的派生证据，包含内容
-fingerprint、分析器身份、状态和严格 `message_analysis.v1`，不保存额外客户正文副本。相同 revision
-只有完全相同证据可幂等完成；同 revision 不同 JSON、MessageID、fingerprint 或状态必须拒绝，
-避免恢复任务覆盖已完成分析。
+V3 Generate 禁止再调用 `currentUserText(CurrentMessages)`。`CurrentMessages` 只保留给 Scope 校验和
+V1/V2 兼容；已完成旧问题、未领取的第七题、同一语音的其他片段和延后批次不得进入当前 Generate。
+`ReplyPlanTaskV4.Objective` 必须是服务端验证过的客户原文片段，不能写成 `route=knowledge_answer`
+一类内部描述。
 
-`ConversationDialogueState` 按 `TenantID + ConversationID + SessionNo` 保存严格
-`dialogue_state_snapshot.v1`。Reducer 只接受显式事件并使用 CAS revision：客户消息只推进
-`BasedOnMessageID`，不能自行推断意图、主题或任务；Intent/Task/AI 提交事件才推进 TurnVersion 和
-语义状态；旧 MessageID 或旧 TurnVersion 事件直接忽略且不增加 revision。人工消息、纯路由转人工、
-人工接待、等待 AI 恢复和恢复 AI 分别写入 `human_serving`、`human_pending`、`human_serving`、
-`resume_pending`、`ai_serving`，并与路由修改处于同一事务。Snapshot JSON 与行内 BasedOn 字段
-必须一致，Reducer 重放必须确定性。
+Token 预算优先级为稳定规则、当前 Task、权威 Fact、必需 Evidence、受限 Observation；历史 AI 文本
+不是事实，只在 `follow_up/repeat/correction/confirmation/cancellation` 且确需消解指代时，最多作为两条
+`context_only/resolve_reference` Observation 进入，并显式禁止 `answer_text`、`recommend`、
+`assert_store_fact` 和资源动作。新主题不携带历史业务答案。
 
-Generate 只看到当前未完成 Task、对应 Evidence、允许动作和必要相邻上下文，输出
-`reply_output.v2.parts[]`。六级本地 Validator 顺序固定为 Schema、TaskCoverage、EvidenceReference、
-ActionReference、Safety、CommitInvariant。缺 taskKey 的多题输出仅属于一次可修复协议错误；未知
-Evidence/Action、内部标识泄露、无证据的“已发送/已安排/已转人工”、TurnVersion 不一致和空分段
-直接拒绝，不增加第二个模型评分或事实核验调用。
+V3 使用成组总开关 `AI_RUNTIME_MULTIMODAL_V3=on`。命中时强制设置 Intent V3、ContextCompiler V2
+实现、Reply V3、Validator V3 和 authoritative ActionLedger；禁止只开启其中一个阶段。对应
+`intent_detect_llm` 与 `reply_llm` 必须以 Responses 模式真实通过当前完整 Schema 测试。
+
+### 5.5 MessageAnalysis、DialogueState 与 Validator V3
+
+`MessageAnalysis` 按 `TenantID + MessageID + SourceRevision` 保存派生证据，JSON 使用
+`message_analysis.v2`。文本直接规范化；语音使用 ASR transcript；图片使用受限视觉观察。它记录
+fingerprint、分析器身份、完成度、置信度、警告和受限 Observation，不保存第二份 Prompt 或模型原始
+响应。相同 revision 只有完全相同的证据可幂等完成；不同 fingerprint 或内容必须拒绝覆盖。
+
+图片、OCR、ASR、客户文字、历史 AI 与 Store Fact 必须分源：客户媒体只能形成 Observation，不能
+形成 `store_fact`；客户提出的地址、店名或猜测不能成为权威事实；语音 transcript 可以形成当前
+utterance，但每个业务 Task 必须绑定自己的 rune SourceSpan，不能把整段语音复制给每个知识查询。
+
+`ConversationDialogueState` 按 `TenantID + ConversationID + SessionNo` 使用 CAS revision。客户消息
+只推进 BasedOnMessageID；Intent、Task、Commit 事件才推进语义状态。人工消息、接管、恢复、Session
+变化和旧 TurnVersion 都有显式状态转换，Reducer 重放必须确定性。
+
+Validator V3 固定执行：Schema、GroupCoverage、TaskCoverage、ServerResolvedRefs、DuplicateContent、
+FactSource、KnowledgeQuality、ActionClaims、Safety、CommitInvariants。模型只输出 groupKey、taskKeys
+和客户可见 content，EvidenceRef、RequiredFactRef 与 ActionRef 由服务端 ReplyPlan 并集解析，避免模型
+漏抄引用造成技术失败。
+
+- 完全相同的跨 Group 回复在 NFKC、大小写、空白和标点归一化后直接拒绝，不受 intent 是否相同影响。
+- `<<NEXT_MESSAGE>>` 等内部控制标记属于可修复协议错误，不能提交给客户。
+- 地址和门店身份由 `RequiredFactRefs -> store.address/store.name` 或地址类 subIntent 激活保护边界；
+  客户猜测和历史 AI 不能覆盖权威值。
+- 推荐 Task 只能使用 `claimType=recommendation`、`topicMatch=exact`、`answerability=supporting` 且
+  `allowedUses` 包含 `recommend` 的 Evidence；未命中时使用服务端确定性“不可靠推荐”回复。
+- `no_context/unavailable/unanswerable` 使用服务端确定性收敛文本，模型生成的事实性内容被替换。
+- Validator 不调用第二个模型，不做模型评分或二次知识查询。
 
 ## 6. 批次与媒体
 
@@ -419,8 +461,9 @@ ChunkID 或本地知识兼容字段，也不通过标题猜测身份。
   上下文能唯一解析一个对象时才允许探测。无法唯一解析时保留澄清，不能因任意知识命中强制
   改成知识意图。
 - 未命中时不编造，也不注入固定“已记录/同事跟进”话术。
-- FastGPT 无命中与基础设施失败必须分开：无命中可追问一个关键点；基础设施失败在网关初次
-  调用加两次重试后返回 `knowledge_unavailable` 并进入人工。
+- FastGPT 无命中与基础设施失败必须分开：无命中只影响该 Task，可说明当前资料未写明并最多追问
+  一个关键点；基础设施失败由 Gateway 独占初次调用加两次网络重试，耗尽后进入该 Task 的技术终态，
+  不得自动转人工，也不得由 Job 层重新放大知识调用。
 - 低风险 FAQ 优先回答或追问关键字段，不默认转人工。
 - 真实服务动作只能由当前工具/接待路由决定，模型不能虚构已执行。
 - 检索失败时仍可基于非知识上下文继续 ReplyPlan，但必须带“不编造门店事实”约束。
@@ -451,10 +494,11 @@ AI 只输出是否需要人工、原因和客户等待文案。唯一任务入�
 明确人工、退款/赔偿/投诉升级、安全、隐私、严重订单异常和价格争议可进入人工路由。
 普通 FAQ、用品、电视、入住、小程序、定位、轻互动和普通文件咨询不能因为关键词误转。
 
-模型槽与 Job 重试都耗尽、FastGPT 基础设施失败达到任务上限、空输出、结构化资源不变量损坏
-或 Commit 失败才进入同一任务池；确定性 Schema/配置错误可直接进入该池，因为继续发送同一非法
-请求没有恢复价值。该兜底只负责保住客户问题，不改变客服选择、排班和容量算法。范围损坏时继续
-fail closed，不使用不可信 Store/Binding 创建人工任务。
+人工只由业务能力和安全政策触发：明确请求人工、投诉升级、退款赔偿、订单价格争议、安全或隐私
+事件。Intent、Generate、Schema、网络、FastGPT、空输出、资源不变量、数据库和范围错误都是技术
+失败，必须进入技术失败状态或稳定的技术失败提示，绝不能自动创建人工任务。这样“模型偶发 JSON
+错误”不会被伪装成“客户需要人工”。范围损坏继续 fail closed，也不能使用不可信 Store/Binding
+创建人工任务。
 
 ## 10. 提交、Outbox 与 WebSocket
 
@@ -524,13 +568,13 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - Credential 未激活、revision 不一致或解密失败：阻止 AI。
 - FastGPT 未就绪：知识路径失败关闭，不读取本地 fallback。
 - 任一父链跨 Tenant/Store：拒绝执行。
-- IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：先按错误元数据判断
-  是否可重试；可重试错误进入 Job 或逐题任务的退避队列，重新检查会话新鲜度后继续处理。确定性
-  Schema/配置错误，或重试预算耗尽后，进入现有人工任务池，不把 Job 标成 `completed`。
+- IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：网络重试只由九槽
+  客户端或 FastGPT Gateway 执行；Job 只恢复进程、租约、数据库和 Commit。重试耗尽后写技术终态，
+  必要时用稳定 ClientMsgID 提交一次技术失败提示；不得进入人工任务池，也不得标成 `completed`。
 - Commit 已成功但外部发送失败：只重试 Outbox，不重跑模型。
-- 需要人工且 AI 不可用：仍可进入现有人工池。
+- 只有已经由业务/安全策略确定为需要人工的 Task，即使 AI 表达阶段不可用，也可进入现有人工池。
 
-Schema 继续通过 AutoMigrate 同时兼容 SQLite/MySQL。Runtime V2 新表和 nullable 关联字段不需要
+Schema 继续通过 AutoMigrate 同时兼容 SQLite/MySQL。Runtime V3 新表和 nullable 关联字段不需要
 历史正文 backfill；DML runner 只执行明确、幂等的数据同步。Migration `75` 是本次唯一数据更新，
 只把现有 Model Profile revision 的网关地址切到统一 NewAPI `/v1`，不修改 Credential、Assignment、
 Binding、知识库或会话数据。旧 AIConfig、本地知识和兼容 Resolver 仍不得恢复。
@@ -598,7 +642,7 @@ Intent JSON、动作字段、幂等键或模型归因：
 - `internal/ai/runtime/conversation_memory_service.go`
 - `internal/ai/rag/`
 - `internal/services/model_call_resolver_service.go`
-- `internal/services/ai_reply_job_service.go` 中的 Job 状态机、完成证据、租约和人工兜底
+- `internal/services/ai_reply_job_service.go` 中的 Job 状态机、完成证据、租约、技术失败与人工门禁
 - `internal/services/ai_reply_turn_service.go` 中的轮次归属、版本 CAS、迟到覆盖和 Outbox 门禁
 - `internal/repositories/ai_reply_turn_repository.go`
 - `internal/services/ai_reply_turn_task_service.go` 与 `internal/ai/runtime/executor/task_ledger.go` 中的逐题任务状态机

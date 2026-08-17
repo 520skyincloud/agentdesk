@@ -40,6 +40,41 @@ func MediaUnderstandingFromPayload(raw string) (mediaText string, mediaSummary s
 	return strings.TrimSpace(payload.MediaText), strings.TrimSpace(payload.MediaSummary), strings.TrimSpace(payload.MediaStatus)
 }
 
+// MediaResponseExpectationFromPayload reads the structured media routing hint
+// written atomically with message_analysis.v2. The boolean is false for legacy
+// payloads so callers can keep a narrow compatibility path without treating
+// keyword heuristics as the current protocol.
+func MediaResponseExpectationFromPayload(raw string) (mode string, basis string, confidence float64, ok bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "", "", 0, false
+	}
+	var payload struct {
+		ResponseExpectation *struct {
+			Mode       string  `json:"mode"`
+			Basis      string  `json:"basis"`
+			Confidence float64 `json:"confidence"`
+		} `json:"responseExpectation"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.ResponseExpectation == nil {
+		return "", "", 0, false
+	}
+	mode = strings.TrimSpace(payload.ResponseExpectation.Mode)
+	basis = strings.TrimSpace(payload.ResponseExpectation.Basis)
+	if mode != "none" && mode != "reply" && mode != "uncertain" {
+		return "", "", 0, false
+	}
+	return mode, basis, payload.ResponseExpectation.Confidence, true
+}
+
+func MediaResponseExpectationTriggersAI(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case "reply", "uncertain":
+		return true
+	default:
+		return false
+	}
+}
+
 func MediaUnderstandingExplicitlyNoIntent(text string) bool {
 	return containsMediaIntentAny(text, []string{
 		"无清晰文字报错或明确服务诉求",

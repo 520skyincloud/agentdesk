@@ -38,9 +38,16 @@ type KnowledgeRetrieveOptions struct {
 	ScoreThreshold   float64
 	QueryPreview     string
 	// TurnID/TaskID/TaskKey 绑定 Task↔RetrieveLog 审计链（契约 4.17）。
-	TurnID  int64
-	TaskID  int64
-	TaskKey string
+	TurnID      int64
+	TurnVersion int
+	TaskID      int64
+	TaskKey     string
+	// CheckpointManaged 表示 RetrieveLog/Hit 由统一 KnowledgeQueryExecutor
+	// 原子提交；Retriever 只负责网络检索和构建结果，禁止再创建第二条日志。
+	CheckpointManaged bool
+	QueryKey          string
+	QueryPurpose      string
+	ScopeFingerprint  string
 }
 
 type KnowledgeBaseRetrievePolicy struct {
@@ -64,6 +71,7 @@ type KnowledgeRetrieveResult struct {
 	TraceItems     []callbacks.RetrieverTraceItem
 	TraceSummary   callbacks.RetrieverTraceSummary
 	Policies       []KnowledgeBaseRetrievePolicy
+	RetrieveMs     int64
 }
 
 func NewKnowledgeRetriever(aiAgent models.AIAgent) *KnowledgeRetriever {
@@ -139,11 +147,19 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 		KnowledgeBaseIDs: append([]int64(nil), knowledgeBaseIDs...),
 		Query:            query,
 		Options: KnowledgeRetrieveOptions{
-			ContextMaxTokens: contextMaxTokens,
-			MaxContextItems:  maxContextItems,
-			TopK:             opts.TopK,
-			ScoreThreshold:   opts.ScoreThreshold,
-			QueryPreview:     queryPreview,
+			ContextMaxTokens:  contextMaxTokens,
+			MaxContextItems:   maxContextItems,
+			TopK:              opts.TopK,
+			ScoreThreshold:    opts.ScoreThreshold,
+			QueryPreview:      queryPreview,
+			TurnID:            opts.TurnID,
+			TurnVersion:       opts.TurnVersion,
+			TaskID:            opts.TaskID,
+			TaskKey:           opts.TaskKey,
+			CheckpointManaged: opts.CheckpointManaged,
+			QueryKey:          opts.QueryKey,
+			QueryPurpose:      opts.QueryPurpose,
+			ScopeFingerprint:  opts.ScopeFingerprint,
 		},
 		Policies: append([]KnowledgeBaseRetrievePolicy(nil), policies...),
 	}
@@ -165,7 +181,10 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, results, r.AIAgent.TenantID)
 	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, ret.ContextResults, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
-	ret.RetrieveLogID = r.writeRuntimeRetrieveLog(ctx, opts, query, retrieveMs, ret)
+	ret.RetrieveMs = retrieveMs
+	if !opts.CheckpointManaged {
+		ret.RetrieveLogID = r.writeRuntimeRetrieveLog(ctx, opts, query, retrieveMs, ret)
+	}
 	r.writeKnowledgeUsageEvent(ctx, retrieveMs, ret)
 	return ret, nil
 }
@@ -235,12 +254,24 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, opts K
 	if requestID == "" {
 		requestID = strings.TrimSpace(scope.RequestID)
 	}
+	executionStatus := "succeeded"
+	if len(result.Hits) == 0 {
+		executionStatus = "no_hit"
+	}
+	completedAt := time.Now()
 	if logItem, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
+		TenantID:         r.AIAgent.TenantID,
 		KnowledgeBaseID:  result.KnowledgeBaseIDs[0],
 		TurnID:           opts.TurnID,
+		TurnVersion:      opts.TurnVersion,
 		TaskID:           opts.TaskID,
 		TaskKey:          opts.TaskKey,
 		QueryFingerprint: queryFingerprint(query),
+		QueryKey:         opts.QueryKey,
+		QueryPurpose:     opts.QueryPurpose,
+		ScopeFingerprint: opts.ScopeFingerprint,
+		ExecutionStatus:  executionStatus,
+		CompletedAt:      &completedAt,
 		Channel:          string(enums.KnowledgeRetrieveChannelIM),
 		Scene:            string(enums.KnowledgeRetrieveSceneFirstResponse),
 		ConversationID:   scope.ConversationID,

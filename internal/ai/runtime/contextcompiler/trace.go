@@ -12,7 +12,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-func contextFingerprint(input CompileInput, messages []*schema.Message, evidence *contracts.EvidenceBundleV1, tagText string) string {
+func contextFingerprint(
+	input CompileInput,
+	messages []*schema.Message,
+	evidence *contracts.EvidenceBundleV1,
+	evidenceV2 *contracts.EvidenceBundleV2,
+	tagText string,
+) string {
 	h := sha256.New()
 	writeFingerprintPart(h, string(input.Stage))
 	writeFingerprintPart(h, strconv.FormatInt(input.Model.ProfileRevision, 10))
@@ -36,6 +42,23 @@ func contextFingerprint(input CompileInput, messages []*schema.Message, evidence
 			contentHash := sha256.Sum256([]byte(item.Content))
 			writeFingerprintPart(h, hex.EncodeToString(contentHash[:]))
 		}
+	}
+	if evidenceV2 != nil {
+		for _, item := range evidenceV2.Items {
+			writeFingerprintPart(h, item.Ref)
+			writeFingerprintPart(h, item.Answerability)
+			writeFingerprintPart(h, item.TopicMatch)
+			contentHash := sha256.Sum256([]byte(item.Content))
+			writeFingerprintPart(h, hex.EncodeToString(contentHash[:]))
+		}
+	}
+	if input.ReplyPlanV4 != nil {
+		writeFingerprintPart(h, input.ReplyPlanV4.PlanFingerprint)
+	}
+	if input.ResourceEligibility != nil {
+		raw := fmt.Sprintf("%v", input.ResourceEligibility.Items)
+		resourceHash := sha256.Sum256([]byte(raw))
+		writeFingerprintPart(h, hex.EncodeToString(resourceHash[:]))
 	}
 	writeFingerprintPart(h, strings.TrimSpace(tagText))
 	return hex.EncodeToString(h.Sum(nil))

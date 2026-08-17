@@ -227,6 +227,7 @@
         "accepted",
         "repaired",
         "degraded_single_task",
+        "degraded_clause_tasks",
         "rejected"
       ]
     }

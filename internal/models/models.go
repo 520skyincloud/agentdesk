@@ -804,6 +804,7 @@ type AIReplyTurnTask struct {
 	SourceSpanStart           int        `gorm:"type:int;not null;default:0"`
 	SourceSpanEnd             int        `gorm:"type:int;not null;default:0"`
 	SourceBindingsJSON        string     `gorm:"type:text"`
+	ObservationBindingsJSON   string     `gorm:"type:text"`
 	SourceSetFingerprint      string     `gorm:"type:varchar(64);not null;default:'';index"`
 	CanonicalQuestionHash     string     `gorm:"type:varchar(64);not null;default:'';index"`
 	RequestMode               string     `gorm:"type:varchar(24);not null;default:'answer';index"`
@@ -1384,19 +1385,27 @@ type KnowledgeRetrieveLog struct {
 	CompletionTokens int     `gorm:"type:int;not null;default:0"`                       // CompletionTokens 为completion token数。
 	ModelName        string  `gorm:"type:varchar(100);not null;default:''"`             // ModelName 为使用的模型名称。
 	// 契约 3.3.1/4.17：Task↔RetrieveLog 持久审计关联。
-	TurnID           int64      `gorm:"type:bigint;not null;default:0;index"`
-	TaskID           int64      `gorm:"type:bigint;not null;default:0;index"`
-	TaskKey          string     `gorm:"type:varchar(128);not null;default:'';index"`
-	QueryFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
-	QueryKey         string     `gorm:"type:varchar(128);not null;default:'';index"`
-	QueryPurpose     string     `gorm:"type:varchar(32);not null;default:'answer';index"`
-	ScopeFingerprint string     `gorm:"type:varchar(64);not null;default:'';index"`
-	ExecutionStatus  string     `gorm:"type:varchar(32);not null;default:'pending';index"`
-	LeaseOwner       string     `gorm:"type:varchar(128);not null;default:'';index"`
-	LeaseExpiresAt   *time.Time `gorm:"type:datetime;index"`
-	CompletedAt      *time.Time `gorm:"type:datetime;index"`
-	TraceData        string     `gorm:"type:text"` // TraceData 为链路追踪数据JSON。
-	CreatedAt        time.Time  `gorm:"type:datetime;not null;index"`
+	TurnID                       int64  `gorm:"type:bigint;not null;default:0;index"`
+	TurnVersion                  int    `gorm:"type:int;not null;default:0;index"`
+	TaskID                       int64  `gorm:"type:bigint;not null;default:0;index"`
+	TaskKey                      string `gorm:"type:varchar(128);not null;default:'';index"`
+	QueryFingerprint             string `gorm:"type:varchar(64);not null;default:'';index"`
+	QueryKey                     string `gorm:"type:varchar(128);not null;default:'';index"`
+	QueryPurpose                 string `gorm:"type:varchar(32);not null;default:'answer';index"`
+	RequirementKeysJSON          string `gorm:"type:text"`
+	ScopeFingerprint             string `gorm:"type:varchar(64);not null;default:'';index"`
+	RetrievalPolicyFingerprint   string `gorm:"type:varchar(64);not null;default:'';index"`
+	KnowledgeRevisionFingerprint string `gorm:"type:varchar(64);not null;default:'';index"`
+	EvidenceFingerprint          string `gorm:"type:varchar(64);not null;default:'';index"`
+	// CheckpointKey 是兼容已有重复历史日志的可空唯一键。只有统一执行器创建的
+	// runtime checkpoint 写值；旧日志和调试日志保持 NULL，不阻塞 AutoMigrate。
+	CheckpointKey   *string    `gorm:"type:varchar(64);uniqueIndex:uk_knowledge_retrieve_checkpoint"`
+	ExecutionStatus string     `gorm:"type:varchar(32);not null;default:'pending';index"`
+	LeaseOwner      string     `gorm:"type:varchar(128);not null;default:'';index"`
+	LeaseExpiresAt  *time.Time `gorm:"type:datetime;index"`
+	CompletedAt     *time.Time `gorm:"type:datetime;index"`
+	TraceData       string     `gorm:"type:text"` // TraceData 为链路追踪数据JSON。
+	CreatedAt       time.Time  `gorm:"type:datetime;not null;index"`
 }
 
 // KnowledgeRetrieveHit 检索命中详情表。

@@ -68,3 +68,16 @@ func TestRealAnswersStillSupportingAfterJudge(t *testing.T) {
 	}
 	_ = contracts.EvidenceBundleV1SchemaVersion
 }
+
+func TestHighVectorScoreAloneCannotBecomeExactEvidence(t *testing.T) {
+	hit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "unrelated", Title: "早餐供应时间", Content: "早餐七点开始。", Score: 0.99}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-play", Intent: "hotel_info", SubIntent: "nearby_play", Query: "附近有什么好玩的",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	_, byTask, _ := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
+	if byTask["t-play"].Status != "no_context" {
+		t.Fatalf("vector score alone must not authorize an answer: %+v", byTask["t-play"])
+	}
+}

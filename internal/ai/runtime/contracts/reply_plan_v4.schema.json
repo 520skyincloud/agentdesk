@@ -39,11 +39,13 @@
           "sequence",
           "intent",
           "subIntent",
+          "claimType",
           "answerGroupKey",
           "objective",
           "outputMode",
           "knowledge",
           "evidenceRefs",
+          "observationRefs",
           "requiredFactRefs",
           "actionRefs",
           "resourcePolicy",
@@ -68,6 +70,9 @@
           "subIntent": {
             "type": "string",
             "maxLength": 120
+          },
+          "claimType": {
+            "enum": ["fact", "procedure", "policy", "recommendation", "meta", "unknown"]
           },
           "answerGroupKey": {
             "type": "string",
@@ -127,6 +132,15 @@
             "items": {
               "type": "string",
               "pattern": "^[KSM][1-9][0-9]*$"
+            }
+          },
+          "observationRefs": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^O[1-9][0-9]*$"
             }
           },
           "requiredFactRefs": {

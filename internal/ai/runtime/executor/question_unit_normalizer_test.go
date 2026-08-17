@@ -1,13 +1,17 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"agent-desk/internal/ai/runtime/contextcompiler"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
+
+const productionMessage1452Transcript = "这附近有附近有什么地方好玩儿的呀，什么景点啊，好吃的之类的有没有啊？我就换个安静点的房间，别帮我换了吧，你就说有没有安静的房间吧。最后告诉我有什么酒店什么。好困，能不能搞点咖啡来呀？"
 
 // 语音 1354 回放（多模态契约 13）：三个子问题各自绑定真实 Span。
 func envelopeTestScope() contextcompiler.EnvelopeScope {
@@ -116,6 +120,75 @@ func TestNormalizeKeepsDistinctSpans(t *testing.T) {
 	}
 }
 
+// 生产消息 1452 精确回放：同一段语音包含游玩、安静房和咖啡三个问题。
+// 每个 QuestionUnit 与知识 Query 必须只使用自己的真实来源片段；旧实现把
+// 整段 transcript 复制给三个 Task，会造成三次相同检索和三次相同图片发送。
+func TestProductionMessage1452KeepsAtomicVoiceQuestions(t *testing.T) {
+	envelope := contextcompiler.BuildTurnInputEnvelope(contextcompiler.EnvelopeScope{
+		TenantID: 2, StoreID: 1, ConversationID: 2, SessionNo: 5, TurnID: 370, TurnVersion: 1,
+	}, []models.Message{{
+		ID: 1452, TenantID: 2, ConversationID: 2, SessionNo: 5,
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeVoice,
+		Content: "wx_protocol_1006354.mp3",
+		Payload: `{"mediaText":"` + productionMessage1452Transcript + `","mediaUnderstandingStatus":"understood"}`,
+	}})
+	fragments := []string{
+		"这附近有附近有什么地方好玩儿的呀，什么景点啊，好吃的之类的有没有啊？",
+		"我就换个安静点的房间，别帮我换了吧，你就说有没有安静的房间吧。",
+		"好困，能不能搞点咖啡来呀？",
+	}
+	tasks := []IntentTaskV3{
+		{Sequence: 1, Intent: "hotel_info", SubIntent: "surrounding_facilities", SourceRefs: []string{"U1"}, SourceSpans: []IntentSourceSpan{spanFor(envelope, fragments[0])}, RequestMode: "answer"},
+		{Sequence: 2, Intent: "hotel_info", SubIntent: "room_change", SourceRefs: []string{"U1"}, SourceSpans: []IntentSourceSpan{spanFor(envelope, fragments[1])}, RequestMode: "answer"},
+		{Sequence: 3, Intent: "service_request", SubIntent: "coffee_delivery", SourceRefs: []string{"U1"}, SourceSpans: []IntentSourceSpan{spanFor(envelope, fragments[2])}, RequestMode: "answer"},
+	}
+
+	if issues := ValidateIntentTaskSources(envelope, tasks); len(issues) != 0 {
+		t.Fatalf("production 1452 spans were rejected: %+v", issues)
+	}
+	normalized := NormalizeIntentTasks(envelope, tasks)
+	if normalized.Status != "accepted" || len(normalized.AcceptedUnits) != len(fragments) {
+		t.Fatalf("production 1452 normalization=%+v", normalized)
+	}
+	seenSpans := make(map[string]struct{}, len(fragments))
+	for index, unit := range normalized.AcceptedUnits {
+		if unit.Text != fragments[index] {
+			t.Fatalf("task %d source text=%q want %q", index+1, unit.Text, fragments[index])
+		}
+		span := unit.SourceSpans[0]
+		spanKey := fmt.Sprintf("%s:%d:%d", span.SourceRef, span.Start, span.End)
+		if _, duplicate := seenSpans[spanKey]; duplicate {
+			t.Fatalf("task %d reused another task span: %+v", index+1, span)
+		}
+		seenSpans[spanKey] = struct{}{}
+		query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+			TaskKey: "production-1452", Sequence: index + 1, Text: unit.Text,
+			SourceMessageID: unit.PrimarySourceMessageID, SourceSpanStart: span.Start, SourceSpanEnd: span.End,
+		})
+		if query != fragments[index] || query == productionMessage1452Transcript {
+			t.Fatalf("task %d knowledge query=%q want atomic fragment %q", index+1, query, fragments[index])
+		}
+	}
+
+	fullRunes := []rune(productionMessage1452Transcript)
+	duplicatedFullTextTasks := make([]IntentTaskV3, len(tasks))
+	for index := range duplicatedFullTextTasks {
+		duplicatedFullTextTasks[index] = tasks[index]
+		duplicatedFullTextTasks[index].SourceSpans = []IntentSourceSpan{{
+			SourceRef: "U1", Start: 0, End: len(fullRunes), Quote: productionMessage1452Transcript,
+		}}
+	}
+	issues := ValidateIntentTaskSources(envelope, duplicatedFullTextTasks)
+	if len(issues) != 2 {
+		t.Fatalf("three duplicated full-text tasks must produce two duplicate issues, got %+v", issues)
+	}
+	for _, issue := range issues {
+		if issue.Code != "intent_duplicate_full_span" {
+			t.Fatalf("unexpected duplicated full-text issue: %+v", issue)
+		}
+	}
+}
+
 func TestNormalizeDegradesWhenAllSpansInvalid(t *testing.T) {
 	e := voiceEnvelope()
 	tasks := []IntentTaskV3{{
@@ -124,10 +197,37 @@ func TestNormalizeDegradesWhenAllSpansInvalid(t *testing.T) {
 		NormalizedText: "q", RequestMode: "answer",
 	}}
 	result := NormalizeIntentTasks(e, tasks)
-	if result.Status != "degraded_single_task" {
-		t.Fatalf("expected degraded_single_task, got %s", result.Status)
+	if result.Status != "degraded_clause_tasks" {
+		t.Fatalf("expected degraded_clause_tasks, got %s", result.Status)
 	}
-	if len(result.AcceptedUnits) != 1 {
-		t.Fatalf("expected 1 degraded full-text unit, got %d", len(result.AcceptedUnits))
+	if len(result.AcceptedUnits) != 5 {
+		t.Fatalf("expected 5 punctuation-delimited degraded units, got %d", len(result.AcceptedUnits))
+	}
+	want := []string{"现在你给我说一下，", "你们酒店有拖鞋没有，", "然后有没有洗发水？", "然后床单，", "床单脏了怎么办？"}
+	for index, unit := range result.AcceptedUnits {
+		if unit.Text != want[index] {
+			t.Fatalf("degraded unit %d text=%q want %q", index+1, unit.Text, want[index])
+		}
+		if unit.Text == e.Utterances[0].Text {
+			t.Fatalf("degraded unit duplicated the full transcript: %+v", unit)
+		}
+	}
+}
+
+func TestFallbackClauseSplitterKeepsProductionVoiceQuestionsIndependent(t *testing.T) {
+	spans := splitFallbackUtteranceClauses(productionMessage1452Transcript, 12)
+	if len(spans) != 9 {
+		t.Fatalf("expected nine punctuation-delimited fallback tasks, got %d: %+v", len(spans), spans)
+	}
+	runes := []rune(productionMessage1452Transcript)
+	seen := map[string]struct{}{}
+	for _, span := range spans {
+		if span.Quote != string(runes[span.Start:span.End]) {
+			t.Fatalf("fallback span does not match source: %+v", span)
+		}
+		if _, exists := seen[span.Quote]; exists {
+			t.Fatalf("fallback duplicated a source clause: %q", span.Quote)
+		}
+		seen[span.Quote] = struct{}{}
 	}
 }

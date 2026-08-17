@@ -1164,6 +1164,253 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolEmployeeOutgoingTextEchoReconcilesAIOutboxWithoutManualTakeover(t *testing.T) {
+	db, instance, conversation, aiAgent := setupWxWorkProtocolAIOutboxEchoFixture(t, "ai-text-echo")
+	now := time.Now()
+	sessionNo := ConversationRouteService.CurrentSessionNo(conversation.ID)
+	aiMessage := models.Message{
+		TenantID:       instance.TenantID,
+		ConversationID: conversation.ID,
+		SessionNo:      sessionNo,
+		RequestID:      "request-ai-text-echo",
+		ClientMsgID:    "ai-text-echo-client-message",
+		SenderType:     enums.IMSenderTypeAI,
+		SenderID:       aiAgent.ID,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "酒店地址在合肥市包河区测试路 1 号。",
+		SeqNo:          repositories.MessageRepository.NextSeqNoInTenant(db, conversation.ID, instance.TenantID),
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         &now,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&aiMessage).Error; err != nil {
+		t.Fatalf("create ai text message: %v", err)
+	}
+	createSentWxWorkProtocolOutbox(t, db, &aiMessage, now)
+
+	beforeRoute := ConversationRouteService.GetByConversationID(conversation.ID)
+	if beforeRoute == nil || beforeRoute.RouteStatus != enums.ConversationRouteStatusAIServing {
+		t.Fatalf("expected AI route before echo, got %+v", beforeRoute)
+	}
+	var beforeMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&beforeMessageCount).Error; err != nil {
+		t.Fatalf("count messages before echo: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "wx-ai-text-echo",
+		Sender:      instance.EmployeeUserID,
+		Receiver:    "external-ai-text-echo",
+		RoomID:      "0",
+		ContentType: wxProtocolMsgText,
+		MsgType:     wxProtocolMsgText,
+		Content:     " 酒店地址在合肥市包河区测试路 1 号。 ",
+		SendTime:    now.Unix(),
+	}, `{"id":"wx-ai-text-echo","sender":"employee-ai-text-echo","receiver":"external-ai-text-echo","msg_type":2}`)
+	if err != nil {
+		t.Fatalf("handle AI text echo: %v", err)
+	}
+
+	var afterMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&afterMessageCount).Error; err != nil {
+		t.Fatalf("count messages after echo: %v", err)
+	}
+	if afterMessageCount != beforeMessageCount {
+		t.Fatalf("AI text echo must not create an agent message, before=%d after=%d", beforeMessageCount, afterMessageCount)
+	}
+	ref := WxWorkKFMessageRefService.GetByWxMsgID("wx_protocol:" + instance.Guid + ":wx-ai-text-echo")
+	if ref == nil || ref.MessageID != aiMessage.ID || ref.Direction != string(enums.WxWorkKFMessageDirectionOut) {
+		t.Fatalf("expected echo reference to bind original AI message, got %+v", ref)
+	}
+	afterRoute := ConversationRouteService.GetByConversationID(conversation.ID)
+	if afterRoute == nil || afterRoute.RouteStatus != enums.ConversationRouteStatusAIServing {
+		t.Fatalf("AI text echo must not switch route to manual, got %+v", afterRoute)
+	}
+}
+
+func TestWxWorkProtocolEmployeeOutgoingImageEchoReconcilesByMediaIdentityWithoutNewAsset(t *testing.T) {
+	db, instance, conversation, aiAgent := setupWxWorkProtocolAIOutboxEchoFixture(t, "ai-image-echo")
+	now := time.Now()
+	asset := models.Asset{
+		TenantID:   instance.TenantID,
+		AssetID:    "asset-ai-image-echo",
+		StorageKey: "test/ai-image-echo.jpg",
+		Filename:   "knowledge-room.jpg",
+		MimeType:   "image/jpeg",
+		AuditFields: models.AuditFields{
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatalf("create source asset: %v", err)
+	}
+	payload := `{"assetId":"asset-ai-image-echo","wxMedia":{"file_id":"wx-file-ai-image-echo","file_md5":"aabbccddeeff00112233445566778899"}}`
+	aiMessage := models.Message{
+		TenantID:       instance.TenantID,
+		ConversationID: conversation.ID,
+		SessionNo:      ConversationRouteService.CurrentSessionNo(conversation.ID),
+		RequestID:      "request-ai-image-echo",
+		ClientMsgID:    "ai-image-echo-client-message",
+		SenderType:     enums.IMSenderTypeAI,
+		SenderID:       aiAgent.ID,
+		MessageType:    enums.IMMessageTypeImage,
+		Content:        "knowledge-room.jpg",
+		Payload:        payload,
+		SeqNo:          repositories.MessageRepository.NextSeqNoInTenant(db, conversation.ID, instance.TenantID),
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         &now,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&aiMessage).Error; err != nil {
+		t.Fatalf("create ai image message: %v", err)
+	}
+	createSentWxWorkProtocolOutbox(t, db, &aiMessage, now)
+
+	var beforeAssetCount int64
+	if err := db.Model(&models.Asset{}).Count(&beforeAssetCount).Error; err != nil {
+		t.Fatalf("count assets before echo: %v", err)
+	}
+	var beforeMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&beforeMessageCount).Error; err != nil {
+		t.Fatalf("count messages before echo: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		ID:          "wx-ai-image-echo",
+		Sender:      instance.EmployeeUserID,
+		Receiver:    "external-ai-image-echo",
+		RoomID:      "0",
+		ContentType: 101,
+		MsgType:     wxProtocolMsgImage,
+		FileName:    "callback-renamed-image.jpg",
+		SendTime:    now.Unix(),
+		CDN: request.WxProtocolMediaPayload{
+			FileID:  "wx-file-ai-image-echo",
+			FileMD5: "AABBCCDDEEFF00112233445566778899",
+		},
+	}, `{"id":"wx-ai-image-echo","sender":"employee-ai-image-echo","receiver":"external-ai-image-echo","msg_type":5}`)
+	if err != nil {
+		t.Fatalf("handle AI image echo: %v", err)
+	}
+
+	var afterAssetCount int64
+	if err := db.Model(&models.Asset{}).Count(&afterAssetCount).Error; err != nil {
+		t.Fatalf("count assets after echo: %v", err)
+	}
+	if afterAssetCount != beforeAssetCount {
+		t.Fatalf("AI image echo must not register another asset, before=%d after=%d", beforeAssetCount, afterAssetCount)
+	}
+	var afterMessageCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&afterMessageCount).Error; err != nil {
+		t.Fatalf("count messages after echo: %v", err)
+	}
+	if afterMessageCount != beforeMessageCount {
+		t.Fatalf("AI image echo must not create an agent message, before=%d after=%d", beforeMessageCount, afterMessageCount)
+	}
+	ref := WxWorkKFMessageRefService.GetByWxMsgID("wx_protocol:" + instance.Guid + ":wx-ai-image-echo")
+	if ref == nil || ref.MessageID != aiMessage.ID || ref.Direction != string(enums.WxWorkKFMessageDirectionOut) {
+		t.Fatalf("expected media echo reference to bind original AI message, got %+v", ref)
+	}
+	route := ConversationRouteService.GetByConversationID(conversation.ID)
+	if route == nil || route.RouteStatus != enums.ConversationRouteStatusAIServing {
+		t.Fatalf("AI image echo must not switch route to manual, got %+v", route)
+	}
+}
+
+func setupWxWorkProtocolAIOutboxEchoFixture(t *testing.T, suffix string) (*gorm.DB, *models.WxWorkProtocolInstance, *models.Conversation, *models.AIAgent) {
+	t.Helper()
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微 AI 回声测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-" + suffix,
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	store := &models.Store{
+		TenantID:    101,
+		StoreCode:   "echo-store-" + suffix,
+		Name:        "AI 回声测试门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, suffix)
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:            101,
+		Guid:                "guid-" + suffix,
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-" + suffix,
+		EmployeeName:        "AI 回声测试员工",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		AIReplyEnabled:      true,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	externalID := "external-" + suffix
+	conversation, _, err := ConversationService.CreateStoreScopedWithRuntimeProfileWithoutWelcome(
+		welcomeTestExternalUser(externalID),
+		channel.ID,
+		*aiAgent,
+		StoreConversationScope{StoreID: store.ID, StoreStaffBindingID: binding.ID},
+	)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.WxWorkKFConversation{
+		TenantID:       instance.TenantID,
+		ConversationID: conversation.ID,
+		ChannelID:      channel.ID,
+		OpenKfID:       "wx_protocol:" + instance.Guid + ":single",
+		ExternalUserID: externalID,
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create conversation mapping: %v", err)
+	}
+	if _, err := ConversationRouteService.Ensure(conversation.ID); err != nil {
+		t.Fatalf("ensure conversation route: %v", err)
+	}
+	if route := ConversationRouteService.GetByConversationID(conversation.ID); route == nil || route.RouteStatus != enums.ConversationRouteStatusAIServing {
+		t.Fatalf("expected AI-serving route fixture, got %+v", route)
+	}
+	return db, instance, conversation, aiAgent
+}
+
+func createSentWxWorkProtocolOutbox(t *testing.T, db *gorm.DB, message *models.Message, now time.Time) {
+	t.Helper()
+	if message == nil || message.ID <= 0 {
+		t.Fatal("persisted message is required")
+	}
+	if err := db.Create(&models.ChannelMessageOutbox{
+		TenantID:       message.TenantID,
+		ChannelType:    string(enums.ChannelTypeWxWorkProtocol),
+		ConversationID: message.ConversationID,
+		MessageID:      message.ID,
+		SendStatus:     string(enums.ChannelMessageOutboxStatusSent),
+		SentAt:         &now,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create sent outbox: %v", err)
+	}
+}
+
 func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()

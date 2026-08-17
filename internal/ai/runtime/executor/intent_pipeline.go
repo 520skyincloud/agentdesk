@@ -2,10 +2,14 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/contracts"
@@ -36,20 +40,36 @@ type runtimePipelinePlan struct {
 	NoHitTaskKeys       []string
 	IntentV2            contracts.IntentTasksV2
 	ReplyPlanV2         contracts.ReplyPlanV2
+	ReplyPlanV4         contracts.ReplyPlanV4
 	Evidence            contracts.EvidenceBundleV1
+	EvidenceV2          contracts.EvidenceBundleV2
+	ResourceEligibility contracts.ResourceEligibilityV1
+	Observations        []contracts.ObservationV1
+	AuthoritativeFacts  []contracts.RuntimeContextFactV2
 	ActionLedgerV2      contracts.ActionLedgerV1
 	KnowledgeByTask     map[string]AnswerabilityOutcome
+	DeferredTaskKeys    []string
+	DeferredReason      string
 }
 
+type runtimeConditionalKnowledgeProbes map[string]*retrievers.KnowledgeRetrieveResult
+
 func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (runtimePipelinePlan, error) {
+	modes := resolveRuntimeFeatureModes(req)
 	currentText := strings.TrimSpace(req.UserMessage.Content)
 	intent, replyPlan, taskState, restored, err := loadPersistedRuntimeTaskBatch(req)
 	if err != nil {
 		return runtimePipelinePlan{}, err
 	}
 	var prefetchedKnowledge *retrievers.KnowledgeRetrieveResult
+	conditionalProbes := runtimeConditionalKnowledgeProbes{}
 	knowledgeByTask := make(map[string]AnswerabilityOutcome)
 	evidence := runtimeEmptyEvidenceBundle(req)
+	evidenceV2 := runtimeEmptyEvidenceBundleV2(req)
+	resourceEligibility := contracts.ResourceEligibilityV1{
+		SchemaVersion: contracts.ResourceEligibilityV1SchemaVersion,
+		Items:         []contracts.ResourceEligibilityItemV1{},
+	}
 	promptPack := selectIntentPromptPack(intent)
 	if !restored {
 		var configured bool
@@ -63,24 +83,11 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 				fmt.Errorf("intent model unavailable"),
 			)
 		}
-		prefetchedKnowledge, err = probeClarifyKnowledge(ctx, req, history, intent)
+		intent, conditionalProbes, err = probeConditionalKnowledgeTasks(ctx, req, history, intent)
 		if err != nil {
 			return runtimePipelinePlan{}, err
 		}
-		if prefetchedKnowledge != nil && len(prefetchedKnowledge.Hits) > 0 && strings.TrimSpace(prefetchedKnowledge.ContextText) != "" {
-			intent.PrimaryIntent = "hotel_info"
-			intent.MatchedIntentCode = "hotel_info"
-			intent.DetectedIntent = "hotel_info"
-			intent.SubIntent = "store_knowledge"
-			intent.NeedsClarification = false
-			intent.NeedsKnowledge = true
-			intent.ShouldReply = true
-			intent.MatchMode = "knowledge_probe"
-			intent.Reason = appendIntentReason(intent.Reason, "clarify knowledge probe matched current store knowledge")
-			intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-				Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
-				NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
-			}}
+		if len(conditionalProbes) > 0 {
 			promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		}
 		replyPlan = buildReplyPlan(intent, promptPack)
@@ -90,11 +97,36 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		}
 	}
 
+	readyPlans, deferredTaskKeys, readinessErr := partitionRuntimePlansByObservationReadiness(req, replyPlan.TaskPlans)
+	if readinessErr != nil {
+		return runtimePipelinePlan{}, readinessErr
+	}
+	if len(deferredTaskKeys) > 0 {
+		if taskState.Enabled && taskState.TurnID > 0 {
+			now := time.Now()
+			releaseErr := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+				return services.AIReplyTurnTaskService.DeferTaskKeysDB(
+					tx.Tx, req.Conversation.TenantID, taskState.TurnID, req.JobID, deferredTaskKeys,
+					runtimeObservationDeferredReason, now.Add(time.Second), now,
+				)
+			})
+			if releaseErr != nil {
+				return runtimePipelinePlan{}, releaseErr
+			}
+			taskState.HasMore = true
+		}
+		replyPlan.TaskPlans = readyPlans
+		intent = filterIntentForReplyTaskPlans(intent, readyPlans)
+		promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
+		replyPlan = buildReplyPlan(intent, promptPack)
+		replyPlan.TaskPlans = readyPlans
+	}
+
 	noHitTaskKeys := []string(nil)
 	activePlans := replyPlan.TaskPlans
 	if taskState.Enabled {
 		runnablePlans := excludeReplyTaskKeys(replyPlan.TaskPlans, taskState.FailedTaskKeys)
-		knowledgeOutcome, retrieveErr := retrieveRuntimeTaskKnowledge(ctx, req, runnablePlans, prefetchedKnowledge, taskState)
+		knowledgeOutcome, retrieveErr := retrieveRuntimeTaskKnowledge(ctx, req, runnablePlans, conditionalProbes, taskState)
 		if retrieveErr != nil {
 			return runtimePipelinePlan{}, retrieveErr
 		}
@@ -110,6 +142,10 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		if knowledgeOutcome.Evidence != nil {
 			evidence = *knowledgeOutcome.Evidence
 		}
+		if knowledgeOutcome.EvidenceV2 != nil {
+			evidenceV2 = *knowledgeOutcome.EvidenceV2
+		}
+		resourceEligibility = knowledgeOutcome.ResourceEligibility
 		// 知识命中绑定动作：把“转人工”类知识答案从口头文本提升为结构化人工路由，
 		// 让既有二次确认链真正触发，而不是模型复述“我要转人工”。
 		activePlans, knowledgeHandoff := applyKnowledgeActionBindings(activePlans, knowledgeOutcome.TaskActionCodes)
@@ -118,7 +154,7 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 			intent = markIntentAsKnowledgeHandoff(intent)
 		}
 	}
-	actionLedgerV2, err := ensureRuntimeActionLedger(req, taskState, replyPlan.TaskPlans, &evidence)
+	actionLedgerV2, err := ensureRuntimeActionLedgerWithEligibility(req, taskState, replyPlan.TaskPlans, &evidence, &resourceEligibility)
 	if err != nil {
 		return runtimePipelinePlan{}, err
 	}
@@ -134,9 +170,42 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		return runtimePipelinePlan{}, err
 	}
 	intentV2 := intentContractFromTrace(intent)
+	var replyPlanV4 contracts.ReplyPlanV4
+	var observations []contracts.ObservationV1
+	var authoritativeFacts []contracts.RuntimeContextFactV2
+	if modes.ReplyContract == runtimeReplyContractV3 {
+		envelope, envelopeErr := buildIntentV3Envelope(req, history)
+		if envelopeErr != nil {
+			return runtimePipelinePlan{}, envelopeErr
+		}
+		observations = runtimeV3ObservationsFromEnvelope(envelope)
+		artifacts, buildErr := buildRuntimeV3PlanArtifacts(
+			req, taskState, replyPlan.TaskPlans, knowledgeByTask, evidenceV2, resourceEligibility, actionLedgerV2, observations,
+		)
+		if buildErr != nil {
+			return runtimePipelinePlan{}, buildErr
+		}
+		replyPlanV4 = artifacts.Plan
+		authoritativeFacts = artifacts.AuthoritativeFacts
+		if len(artifacts.DeferredTaskKeys) > 0 && taskState.Enabled {
+			releaseErr := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+				return services.AIReplyTurnTaskService.ReleaseTaskKeysDB(
+					tx.Tx, req.Conversation.TenantID, taskState.TurnID, req.JobID, artifacts.DeferredTaskKeys, time.Now(),
+				)
+			})
+			if releaseErr != nil {
+				return runtimePipelinePlan{}, releaseErr
+			}
+			taskState.HasMore = true
+		}
+	}
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
 	prompt := buildIntentStagePrompt(promptPack, replyPlan)
+	deferredReason := ""
+	if len(deferredTaskKeys) > 0 {
+		deferredReason = runtimeObservationDeferredReason
+	}
 	if taskState.Enabled && taskState.TurnID > 0 {
 		if turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), taskState.TurnID, req.Conversation.TenantID); turn != nil {
 			topic := ""
@@ -174,9 +243,16 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		NoHitTaskKeys:       noHitTaskKeys,
 		IntentV2:            intentV2,
 		ReplyPlanV2:         replyPlanV2,
+		ReplyPlanV4:         replyPlanV4,
 		Evidence:            evidence,
+		EvidenceV2:          evidenceV2,
+		ResourceEligibility: resourceEligibility,
+		Observations:        observations,
+		AuthoritativeFacts:  authoritativeFacts,
 		ActionLedgerV2:      actionLedgerV2,
 		KnowledgeByTask:     knowledgeByTask,
+		DeferredTaskKeys:    deferredTaskKeys,
+		DeferredReason:      deferredReason,
 	}, nil
 }
 
@@ -225,6 +301,16 @@ func runtimeEmptyEvidenceBundle(req RunInput) contracts.EvidenceBundleV1 {
 	}
 }
 
+func runtimeEmptyEvidenceBundleV2(req RunInput) contracts.EvidenceBundleV2 {
+	return contracts.EvidenceBundleV2{
+		SchemaVersion:    contracts.EvidenceBundleV2SchemaVersion,
+		ScopeFingerprint: runtimeEvidenceScopeFingerprint(req, nil),
+		RetrievalStatus:  "not_needed",
+		Items:            []contracts.EvidenceItemV2{},
+		Resources:        []contracts.EvidenceResourceV2{},
+	}
+}
+
 func excludeReplyTaskKeys(plans []callbacks.ReplyTaskPlanTraceData, excludedKeys []string) []callbacks.ReplyTaskPlanTraceData {
 	excluded := make(map[string]struct{}, len(excludedKeys))
 	for _, key := range excludedKeys {
@@ -258,31 +344,159 @@ func appendUniqueStrings(items []string, values ...string) []string {
 	return ret
 }
 
-func probeClarifyKnowledge(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) (*retrievers.KnowledgeRetrieveResult, error) {
-	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
-		return nil, nil
-	}
+func probeConditionalKnowledgeTasks(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) (callbacks.IntentTraceData, runtimeConditionalKnowledgeProbes, error) {
 	if len(utils.SplitInt64s(req.AIAgent.KnowledgeIDs)) == 0 {
-		return nil, nil
-	}
-	query := resolveClarifyKnowledgeProbeQuery(req, history)
-	if query == "" {
-		return nil, nil
+		return intent, runtimeConditionalKnowledgeProbes{}, nil
 	}
 	retriever := retrievers.NewKnowledgeRetriever(req.AIAgent)
 	if len(retriever.KnowledgeBaseIDs()) == 0 {
-		return nil, nil
+		return intent, runtimeConditionalKnowledgeProbes{}, nil
 	}
-	options := retrievers.DefaultKnowledgeRetrieveOptions()
-	options.QueryPreview = preview(query, 120)
-	result, err := retriever.RetrieveContextByOptions(ctx, options, query)
-	if err != nil {
-		return nil, services.NewAIReplyExecutionError(services.AIReplyExecutionErrorKnowledgeUnavailable, err)
+	return probeConditionalKnowledgeTasksWithRetriever(ctx, req, history, intent, retriever)
+}
+
+type conditionalKnowledgeProbeCandidate struct {
+	TaskIndex int
+	Identity  string
+	Query     string
+	Result    *retrievers.KnowledgeRetrieveResult
+	Err       error
+}
+
+func probeConditionalKnowledgeTasksWithRetriever(
+	ctx context.Context,
+	req RunInput,
+	history adapter.HistoryBuildResult,
+	intent callbacks.IntentTraceData,
+	retriever runtimeTaskKnowledgeRetriever,
+) (callbacks.IntentTraceData, runtimeConditionalKnowledgeProbes, error) {
+	probes := runtimeConditionalKnowledgeProbes{}
+	if retriever == nil || len(retriever.KnowledgeBaseIDs()) == 0 || len(intent.IntentTasks) == 0 {
+		return intent, probes, nil
 	}
-	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
-		return nil, nil
+	candidates := make([]conditionalKnowledgeProbeCandidate, 0, len(intent.IntentTasks))
+	for index, task := range intent.IntentTasks {
+		if !runtimeIntentTaskNeedsConditionalKnowledgeProbe(task) {
+			continue
+		}
+		ready, readyErr := runtimeObservationBindingsReady(req, task.ObservationBindings)
+		if readyErr != nil {
+			return callbacks.IntentTraceData{}, nil, services.NewAIReplyExecutionError(
+				services.AIReplyExecutionErrorResourceInvariantBroken,
+				fmt.Errorf("conditional knowledge observation dependency: %w", readyErr),
+			)
+		}
+		if !ready {
+			continue
+		}
+		query := resolveConditionalKnowledgeProbeQuery(req, history, task.Text)
+		if query == "" {
+			continue
+		}
+		candidates = append(candidates, conditionalKnowledgeProbeCandidate{
+			TaskIndex: index, Identity: conditionalKnowledgeProbeIdentityForIntentTask(task), Query: query,
+		})
 	}
-	return result, nil
+	if len(candidates) == 0 {
+		return intent, probes, nil
+	}
+
+	// 契约 4.18：条件探测与正式回答复用同一执行器与 checkpoint。
+	semaphore := make(chan struct{}, knowledgeTaskConcurrencyForDB(sqls.DB()))
+	var wg sync.WaitGroup
+	for index := range candidates {
+		wg.Add(1)
+		go func(candidateIndex int) {
+			defer wg.Done()
+			candidate := &candidates[candidateIndex]
+			options := retrievers.DefaultKnowledgeRetrieveOptions()
+			options.QueryPreview = preview(candidate.Query, 120)
+			plan := BuildKnowledgeQueryPlan(
+				req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID,
+				req.UserMessage.SessionNo, candidate.Query, "conditional_probe",
+				req.UserMessage.AIReplyTurnID, req.UserMessage.AIReplyTurnVersion, 0,
+				"conditional_probe_"+candidate.Identity,
+			)
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				candidate.Err = ctx.Err()
+				return
+			}
+			candidate.Result, candidate.Err = ExecuteKnowledgeQuery(ctx, plan, retriever, options, sqls.DB())
+		}(index)
+	}
+	wg.Wait()
+
+	promoted := false
+	for _, candidate := range candidates {
+		if candidate.Err != nil {
+			if ctx.Err() != nil {
+				return callbacks.IntentTraceData{}, nil, ctx.Err()
+			}
+			slog.Warn("conditional knowledge probe failed; keeping clarification task",
+				"conversation_id", req.Conversation.ID, "task_identity", candidate.Identity, "error", candidate.Err)
+			continue
+		}
+		if candidate.Result == nil || len(candidate.Result.Hits) == 0 || strings.TrimSpace(candidate.Result.ContextText) == "" {
+			continue
+		}
+		task := &intent.IntentTasks[candidate.TaskIndex]
+		task.Intent = "hotel_info"
+		task.SubIntent = "store_knowledge"
+		task.NeedsKnowledge = true
+		task.Reason = appendIntentReason(task.Reason, "conditional knowledge probe matched current store knowledge")
+		probes[candidate.Identity] = candidate.Result
+		promoted = true
+	}
+	if !promoted {
+		return intent, probes, nil
+	}
+	intent = deriveModelIntentFromTasks(intent)
+	intent.ShouldReply = true
+	intent.MatchMode = "knowledge_probe"
+	intent.Reason = appendIntentReason(intent.Reason, "per-task conditional knowledge probe promoted matched tasks")
+	intent.NeedsClarification = false
+	for _, task := range intent.IntentTasks {
+		if runtimeIntentTaskNeedsConditionalKnowledgeProbe(task) {
+			intent.NeedsClarification = true
+			break
+		}
+	}
+	return intent, probes, nil
+}
+
+func runtimeIntentTaskNeedsConditionalKnowledgeProbe(task callbacks.IntentTaskTraceData) bool {
+	if task.NeedsKnowledge || strings.TrimSpace(task.Intent) != "interaction" {
+		return false
+	}
+	return strings.TrimSpace(task.SubIntent) == "clarify" || strings.TrimSpace(task.RequestMode) == "clarify_previous"
+
+}
+
+func conditionalKnowledgeProbeIdentityForIntentTask(task callbacks.IntentTaskTraceData) string {
+	return conditionalKnowledgeProbeIdentity(
+		task.Sequence, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
+		task.CanonicalQuestionHash, task.Text,
+	)
+}
+
+func conditionalKnowledgeProbeIdentityForPlan(plan callbacks.ReplyTaskPlanTraceData) string {
+	return conditionalKnowledgeProbeIdentity(
+		plan.Sequence, plan.SourceMessageID, plan.SourceSpanStart, plan.SourceSpanEnd,
+		plan.CanonicalQuestionHash, plan.Text,
+	)
+}
+
+func conditionalKnowledgeProbeIdentity(sequence int, sourceMessageID int64, spanStart, spanEnd int, canonicalHash, text string) string {
+	identity := strings.Join([]string{
+		strconv.Itoa(sequence), strconv.FormatInt(sourceMessageID, 10),
+		strconv.Itoa(spanStart), strconv.Itoa(spanEnd), strings.TrimSpace(canonicalHash),
+		knowledgeQueryFingerprint(text),
+	}, "/")
+	sum := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(sum[:12])
 }
 
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {
@@ -579,14 +793,23 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
-		Sequence:       task.Sequence,
-		Intent:         task.Intent,
-		SubIntent:      task.SubIntent,
-		Text:           task.Text,
-		RequestMode:    task.RequestMode,
-		Requirements:   task.Requirements,
-		Output:         output,
-		ResourceAction: task.ResourceAction,
+		Sequence:              task.Sequence,
+		Intent:                task.Intent,
+		SubIntent:             task.SubIntent,
+		Text:                  task.Text,
+		RequestMode:           task.RequestMode,
+		QuestionUnitKey:       task.QuestionUnitKey,
+		SourceMessageID:       task.SourceMessageID,
+		AnalysisRevision:      task.AnalysisRevision,
+		SourceSpanStart:       task.SourceSpanStart,
+		SourceSpanEnd:         task.SourceSpanEnd,
+		SourceBindings:        append([]callbacks.TaskSourceBindingTraceData(nil), task.SourceBindings...),
+		ObservationBindings:   append([]callbacks.TaskObservationBindingTraceData(nil), task.ObservationBindings...),
+		SourceSetFingerprint:  task.SourceSetFingerprint,
+		CanonicalQuestionHash: task.CanonicalQuestionHash,
+		Requirements:          task.Requirements,
+		Output:                output,
+		ResourceAction:        task.ResourceAction,
 	}
 }
 
@@ -685,6 +908,9 @@ func isMediaOnlyWithoutActionableIntent(message models.Message) bool {
 	if message.MessageType == enums.IMMessageTypeVoice {
 		return false
 	}
+	if mode, _, _, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+		return !replyengine.MediaResponseExpectationTriggersAI(mode)
+	}
 	if replyengine.MediaUnderstandingExplicitlyNoIntent(text) {
 		return true
 	}
@@ -698,6 +924,11 @@ func isActionableMediaMessage(message models.Message) bool {
 	mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
 	if status != "understood" {
 		return false
+	}
+	if message.MessageType != enums.IMMessageTypeVoice {
+		if mode, _, _, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+			return replyengine.MediaResponseExpectationTriggersAI(mode)
+		}
 	}
 	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
 }

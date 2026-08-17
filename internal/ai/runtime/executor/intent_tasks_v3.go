@@ -2,10 +2,14 @@ package executor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"agent-desk/internal/ai/runtime/channelbreaker"
 	"agent-desk/internal/ai/runtime/contextcompiler"
@@ -14,10 +18,15 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/modelconfig"
 	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/pkg/usagex"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mlogclub/simple/sqls"
 )
 
 // 多模态契约 9/10/12：IntentTasksV3 主链接线（成组灰度 AI_RUNTIME_MULTIMODAL_V3=on）。
@@ -47,7 +56,7 @@ type intentTaskV3Wire struct {
 	SourceRefs   []string          `json:"sourceRefs"`
 	SourceSpans  []intentSpanWire  `json:"sourceSpans"`
 	DependsOnObs []string          `json:"dependsOnObservationRefs"`
-	Normalized   string            `json:"normalizedQuestion"`
+	Normalized   string            `json:"normalizedText"`
 	Requirements []requirementWire `json:"answerRequirements"`
 	RequestMode  string            `json:"requestMode"`
 	Confidence   float64           `json:"confidence"`
@@ -73,12 +82,13 @@ const intentV3SystemPrompt = `你是酒店无人化客服系统的 IntentDetect 
 - utterances 是当前 Turn 的客户输入；
 - observations 是媒体观察，不是门店事实；
 - unresolvedTasks 只用于判断重复、补充、纠正或取消。
+- textOrigin=media_analysis 表示文字来自媒体分析，不是客户原话；只能结合对应 Observation 理解可见问题或发起中性澄清。
 
 输出 intent_tasks.v3。
 
 强制规则：
 1. 先为每个非空 utterance 输出一条 utteranceCoverage；不得遗漏 URef。
-2. covered 必须列出 Task sequence；ignored 必须使用允许的稳定 reasonCode。
+2. covered 必须列出 Task sequence；ignored 只允许用于与另一条 covered 输入完全等价的重复消息，ignoredReason 必须为 duplicate_equivalent。
 3. 每个 Task 必须引用真实 sourceRef。
 4. sourceSpan.quote 必须是对应 utterance.text 的连续原文片段。
 5. 多问题必须使用各自原文片段；禁止把完整原文复制到多个 Task。
@@ -86,35 +96,101 @@ const intentV3SystemPrompt = `你是酒店无人化客服系统的 IntentDetect 
 7. 当前文字明确引用图片时，在 dependsOnObservationRefs 中引用对应 Observation。
 8. 语音 transcript 属于当前客户输入，可拆多个问题，但每题必须绑定自己的 Span。
 9. 不得输出 taskKey、needsKnowledge、needsResource、needsHumanRoute、action 或执行结果。
-10. 只输出严格 JSON Object，不输出 Markdown 或解释。`
+10. intent 必须来自 ALLOWED_INTENT_CATALOG，并严格遵守该项的能力边界。
+11. interaction、social requestMode、greeting/thanks/closing 不得伪装成酒店知识问题。
+12. answerRequirements 描述本 Task 必须完成的答案义务；每个 Task 至少一项。
+13. 寒暄、感谢、表情、问号、闲聊也是需要处理的输入，必须建立 interaction Task，不能标记 ignored。
+14. 纯表情、拟声、寒暄或闲聊时 dialogueAct 使用 social/greeting/thanks/closing，Task 使用 intent=interaction、requestMode=social；不得使用 hotel_info。
+15. 只输出严格 JSON Object，不输出 Markdown 或解释。`
 
-// buildIntentV3Envelope 构建当前 Turn 的 Envelope：当前消息 + 紧邻未答复
-// 的客户连续消息（无 AI/人工回复分隔）。
-func buildIntentV3Envelope(req RunInput, history adapter.HistoryBuildResult) contextcompiler.TurnInputEnvelope {
-	messages := make([]models.Message, 0, 4)
-	for index := len(history.RawItems) - 1; index >= 0; index-- {
-		item := history.RawItems[index]
-		if item.SenderType != req.UserMessage.SenderType {
-			break // 一旦出现非客户消息即停止（媒体/文字连续段）
-		}
-		messages = append([]models.Message{item}, messages...)
-		if len(messages) >= 6 {
-			break
-		}
+const intentV3MaxUtterancesPerBatch = 12
+
+// buildIntentV3Envelope constructs the envelope from the authoritative current
+// turn when a persisted turn is available. History is only a compatibility
+// fallback for non-coordinated calls. This prevents history window truncation
+// from permanently omitting an older unanswered source message.
+func buildIntentV3Envelope(req RunInput, history adapter.HistoryBuildResult) (contextcompiler.TurnInputEnvelope, error) {
+	messages := authoritativeIntentTurnMessages(req)
+	if len(messages) == 0 {
+		messages = recentIntentHistoryMessages(req, history)
 	}
-	messages = append(messages, req.UserMessage)
 	scope := contextcompiler.EnvelopeScope{
 		TenantID:       req.Conversation.TenantID,
 		StoreID:        req.Conversation.StoreID,
 		ConversationID: req.Conversation.ID,
 		SessionNo:      req.UserMessage.SessionNo,
+		TurnID:         req.UserMessage.AIReplyTurnID,
+		TurnVersion:    req.UserMessage.AIReplyTurnVersion,
 	}
-	return contextcompiler.BuildTurnInputEnvelope(scope, messages)
+	analyses, err := services.MessageAnalysisService.ReadyV2ForMessages(messages)
+	if err != nil {
+		return contextcompiler.TurnInputEnvelope{}, err
+	}
+	return contextcompiler.BuildTurnInputEnvelopeWithAnalyses(scope, messages, analyses), nil
+}
+
+func authoritativeIntentTurnMessages(req RunInput) []models.Message {
+	if req.UserMessage.AIReplyTurnID <= 0 || req.Conversation.TenantID <= 0 || req.Conversation.ID <= 0 || sqls.DB() == nil {
+		return nil
+	}
+	messages := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", req.Conversation.TenantID).
+		Eq("conversation_id", req.Conversation.ID).
+		Eq("session_no", req.UserMessage.SessionNo).
+		Eq("ai_reply_turn_id", req.UserMessage.AIReplyTurnID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+		Asc("ai_reply_turn_version").
+		Asc("id"))
+	return uniqueIntentMessages(messages, req.UserMessage)
+}
+
+func recentIntentHistoryMessages(req RunInput, history adapter.HistoryBuildResult) []models.Message {
+	messages := make([]models.Message, 0, 8)
+	for index := len(history.RawItems) - 1; index >= 0; index-- {
+		item := history.RawItems[index]
+		if item.SenderType != req.UserMessage.SenderType || item.SessionNo != req.UserMessage.SessionNo {
+			break
+		}
+		if req.UserMessage.AIReplyTurnID > 0 && item.AIReplyTurnID > 0 && item.AIReplyTurnID != req.UserMessage.AIReplyTurnID {
+			break
+		}
+		messages = append([]models.Message{item}, messages...)
+	}
+	return uniqueIntentMessages(messages, req.UserMessage)
+}
+
+func uniqueIntentMessages(messages []models.Message, current models.Message) []models.Message {
+	ret := make([]models.Message, 0, len(messages)+1)
+	seen := make(map[int64]struct{}, len(messages)+1)
+	for _, item := range messages {
+		if item.ID <= 0 {
+			continue
+		}
+		if _, exists := seen[item.ID]; exists {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		ret = append(ret, item)
+	}
+	if current.ID > 0 {
+		if _, exists := seen[current.ID]; !exists {
+			ret = append(ret, current)
+		}
+	}
+	sort.SliceStable(ret, func(i, j int) bool {
+		if ret[i].AIReplyTurnVersion != ret[j].AIReplyTurnVersion {
+			return ret[i].AIReplyTurnVersion < ret[j].AIReplyTurnVersion
+		}
+		return ret[i].ID < ret[j].ID
+	})
+	return ret
 }
 
 // parseIntentTasksV3Wire 严格解码 + 业务校验（Schema、版本、覆盖率集合等式）。
 func parseIntentTasksV3Wire(content string) (intentTasksV3Wire, error) {
-	parsed, err := strictjson.DecodeObject[intentTasksV3Wire]([]byte(content), strictjson.DecodeOptions{
+	normalized, _ := normalizeStructuredModelObject(content)
+	parsed, err := strictjson.DecodeObject[intentTasksV3Wire]([]byte(normalized), strictjson.DecodeOptions{
 		MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaIntentTasksV3),
 	})
 	if err != nil {
@@ -127,7 +203,7 @@ func parseIntentTasksV3Wire(content string) (intentTasksV3Wire, error) {
 }
 
 // validateV3UtteranceCoverage 契约 10.7：非空 URef 集合等式。
-func validateV3UtteranceCoverage(envelope contextcompiler.TurnInputEnvelope, coverage []intentCoverageItemWire) []string {
+func validateV3UtteranceCoverage(envelope contextcompiler.TurnInputEnvelope, coverage []intentCoverageItemWire, tasks []intentTaskV3Wire) []string {
 	issues := make([]string, 0)
 	nonEmpty := map[string]struct{}{}
 	for _, utterance := range envelope.Utterances {
@@ -135,23 +211,143 @@ func validateV3UtteranceCoverage(envelope contextcompiler.TurnInputEnvelope, cov
 			nonEmpty[utterance.Ref] = struct{}{}
 		}
 	}
+	taskBySequence := make(map[int]intentTaskV3Wire, len(tasks))
+	for _, task := range tasks {
+		if _, exists := taskBySequence[task.Sequence]; exists {
+			issues = append(issues, fmt.Sprintf("task sequence %d appears more than once", task.Sequence))
+			continue
+		}
+		taskBySequence[task.Sequence] = task
+	}
 	seen := map[string]string{}
+	normalizedByRef := make(map[string]string, len(envelope.Utterances))
+	for _, utterance := range envelope.Utterances {
+		if value := normalizeQuestionText(utterance.Text); value != "" {
+			normalizedByRef[utterance.Ref] = value
+		}
+	}
+	coveredNormalized := make(map[string]struct{}, len(coverage))
+	for _, item := range coverage {
+		if item.Status != "covered" {
+			continue
+		}
+		if value := normalizedByRef[item.SourceRef]; value != "" {
+			coveredNormalized[value] = struct{}{}
+		}
+	}
+	coveredTaskSequences := make(map[int]map[string]struct{}, len(tasks))
 	for _, item := range coverage {
 		if previous, dup := seen[item.SourceRef]; dup {
 			issues = append(issues, fmt.Sprintf("utterance %s covered twice (%s/%s)", item.SourceRef, previous, item.Status))
 			continue
 		}
 		seen[item.SourceRef] = item.Status
+		if _, known := nonEmpty[item.SourceRef]; !known {
+			issues = append(issues, fmt.Sprintf("coverage references unknown or empty utterance %s", item.SourceRef))
+		}
 		if (item.Status == "covered") != (len(item.TaskSequences) > 0) {
 			issues = append(issues, fmt.Sprintf("utterance %s coverage status mismatch", item.SourceRef))
 		}
-		if item.Status == "ignored" && item.IgnoredReason == "none" {
-			issues = append(issues, fmt.Sprintf("utterance %s ignored without reason", item.SourceRef))
+		if item.Status == "ignored" {
+			if strings.TrimSpace(item.IgnoredReason) != "duplicate_equivalent" {
+				issues = append(issues, fmt.Sprintf("utterance %s ignored with unsupported reason", item.SourceRef))
+			} else if normalized := normalizedByRef[item.SourceRef]; normalized == "" {
+				issues = append(issues, fmt.Sprintf("utterance %s ignored without comparable text", item.SourceRef))
+			} else if _, duplicated := coveredNormalized[normalized]; !duplicated {
+				issues = append(issues, fmt.Sprintf("utterance %s ignored without an equivalent covered utterance", item.SourceRef))
+			}
+		}
+		if item.Status == "covered" && strings.TrimSpace(item.IgnoredReason) != "" {
+			issues = append(issues, fmt.Sprintf("utterance %s covered with ignored reason", item.SourceRef))
+		}
+		for _, sequence := range item.TaskSequences {
+			task, exists := taskBySequence[sequence]
+			if !exists {
+				issues = append(issues, fmt.Sprintf("utterance %s references unknown task sequence %d", item.SourceRef, sequence))
+				continue
+			}
+			if !stringInExactSet(item.SourceRef, task.SourceRefs) {
+				issues = append(issues, fmt.Sprintf("utterance %s does not belong to task sequence %d", item.SourceRef, sequence))
+			}
+			if coveredTaskSequences[sequence] == nil {
+				coveredTaskSequences[sequence] = make(map[string]struct{})
+			}
+			coveredTaskSequences[sequence][item.SourceRef] = struct{}{}
 		}
 		delete(nonEmpty, item.SourceRef)
 	}
+	for _, task := range tasks {
+		spanRefs := make(map[string]struct{}, len(task.SourceSpans))
+		for _, span := range task.SourceSpans {
+			spanRefs[span.SourceRef] = struct{}{}
+		}
+		if !sameStringSet(task.SourceRefs, mapKeys(spanRefs)) {
+			issues = append(issues, fmt.Sprintf("task sequence %d sourceRefs do not match sourceSpans", task.Sequence))
+		}
+		for _, ref := range task.SourceRefs {
+			if _, covered := coveredTaskSequences[task.Sequence][ref]; !covered {
+				issues = append(issues, fmt.Sprintf("task sequence %d is not linked from coverage for %s", task.Sequence, ref))
+			}
+		}
+	}
 	for ref := range nonEmpty {
 		issues = append(issues, fmt.Sprintf("utterance %s missing from coverage", ref))
+	}
+	return issues
+}
+
+// validateV3SemanticFragmentCoverage closes the gap between message-level
+// utteranceCoverage and the actual questions inside one long text/voice
+// utterance. Every deterministic punctuation-delimited fragment must overlap
+// at least one valid source span owned by a task linked from that utterance's
+// coverage entry. This is a protocol check only; it does not infer intent or
+// perform keyword classification.
+func validateV3SemanticFragmentCoverage(envelope contextcompiler.TurnInputEnvelope, coverage []intentCoverageItemWire, tasks []intentTaskV3Wire) []string {
+	utteranceByRef := make(map[string]contextcompiler.EnvelopeUtterance, len(envelope.Utterances))
+	for _, utterance := range envelope.Utterances {
+		utteranceByRef[utterance.Ref] = utterance
+	}
+	taskBySequence := make(map[int]intentTaskV3Wire, len(tasks))
+	for _, task := range tasks {
+		taskBySequence[task.Sequence] = task
+	}
+
+	issues := make([]string, 0)
+	for _, item := range coverage {
+		if item.Status != "covered" {
+			continue
+		}
+		utterance, ok := utteranceByRef[item.SourceRef]
+		if !ok || strings.TrimSpace(utterance.Text) == "" {
+			continue
+		}
+		spans := make([]intentSpanWire, 0)
+		for _, sequence := range item.TaskSequences {
+			task, exists := taskBySequence[sequence]
+			if !exists {
+				continue
+			}
+			for _, span := range task.SourceSpans {
+				if span.SourceRef == item.SourceRef {
+					spans = append(spans, span)
+				}
+			}
+		}
+		for _, fragment := range splitFallbackUtteranceClauses(utterance.Text, len([]rune(utterance.Text))+1) {
+			covered := false
+			for _, span := range spans {
+				if span.Start < fragment.End && span.End > fragment.Start {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				issues = append(issues, fmt.Sprintf(
+					"utterance %s fragment [%d,%d) is not covered by any linked task span: %q",
+					item.SourceRef, fragment.Start, fragment.End, fragment.Quote,
+				))
+			}
+		}
 	}
 	return issues
 }
@@ -176,7 +372,8 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 			})
 		}
 	}
-	if issues := validateV3UtteranceCoverage(envelope, parsed.UtteranceCoverage); len(issues) > 0 {
+	tasks = normalizeIntentTasksForDialogueAct(parsed.DialogueAct, tasks)
+	if issues := validateV3UtteranceCoverage(envelope, parsed.UtteranceCoverage, parsed.Tasks); len(issues) > 0 {
 		return callbacks.IntentTraceData{}, false, &strictjson.ProtocolError{
 			Code: strictjson.ErrorJSONBusinessInvariant, Path: "utteranceCoverage",
 			Message: strings.Join(issues, "; "),
@@ -188,9 +385,15 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 			Message: fmt.Sprintf("source span invalid: %s", issues[0].Message),
 		}
 	}
+	if issues := validateV3SemanticFragmentCoverage(envelope, parsed.UtteranceCoverage, parsed.Tasks); len(issues) > 0 {
+		return callbacks.IntentTraceData{}, false, &strictjson.ProtocolError{
+			Code: strictjson.ErrorJSONBusinessInvariant, Path: "tasks.sourceSpans",
+			Message: strings.Join(issues, "; "),
+		}
+	}
 	normalized := NormalizeIntentTasks(envelope, tasks)
 	units := normalized.AcceptedUnits
-	degraded := normalized.Status == "degraded_single_task"
+	degraded := strings.HasPrefix(normalized.Status, "degraded_")
 	if len(units) == 0 {
 		return callbacks.IntentTraceData{}, false, fmt.Errorf("intent v3 produced no question units")
 	}
@@ -208,33 +411,87 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 	derived, deriveErr := DeriveRuntimeIntentCapabilities(v2, configs)
 	var trace callbacks.IntentTraceData
 	if deriveErr != nil {
-		// 能力目录缺该意图时降级仍要产出可回复 trace（信息问答路径），
-		// 不让降级协议失败升级为整次 Intent 失败。
+		// 能力目录与模型输出不一致属于协议/配置故障。安全降级只能澄清，
+		// 不能把未知输入强制送进酒店知识库，更不能转人工。
 		trace = callbacks.IntentTraceData{ShouldReply: true, DialogueAct: v2.DialogueAct,
-			PrimaryIntent: "hotel_info", Reason: "intent_tasks.v3 degraded_single_task"}
+			PrimaryIntent: "interaction", MatchedIntentCode: "interaction",
+			SubIntent: "clarify", NeedsClarification: true,
+			Reason: "intent_tasks.v3 capability_unavailable_safe_clarify"}
 		trace.IntentTasks = make([]callbacks.IntentTaskTraceData, 0, len(v2Tasks))
 		for _, task := range v2Tasks {
 			trace.IntentTasks = append(trace.IntentTasks, callbacks.IntentTaskTraceData{
-				Sequence: task.Sequence, Intent: task.Intent, SubIntent: task.SubIntent,
-				Text: task.Text, RequestMode: task.RequestMode, Confidence: task.Confidence,
-				NeedsKnowledge: true,
+				Sequence: task.Sequence, Intent: "interaction", SubIntent: "clarify",
+				Text: task.Text, RequestMode: "clarify_previous", Confidence: task.Confidence,
 			})
 		}
 	} else {
 		trace = AdaptIntentV2ToLegacyTrace(v2, derived)
 	}
+	unitsBySequence := make(map[int]QuestionUnit, len(units))
+	for _, unit := range units {
+		unitsBySequence[unit.Sequence] = unit
+	}
 	for index := range trace.IntentTasks {
-		for _, seed := range unitRequirements[trace.IntentTasks[index].Sequence] {
+		unit, ok := unitsBySequence[trace.IntentTasks[index].Sequence]
+		if !ok {
+			return callbacks.IntentTraceData{}, false, &strictjson.ProtocolError{
+				Code: strictjson.ErrorJSONReferenceInvalid, Path: "tasks.sequence",
+				Message: fmt.Sprintf("normalized question unit missing for task sequence %d", trace.IntentTasks[index].Sequence),
+			}
+		}
+		trace.IntentTasks[index].QuestionUnitKey = unit.QuestionKey
+		trace.IntentTasks[index].SourceMessageID = unit.PrimarySourceMessageID
+		trace.IntentTasks[index].CanonicalQuestionHash = unit.CanonicalQuestionHash
+		trace.IntentTasks[index].SourceBindings, trace.IntentTasks[index].SourceSetFingerprint,
+			trace.IntentTasks[index].AnalysisRevision = buildQuestionUnitSourceTrace(envelope, unit)
+		trace.IntentTasks[index].ObservationBindings = buildQuestionUnitObservationTrace(envelope, unit)
+		if len(unit.SourceSpans) > 0 {
+			trace.IntentTasks[index].SourceSpanStart = unit.SourceSpans[0].Start
+			trace.IntentTasks[index].SourceSpanEnd = unit.SourceSpans[0].End
+		}
+		seeds := unitRequirements[trace.IntentTasks[index].Sequence]
+		if len(seeds) == 0 {
+			seeds = defaultRequirementSeeds(trace.IntentTasks[index])
+		}
+		for _, seed := range seeds {
 			trace.IntentTasks[index].Requirements = append(trace.IntentTasks[index].Requirements,
 				fmt.Sprintf("%s|%t", seed.Kind, seed.Required))
 		}
 	}
 	trace.MatchMode = "intent_tasks.v3"
+	trace.UtteranceCoverage = buildIntentCoverageTrace(envelope, parsed.UtteranceCoverage)
 	trace.Reason = "intent_tasks.v3 envelope+span normalized"
 	if degraded {
-		trace.Reason = "intent_tasks.v3 degraded_single_task"
+		trace.Reason = "intent_tasks.v3 " + normalized.Status
 	}
 	return trace, degraded, nil
+}
+
+func buildIntentCoverageTrace(envelope contextcompiler.TurnInputEnvelope, coverage []intentCoverageItemWire) []callbacks.IntentCoverageTraceData {
+	messageIDByRef := make(map[string]int64, len(envelope.Utterances))
+	for _, utterance := range envelope.Utterances {
+		messageIDByRef[utterance.Ref] = utterance.MessageID
+	}
+	ret := make([]callbacks.IntentCoverageTraceData, 0, len(coverage))
+	for _, item := range coverage {
+		messageID := messageIDByRef[item.SourceRef]
+		if messageID <= 0 {
+			continue
+		}
+		ret = append(ret, callbacks.IntentCoverageTraceData{
+			MessageID: messageID, Status: item.Status, ReasonCode: strings.TrimSpace(item.IgnoredReason),
+			TaskSequences: append([]int(nil), item.TaskSequences...),
+		})
+	}
+	return ret
+}
+
+func mapKeys(values map[string]struct{}) []string {
+	ret := make([]string, 0, len(values))
+	for value := range values {
+		ret = append(ret, value)
+	}
+	return ret
 }
 
 // renderIntentV3EnvelopeBlock 渲染 Intent User Prompt（契约 9.4）。
@@ -252,14 +509,30 @@ func renderIntentV3EnvelopeBlock(envelope contextcompiler.TurnInputEnvelope, cat
 }
 
 type intentCatalogEntry struct {
-	Intent    string `json:"intent"`
-	SubIntent string `json:"subIntent"`
+	Intent             string   `json:"intent"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	NeedsKnowledge     bool     `json:"needsKnowledge"`
+	NeedsResource      bool     `json:"needsResource"`
+	ResourceType       string   `json:"resourceType"`
+	NeedsTool          bool     `json:"needsTool"`
+	NeedsHumanRoute    bool     `json:"needsHumanRoute"`
+	NoReplyWhenMatched bool     `json:"noReplyWhenMatched"`
+	PositiveExamples   []string `json:"positiveExamples"`
+	NegativeExamples   []string `json:"negativeExamples"`
 }
 
 func renderIntentCatalogEntries(configs []models.ReplyIntentConfig) []intentCatalogEntry {
 	entries := make([]intentCatalogEntry, 0, len(configs))
 	for _, config := range configs {
-		entries = append(entries, intentCatalogEntry{Intent: config.Code, SubIntent: config.Name})
+		entries = append(entries, intentCatalogEntry{
+			Intent: config.Code, Name: config.Name, Description: boundedIntentCatalogText(config.Description, 600),
+			NeedsKnowledge: config.NeedsKnowledge, NeedsResource: config.NeedsResource,
+			ResourceType: config.ResourceType, NeedsTool: config.NeedsTool,
+			NeedsHumanRoute: config.NeedsHumanRoute, NoReplyWhenMatched: config.NoReplyWhenMatched,
+			PositiveExamples: splitIntentCatalogExamples(config.PositiveExamples, 6),
+			NegativeExamples: splitIntentCatalogExamples(config.NegativeExamples, 6),
+		})
 	}
 	return entries
 }
@@ -272,7 +545,7 @@ func detectRuntimeIntentV3(ctx context.Context, req RunInput, history adapter.Hi
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	intentConfig, err := withRuntimeIntentStructuredOutputSchema(resolved.RuntimeConfig(), contracts.MustSchema(contracts.SchemaIntentTasksV3))
+	intentConfig, err := withRuntimeIntentStructuredOutputSchema(resolved.RuntimeConfig(), contracts.SchemaIntentTasksV3, contracts.MustSchema(contracts.SchemaIntentTasksV3))
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
@@ -286,60 +559,431 @@ func detectRuntimeIntentV3(ctx context.Context, req RunInput, history adapter.Hi
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	envelope := buildIntentV3Envelope(req, history)
-	userBlock, err := renderIntentV3EnvelopeBlock(envelope, configs)
+	envelope, err := buildIntentV3Envelope(req, history)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
-	}
-	messages := []*schema.Message{
-		schema.SystemMessage(intentV3SystemPrompt),
-		schema.UserMessage(userBlock),
 	}
 	if open, retryAt := channelbreaker.IsOpen("intent_detect_v3", resolved.ModelName, time.Now()); open {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent v3 channel breaker open until %s", retryAt.Format(time.RFC3339))
 	}
+	batches := splitIntentV3Envelope(envelope, intentV3MaxUtterancesPerBatch)
+	if len(batches) == 0 {
+		return callbacks.IntentTraceData{}, fmt.Errorf("intent v3 envelope has no non-empty utterance")
+	}
+	outputs := make([]intentTasksV3Wire, 0, len(batches))
+	callNo := 0
+	for _, batch := range batches {
+		parsed, calls, batchErr := detectRuntimeIntentV3Batch(
+			intentCtx, req, batch, configs, resolved, intentConfig, chatModel, usageCapture, callNo,
+		)
+		callNo += calls
+		if batchErr != nil {
+			return callbacks.IntentTraceData{}, batchErr
+		}
+		outputs = append(outputs, parsed)
+	}
+	merged := mergeIntentV3BatchOutputs(outputs)
+	return adaptDone(envelope, merged, configs)
+}
+
+func detectRuntimeIntentV3Batch(
+	ctx context.Context,
+	req RunInput,
+	envelope contextcompiler.TurnInputEnvelope,
+	configs []models.ReplyIntentConfig,
+	resolved *services.ModelCallConfig,
+	intentConfig modelconfig.Config,
+	chatModel model.ToolCallingChatModel,
+	usageCapture *usagex.Capture,
+	callOffset int,
+) (intentTasksV3Wire, int, error) {
+	userBlock, err := renderIntentV3EnvelopeBlock(envelope, configs)
+	if err != nil {
+		return intentTasksV3Wire{}, 0, err
+	}
+	messages := []*schema.Message{schema.SystemMessage(intentV3SystemPrompt), schema.UserMessage(userBlock)}
 	startedAt := time.Now()
 	receiptOffset := len(usageCapture.Receipts())
-	callCtx, cancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+	callCtx, cancel := context.WithTimeout(ctx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
 	result, err := chatModel.Generate(callCtx, messages)
 	cancel()
 	if err != nil {
 		channelbreaker.RecordFailure("intent_detect_v3", resolved.ModelName, time.Now())
-		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, receiptOffset), 1, time.Since(startedAt).Milliseconds(), err)
-		return callbacks.IntentTraceData{}, err
+		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, receiptOffset), callOffset+1, time.Since(startedAt).Milliseconds(), err)
+		return intentTasksV3Wire{}, 1, err
 	}
 	channelbreaker.RecordSuccess("intent_detect_v3", resolved.ModelName)
-	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, receiptOffset), 1, time.Since(startedAt).Milliseconds(), nil)
-	parsed, err := parseIntentTasksV3Wire(result.Content)
-	if err != nil && runtimeProtocolRepairAllowed(err) {
-		// 契约 10.5：一次协议修复；仍失败时由 Normalize 降级，不转人工。
-		trace, degraded, adaptErr := adaptIntentV3ToTrace(envelope, parsed, configs)
-		_ = trace
-		_ = degraded
-		if adaptErr == nil {
-			return adaptDone(envelope, parsed, configs)
+	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, receiptOffset), callOffset+1, time.Since(startedAt).Milliseconds(), nil)
+	parsed, protocolErr := parseIntentTasksV3Wire(result.Content)
+	if protocolErr == nil {
+		if _, adaptErr := adaptDone(envelope, parsed, configs); adaptErr == nil {
+			return parsed, 1, nil
+		} else {
+			protocolErr = adaptErr
 		}
-		repairMessages := append(append([]*schema.Message{}, messages...),
-			schema.AssistantMessage(result.Content, nil),
-			schema.UserMessage(buildIntentV3RepairInstruction(err)))
-		retryStartedAt := time.Now()
-		retryOffset := len(usageCapture.Receipts())
-		retryCtx, retryCancel := context.WithTimeout(intentCtx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
-		retry, retryErr := chatModel.Generate(retryCtx, repairMessages)
-		retryCancel()
-		if retryErr == nil {
-			recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
-			if retried, retryParseErr := parseIntentTasksV3Wire(retry.Content); retryParseErr == nil {
-				return adaptDone(envelope, retried, configs)
+	}
+	if protocolErr == nil || !runtimeProtocolRepairAllowed(protocolErr) {
+		return intentTasksV3Wire{}, 1, protocolErr
+	}
+	repairMessages := append(append([]*schema.Message{}, messages...),
+		schema.AssistantMessage(result.Content, nil),
+		schema.UserMessage(buildIntentV3RepairInstruction(protocolErr)))
+	retryStartedAt := time.Now()
+	retryOffset := len(usageCapture.Receipts())
+	retryCtx, retryCancel := context.WithTimeout(ctx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
+	retry, retryErr := chatModel.Generate(retryCtx, repairMessages)
+	retryCancel()
+	if retryErr == nil {
+		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryOffset), callOffset+2, time.Since(retryStartedAt).Milliseconds(), nil)
+		if retried, retryParseErr := parseIntentTasksV3Wire(retry.Content); retryParseErr == nil {
+			if _, retryAdaptErr := adaptDone(envelope, retried, configs); retryAdaptErr == nil {
+				return retried, 2, nil
 			}
 		}
-		// 修复失败：降级为逐 utterance 全文 QuestionUnit（不转人工）。
-		return degradeIntentV3(envelope, parsed, configs, err)
 	}
-	if err != nil {
-		return callbacks.IntentTraceData{}, err
+	degraded, degradeErr := degradeIntentV3Wire(envelope)
+	return degraded, 2, degradeErr
+}
+
+func splitIntentV3Envelope(envelope contextcompiler.TurnInputEnvelope, maxUtterances int) []contextcompiler.TurnInputEnvelope {
+	if maxUtterances <= 0 {
+		maxUtterances = intentV3MaxUtterancesPerBatch
 	}
-	return adaptDone(envelope, parsed, configs)
+	ret := make([]contextcompiler.TurnInputEnvelope, 0, (len(envelope.Utterances)+maxUtterances-1)/maxUtterances)
+	for start := 0; start < len(envelope.Utterances); {
+		end := min(start+maxUtterances, len(envelope.Utterances))
+		if end < len(envelope.Utterances) && end-start > 1 && strings.TrimSpace(envelope.Utterances[end-1].Text) == "" && strings.TrimSpace(envelope.Utterances[end].Text) != "" {
+			end--
+		}
+		batch := sliceIntentV3Envelope(envelope, start, end)
+		if intentEnvelopeHasNonEmptyUtterance(batch) {
+			ret = append(ret, batch)
+		}
+		start = end
+	}
+	return ret
+}
+
+func sliceIntentV3Envelope(envelope contextcompiler.TurnInputEnvelope, start, end int) contextcompiler.TurnInputEnvelope {
+	batch := contextcompiler.TurnInputEnvelope{
+		SchemaVersion: envelope.SchemaVersion, Scope: envelope.Scope, PriorAssistant: envelope.PriorAssistant,
+		UnresolvedTasks: append([]contextcompiler.EnvelopeUnresolvedTask(nil), envelope.UnresolvedTasks...),
+		Utterances:      append([]contextcompiler.EnvelopeUtterance(nil), envelope.Utterances[start:end]...),
+	}
+	observationRefs := make(map[string]struct{})
+	for _, utterance := range batch.Utterances {
+		for _, ref := range utterance.ObservationRefs {
+			observationRefs[ref] = struct{}{}
+		}
+	}
+	for _, observation := range envelope.Observations {
+		if _, ok := observationRefs[observation.Ref]; ok {
+			batch.Observations = append(batch.Observations, observation)
+		}
+	}
+	return batch
+}
+
+func intentEnvelopeHasNonEmptyUtterance(envelope contextcompiler.TurnInputEnvelope) bool {
+	for _, utterance := range envelope.Utterances {
+		if strings.TrimSpace(utterance.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeIntentV3BatchOutputs(outputs []intentTasksV3Wire) intentTasksV3Wire {
+	merged := intentTasksV3Wire{SchemaVersion: contracts.SchemaIntentTasksV3, DialogueAct: "unknown"}
+	sequenceOffset := 0
+	for _, output := range outputs {
+		if merged.DialogueAct == "unknown" {
+			merged.DialogueAct = output.DialogueAct
+		} else if output.DialogueAct != "" && output.DialogueAct != merged.DialogueAct {
+			merged.DialogueAct = "new_topic"
+		}
+		for _, task := range output.Tasks {
+			task.Sequence += sequenceOffset
+			merged.Tasks = append(merged.Tasks, task)
+		}
+		for _, item := range output.UtteranceCoverage {
+			for index := range item.TaskSequences {
+				item.TaskSequences[index] += sequenceOffset
+			}
+			merged.UtteranceCoverage = append(merged.UtteranceCoverage, item)
+		}
+		sequenceOffset = len(merged.Tasks)
+	}
+	return merged
+}
+
+func normalizeIntentTasksForDialogueAct(dialogueAct string, tasks []IntentTaskV3) []IntentTaskV3 {
+	for index := range tasks {
+		act := classifyIntentTaskDialogueAct(tasks[index])
+		if act == "" && len(tasks) == 1 {
+			switch strings.TrimSpace(dialogueAct) {
+			case "greeting", "thanks", "closing", "social":
+				act = strings.TrimSpace(dialogueAct)
+			}
+		}
+		switch act {
+		case "greeting", "thanks", "closing", "social":
+			tasks[index].Intent = "interaction"
+			tasks[index].SubIntent = act
+			tasks[index].RequestMode = "social"
+			tasks[index].Requirements = []RequirementSeed{{Sequence: 1, Kind: "social_reply", Required: true}}
+		case "clarify":
+			tasks[index].Intent = "interaction"
+			tasks[index].SubIntent = "clarify"
+			tasks[index].RequestMode = "clarify_previous"
+			tasks[index].Requirements = []RequirementSeed{{Sequence: 1, Kind: "clarification", Required: true}}
+		}
+	}
+	return tasks
+}
+
+// classifyIntentTaskDialogueAct 是模型后的逐 Task 确定性保护。它只修正纯社交、
+// 纯语气和无唯一指代的短追问，不识别任何酒店业务关键词。
+func classifyIntentTaskDialogueAct(task IntentTaskV3) string {
+	parts := make([]string, 0, len(task.SourceSpans))
+	for _, span := range task.SourceSpans {
+		if value := strings.TrimSpace(span.Quote); value != "" {
+			parts = append(parts, value)
+		}
+	}
+	text := strings.Join(parts, " ")
+	if strings.TrimSpace(text) == "" {
+		text = task.NormalizedText
+	}
+	if questionPunctuationOnly(text) {
+		return "clarify"
+	}
+	compact := compactDialogueText(text)
+	if compact == "" {
+		return "social"
+	}
+	if symbolOnlyDialogueText(compact) {
+		return "social"
+	}
+	if stringInExactSet(compact, []string{"你好", "您好", "在吗", "在不", "哈喽", "嗨", "hello", "hi", "早上好", "下午好", "晚上好"}) {
+		return "greeting"
+	}
+	if stringInExactSet(compact, []string{"谢谢", "谢谢你", "谢谢您", "多谢", "感谢", "辛苦了", "麻烦了", "谢啦"}) {
+		return "thanks"
+	}
+	if stringInExactSet(compact, []string{"再见", "拜拜", "晚安", "不用了", "没事了", "先这样", "回头聊"}) {
+		return "closing"
+	}
+	if stringInExactSet(compact, []string{"怎么说", "什么意思", "然后呢", "这个呢", "你说啥", "没听懂", "没明白", "?", "??"}) {
+		return "clarify"
+	}
+	if stringInExactSet(compact, []string{"哈哈", "哈哈哈", "嘿嘿", "嘻嘻", "嘻嘻嘻", "略略略", "好无聊", "好无聊啊", "无聊", "开心", "好玩", "哎呀", "哦吼吼"}) {
+		return "social"
+	}
+	if act := reduplicatedDialogueFragmentAct(compact); act != "" {
+		return act
+	}
+	if strings.TrimSpace(task.RequestMode) == "social" {
+		return "social"
+	}
+	return ""
+}
+
+func questionPunctuationOnly(text string) bool {
+	seenQuestion := false
+	for _, r := range strings.TrimSpace(text) {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		switch r {
+		case '?', '？', '﹖', '⁇', '⁈', '⁉':
+			seenQuestion = true
+			continue
+		}
+		if unicode.IsPunct(r) {
+			continue
+		}
+		return false
+	}
+	return seenQuestion
+}
+
+func symbolOnlyDialogueText(text string) bool {
+	seen := false
+	for _, r := range strings.TrimSpace(text) {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		seen = true
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return seen
+}
+
+// reduplicatedDialogueFragmentAct recognizes a linguistic shape, not a hotel
+// keyword. Short repeated interjections are social; other short reduplicated
+// fragments are incomplete enough to require clarification instead of RAG.
+func reduplicatedDialogueFragmentAct(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) < 3 || len(runes) > 8 {
+		return ""
+	}
+	unique := make(map[rune]struct{}, len(runes))
+	hasAdjacentRepeat := false
+	allVocalization := true
+	for index, r := range runes {
+		if !unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return ""
+		}
+		unique[r] = struct{}{}
+		if index > 0 && runes[index-1] == r {
+			hasAdjacentRepeat = true
+		}
+		if !strings.ContainsRune("哈嘿嘻呵咦呀哎哦噢嗯呃额吼略哼", r) {
+			allVocalization = false
+		}
+	}
+	if !hasAdjacentRepeat || len(unique) > (len(runes)+1)/2 {
+		return ""
+	}
+	if allVocalization {
+		return "social"
+	}
+	return "clarify"
+}
+
+func compactDialogueText(text string) string {
+	return strings.ToLower(strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\r', '，', ',', '。', '！', '!', '；', ';', '：', ':', '“', '”', '"', '\'', '（', '）', '(', ')':
+			return -1
+		default:
+			return r
+		}
+	}, strings.TrimSpace(text)))
+}
+
+func stringInExactSet(value string, options []string) bool {
+	for _, option := range options {
+		if value == option {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultRequirementSeeds(task callbacks.IntentTaskTraceData) []RequirementSeed {
+	kind := "answer"
+	switch task.Intent {
+	case "hotel_variable":
+		kind = "resource_delivery"
+	case "human_complaint_risk":
+		kind = "handoff_decision"
+	case "interaction":
+		if task.SubIntent == "clarify" || task.RequestMode == "clarify_previous" {
+			kind = "clarification"
+		} else {
+			kind = "social_reply"
+		}
+	case "service_request":
+		kind = "service_boundary"
+	case "hotel_info":
+		kind = "knowledge_answer"
+	}
+	return []RequirementSeed{{Sequence: 1, Kind: kind, Required: true}}
+}
+
+func buildQuestionUnitSourceTrace(envelope contextcompiler.TurnInputEnvelope, unit QuestionUnit) ([]callbacks.TaskSourceBindingTraceData, string, int) {
+	messageByRef := make(map[string]contextcompiler.EnvelopeUtterance, len(envelope.Utterances))
+	for _, utterance := range envelope.Utterances {
+		messageByRef[utterance.Ref] = utterance
+	}
+	bindings := make([]callbacks.TaskSourceBindingTraceData, 0, len(unit.SourceSpans))
+	analysisRevision := 0
+	for _, span := range unit.SourceSpans {
+		utterance, ok := messageByRef[span.SourceRef]
+		if !ok || utterance.MessageID <= 0 {
+			continue
+		}
+		bindings = append(bindings, callbacks.TaskSourceBindingTraceData{
+			MessageID: utterance.MessageID, SpanStart: span.Start, SpanEnd: span.End,
+		})
+		if utterance.MessageType != "text" && utterance.MessageType != "html" {
+			analysisRevision = 1
+		}
+	}
+	sort.SliceStable(bindings, func(i, j int) bool {
+		if bindings[i].MessageID != bindings[j].MessageID {
+			return bindings[i].MessageID < bindings[j].MessageID
+		}
+		if bindings[i].SpanStart != bindings[j].SpanStart {
+			return bindings[i].SpanStart < bindings[j].SpanStart
+		}
+		return bindings[i].SpanEnd < bindings[j].SpanEnd
+	})
+	raw, _ := json.Marshal(bindings)
+	sum := sha256.Sum256(raw)
+	return bindings, hex.EncodeToString(sum[:]), analysisRevision
+}
+
+func buildQuestionUnitObservationTrace(envelope contextcompiler.TurnInputEnvelope, unit QuestionUnit) []callbacks.TaskObservationBindingTraceData {
+	observationByRef := make(map[string]contextcompiler.EnvelopeObservation, len(envelope.Observations))
+	for _, observation := range envelope.Observations {
+		observationByRef[observation.Ref] = observation
+	}
+	bindings := make([]callbacks.TaskObservationBindingTraceData, 0, len(unit.DependsOnObs))
+	seen := make(map[string]struct{}, len(unit.DependsOnObs))
+	for _, ref := range unit.DependsOnObs {
+		observation, ok := observationByRef[ref]
+		if !ok || observation.MessageID <= 0 {
+			continue
+		}
+		revision := observation.SourceRevision
+		if revision <= 0 {
+			revision = 1
+		}
+		key := fmt.Sprintf("%d/%d", observation.MessageID, revision)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		bindings = append(bindings, callbacks.TaskObservationBindingTraceData{
+			MessageID: observation.MessageID, SourceRevision: revision,
+		})
+	}
+	sort.SliceStable(bindings, func(i, j int) bool {
+		if bindings[i].MessageID == bindings[j].MessageID {
+			return bindings[i].SourceRevision < bindings[j].SourceRevision
+		}
+		return bindings[i].MessageID < bindings[j].MessageID
+	})
+	return bindings
+}
+
+func splitIntentCatalogExamples(raw string, limit int) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' || r == '；' || r == ';' })
+	ret := make([]string, 0, min(limit, len(parts)))
+	for _, part := range parts {
+		part = boundedIntentCatalogText(part, 120)
+		if part == "" {
+			continue
+		}
+		ret = append(ret, part)
+		if len(ret) >= limit {
+			break
+		}
+	}
+	return ret
+}
+
+func boundedIntentCatalogText(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit])
 }
 
 func adaptDone(envelope contextcompiler.TurnInputEnvelope, parsed intentTasksV3Wire, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
@@ -350,32 +994,54 @@ func adaptDone(envelope contextcompiler.TurnInputEnvelope, parsed intentTasksV3W
 // degradeIntentV3 契约 10.5.2：协议失败时按唯一非空 utterance 收敛，
 // 不复制多个 Task，不转人工。
 func degradeIntentV3(envelope contextcompiler.TurnInputEnvelope, parsed intentTasksV3Wire, configs []models.ReplyIntentConfig, cause error) (callbacks.IntentTraceData, error) {
-	fallback := intentTasksV3Wire{SchemaVersion: contracts.SchemaIntentTasksV3, DialogueAct: parsed.DialogueAct}
-	seq := 0
-	for _, utterance := range envelope.Utterances {
-		if strings.TrimSpace(utterance.Text) == "" {
-			continue
-		}
-		seq++
-		runes := []rune(utterance.Text)
-		fallback.Tasks = append(fallback.Tasks, intentTaskV3Wire{
-			Sequence: seq, Intent: "hotel_info", SourceRefs: []string{utterance.Ref},
-			SourceSpans: []intentSpanWire{{SourceRef: utterance.Ref, Start: 0, End: len(runes), Quote: utterance.Text}},
-			Normalized:  utterance.Text, RequestMode: "answer", Confidence: 0.5,
-		})
-		fallback.UtteranceCoverage = append(fallback.UtteranceCoverage, intentCoverageItemWire{
-			SourceRef: utterance.Ref, Status: "covered", TaskSequences: []int{seq},
-		})
-	}
-	if len(fallback.Tasks) == 0 {
+	fallback, err := degradeIntentV3Wire(envelope)
+	if err != nil {
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent v3 protocol failure without fallback: %w", cause)
+	}
+	if dialogueAct := strings.TrimSpace(parsed.DialogueAct); dialogueAct != "" {
+		fallback.DialogueAct = dialogueAct
 	}
 	trace, _, err := adaptIntentV3ToTrace(envelope, fallback, configs)
 	return trace, err
 }
 
+func degradeIntentV3Wire(envelope contextcompiler.TurnInputEnvelope) (intentTasksV3Wire, error) {
+	fallback := intentTasksV3Wire{SchemaVersion: contracts.SchemaIntentTasksV3, DialogueAct: "unknown"}
+	seq := 0
+	nonEmptyRemaining := countNonEmptyEnvelopeUtterances(envelope.Utterances)
+	for _, utterance := range envelope.Utterances {
+		if strings.TrimSpace(utterance.Text) == "" {
+			continue
+		}
+		maxClauses := 12 - seq - (nonEmptyRemaining - 1)
+		if maxClauses < 1 {
+			maxClauses = 1
+		}
+		sequences := make([]int, 0, maxClauses)
+		for _, clause := range splitFallbackUtteranceClauses(utterance.Text, maxClauses) {
+			seq++
+			sequences = append(sequences, seq)
+			fallback.Tasks = append(fallback.Tasks, intentTaskV3Wire{
+				Sequence: seq, Intent: "interaction", SubIntent: "clarify", SourceRefs: []string{utterance.Ref},
+				SourceSpans: []intentSpanWire{{SourceRef: utterance.Ref, Start: clause.Start, End: clause.End, Quote: clause.Quote}},
+				Normalized:  clause.Quote, Requirements: []requirementWire{{Sequence: 1, Kind: "clarification", Required: true}},
+				RequestMode: "clarify_previous", Confidence: 0.5,
+			})
+		}
+		fallback.UtteranceCoverage = append(fallback.UtteranceCoverage, intentCoverageItemWire{
+			SourceRef: utterance.Ref, Status: "covered", TaskSequences: sequences,
+		})
+		nonEmptyRemaining--
+	}
+	if len(fallback.Tasks) == 0 {
+		return intentTasksV3Wire{}, fmt.Errorf("intent v3 protocol failure without fallback")
+	}
+	return fallback, nil
+}
+
 func buildIntentV3RepairInstruction(err error) string {
 	return "上一次输出违反 intent_tasks.v3 协议：" + err.Error() +
 		"\n请重新输出严格 JSON：每个非空 URef 恰好一条 utteranceCoverage；" +
-		"sourceSpan.quote 必须是对应 utterance.text 的连续原文片段（0-based rune offset，end exclusive）。"
+		"sourceSpan.quote 必须是对应 utterance.text 的连续原文片段（0-based rune offset，end exclusive）；" +
+		"ignored 只允许 duplicate_equivalent，且必须存在归一化后完全相同的 covered 输入。"
 }

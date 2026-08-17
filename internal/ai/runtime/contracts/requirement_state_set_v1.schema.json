@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/requirement_state_set.v1.json",
+  "title": "RequirementStateSetV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "states"],
+  "properties": {
+    "schemaVersion": {"const": "requirement_state_set.v1"},
+    "states": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "outcome", "queryKey", "evidenceRef", "errorCode"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^R[1-9][0-9]*$", "maxLength": 16},
+          "outcome": {
+            "enum": [
+              "answered", "no_hit", "failed_retryable", "failed_terminal", "clarify",
+              "covered", "superseded", "handoff", "skipped_policy"
+            ]
+          },
+          "queryKey": {"type": "string", "maxLength": 128},
+          "evidenceRef": {"type": "string", "maxLength": 255},
+          "errorCode": {"type": "string", "maxLength": 80}
+        }
+      }
+    }
+  }
+}

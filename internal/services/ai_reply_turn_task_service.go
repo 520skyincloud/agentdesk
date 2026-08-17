@@ -8,6 +8,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ type AIReplyTurnTaskInput struct {
 	TenantID        int64
 	TurnID          int64
 	SourceMessageID int64
+	QuestionUnitKey string
 	SequenceNo      int
 	OccurrenceIndex int
 	TaskType        enums.AIReplyTurnTaskType
@@ -44,17 +46,18 @@ type AIReplyTurnTaskInput struct {
 	ResourceAction  string
 	QuestionText    string
 	// 多模态契约 3.2/22.11：QuestionUnit 持久来源绑定与摘要；临时 SourceRef 不入库。
-	AnalysisRevision       int
-	AnswerRequirementsJSON string
-	SourceSpanStart        int
-	SourceSpanEnd          int
-	SourceBindingsJSON     string
-	SourceSetFingerprint   string
-	CanonicalQuestionHash  string
-	CapabilityCode         string
-	CapabilityRoute        string
-	CapabilityFingerprint  string
-	AnswerGroupKey         string
+	AnalysisRevision        int
+	AnswerRequirementsJSON  string
+	SourceSpanStart         int
+	SourceSpanEnd           int
+	SourceBindingsJSON      string
+	ObservationBindingsJSON string
+	SourceSetFingerprint    string
+	CanonicalQuestionHash   string
+	CapabilityCode          string
+	CapabilityRoute         string
+	CapabilityFingerprint   string
+	AnswerGroupKey          string
 }
 
 type AIReplyTurnTaskKnowledgeUpdate struct {
@@ -76,59 +79,45 @@ func (s *aiReplyTurnTaskService) Enabled() bool {
 }
 
 func (s *aiReplyTurnTaskService) StableTaskKey(input AIReplyTurnTaskInput) string {
-	// 契约 3.2.3：稳定键不再包含 OccurrenceIndex。优先使用 QuestionUnit 的
-	// canonical hash + 来源集合 fingerprint；旧输入缺这些字段时回退到语义
-	// fingerprint（同样不带 occurrence）。
-	canonicalHash := strings.TrimSpace(input.CanonicalQuestionHash)
+	// 契约 3.2.3：Task 是来源片段的持久处理标签，身份只能由租户、轮次和
+	// 不可变来源集合决定。Intent/SubIntent/TaskType/模型改写均是可修订分析结果，
+	// 绝不能在协议修复或重试时制造第二个物理 Task。
 	sourceSetFingerprint := strings.TrimSpace(input.SourceSetFingerprint)
-	if input.TenantID > 0 && input.TurnID > 0 && input.SourceMessageID > 0 && input.AnalysisRevision > 0 &&
-		canonicalHash != "" && sourceSetFingerprint != "" {
-		taskType := strings.TrimSpace(string(input.TaskType))
-		if taskType == "" {
-			taskType = string(enums.AIReplyTurnTaskTypeText)
-		}
+	if input.TenantID > 0 && input.TurnID > 0 && input.SourceMessageID > 0 &&
+		sourceSetFingerprint != "" {
 		raw := fmt.Sprintf(
-			"%d/%d/%d/%d/%s/%s/%s",
-			input.TenantID, input.TurnID, input.SourceMessageID, input.AnalysisRevision,
-			sourceSetFingerprint, taskType, canonicalHash,
+			"%d/%d/%d/%s",
+			input.TenantID, input.TurnID, input.SourceMessageID,
+			sourceSetFingerprint,
 		)
 		sum := sha256.Sum256([]byte(raw))
 		return "turn_task_" + hex.EncodeToString(sum[:16])
 	}
-	fingerprint := s.SemanticQuestionFingerprint(input)
-	if fingerprint == "" {
-		fingerprint = canonicalHash
-	}
-	if input.TenantID > 0 && input.TurnID > 0 && fingerprint != "" {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s/1", input.TenantID, input.TurnID, fingerprint)))
+	if input.TenantID > 0 && input.TurnID > 0 && input.SourceMessageID > 0 {
+		sum := sha256.Sum256([]byte(fmt.Sprintf(
+			"%d/%d/%d/%d/%d",
+			input.TenantID,
+			input.TurnID,
+			input.SourceMessageID,
+			input.SourceSpanStart,
+			input.SourceSpanEnd,
+		)))
 		encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
 		return "turn_task_" + strings.ToLower(encoded[:26])
-	}
-	taskType := strings.TrimSpace(string(input.TaskType))
-	if taskType == "" {
-		taskType = string(enums.AIReplyTurnTaskTypeText)
 	}
 	sequenceNo := input.SequenceNo
 	if sequenceNo <= 0 {
 		sequenceNo = 1
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", input.SourceMessageID, sequenceNo, taskType)))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d:%d", input.SourceMessageID, sequenceNo)))
 	return "turn_task_" + hex.EncodeToString(sum[:12])
 }
 
 func (s *aiReplyTurnTaskService) SemanticQuestionFingerprint(input AIReplyTurnTaskInput) string {
-	questionFingerprint := s.QuestionFingerprint(input.QuestionText)
-	parts := []string{
-		normalizeTaskFingerprintPart(input.Intent),
-		normalizeTaskFingerprintPart(input.SubIntent),
-		questionFingerprint,
-		normalizeTaskFingerprintPart(input.RequestMode),
+	if canonical := strings.TrimSpace(input.CanonicalQuestionHash); canonical != "" {
+		return canonical
 	}
-	if strings.Join(parts, "") == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
-	return hex.EncodeToString(sum[:])
+	return s.QuestionFingerprint(input.QuestionText)
 }
 
 func (s *aiReplyTurnTaskService) QuestionFingerprint(text string) string {
@@ -155,11 +144,10 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	ret := make([]models.AIReplyTurnTask, 0, len(inputs))
 	seen := make(map[string]struct{}, len(inputs))
 	existingTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
-	existingBySourceSequence := make(map[string]*models.AIReplyTurnTask, len(existingTasks))
+	existingByTaskKey := make(map[string]*models.AIReplyTurnTask, len(existingTasks))
 	for index := range existingTasks {
 		existing := &existingTasks[index]
-		identity := aiReplyTurnTaskSourceIdentity(existing.SourceMessageID, existing.SequenceNo, existing.TaskType)
-		existingBySourceSequence[identity] = existing
+		existingByTaskKey[existing.TaskKey] = existing
 	}
 	for index, input := range inputs {
 		if input.SourceMessageID <= 0 {
@@ -178,6 +166,12 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		}
 		input.TenantID = turn.TenantID
 		input.TurnID = turn.ID
+		normalizeAIReplyTurnTaskSourceIdentity(&input)
+		normalizedObservationBindings, observationErr := normalizeAIReplyTurnTaskObservationBindings(db, turn, input.ObservationBindingsJSON)
+		if observationErr != nil {
+			return nil, observationErr
+		}
+		input.ObservationBindingsJSON = normalizedObservationBindings
 		fingerprint := s.SemanticQuestionFingerprint(input)
 		// 契约 3.2.2：canonical hash 非空时写入 CanonicalQuestionHash，
 		// QuestionFingerprint 作为兼容副本。
@@ -185,30 +179,23 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		if canonicalHash == "" && fingerprint != "" {
 			canonicalHash = fingerprint
 		}
-		identity := aiReplyTurnTaskSourceIdentity(input.SourceMessageID, input.SequenceNo, input.TaskType)
-		existingIdentity := existingBySourceSequence[identity]
+		taskKey := s.StableTaskKey(input)
+		normalizedRequirements, requirementsErr := normalizeAnswerRequirementsForTask(input.AnswerRequirementsJSON, taskKey, input)
+		if requirementsErr != nil {
+			return nil, requirementsErr
+		}
+		input.AnswerRequirementsJSON = normalizedRequirements
+		existingIdentity := existingByTaskKey[taskKey]
 		if existingIdentity != nil {
-			fingerprint = existingIdentity.QuestionFingerprint
 			if canonicalHash == "" {
 				canonicalHash = existingIdentity.CanonicalQuestionHash
 			}
 		}
-		taskKey := ""
-		if existingIdentity != nil {
-			taskKey = existingIdentity.TaskKey
-		} else {
-			taskKey = s.StableTaskKey(input)
-			// 稳定键不含 occurrence：同轮次语义/来源相同的第二个 QuestionUnit
-			// 会得到相同 key。为保证物理行唯一，用 sequence 做 salt 生成
-			// 去重副本行，随后由 canonical 去重收敛为 covered。
-			for {
-				owner := s.taskKeyOwner(db, turn, taskKey)
-				if owner == nil || (owner.SourceMessageID == input.SourceMessageID && owner.SequenceNo == input.SequenceNo) {
-					break
-				}
-				sum := sha256.Sum256([]byte(taskKey + "\x1f" + fmt.Sprintf("%d", input.SequenceNo)))
-				taskKey = "turn_task_" + hex.EncodeToString(sum[:16])
-			}
+		if owner := s.taskKeyOwner(db, turn, taskKey); owner != nil &&
+			(owner.SourceMessageID != input.SourceMessageID || owner.SourceSpanStart != input.SourceSpanStart ||
+				owner.SourceSpanEnd != input.SourceSpanEnd ||
+				strings.TrimSpace(owner.SourceSetFingerprint) != strings.TrimSpace(input.SourceSetFingerprint)) {
+			return nil, fmt.Errorf("AI reply task stable key collision: %s", taskKey)
 		}
 		if _, exists := seen[taskKey]; exists {
 			continue
@@ -231,23 +218,25 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 		item := &models.AIReplyTurnTask{
 			TenantID: turn.TenantID, ConversationID: turn.ConversationID, SessionNo: turn.SessionNo,
 			TurnID: turn.ID, IntroducedVersion: turn.Version, SourceMessageID: input.SourceMessageID,
-			TaskKey: taskKey, SequenceNo: input.SequenceNo, TaskType: input.TaskType,
+			TaskKey: taskKey, QuestionUnitKey: limitText(strings.TrimSpace(input.QuestionUnitKey), 128),
+			SequenceNo: input.SequenceNo, TaskType: input.TaskType,
 			Intent: limitText(strings.TrimSpace(input.Intent), 80), SubIntent: limitText(strings.TrimSpace(input.SubIntent), 120),
 			ResourceAction: limitText(strings.TrimSpace(input.ResourceAction), 80), QuestionFingerprint: fingerprint,
 			RelationType: limitText(strings.TrimSpace(input.RelationType), 24), RelatedTaskID: input.RelatedTaskID,
-			AnalysisRevision:       input.AnalysisRevision,
-			SourceSpanStart:        input.SourceSpanStart,
-			SourceSpanEnd:          input.SourceSpanEnd,
-			SourceBindingsJSON:     strings.TrimSpace(input.SourceBindingsJSON),
-			SourceSetFingerprint:   limitText(strings.TrimSpace(input.SourceSetFingerprint), 64),
-			CanonicalQuestionHash:  limitText(canonicalHash, 64),
-			RequestMode:            limitText(strings.TrimSpace(input.RequestMode), 24),
-			AnswerRequirementsJSON: strings.TrimSpace(input.AnswerRequirementsJSON),
-			CapabilityCode:         limitText(strings.TrimSpace(input.CapabilityCode), 120),
-			CapabilityRoute:        limitText(strings.TrimSpace(input.CapabilityRoute), 40),
-			CapabilityFingerprint:  limitText(strings.TrimSpace(input.CapabilityFingerprint), 64),
-			AnswerGroupKey:         limitText(strings.TrimSpace(input.AnswerGroupKey), 128),
-			Stage:                  stage, Status: status, KnowledgeStatus: knowledgeStatus,
+			AnalysisRevision:        input.AnalysisRevision,
+			SourceSpanStart:         input.SourceSpanStart,
+			SourceSpanEnd:           input.SourceSpanEnd,
+			SourceBindingsJSON:      strings.TrimSpace(input.SourceBindingsJSON),
+			ObservationBindingsJSON: strings.TrimSpace(input.ObservationBindingsJSON),
+			SourceSetFingerprint:    limitText(strings.TrimSpace(input.SourceSetFingerprint), 64),
+			CanonicalQuestionHash:   limitText(canonicalHash, 64),
+			RequestMode:             limitText(strings.TrimSpace(input.RequestMode), 24),
+			AnswerRequirementsJSON:  strings.TrimSpace(input.AnswerRequirementsJSON),
+			CapabilityCode:          limitText(strings.TrimSpace(input.CapabilityCode), 120),
+			CapabilityRoute:         limitText(strings.TrimSpace(input.CapabilityRoute), 40),
+			CapabilityFingerprint:   limitText(strings.TrimSpace(input.CapabilityFingerprint), 64),
+			AnswerGroupKey:          limitText(strings.TrimSpace(input.AnswerGroupKey), 128),
+			Stage:                   stage, Status: status, KnowledgeStatus: knowledgeStatus,
 			AuditFields: models.AuditFields{
 				CreatedAt: now, CreateUserName: "ai_reply_task",
 				UpdatedAt: now, UpdateUserName: "ai_reply_task",
@@ -266,52 +255,108 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 				return nil, fmt.Errorf("AI reply task conflict without existing row")
 			}
 			item = existing
-			if !aiReplyTurnTaskTerminal(existing.Status) {
+			if aiReplyTurnTaskAnalysisRevisable(existing.Status) {
+				analysisChanged := aiReplyTurnTaskAnalysisChanged(existing, input, fingerprint, canonicalHash)
 				updates := map[string]any{
-					"introduced_version":      turn.Version,
-					"intent":                  limitText(strings.TrimSpace(input.Intent), 80),
-					"sub_intent":              limitText(strings.TrimSpace(input.SubIntent), 120),
-					"resource_action":         limitText(strings.TrimSpace(input.ResourceAction), 80),
-					"question_fingerprint":    fingerprint,
-					"canonical_question_hash": limitText(canonicalHash, 64),
-					"relation_type":           limitText(strings.TrimSpace(input.RelationType), 24),
-					"related_task_id":         input.RelatedTaskID,
-					"updated_at":              now,
-					"update_user_name":        "ai_reply_task",
+					"introduced_version":        turn.Version,
+					"source_message_id":         input.SourceMessageID,
+					"question_unit_key":         limitText(strings.TrimSpace(input.QuestionUnitKey), 128),
+					"sequence_no":               input.SequenceNo,
+					"task_type":                 input.TaskType,
+					"intent":                    limitText(strings.TrimSpace(input.Intent), 80),
+					"sub_intent":                limitText(strings.TrimSpace(input.SubIntent), 120),
+					"resource_action":           limitText(strings.TrimSpace(input.ResourceAction), 80),
+					"request_mode":              limitText(strings.TrimSpace(input.RequestMode), 24),
+					"question_fingerprint":      fingerprint,
+					"canonical_question_hash":   limitText(canonicalHash, 64),
+					"relation_type":             limitText(strings.TrimSpace(input.RelationType), 24),
+					"related_task_id":           input.RelatedTaskID,
+					"analysis_revision":         input.AnalysisRevision,
+					"source_span_start":         input.SourceSpanStart,
+					"source_span_end":           input.SourceSpanEnd,
+					"source_bindings_json":      strings.TrimSpace(input.SourceBindingsJSON),
+					"observation_bindings_json": strings.TrimSpace(input.ObservationBindingsJSON),
+					"source_set_fingerprint":    limitText(strings.TrimSpace(input.SourceSetFingerprint), 64),
+					"answer_requirements_json":  strings.TrimSpace(input.AnswerRequirementsJSON),
+					"capability_code":           limitText(strings.TrimSpace(input.CapabilityCode), 120),
+					"capability_route":          limitText(strings.TrimSpace(input.CapabilityRoute), 40),
+					"capability_fingerprint":    limitText(strings.TrimSpace(input.CapabilityFingerprint), 64),
+					"answer_group_key":          limitText(strings.TrimSpace(input.AnswerGroupKey), 128),
+					"updated_at":                now,
+					"update_user_name":          "ai_reply_task",
 				}
-				if input.AnalysisRevision > 0 {
-					updates["analysis_revision"] = input.AnalysisRevision
-					updates["source_span_start"] = input.SourceSpanStart
-					updates["source_span_end"] = input.SourceSpanEnd
-					updates["source_set_fingerprint"] = limitText(strings.TrimSpace(input.SourceSetFingerprint), 64)
-					if strings.TrimSpace(input.SourceBindingsJSON) != "" {
-						updates["source_bindings_json"] = strings.TrimSpace(input.SourceBindingsJSON)
-					}
-				}
-				if strings.TrimSpace(input.CapabilityRoute) != "" {
-					updates["capability_code"] = limitText(strings.TrimSpace(input.CapabilityCode), 120)
-					updates["capability_route"] = limitText(strings.TrimSpace(input.CapabilityRoute), 40)
-					updates["capability_fingerprint"] = limitText(strings.TrimSpace(input.CapabilityFingerprint), 64)
-				}
-				if strings.TrimSpace(input.AnswerGroupKey) != "" {
-					updates["answer_group_key"] = limitText(strings.TrimSpace(input.AnswerGroupKey), 128)
+				if analysisChanged {
+					updates["stage"] = stage
+					updates["status"] = status
+					updates["knowledge_status"] = knowledgeStatus
+					updates["claimed_by_job_id"] = int64(0)
+					updates["claimed_version"] = 0
+					updates["covered_by_task_id"] = int64(0)
+					updates["attempt_count"] = 0
+					updates["knowledge_hit_count"] = 0
+					updates["knowledge_retrieve_log_id"] = int64(0)
+					updates["knowledge_query_fingerprint"] = ""
+					updates["requirement_state_json"] = ""
+					updates["evidence_fingerprint"] = ""
+					updates["failure_class"] = ""
+					updates["result_code"] = ""
+					updates["committed_message_id"] = int64(0)
+					updates["next_retry_at"] = nil
+					updates["completed_at"] = nil
 				}
 				if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, existing.ID, existing.TenantID, updates); err != nil {
 					return nil, err
 				}
 				item.IntroducedVersion = turn.Version
+				item.SourceMessageID = input.SourceMessageID
+				item.QuestionUnitKey = limitText(strings.TrimSpace(input.QuestionUnitKey), 128)
+				item.SequenceNo = input.SequenceNo
+				item.TaskType = input.TaskType
 				item.Intent = limitText(strings.TrimSpace(input.Intent), 80)
 				item.SubIntent = limitText(strings.TrimSpace(input.SubIntent), 120)
 				item.ResourceAction = limitText(strings.TrimSpace(input.ResourceAction), 80)
+				item.RequestMode = limitText(strings.TrimSpace(input.RequestMode), 24)
 				item.QuestionFingerprint = fingerprint
 				item.RelationType = limitText(strings.TrimSpace(input.RelationType), 24)
 				item.RelatedTaskID = input.RelatedTaskID
+				item.AnalysisRevision = input.AnalysisRevision
+				item.SourceSpanStart = input.SourceSpanStart
+				item.SourceSpanEnd = input.SourceSpanEnd
+				item.SourceBindingsJSON = strings.TrimSpace(input.SourceBindingsJSON)
+				item.ObservationBindingsJSON = strings.TrimSpace(input.ObservationBindingsJSON)
+				item.SourceSetFingerprint = limitText(strings.TrimSpace(input.SourceSetFingerprint), 64)
+				item.CanonicalQuestionHash = limitText(canonicalHash, 64)
+				item.AnswerRequirementsJSON = strings.TrimSpace(input.AnswerRequirementsJSON)
+				item.CapabilityCode = limitText(strings.TrimSpace(input.CapabilityCode), 120)
+				item.CapabilityRoute = limitText(strings.TrimSpace(input.CapabilityRoute), 40)
+				item.CapabilityFingerprint = limitText(strings.TrimSpace(input.CapabilityFingerprint), 64)
+				item.AnswerGroupKey = limitText(strings.TrimSpace(input.AnswerGroupKey), 128)
+				if analysisChanged {
+					item.Stage = stage
+					item.Status = status
+					item.KnowledgeStatus = knowledgeStatus
+					item.ClaimedByJobID = 0
+					item.ClaimedVersion = 0
+					item.CoveredByTaskID = 0
+					item.AttemptCount = 0
+					item.KnowledgeHitCount = 0
+					item.KnowledgeRetrieveLogID = 0
+					item.KnowledgeQueryFingerprint = ""
+					item.RequirementStateJSON = ""
+					item.EvidenceFingerprint = ""
+					item.FailureClass = ""
+					item.ResultCode = ""
+					item.CommittedMessageID = 0
+					item.NextRetryAt = nil
+					item.CompletedAt = nil
+				}
 			}
 		}
+		existingByTaskKey[taskKey] = item
 		if created && fingerprint != "" && status != enums.AIReplyTurnTaskStatusHandoffPending {
 			canonical := s.findCanonicalDuplicate(db, turn, item)
 			if canonical != nil {
-				covered, err := s.markCoveredByExisting(db, canonical, item, now)
+				covered, err := s.markDependentOnCanonical(db, canonical, item, now)
 				if err != nil {
 					return nil, err
 				}
@@ -324,28 +369,247 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 	return ret, nil
 }
 
-// markCoveredByExisting 把 current 任务标记为被 canonical 任务覆盖。
-func (s *aiReplyTurnTaskService) markCoveredByExisting(db *gorm.DB, canonical, current *models.AIReplyTurnTask, now time.Time) (*models.AIReplyTurnTask, error) {
+func normalizeAIReplyTurnTaskSourceIdentity(input *AIReplyTurnTaskInput) {
+	if input == nil || input.SourceMessageID <= 0 {
+		return
+	}
+	if input.SourceSpanStart < 0 {
+		input.SourceSpanStart = 0
+	}
+	if input.SourceSpanEnd < input.SourceSpanStart {
+		input.SourceSpanEnd = input.SourceSpanStart
+	}
+	if strings.TrimSpace(input.SourceBindingsJSON) == "" {
+		raw, _ := json.Marshal([]map[string]any{{
+			"messageId": input.SourceMessageID,
+			"spanStart": input.SourceSpanStart,
+			"spanEnd":   input.SourceSpanEnd,
+		}})
+		input.SourceBindingsJSON = string(raw)
+	}
+	if strings.TrimSpace(input.SourceSetFingerprint) == "" {
+		sum := sha256.Sum256([]byte(input.SourceBindingsJSON))
+		input.SourceSetFingerprint = hex.EncodeToString(sum[:])
+	}
+}
+
+type aiReplyTurnTaskObservationBinding struct {
+	MessageID      int64 `json:"messageId"`
+	SourceRevision int   `json:"sourceRevision"`
+}
+
+func normalizeAIReplyTurnTaskObservationBindings(db *gorm.DB, turn *models.AIReplyTurn, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	var bindings []aiReplyTurnTaskObservationBinding
+	if err := json.Unmarshal([]byte(raw), &bindings); err != nil {
+		return "", fmt.Errorf("AI reply task observation bindings are invalid: %w", err)
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	normalized := make([]aiReplyTurnTaskObservationBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.MessageID <= 0 || binding.SourceRevision <= 0 {
+			return "", errorsx.InvalidParam("AI 回复逐题任务媒体观察绑定无效")
+		}
+		message := repositories.MessageRepository.GetInTenant(db, binding.MessageID, turn.TenantID)
+		if message == nil || message.ConversationID != turn.ConversationID || message.SessionNo != turn.SessionNo ||
+			message.AIReplyTurnID != turn.ID || message.SenderType != enums.IMSenderTypeCustomer {
+			return "", errorsx.InvalidParam("AI 回复逐题任务媒体观察范围不一致")
+		}
+		key := fmt.Sprintf("%d/%d", binding.MessageID, binding.SourceRevision)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, binding)
+	}
+	sort.SliceStable(normalized, func(i, j int) bool {
+		if normalized[i].MessageID == normalized[j].MessageID {
+			return normalized[i].SourceRevision < normalized[j].SourceRevision
+		}
+		return normalized[i].MessageID < normalized[j].MessageID
+	})
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("encode AI reply task observation bindings: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func normalizeAnswerRequirementsForTask(raw, taskKey string, input AIReplyTurnTaskInput) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	set, err := contracts.DecodeAnswerRequirementSetV1([]byte(raw))
+	if err != nil {
+		return "", fmt.Errorf("AI reply task %s answer requirements are invalid: %w", taskKey, err)
+	}
+	if err := contracts.ValidateAnswerRequirementBindingV1(
+		set, taskKey, input.SourceMessageID, input.SourceSpanStart, input.SourceSpanEnd,
+	); err != nil {
+		return "", fmt.Errorf("AI reply task %s answer requirements do not match source: %w", taskKey, err)
+	}
+	canonical, err := contracts.MarshalAnswerRequirementSetV1(set)
+	if err != nil {
+		return "", fmt.Errorf("AI reply task %s answer requirements cannot be encoded: %w", taskKey, err)
+	}
+	return string(canonical), nil
+}
+
+func aiReplyTurnTaskAnalysisChanged(existing *models.AIReplyTurnTask, input AIReplyTurnTaskInput, fingerprint, canonicalHash string) bool {
+	if existing == nil {
+		return true
+	}
+	return existing.TaskType != input.TaskType ||
+		existing.Intent != limitText(strings.TrimSpace(input.Intent), 80) ||
+		existing.SubIntent != limitText(strings.TrimSpace(input.SubIntent), 120) ||
+		existing.ResourceAction != limitText(strings.TrimSpace(input.ResourceAction), 80) ||
+		existing.RequestMode != limitText(strings.TrimSpace(input.RequestMode), 24) ||
+		existing.RelationType != limitText(strings.TrimSpace(input.RelationType), 24) ||
+		existing.RelatedTaskID != input.RelatedTaskID ||
+		existing.QuestionFingerprint != strings.TrimSpace(fingerprint) ||
+		existing.CanonicalQuestionHash != limitText(strings.TrimSpace(canonicalHash), 64) ||
+		existing.ObservationBindingsJSON != strings.TrimSpace(input.ObservationBindingsJSON) ||
+		existing.AnswerRequirementsJSON != strings.TrimSpace(input.AnswerRequirementsJSON) ||
+		existing.CapabilityCode != limitText(strings.TrimSpace(input.CapabilityCode), 120) ||
+		existing.CapabilityRoute != limitText(strings.TrimSpace(input.CapabilityRoute), 40) ||
+		existing.CapabilityFingerprint != limitText(strings.TrimSpace(input.CapabilityFingerprint), 64) ||
+		existing.AnswerGroupKey != limitText(strings.TrimSpace(input.AnswerGroupKey), 128)
+}
+
+// markDependentOnCanonical records exact-duplicate ownership without claiming
+// that the duplicate is already answered. A real committed message closes the
+// dependency immediately; otherwise the duplicate waits for the canonical
+// task's durable transition.
+func (s *aiReplyTurnTaskService) markDependentOnCanonical(db *gorm.DB, canonical, current *models.AIReplyTurnTask, now time.Time) (*models.AIReplyTurnTask, error) {
 	if canonical == nil || current == nil || canonical.ID <= 0 || canonical.ID == current.ID {
 		return current, nil
 	}
+	canonical = s.resolveCoverageCanonicalDB(db, canonical)
+	if canonical == nil || canonical.ID <= 0 || canonical.ID == current.ID {
+		return current, nil
+	}
+	switch canonical.Status {
+	case enums.AIReplyTurnTaskStatusCommitted, enums.AIReplyTurnTaskStatusDelivered, enums.AIReplyTurnTaskStatusCovered:
+		if canonical.CommittedMessageID <= 0 {
+			// Historical rows may contain evidence-free covered states. They are
+			// not valid coverage and must not suppress a new task.
+			return current, nil
+		}
+		if err := s.markCoverageDependentCoveredDB(db, canonical, current, canonical.CommittedMessageID, "covered_by_committed_task", now); err != nil {
+			return nil, err
+		}
+		return current, nil
+	case enums.AIReplyTurnTaskStatusHandoff:
+		if err := s.markCoverageDependentHandoffDB(db, canonical, current, now); err != nil {
+			return nil, err
+		}
+		return current, nil
+	case enums.AIReplyTurnTaskStatusFailed, enums.AIReplyTurnTaskStatusSkipped, enums.AIReplyTurnTaskStatusSuperseded:
+		return current, nil
+	}
 	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, current.ID, current.TenantID, map[string]any{
-		"stage":              enums.AIReplyTurnTaskStageComplete,
-		"status":             enums.AIReplyTurnTaskStatusCovered,
+		"status":             enums.AIReplyTurnTaskStatusWaitingCoverage,
 		"covered_by_task_id": canonical.ID,
-		"result_code":        "covered_by_existing_task",
-		"completed_at":       now,
+		"result_code":        "waiting_for_canonical_task",
+		"completed_at":       nil,
+		"claimed_by_job_id":  0,
+		"claimed_version":    0,
+		"next_retry_at":      nil,
 		"updated_at":         now,
 		"update_user_name":   "ai_reply_task",
 	}); err != nil {
 		return nil, err
 	}
-	current.Stage = enums.AIReplyTurnTaskStageComplete
-	current.Status = enums.AIReplyTurnTaskStatusCovered
+	current.Status = enums.AIReplyTurnTaskStatusWaitingCoverage
 	current.CoveredByTaskID = canonical.ID
-	current.ResultCode = "covered_by_existing_task"
-	current.CompletedAt = &now
+	current.ResultCode = "waiting_for_canonical_task"
+	current.CompletedAt = nil
+	current.ClaimedByJobID = 0
+	current.ClaimedVersion = 0
 	return current, nil
+}
+
+func (s *aiReplyTurnTaskService) resolveCoverageCanonicalDB(db *gorm.DB, task *models.AIReplyTurnTask) *models.AIReplyTurnTask {
+	current := task
+	seen := map[int64]struct{}{}
+	for current != nil && current.Status == enums.AIReplyTurnTaskStatusCovered && current.CommittedMessageID <= 0 && current.CoveredByTaskID > 0 {
+		if _, exists := seen[current.ID]; exists {
+			return nil
+		}
+		seen[current.ID] = struct{}{}
+		next, err := repositories.AIReplyTurnTaskRepository.GetForUpdateInTenant(db, current.CoveredByTaskID, current.TenantID)
+		if err != nil || next == nil || next.TurnID != current.TurnID {
+			return nil
+		}
+		current = next
+	}
+	return current
+}
+
+func (s *aiReplyTurnTaskService) markCoverageDependentCoveredDB(
+	db *gorm.DB,
+	canonical, dependent *models.AIReplyTurnTask,
+	messageID int64,
+	resultCode string,
+	now time.Time,
+) error {
+	if canonical == nil || dependent == nil || messageID <= 0 {
+		return nil
+	}
+	if err := s.ensureRequirementCoveredByMessage(db, dependent, messageID, resultCode, now); err != nil {
+		return err
+	}
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, dependent.ID, dependent.TenantID, map[string]any{
+		"stage":                enums.AIReplyTurnTaskStageComplete,
+		"status":               enums.AIReplyTurnTaskStatusCovered,
+		"covered_by_task_id":   canonical.ID,
+		"result_code":          controlledResultCode(resultCode, "covered_by_committed_task"),
+		"committed_message_id": messageID,
+		"claimed_by_job_id":    0,
+		"claimed_version":      0,
+		"completed_at":         now,
+		"next_retry_at":        nil,
+		"updated_at":           now,
+		"update_user_name":     "ai_reply_task_coverage",
+	}); err != nil {
+		return err
+	}
+	dependent.Stage = enums.AIReplyTurnTaskStageComplete
+	dependent.Status = enums.AIReplyTurnTaskStatusCovered
+	dependent.CoveredByTaskID = canonical.ID
+	dependent.ResultCode = controlledResultCode(resultCode, "covered_by_committed_task")
+	dependent.CommittedMessageID = messageID
+	dependent.CompletedAt = &now
+	return nil
+}
+
+func (s *aiReplyTurnTaskService) markCoverageDependentHandoffDB(
+	db *gorm.DB,
+	canonical, dependent *models.AIReplyTurnTask,
+	now time.Time,
+) error {
+	if canonical == nil || dependent == nil {
+		return nil
+	}
+	if err := s.attachRequirementTaskOutcomeDB(db, dependent, "handoff", fmt.Sprintf("task:%d", canonical.ID), "covered_by_canonical_handoff", now); err != nil {
+		return err
+	}
+	return repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, dependent.ID, dependent.TenantID, map[string]any{
+		"stage":              enums.AIReplyTurnTaskStageComplete,
+		"status":             enums.AIReplyTurnTaskStatusHandoff,
+		"covered_by_task_id": canonical.ID,
+		"result_code":        "covered_by_canonical_handoff",
+		"claimed_by_job_id":  0,
+		"claimed_version":    0,
+		"completed_at":       now,
+		"next_retry_at":      nil,
+		"updated_at":         now,
+		"update_user_name":   "ai_reply_task_coverage",
+	})
 }
 
 func aiReplyTurnTaskSourceIdentity(sourceMessageID int64, sequenceNo int, taskType enums.AIReplyTurnTaskType) string {
@@ -374,9 +638,30 @@ func (s *aiReplyTurnTaskService) findCanonicalDuplicate(db *gorm.DB, turn *model
 			candidate.Status == enums.AIReplyTurnTaskStatusFailed {
 			continue
 		}
+		// Surface-identical deictic questions are not duplicates when they point
+		// at different media evidence. "这个是什么" for image A and image B must
+		// remain two independently answerable Tasks. Observation bindings are
+		// normalized before persistence, so exact JSON equality is a stable
+		// dependency-identity comparison.
+		if strings.TrimSpace(candidate.ObservationBindingsJSON) != strings.TrimSpace(current.ObservationBindingsJSON) {
+			continue
+		}
+		if strings.TrimSpace(candidate.ResourceAction) != strings.TrimSpace(current.ResourceAction) ||
+			strings.TrimSpace(candidate.RelationType) != strings.TrimSpace(current.RelationType) {
+			continue
+		}
+		candidateRequirements := strings.TrimSpace(candidate.AnswerRequirementsJSON)
+		currentRequirements := strings.TrimSpace(current.AnswerRequirementsJSON)
+		if candidateRequirements != "" && currentRequirements != "" && candidateRequirements != currentRequirements {
+			continue
+		}
+		candidateCanonicalHash := strings.TrimSpace(candidate.CanonicalQuestionHash)
+		if canonicalHash != "" && candidateCanonicalHash != "" && candidateCanonicalHash != canonicalHash {
+			continue
+		}
 		// 同 canonical hash 时同源重复也覆盖；hash 缺失时保守只合并跨源重复。
 		if candidate.SourceMessageID == current.SourceMessageID &&
-			(canonicalHash == "" || strings.TrimSpace(candidate.CanonicalQuestionHash) != canonicalHash) {
+			(canonicalHash == "" || candidateCanonicalHash != canonicalHash) {
 			continue
 		}
 		return candidate
@@ -454,18 +739,22 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		stage := enums.AIReplyTurnTaskStageGenerate
 		claimedByJobID := task.ClaimedByJobID
 		claimedVersion := task.ClaimedVersion
-		var nextRetryAt *time.Time
+		var completedAt *time.Time
+		failureClass := ""
 		if update.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-			status = enums.AIReplyTurnTaskStatusPending
-			stage = enums.AIReplyTurnTaskStageKnowledge
+			// FastGPT Gateway owns transport retries. Re-running the whole Task or Job
+			// would multiply external calls and can later turn a technical outage into
+			// an unrelated human handoff. Persist one explicit terminal outcome instead.
+			status = enums.AIReplyTurnTaskStatusFailed
+			stage = enums.AIReplyTurnTaskStageComplete
 			claimedByJobID = 0
 			claimedVersion = 0
-			nextAttempt := task.AttemptCount + 1
-			if nextAttempt >= aiReplyJobMaxAttempts {
-				status = enums.AIReplyTurnTaskStatusHandoffPending
-				stage = enums.AIReplyTurnTaskStageHandoff
-			} else {
-				nextRetryAt = aiReplyTaskRetryAt(now, nextAttempt)
+			completedAt = &now
+			failureClass = "knowledge"
+			if err := s.attachRequirementTaskOutcomeDB(
+				db, task, "failed_terminal", "", controlledResultCode(update.ResultCode, "knowledge_failed"), now,
+			); err != nil {
+				return err
 			}
 		}
 		updatesMap := map[string]any{
@@ -477,7 +766,9 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 			"claimed_version":     claimedVersion,
 			"attempt_count":       gorm.Expr("attempt_count + 1"),
 			"result_code":         controlledResultCode(update.ResultCode, string(update.Status)),
-			"next_retry_at":       nextRetryAt,
+			"failure_class":       failureClass,
+			"next_retry_at":       nil,
+			"completed_at":        completedAt,
 			"updated_at":          now,
 			"update_user_name":    "ai_reply_knowledge",
 		}
@@ -490,6 +781,17 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updatesMap); err != nil {
 			return err
+		}
+		if status == enums.AIReplyTurnTaskStatusFailed {
+			failedTask := *task
+			failedTask.Stage = stage
+			failedTask.Status = status
+			failedTask.FailureClass = failureClass
+			failedTask.ResultCode = controlledResultCode(update.ResultCode, "knowledge_failed")
+			failedTask.CompletedAt = completedAt
+			if err := s.resolveCoverageDependentsDB(db, &failedTask, now); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -535,8 +837,9 @@ func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
 		if task == nil || aiReplyTurnTaskTerminal(task.Status) || task.ClaimedByJobID != jobID {
 			return ErrAIReplyTurnStale
 		}
-		// 契约 3.2.4：Task completed 前所有 Required Requirement 必须有终态。
-		if err := s.EnsureRequirementTerminalForTask(db, task, now); err != nil {
+		// 契约 3.2.4：Task completed 前所有 Required Requirement 必须由
+		// 真实 RetrieveLog/Message 证据进入终态，禁止凭状态字段伪造 answered。
+		if err := s.EnsureRequirementTerminalForTask(db, task, messageID, now); err != nil {
 			return err
 		}
 		updates := map[string]any{
@@ -552,6 +855,13 @@ func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
 			updates["result_code"] = "delivered"
 		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates); err != nil {
+			return err
+		}
+		committedTask := *task
+		committedTask.Stage = stage
+		committedTask.Status = status
+		committedTask.CommittedMessageID = messageID
+		if err := s.resolveCoverageDependentsDB(db, &committedTask, now); err != nil {
 			return err
 		}
 	}
@@ -576,6 +886,9 @@ func (s *aiReplyTurnTaskService) MarkSuppressedActionsDB(
 		if task == nil || aiReplyTurnTaskTerminal(task.Status) || task.ClaimedByJobID != jobID || item.CoveredByMessageID <= 0 {
 			return ErrAIReplyTurnStale
 		}
+		if err := s.ensureRequirementCoveredByMessage(db, task, item.CoveredByMessageID, item.ResultCode, now); err != nil {
+			return err
+		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
 			"stage":                enums.AIReplyTurnTaskStageComplete,
 			"status":               enums.AIReplyTurnTaskStatusCovered,
@@ -588,6 +901,13 @@ func (s *aiReplyTurnTaskService) MarkSuppressedActionsDB(
 			"updated_at":           now,
 			"update_user_name":     "ai_reply_action",
 		}); err != nil {
+			return err
+		}
+		coveredTask := *task
+		coveredTask.Stage = enums.AIReplyTurnTaskStageComplete
+		coveredTask.Status = enums.AIReplyTurnTaskStatusCovered
+		coveredTask.CommittedMessageID = item.CoveredByMessageID
+		if err := s.resolveCoverageDependentsDB(db, &coveredTask, now); err != nil {
 			return err
 		}
 	}
@@ -635,6 +955,17 @@ func (s *aiReplyTurnTaskService) HasRunnable(tenantID, turnID int64) bool {
 	return repositories.AIReplyTurnTaskRepository.CountRunnableByTurnInTenant(sqls.DB(), tenantID, turnID) > 0
 }
 
+// HasWorkPending reports whether AI-side work is still active or waiting for a
+// canonical duplicate to produce durable evidence. Committed tasks belong to
+// delivery, and handoff_pending tasks belong to the handoff state machine, so
+// neither is counted here.
+func (s *aiReplyTurnTaskService) HasWorkPending(tenantID, turnID int64) bool {
+	if !s.Enabled() {
+		return false
+	}
+	return repositories.AIReplyTurnTaskRepository.CountWorkPendingByTurnInTenant(sqls.DB(), tenantID, turnID) > 0
+}
+
 func (s *aiReplyTurnTaskService) NextRetryAt(tenantID, turnID int64) *time.Time {
 	if !s.Enabled() {
 		return nil
@@ -649,11 +980,19 @@ func (s *aiReplyTurnTaskService) HasFailureHandoffs(tenantID, turnID int64) bool
 	return repositories.AIReplyTurnTaskRepository.CountFailureHandoffsByTurnInTenant(sqls.DB(), tenantID, turnID) > 0
 }
 
+func (s *aiReplyTurnTaskService) HasTerminalFailures(tenantID, turnID int64) bool {
+	if !s.Enabled() {
+		return false
+	}
+	return repositories.AIReplyTurnTaskRepository.CountFailedByTurnInTenant(sqls.DB(), tenantID, turnID) > 0
+}
+
 func (s *aiReplyTurnTaskService) MarkPendingHandoffsDB(db *gorm.DB, tenantID, turnID int64, resultCode string, now time.Time) error {
 	if db == nil || tenantID <= 0 || turnID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
 		return nil
 	}
-	return db.Model(&models.AIReplyTurnTask{}).
+	candidates := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, tenantID, turnID)
+	if err := db.Model(&models.AIReplyTurnTask{}).
 		Where("tenant_id = ? AND turn_id = ? AND status = ?", tenantID, turnID, enums.AIReplyTurnTaskStatusHandoffPending).
 		Updates(map[string]any{
 			"stage":             enums.AIReplyTurnTaskStageComplete,
@@ -665,7 +1004,20 @@ func (s *aiReplyTurnTaskService) MarkPendingHandoffsDB(db *gorm.DB, tenantID, tu
 			"next_retry_at":     nil,
 			"updated_at":        now,
 			"update_user_name":  "ai_reply_handoff",
-		}).Error
+		}).Error; err != nil {
+		return err
+	}
+	for index := range candidates {
+		if candidates[index].Status != enums.AIReplyTurnTaskStatusHandoffPending {
+			continue
+		}
+		candidates[index].Status = enums.AIReplyTurnTaskStatusHandoff
+		candidates[index].Stage = enums.AIReplyTurnTaskStageComplete
+		if err := s.resolveCoverageDependentsDB(db, &candidates[index], now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *aiReplyTurnTaskService) FinalizeAIHandoffDB(db *gorm.DB, tenantID, turnID int64, resultCode string, now time.Time) error {
@@ -680,6 +1032,7 @@ func (s *aiReplyTurnTaskService) FinalizeAIHandoffDB(db *gorm.DB, tenantID, turn
 			enums.AIReplyTurnTaskStatusPending,
 			enums.AIReplyTurnTaskStatusReady,
 			enums.AIReplyTurnTaskStatusRunning,
+			enums.AIReplyTurnTaskStatusWaitingCoverage,
 		}).
 		Updates(map[string]any{
 			"stage":             enums.AIReplyTurnTaskStageComplete,
@@ -705,6 +1058,7 @@ func (s *aiReplyTurnTaskService) FinalizeRequestedHandoffDB(db *gorm.DB, tenantI
 				enums.AIReplyTurnTaskStatusPending,
 				enums.AIReplyTurnTaskStatusReady,
 				enums.AIReplyTurnTaskStatusRunning,
+				enums.AIReplyTurnTaskStatusWaitingCoverage,
 				enums.AIReplyTurnTaskStatusHandoffPending,
 			}).
 		Updates(map[string]any{
@@ -725,6 +1079,7 @@ func (s *aiReplyTurnTaskService) FinalizeRequestedHandoffDB(db *gorm.DB, tenantI
 			enums.AIReplyTurnTaskStatusPending,
 			enums.AIReplyTurnTaskStatusReady,
 			enums.AIReplyTurnTaskStatusRunning,
+			enums.AIReplyTurnTaskStatusWaitingCoverage,
 			enums.AIReplyTurnTaskStatusHandoffPending,
 		}).
 		Updates(map[string]any{
@@ -878,7 +1233,12 @@ func (s *aiReplyTurnTaskService) CancelHandoffTransactionDB(
 	if err := db.Model(&models.AIReplyTurnTask{}).
 		Where("tenant_id = ? AND turn_id = ? AND source_message_id = ? AND status IN ?",
 			tenantID, turnID, originMessageID,
-			[]enums.AIReplyTurnTaskStatus{enums.AIReplyTurnTaskStatusPending, enums.AIReplyTurnTaskStatusReady, enums.AIReplyTurnTaskStatusRunning},
+			[]enums.AIReplyTurnTaskStatus{
+				enums.AIReplyTurnTaskStatusPending,
+				enums.AIReplyTurnTaskStatusReady,
+				enums.AIReplyTurnTaskStatusRunning,
+				enums.AIReplyTurnTaskStatusWaitingCoverage,
+			},
 		).
 		Updates(map[string]any{
 			"stage": enums.AIReplyTurnTaskStageComplete, "status": enums.AIReplyTurnTaskStatusSuperseded,
@@ -940,6 +1300,12 @@ func (s *aiReplyTurnTaskService) MarkTaskKeysHandoffDB(db *gorm.DB, tenantID, tu
 		}); err != nil {
 			return err
 		}
+		handoffTask := *task
+		handoffTask.Stage = enums.AIReplyTurnTaskStageComplete
+		handoffTask.Status = enums.AIReplyTurnTaskStatusHandoff
+		if err := s.resolveCoverageDependentsDB(db, &handoffTask, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -958,6 +1324,137 @@ func (s *aiReplyTurnTaskService) ReleaseJobClaimsDB(db *gorm.DB, tenantID, turnI
 			"updated_at":        now,
 			"update_user_name":  "ai_reply_task_release",
 		}).Error
+}
+
+// ReleaseTaskKeysDB releases only the claimed tasks that were not selected for
+// the current ReplyPlanV4 batch. Their knowledge checkpoint remains intact, so
+// the continuation job resumes at Generate instead of querying FastGPT again.
+func (s *aiReplyTurnTaskService) ReleaseTaskKeysDB(
+	db *gorm.DB,
+	tenantID, turnID, jobID int64,
+	taskKeys []string,
+	now time.Time,
+) error {
+	return s.releaseTaskKeysDB(db, tenantID, turnID, jobID, taskKeys, "deferred_to_next_reply_batch", nil, now)
+}
+
+// DeferTaskKeysDB releases an exact claimed subset with a durable retry time.
+// It is used for external prerequisites such as media analysis: the Task is
+// unfinished but must not be reclaimed in a tight continuation loop.
+func (s *aiReplyTurnTaskService) DeferTaskKeysDB(
+	db *gorm.DB,
+	tenantID, turnID, jobID int64,
+	taskKeys []string,
+	resultCode string,
+	nextRetryAt time.Time,
+	now time.Time,
+) error {
+	if nextRetryAt.Before(now) {
+		nextRetryAt = now
+	}
+	return s.releaseTaskKeysDB(db, tenantID, turnID, jobID, taskKeys, resultCode, &nextRetryAt, now)
+}
+
+func (s *aiReplyTurnTaskService) releaseTaskKeysDB(
+	db *gorm.DB,
+	tenantID, turnID, jobID int64,
+	taskKeys []string,
+	resultCode string,
+	nextRetryAt *time.Time,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || turnID <= 0 || jobID <= 0 || len(taskKeys) == 0 {
+		return nil
+	}
+	resultCode = controlledResultCode(resultCode, "deferred_to_next_reply_batch")
+	for _, taskKey := range uniqueTaskKeys(taskKeys) {
+		task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(db, tenantID, turnID, taskKey)
+		if err != nil {
+			return err
+		}
+		if task == nil || task.Status != enums.AIReplyTurnTaskStatusRunning || task.ClaimedByJobID != jobID {
+			continue
+		}
+		stage := task.Stage
+		if task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusPending {
+			stage = enums.AIReplyTurnTaskStageKnowledge
+		} else if stage == "" || stage == enums.AIReplyTurnTaskStageComplete {
+			stage = enums.AIReplyTurnTaskStageGenerate
+		}
+		updates := map[string]any{
+			"stage": stage, "status": enums.AIReplyTurnTaskStatusPending,
+			"claimed_by_job_id": 0, "claimed_version": 0,
+			"next_retry_at": nextRetryAt, "result_code": resultCode,
+			"updated_at": now, "update_user_name": "ai_reply_task_batch",
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, tenantID, updates); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// MarkClaimedPolicySkippedDB closes the exact Task batch selected by a Runtime
+// policy decision. A skipped Job must not release these claims back to pending:
+// doing so re-enqueues the same no-reply work on every cron tick.
+func (s *aiReplyTurnTaskService) MarkClaimedPolicySkippedDB(
+	db *gorm.DB,
+	turn *models.AIReplyTurn,
+	jobID int64,
+	taskKeys []string,
+	resultCode string,
+	now time.Time,
+) error {
+	if db == nil || turn == nil || turn.ID <= 0 || turn.TenantID <= 0 || jobID <= 0 {
+		return errorsx.InvalidParam("AI 回复跳过任务缺少领取范围")
+	}
+	resultCode = controlledResultCode(resultCode, "policy_skipped")
+	targets := make(map[string]struct{}, len(taskKeys))
+	for _, taskKey := range uniqueTaskKeys(taskKeys) {
+		targets[taskKey] = struct{}{}
+	}
+	items := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	for index := range items {
+		task := &items[index]
+		if task.Status != enums.AIReplyTurnTaskStatusRunning || task.ClaimedByJobID != jobID {
+			continue
+		}
+		if len(targets) > 0 {
+			if _, selected := targets[strings.TrimSpace(task.TaskKey)]; !selected {
+				continue
+			}
+		}
+		if err := s.attachRequirementTaskOutcomeDB(
+			db, task, "skipped_policy", fmt.Sprintf("job:%d", jobID), resultCode, now,
+		); err != nil {
+			return err
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+			"stage":             enums.AIReplyTurnTaskStageComplete,
+			"status":            enums.AIReplyTurnTaskStatusSkipped,
+			"result_code":       resultCode,
+			"failure_class":     "",
+			"claimed_by_job_id": 0,
+			"claimed_version":   0,
+			"next_retry_at":     nil,
+			"completed_at":      now,
+			"updated_at":        now,
+			"update_user_name":  "ai_reply_policy",
+		}); err != nil {
+			return err
+		}
+		skipped := *task
+		skipped.Stage = enums.AIReplyTurnTaskStageComplete
+		skipped.Status = enums.AIReplyTurnTaskStatusSkipped
+		skipped.ResultCode = resultCode
+		skipped.ClaimedByJobID = 0
+		skipped.ClaimedVersion = 0
+		skipped.CompletedAt = &now
+		if err := s.resolveCoverageDependentsDB(db, &skipped, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *aiReplyTurnTaskService) SupersedeTurnDB(db *gorm.DB, tenantID, turnID int64, resultCode string, now time.Time) error {
@@ -982,6 +1479,16 @@ func aiReplyTurnTaskTerminal(status enums.AIReplyTurnTaskStatus) bool {
 	case enums.AIReplyTurnTaskStatusDelivered, enums.AIReplyTurnTaskStatusCovered,
 		enums.AIReplyTurnTaskStatusHandoff, enums.AIReplyTurnTaskStatusSkipped,
 		enums.AIReplyTurnTaskStatusSuperseded, enums.AIReplyTurnTaskStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func aiReplyTurnTaskAnalysisRevisable(status enums.AIReplyTurnTaskStatus) bool {
+	switch status {
+	case enums.AIReplyTurnTaskStatusPending, enums.AIReplyTurnTaskStatusReady,
+		enums.AIReplyTurnTaskStatusRunning, enums.AIReplyTurnTaskStatusWaitingCoverage:
 		return true
 	default:
 		return false
@@ -1071,7 +1578,17 @@ func (s *aiReplyTurnTaskService) MarkTechnicalFailureDB(
 		nextRetry := aiReplyTaskRetryAt(now, nextAttempt)
 		updates["next_retry_at"] = nextRetry
 	}
-	return repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates)
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates); err != nil {
+		return err
+	}
+	if nextAttempt >= maxAttempts {
+		failedTask := *task
+		failedTask.Stage = enums.AIReplyTurnTaskStageComplete
+		failedTask.Status = enums.AIReplyTurnTaskStatusFailed
+		failedTask.ResultCode = "technical_failure"
+		return s.resolveCoverageDependentsDB(db, &failedTask, now)
+	}
+	return nil
 }
 
 // AttachKnowledgeCheckpointDB 持久化知识阶段检查点：一次成功检索的
@@ -1172,27 +1689,57 @@ func (s *aiReplyTurnTaskService) AttachRequirementOutcomeDB(
 	if task == nil || aiReplyTurnTaskTerminal(task.Status) {
 		return nil
 	}
-	set := contracts.RequirementStateSetV1{}
+	if strings.TrimSpace(task.AnswerRequirementsJSON) == "" {
+		return nil
+	}
+	requirements, err := contracts.DecodeAnswerRequirementSetV1([]byte(task.AnswerRequirementsJSON))
+	if err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements are invalid: %w", task.TaskKey, err)
+	}
+	if err := contracts.ValidateAnswerRequirementBindingV1(
+		requirements, task.TaskKey, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
+	); err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements do not match task: %w", task.TaskKey, err)
+	}
+	allowedKeys := make(map[string]int, len(requirements.Requirements))
+	for _, requirement := range requirements.Requirements {
+		allowedKeys[requirement.Key] = requirement.Sequence
+	}
+	set := contracts.RequirementStateSetV1{SchemaVersion: contracts.RequirementStateSetV1SchemaVersion, States: []contracts.RequirementStateItemV1{}}
 	if strings.TrimSpace(task.RequirementStateJSON) != "" {
-		_ = json.Unmarshal([]byte(task.RequirementStateJSON), &set)
+		set, err = contracts.DecodeRequirementStateSetV1([]byte(task.RequirementStateJSON))
+		if err != nil {
+			return fmt.Errorf("AI reply task %s requirement state is invalid: %w", task.TaskKey, err)
+		}
 	}
 	byKey := make(map[string]contracts.RequirementStateItemV1, len(set.States))
 	for _, state := range set.States {
+		if _, exists := allowedKeys[state.Key]; !exists {
+			return fmt.Errorf("AI reply task %s requirement state references unknown key %s", task.TaskKey, state.Key)
+		}
 		byKey[state.Key] = state
 	}
 	for _, state := range states {
+		if _, exists := allowedKeys[state.Key]; !exists {
+			return fmt.Errorf("AI reply task %s requirement outcome references unknown key %s", task.TaskKey, state.Key)
+		}
 		if existing, ok := byKey[state.Key]; ok && contracts.RequirementOutcomeTerminal(existing.Outcome) {
 			continue // 终态不可改写
 		}
 		byKey[state.Key] = state
 	}
-	merged := contracts.RequirementStateSetV1{SchemaVersion: contracts.RequirementStateSetV1SchemaVersion}
-	for _, state := range byKey {
-		merged.States = append(merged.States, state)
+	merged := contracts.RequirementStateSetV1{
+		SchemaVersion: contracts.RequirementStateSetV1SchemaVersion,
+		States:        make([]contracts.RequirementStateItemV1, 0, len(byKey)),
 	}
-	raw, err := json.Marshal(merged)
+	for _, requirement := range requirements.Requirements {
+		if state, exists := byKey[requirement.Key]; exists {
+			merged.States = append(merged.States, state)
+		}
+	}
+	raw, err := contracts.MarshalRequirementStateSetV1(merged)
 	if err != nil {
-		return err
+		return fmt.Errorf("AI reply task %s requirement state cannot be encoded: %w", task.TaskKey, err)
 	}
 	return repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
 		"requirement_state_json": string(raw), "updated_at": now, "update_user_name": "ai_reply_requirement",
@@ -1200,31 +1747,37 @@ func (s *aiReplyTurnTaskService) AttachRequirementOutcomeDB(
 }
 
 // EnsureRequirementTerminalForTask 契约 3.2.4/10.10：提交前校验所有 Required
-// Requirement 已有服务端终态；缺失时按 Task 知识状态派生确定性终态
-// （answered/no_hit），保证不变量成立且不阻塞提交。
-func (s *aiReplyTurnTaskService) EnsureRequirementTerminalForTask(db *gorm.DB, task *models.AIReplyTurnTask, now time.Time) error {
+// Requirement 已有可追溯终态。缺失状态只能由本事务已创建的 Message 和本
+// Task 的终态 RetrieveLog 补齐；技术失败、pending 或缺证据一律拒绝提交。
+func (s *aiReplyTurnTaskService) EnsureRequirementTerminalForTask(db *gorm.DB, task *models.AIReplyTurnTask, messageID int64, now time.Time) error {
 	if task == nil || strings.TrimSpace(task.AnswerRequirementsJSON) == "" {
 		return nil
 	}
-	requirements := contracts.AnswerRequirementSetV1{}
-	if err := json.Unmarshal([]byte(task.AnswerRequirementsJSON), &requirements); err != nil {
-		return nil
+	if db == nil || messageID <= 0 {
+		return fmt.Errorf("AI reply task %s requirement completion lacks committed message evidence", task.TaskKey)
+	}
+	requirements, err := contracts.DecodeAnswerRequirementSetV1([]byte(task.AnswerRequirementsJSON))
+	if err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements are invalid: %w", task.TaskKey, err)
+	}
+	if err := contracts.ValidateAnswerRequirementBindingV1(
+		requirements, task.TaskKey, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
+	); err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements do not match task: %w", task.TaskKey, err)
 	}
 	if len(requirements.Requirements) == 0 {
 		return nil
 	}
-	stateSet := contracts.RequirementStateSetV1{}
+	stateSet := contracts.RequirementStateSetV1{SchemaVersion: contracts.RequirementStateSetV1SchemaVersion, States: []contracts.RequirementStateItemV1{}}
 	if strings.TrimSpace(task.RequirementStateJSON) != "" {
-		_ = json.Unmarshal([]byte(task.RequirementStateJSON), &stateSet)
+		stateSet, err = contracts.DecodeRequirementStateSetV1([]byte(task.RequirementStateJSON))
+		if err != nil {
+			return fmt.Errorf("AI reply task %s requirement state is invalid: %w", task.TaskKey, err)
+		}
 	}
 	outcomeByKey := make(map[string]string, len(stateSet.States))
 	for _, state := range stateSet.States {
 		outcomeByKey[state.Key] = state.Outcome
-	}
-	derived := enums.AIReplyTurnTaskKnowledgeStatusHit
-	if task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusNoHit ||
-		task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-		derived = enums.AIReplyTurnTaskKnowledgeStatusNoHit
 	}
 	missing := false
 	for _, requirement := range requirements.Requirements {
@@ -1240,9 +1793,9 @@ func (s *aiReplyTurnTaskService) EnsureRequirementTerminalForTask(db *gorm.DB, t
 	if !missing {
 		return nil
 	}
-	outcome := "answered"
-	if derived != enums.AIReplyTurnTaskKnowledgeStatusHit {
-		outcome = "no_hit"
+	outcome, evidenceRef, err := s.requirementCommitEvidence(db, task, messageID)
+	if err != nil {
+		return err
 	}
 	states := make([]contracts.RequirementStateItemV1, 0, len(requirements.Requirements))
 	for _, requirement := range requirements.Requirements {
@@ -1253,8 +1806,7 @@ func (s *aiReplyTurnTaskService) EnsureRequirementTerminalForTask(db *gorm.DB, t
 			continue
 		}
 		states = append(states, contracts.RequirementStateItemV1{
-			Key: requirement.Key, Outcome: outcome,
-			ErrorCode: "server_derived_terminal",
+			Key: requirement.Key, Outcome: outcome, EvidenceRef: evidenceRef,
 		})
 	}
 	if len(states) == 0 {
@@ -1263,47 +1815,286 @@ func (s *aiReplyTurnTaskService) EnsureRequirementTerminalForTask(db *gorm.DB, t
 	return s.AttachRequirementOutcomeDB(db, task.TenantID, task.TurnID, task.TaskKey, states, now)
 }
 
+func (s *aiReplyTurnTaskService) requirementCommitEvidence(db *gorm.DB, task *models.AIReplyTurnTask, messageID int64) (string, string, error) {
+	message := repositories.MessageRepository.GetInTenant(db, messageID, task.TenantID)
+	if message == nil || message.ConversationID != task.ConversationID || message.AIReplyTurnID != task.TurnID || message.SenderType != enums.IMSenderTypeAI {
+		return "", "", fmt.Errorf("AI reply task %s committed message evidence is invalid", task.TaskKey)
+	}
+	messageRef := fmt.Sprintf("message:%d", message.ID)
+	if task.TaskType != enums.AIReplyTurnTaskTypeKnowledge {
+		return "answered", messageRef, nil
+	}
+	if task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusFailed ||
+		task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusPending ||
+		task.KnowledgeStatus == enums.AIReplyTurnTaskKnowledgeStatusNone {
+		return "", "", fmt.Errorf("AI reply knowledge task %s cannot commit with status %s", task.TaskKey, task.KnowledgeStatus)
+	}
+	if task.KnowledgeRetrieveLogID <= 0 {
+		return "", "", fmt.Errorf("AI reply knowledge task %s lacks retrieve log evidence", task.TaskKey)
+	}
+	retrieveLog := repositories.KnowledgeRetrieveLogRepository.GetInTenant(db, task.KnowledgeRetrieveLogID, task.TenantID)
+	if retrieveLog == nil || retrieveLog.TurnID != task.TurnID || retrieveLog.TaskID != task.ID ||
+		strings.TrimSpace(retrieveLog.TaskKey) != strings.TrimSpace(task.TaskKey) {
+		return "", "", fmt.Errorf("AI reply knowledge task %s retrieve log scope is invalid", task.TaskKey)
+	}
+	retrieveRef := fmt.Sprintf("retrieve_log:%d;%s", retrieveLog.ID, messageRef)
+	switch task.KnowledgeStatus {
+	case enums.AIReplyTurnTaskKnowledgeStatusHit:
+		if retrieveLog.ExecutionStatus != "succeeded" || retrieveLog.HitCount <= 0 || retrieveLog.UsedChunkCount <= 0 {
+			return "", "", fmt.Errorf("AI reply knowledge task %s lacks succeeded hit evidence", task.TaskKey)
+		}
+		return "answered", retrieveRef, nil
+	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
+		if retrieveLog.ExecutionStatus != "no_hit" || retrieveLog.HitCount != 0 {
+			return "", "", fmt.Errorf("AI reply knowledge task %s no-hit evidence is invalid", task.TaskKey)
+		}
+		return "no_hit", retrieveRef, nil
+	default:
+		return "", "", fmt.Errorf("AI reply knowledge task %s has unsupported status %s", task.TaskKey, task.KnowledgeStatus)
+	}
+}
+
+func (s *aiReplyTurnTaskService) ensureRequirementCoveredByMessage(db *gorm.DB, task *models.AIReplyTurnTask, messageID int64, resultCode string, now time.Time) error {
+	if task == nil || strings.TrimSpace(task.AnswerRequirementsJSON) == "" {
+		return nil
+	}
+	message := repositories.MessageRepository.GetInTenant(db, messageID, task.TenantID)
+	if message == nil || message.ConversationID != task.ConversationID || message.SessionNo != task.SessionNo ||
+		message.AIReplyTurnID != task.TurnID || message.SenderType != enums.IMSenderTypeAI {
+		return fmt.Errorf("AI reply task %s coverage message evidence is invalid", task.TaskKey)
+	}
+	requirements, err := contracts.DecodeAnswerRequirementSetV1([]byte(task.AnswerRequirementsJSON))
+	if err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements are invalid: %w", task.TaskKey, err)
+	}
+	if err := contracts.ValidateAnswerRequirementBindingV1(
+		requirements, task.TaskKey, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
+	); err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements do not match task: %w", task.TaskKey, err)
+	}
+	states := make([]contracts.RequirementStateItemV1, 0, len(requirements.Requirements))
+	for _, requirement := range requirements.Requirements {
+		if !requirement.Required {
+			continue
+		}
+		states = append(states, contracts.RequirementStateItemV1{
+			Key: requirement.Key, Outcome: "covered",
+			EvidenceRef: fmt.Sprintf("message:%d", message.ID), ErrorCode: strings.TrimSpace(resultCode),
+		})
+	}
+	return s.AttachRequirementOutcomeDB(db, task.TenantID, task.TurnID, task.TaskKey, states, now)
+}
+
+func (s *aiReplyTurnTaskService) attachRequirementTaskOutcomeDB(
+	db *gorm.DB,
+	task *models.AIReplyTurnTask,
+	outcome, evidenceRef, resultCode string,
+	now time.Time,
+) error {
+	if task == nil || strings.TrimSpace(task.AnswerRequirementsJSON) == "" {
+		return nil
+	}
+	requirements, err := contracts.DecodeAnswerRequirementSetV1([]byte(task.AnswerRequirementsJSON))
+	if err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements are invalid: %w", task.TaskKey, err)
+	}
+	if err := contracts.ValidateAnswerRequirementBindingV1(
+		requirements, task.TaskKey, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
+	); err != nil {
+		return fmt.Errorf("AI reply task %s answer requirements do not match task: %w", task.TaskKey, err)
+	}
+	states := make([]contracts.RequirementStateItemV1, 0, len(requirements.Requirements))
+	for _, requirement := range requirements.Requirements {
+		if !requirement.Required {
+			continue
+		}
+		states = append(states, contracts.RequirementStateItemV1{
+			Key: requirement.Key, Outcome: strings.TrimSpace(outcome),
+			EvidenceRef: strings.TrimSpace(evidenceRef), ErrorCode: strings.TrimSpace(resultCode),
+		})
+	}
+	return s.AttachRequirementOutcomeDB(db, task.TenantID, task.TurnID, task.TaskKey, states, now)
+}
+
+// resolveCoverageDependentsDB closes the duplicate dependency from the
+// canonical task's durable outcome. It never infers completion from an
+// in-memory model result.
+func (s *aiReplyTurnTaskService) resolveCoverageDependentsDB(
+	db *gorm.DB,
+	canonical *models.AIReplyTurnTask,
+	now time.Time,
+) error {
+	if db == nil || canonical == nil || canonical.ID <= 0 || canonical.TenantID <= 0 || canonical.TurnID <= 0 {
+		return nil
+	}
+	dependents, err := repositories.AIReplyTurnTaskRepository.FindCoverageDependentsForUpdateInTenant(
+		db, canonical.TenantID, canonical.TurnID, canonical.ID,
+	)
+	if err != nil {
+		return err
+	}
+	for index := range dependents {
+		dependent := &dependents[index]
+		switch canonical.Status {
+		case enums.AIReplyTurnTaskStatusCommitted, enums.AIReplyTurnTaskStatusDelivered, enums.AIReplyTurnTaskStatusCovered:
+			if canonical.CommittedMessageID <= 0 {
+				continue
+			}
+			if err := s.markCoverageDependentCoveredDB(
+				db, canonical, dependent, canonical.CommittedMessageID, "covered_by_committed_task", now,
+			); err != nil {
+				return err
+			}
+		case enums.AIReplyTurnTaskStatusHandoff:
+			if err := s.markCoverageDependentHandoffDB(db, canonical, dependent, now); err != nil {
+				return err
+			}
+		case enums.AIReplyTurnTaskStatusFailed:
+			if err := s.attachRequirementTaskOutcomeDB(
+				db, dependent, "failed_terminal", fmt.Sprintf("task:%d", canonical.ID),
+				"covered_by_canonical_failure", now,
+			); err != nil {
+				return err
+			}
+			if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, dependent.ID, dependent.TenantID, map[string]any{
+				"stage":              enums.AIReplyTurnTaskStageComplete,
+				"status":             enums.AIReplyTurnTaskStatusFailed,
+				"covered_by_task_id": canonical.ID,
+				"result_code":        "covered_by_canonical_failure",
+				"failure_class":      canonical.FailureClass,
+				"claimed_by_job_id":  0,
+				"claimed_version":    0,
+				"completed_at":       now,
+				"next_retry_at":      nil,
+				"updated_at":         now,
+				"update_user_name":   "ai_reply_task_coverage",
+			}); err != nil {
+				return err
+			}
+		case enums.AIReplyTurnTaskStatusSkipped, enums.AIReplyTurnTaskStatusSuperseded:
+			outcome := "skipped_policy"
+			if canonical.Status == enums.AIReplyTurnTaskStatusSuperseded {
+				outcome = "superseded"
+			}
+			if err := s.attachRequirementTaskOutcomeDB(
+				db, dependent, outcome, fmt.Sprintf("task:%d", canonical.ID), "covered_by_canonical_"+string(canonical.Status), now,
+			); err != nil {
+				return err
+			}
+			if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, dependent.ID, dependent.TenantID, map[string]any{
+				"stage":             enums.AIReplyTurnTaskStageComplete,
+				"status":            canonical.Status,
+				"result_code":       "covered_by_canonical_" + string(canonical.Status),
+				"claimed_by_job_id": 0,
+				"claimed_version":   0,
+				"completed_at":      now,
+				"next_retry_at":     nil,
+				"updated_at":        now,
+				"update_user_name":  "ai_reply_task_coverage",
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // RecordResolvedCoverageDB 契约 10.7：与 Task 创建同事务写持久覆盖标签。
 func (s *aiReplyTurnTaskService) RecordResolvedCoverageDB(
-	db *gorm.DB, job *models.JobRef, turn *models.AIReplyTurn, tasks []models.AIReplyTurnTask, now time.Time,
+	db *gorm.DB, job *models.JobRef, turn *models.AIReplyTurn, tasks []models.AIReplyTurnTask,
+	intentCoverage []contracts.ResolvedCoverageItemV1, now time.Time,
 ) error {
-	if db == nil || job == nil || job.ID <= 0 || turn == nil || len(tasks) == 0 {
+	if db == nil || job == nil || job.ID <= 0 || turn == nil || (len(tasks) == 0 && len(intentCoverage) == 0) {
 		return nil
 	}
 	coverage := contracts.ResolvedTurnCoverageV1{
 		SchemaVersion: contracts.ResolvedTurnCoverageV1SchemaVersion,
-		TurnID:        turn.ID, TurnVersion: turn.Version,
+		TurnID:        turn.ID, TurnVersion: turn.Version, Items: []contracts.ResolvedCoverageItemV1{},
 	}
-	hashes := make([]string, 0, len(tasks))
+	current := repositories.AIReplyJobRepository.GetInTenant(db, job.ID, job.TenantID)
+	if current != nil && strings.TrimSpace(current.ResolvedCoverageJSON) != "" {
+		previous, decodeErr := contracts.DecodeResolvedTurnCoverageV1([]byte(current.ResolvedCoverageJSON))
+		if decodeErr == nil && previous.TurnID == turn.ID && previous.TurnVersion <= turn.Version {
+			coverage.Items = append(coverage.Items, previous.Items...)
+		} else {
+			slog.Warn("AI reply resolved coverage history ignored",
+				"tenant_id", job.TenantID, "job_id", job.ID, "turn_id", turn.ID, "error", decodeErr)
+		}
+	}
+	byIdentity := make(map[string]contracts.ResolvedCoverageItemV1, len(coverage.Items)+len(tasks)+len(intentCoverage))
+	for _, item := range coverage.Items {
+		byIdentity[resolvedCoverageIdentity(item)] = item
+	}
+	for _, item := range intentCoverage {
+		if item.MessageID <= 0 {
+			continue
+		}
+		byIdentity[resolvedCoverageIdentity(item)] = item
+	}
 	for _, task := range tasks {
 		hash := task.CanonicalQuestionHash
 		if hash == "" {
 			hash = task.QuestionFingerprint
 		}
-		status := "covered"
+		status := "scheduled"
 		reason := ""
-		if task.Status == enums.AIReplyTurnTaskStatusCovered || task.Status == enums.AIReplyTurnTaskStatusSkipped ||
-			task.Status == enums.AIReplyTurnTaskStatusSuperseded {
-			status = "ignored"
+		switch task.Status {
+		case enums.AIReplyTurnTaskStatusWaitingCoverage:
+			status = "waiting"
+			reason = "waiting_for_canonical_task"
+		case enums.AIReplyTurnTaskStatusCovered, enums.AIReplyTurnTaskStatusDelivered, enums.AIReplyTurnTaskStatusCommitted:
+			status = "covered"
+			reason = string(task.Status)
+		case enums.AIReplyTurnTaskStatusHandoff:
+			status = "routed"
+			reason = string(task.Status)
+		case enums.AIReplyTurnTaskStatusHandoffPending:
+			status = "handoff_pending"
+			reason = string(task.Status)
+		case enums.AIReplyTurnTaskStatusSkipped:
+			status = "skipped"
+			reason = string(task.Status)
+		case enums.AIReplyTurnTaskStatusSuperseded:
+			status = "superseded"
+			reason = string(task.Status)
+		case enums.AIReplyTurnTaskStatusFailed:
+			status = "failed"
 			reason = string(task.Status)
 		}
-		coverage.Items = append(coverage.Items, contracts.ResolvedCoverageItemV1{
+		item := contracts.ResolvedCoverageItemV1{
 			MessageID: task.SourceMessageID, CanonicalHash: hash, TaskID: task.ID, TaskKey: task.TaskKey,
 			Status: status, CoveredByTaskID: task.CoveredByTaskID, ReasonCode: reason,
-		})
-		if hash != "" {
-			hashes = append(hashes, fmt.Sprintf("%d:%s", task.SourceMessageID, hash))
 		}
+		byIdentity[resolvedCoverageIdentity(item)] = item
 	}
-	sort.Strings(hashes)
-	raw, err := json.Marshal(coverage)
+	coverage.Items = coverage.Items[:0]
+	for _, item := range byIdentity {
+		coverage.Items = append(coverage.Items, item)
+	}
+	sort.SliceStable(coverage.Items, func(i, j int) bool {
+		if coverage.Items[i].MessageID != coverage.Items[j].MessageID {
+			return coverage.Items[i].MessageID < coverage.Items[j].MessageID
+		}
+		if coverage.Items[i].TaskID != coverage.Items[j].TaskID {
+			return coverage.Items[i].TaskID < coverage.Items[j].TaskID
+		}
+		return coverage.Items[i].TaskKey < coverage.Items[j].TaskKey
+	})
+	raw, err := contracts.MarshalResolvedTurnCoverageV1(coverage)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode resolved_turn_coverage.v1: %w", err)
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d/%d/%s", turn.ID, turn.Version, strings.Join(hashes, ","))))
+	sum := sha256.Sum256(raw)
 	return db.Model(&models.AIReplyJob{}).Where("id = ? AND tenant_id = ?", job.ID, job.TenantID).Updates(map[string]any{
 		"resolved_coverage_json":        string(raw),
-		"resolved_coverage_fingerprint": hex.EncodeToString(sum[:16]),
+		"resolved_coverage_fingerprint": hex.EncodeToString(sum[:]),
 		"updated_at":                    now, "update_user_name": "ai_reply_coverage",
 	}).Error
+}
+
+func resolvedCoverageIdentity(item contracts.ResolvedCoverageItemV1) string {
+	if item.TaskID > 0 || strings.TrimSpace(item.TaskKey) != "" {
+		return fmt.Sprintf("task:%d:%d:%s", item.MessageID, item.TaskID, strings.TrimSpace(item.TaskKey))
+	}
+	return fmt.Sprintf("message:%d", item.MessageID)
 }

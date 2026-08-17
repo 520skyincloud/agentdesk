@@ -3,7 +3,8 @@ package contracts
 // 多模态契约 19：validation_result.v3。Validator 只分类输出和建议恢复阶段，
 // 不决定是否转人工。
 
-const ValidationResultV3SchemaVersion = "validation_result.v3"
+const ValidationResultV3SchemaVersion = SchemaValidationResultV3
+const EvidenceBundleV2SchemaVersion = SchemaEvidenceBundleV2
 
 // ValidationResultV3 是 ValidatorV3 的输出。
 type ValidationResultV3 struct {
@@ -42,34 +43,103 @@ type ValidationChecksV3 struct {
 
 // EvidenceBundleV2 是证据账本（Validator 只消费最终投影字段）。
 type EvidenceBundleV2 struct {
-	SchemaVersion string           `json:"schemaVersion"`
-	Items         []EvidenceItemV2 `json:"items"`
+	SchemaVersion    string               `json:"schemaVersion"`
+	ScopeFingerprint string               `json:"scopeFingerprint"`
+	RetrievalStatus  string               `json:"retrievalStatus"`
+	Items            []EvidenceItemV2     `json:"items"`
+	Resources        []EvidenceResourceV2 `json:"resources"`
 }
 
 // EvidenceItemV2 携带 Metadata Judge 的最终判定。
 type EvidenceItemV2 struct {
 	Ref            string   `json:"ref"`
-	TaskKey        string   `json:"taskKey"`
+	SourceType     string   `json:"sourceType"`
+	SourceClass    string   `json:"sourceClass"`
+	SourceRecordID string   `json:"sourceRecordId,omitempty"`
+	FactKey        string   `json:"factKey,omitempty"`
+	TaskKeys       []string `json:"taskKeys"`
+	Title          string   `json:"title"`
 	Content        string   `json:"content"`
-	Answerability  string   `json:"answerability"` // supporting/restricted/blocked
+	Score          float64  `json:"score"`
+	FactScope      string   `json:"factScope"`
+	ClaimType      string   `json:"claimType"`
 	TrustLevel     string   `json:"trustLevel"`
+	Freshness      string   `json:"freshness"`
+	TopicLabels    []string `json:"topicLabels,omitempty"`
+	TopicMatch     string   `json:"topicMatch"`
+	Answerability  string   `json:"answerability"` // supporting/context_only/blocked
 	AllowedUses    []string `json:"allowedUses"`
 	BlockedReasons []string `json:"blockedReasons"`
+	ResourceRefs   []string `json:"resourceRefs"`
 }
 
-// ObservationV1 是客户媒体的受限观察（contentRole 决定允许用途）。
+type EvidenceResourceV2 struct {
+	Ref      string   `json:"ref"`
+	Type     string   `json:"type"`
+	AssetID  *string  `json:"assetId"`
+	Title    string   `json:"title"`
+	TaskKeys []string `json:"taskKeys"`
+}
+
+// ObservationV1 是客户媒体的受限观察。Observation 不是门店事实，允许用途
+// 和禁止用途必须由服务端 ObservationPolicy 投影，模型不能自行提升权限。
 type ObservationV1 struct {
-	ID          string   `json:"id"`
-	ContentRole string   `json:"contentRole"`
-	MediaType   string   `json:"mediaType"`
-	Summary     string   `json:"summary"`
-	AllowedUses []string `json:"allowedUses"`
+	Ref             string   `json:"ref"`
+	SourceMessageID int64    `json:"sourceMessageId"`
+	SourceRevision  int      `json:"sourceRevision"`
+	Status          string   `json:"status"`
+	SourceType      string   `json:"sourceType"`
+	ObservationType string   `json:"observationType"`
+	Text            string   `json:"text"`
+	Confidence      float64  `json:"confidence"`
+	AllowedUses     []string `json:"allowedUses"`
+	ForbiddenUses   []string `json:"forbiddenUses"`
 }
 
-// RuntimeContextSnapshotV2 是权威事实快照。
+// RuntimeContextSnapshotV2 是 Generate 可见的当前轮快照。当前任务、媒体观察、
+// 权威事实和已准备动作分别进入独立字段，禁止把历史/客户断言混成门店事实。
 type RuntimeContextSnapshotV2 struct {
-	SchemaVersion string                 `json:"schemaVersion"`
-	Facts         []RuntimeContextFactV2 `json:"facts"`
+	SchemaVersion    string                         `json:"schemaVersion"`
+	ConversationMode string                         `json:"conversationMode"`
+	DialogueAct      string                         `json:"dialogueAct"`
+	Focus            RuntimeContextFocus            `json:"focus"`
+	Tasks            []RuntimeContextTaskV2         `json:"tasks"`
+	Observations     []RuntimeContextObservationV2  `json:"observations"`
+	Facts            []RuntimeContextFactV2         `json:"facts"`
+	PreparedActions  []RuntimeContextPreparedAction `json:"preparedActions"`
+	ResponsePolicy   RuntimeContextResponsePolicyV2 `json:"responsePolicy"`
+}
+
+type RuntimeContextTaskV2 struct {
+	TaskKey          string   `json:"taskKey"`
+	Sequence         int      `json:"sequence"`
+	Objective        string   `json:"objective"`
+	ClaimType        string   `json:"claimType"`
+	OutputMode       string   `json:"outputMode"`
+	KnowledgeStatus  string   `json:"knowledgeStatus"`
+	EvidenceRefs     []string `json:"evidenceRefs"`
+	ObservationRefs  []string `json:"observationRefs"`
+	RequiredFactRefs []string `json:"requiredFactRefs"`
+	ActionRefs       []string `json:"actionRefs"`
+	Constraints      []string `json:"constraints"`
+}
+
+type RuntimeContextObservationV2 struct {
+	Ref           string   `json:"ref"`
+	SourceClass   string   `json:"sourceClass"`
+	SourceID      string   `json:"sourceId,omitempty"`
+	Speaker       string   `json:"speaker,omitempty"`
+	Content       string   `json:"content"`
+	AllowedUses   []string `json:"allowedUses"`
+	ForbiddenUses []string `json:"forbiddenUses"`
+}
+
+type RuntimeContextResponsePolicyV2 struct {
+	MaxParts                       int    `json:"maxParts"`
+	Style                          string `json:"style"`
+	MustNotMentionInternalState    bool   `json:"mustNotMentionInternalState"`
+	MustNotClaimUncommittedActions bool   `json:"mustNotClaimUncommittedActions"`
+	MustCiteProtectedFacts         bool   `json:"mustCiteProtectedFacts"`
 }
 
 // RuntimeContextFactV2 是带引用的事实条目（S* 为门店权威）。

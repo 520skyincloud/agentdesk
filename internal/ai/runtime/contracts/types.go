@@ -59,6 +59,7 @@ type DialogueStateSnapshotV1 struct {
 	SessionNo          int                         `json:"sessionNo"`
 	Revision           int64                       `json:"revision"`
 	BasedOnMessageID   int64                       `json:"basedOnMessageId"`
+	BasedOnTurnID      int64                       `json:"basedOnTurnId"`
 	BasedOnTurnVersion int                         `json:"basedOnTurnVersion"`
 	ConversationMode   string                      `json:"conversationMode"`
 	Focus              DialogueStateFocus          `json:"focus"`
@@ -178,16 +179,21 @@ type ActionLedgerItemV1 struct {
 // PreparedActionV1 is an internal, in-memory handoff from resource preparation
 // to Commit. Payload is never rendered into prompts, traces, or public DTOs.
 type PreparedActionV1 struct {
-	ActionKey        string
-	TaskKey          string
-	ActionType       string
-	ResourceType     string
-	ResourceRef      string
-	Sequence         int
-	MessageType      string
-	Content          string
-	Payload          string
-	PreparedRevision string
+	ActionKey              string
+	TaskKey                string
+	ActionType             string
+	ResourceType           string
+	ResourceRef            string
+	Sequence               int
+	MessageType            string
+	Content                string
+	Payload                string
+	PreparedRevision       string
+	EligibilityFingerprint string
+	SourceEvidenceRef      string
+	SourceRecordID         string
+	ResourcePurpose        string
+	EligibilityReasonCode  string
 }
 
 type EvidenceBundleV1 struct {

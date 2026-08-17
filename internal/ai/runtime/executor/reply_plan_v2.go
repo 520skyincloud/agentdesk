@@ -168,12 +168,22 @@ func validateRuntimeReplyPlanContract(plan contracts.ReplyPlanV2, ledger contrac
 }
 
 func ensureRuntimeActionLedger(req RunInput, taskState runtimeTaskBatchState, plans []callbacks.ReplyTaskPlanTraceData, evidence *contracts.EvidenceBundleV1) (contracts.ActionLedgerV1, error) {
+	return ensureRuntimeActionLedgerWithEligibility(req, taskState, plans, evidence, nil)
+}
+
+func ensureRuntimeActionLedgerWithEligibility(
+	req RunInput,
+	taskState runtimeTaskBatchState,
+	plans []callbacks.ReplyTaskPlanTraceData,
+	evidence *contracts.EvidenceBundleV1,
+	eligibility *contracts.ResourceEligibilityV1,
+) (contracts.ActionLedgerV1, error) {
 	turnVersion := taskState.TurnVersion
 	if turnVersion <= 0 {
 		turnVersion = 1
 	}
 	ledger := contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: turnVersion, Actions: []contracts.ActionLedgerItemV1{}}
-	inputs := runtimeActionInputs(plans, evidence, gateEnabled(gateResourceEligibility, req))
+	inputs := runtimeActionInputsWithEligibility(plans, evidence, eligibility, gateEnabled(gateResourceEligibility, req))
 	if len(inputs) == 0 {
 		return ledger, nil
 	}
@@ -209,6 +219,15 @@ func ensureRuntimeActionLedger(req RunInput, taskState runtimeTaskBatchState, pl
 }
 
 func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *contracts.EvidenceBundleV1, resourceGate bool) []services.AIReplyTurnActionInput {
+	return runtimeActionInputsWithEligibility(plans, evidence, nil, resourceGate)
+}
+
+func runtimeActionInputsWithEligibility(
+	plans []callbacks.ReplyTaskPlanTraceData,
+	evidence *contracts.EvidenceBundleV1,
+	eligibility *contracts.ResourceEligibilityV1,
+	resourceGate bool,
+) []services.AIReplyTurnActionInput {
 	ret := make([]services.AIReplyTurnActionInput, 0)
 	seen := make(map[string]struct{})
 	add := func(input services.AIReplyTurnActionInput) {
@@ -228,7 +247,22 @@ func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *con
 			add(services.AIReplyTurnActionInput{TaskKey: plan.TaskKey, ActionType: actionType, ResourceType: resourceType})
 		}
 	}
-	if evidence != nil && resourceGate {
+	if evidence != nil && resourceGate && eligibility != nil {
+		for _, item := range eligibility.Items {
+			if item.Decision != "eligible" || item.ResourceType != "image" || item.ResourceRef == "" || item.TaskKey == "" {
+				continue
+			}
+			if !runtimeEvidenceResourceBelongsToTask(evidence, item.ResourceRef, item.TaskKey) {
+				continue
+			}
+			add(services.AIReplyTurnActionInput{
+				TaskKey: item.TaskKey, ActionType: "send_knowledge_image", ResourceType: "image:" + item.ResourceRef,
+				EligibilityFingerprint: runtimeV3JSONFingerprint(item), SourceEvidenceRef: item.SourceEvidenceRef,
+				SourceRecordID: item.SourceRecordID, ResourcePurpose: item.ResourcePurpose,
+				EligibilityReasonCode: item.ReasonCode,
+			})
+		}
+	} else if evidence != nil && resourceGate {
 		for _, resource := range evidence.Resources {
 			if resource.Type != "image" {
 				continue
@@ -244,6 +278,18 @@ func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *con
 		}
 	}
 	return ret
+}
+
+func runtimeEvidenceResourceBelongsToTask(evidence *contracts.EvidenceBundleV1, resourceRef, taskKey string) bool {
+	if evidence == nil {
+		return false
+	}
+	for _, resource := range evidence.Resources {
+		if resource.Ref == resourceRef && resource.Type == "image" && stringInSlice(taskKey, resource.TaskKeys) {
+			return true
+		}
+	}
+	return false
 }
 
 func planByTaskKey(plans []callbacks.ReplyTaskPlanTraceData, taskKey string) *callbacks.ReplyTaskPlanTraceData {

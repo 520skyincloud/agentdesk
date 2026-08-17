@@ -89,6 +89,7 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.Message{},
 		&models.AIReplyTurn{},
 		&models.AIReplyTurnTask{},
+		&models.AIReplyTurnAction{},
 		&models.AIReplyJob{},
 		&models.ConversationInterrupt{},
 		&models.AgentRunLog{},
@@ -940,6 +941,23 @@ func TestMediaUnderstandingActionableImageCanTriggerWithoutTextFollowUp(t *testi
 	}
 	if !MediaUnderstandingService.mediaUnderstandingLooksActionable(message) {
 		t.Fatal("expected actionable image understanding to trigger ai reply")
+	}
+}
+
+func TestMediaUnderstandingUsesStructuredResponseExpectationBeforeLegacyKeywords(t *testing.T) {
+	ordinary := models.Message{
+		MessageType: enums.IMMessageTypeImage,
+		Payload:     `{"mediaText":"画面里有停车、地址和电话文字，但只是普通宣传页。","mediaUnderstandingStatus":"understood","responseExpectation":{"mode":"none","basis":"ordinary_media","confidence":0.99}}`,
+	}
+	if MediaUnderstandingService.mediaUnderstandingShouldTriggerAI(ordinary) {
+		t.Fatal("structured none must not be overridden by legacy keywords")
+	}
+	visibleError := models.Message{
+		MessageType: enums.IMMessageTypeImage,
+		Payload:     `{"mediaText":"电视画面停在加载页。","mediaUnderstandingStatus":"understood","responseExpectation":{"mode":"reply","basis":"visible_error","confidence":0.95}}`,
+	}
+	if !MediaUnderstandingService.mediaUnderstandingShouldTriggerAI(visibleError) {
+		t.Fatal("structured visible error must trigger without a keyword match")
 	}
 }
 

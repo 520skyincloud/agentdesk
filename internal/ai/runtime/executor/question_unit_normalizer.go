@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
 	"agent-desk/internal/ai/runtime/contextcompiler"
+	"golang.org/x/text/unicode/norm"
 )
 
 // 多模态契约 9-12：IntentTasksV3 来源片段校验、QuestionUnit 规范化与同源去重。
@@ -45,7 +47,7 @@ type SourceSpanIssue struct {
 
 // ValidateIntentTaskSources 校验 Intent 输出与 Envelope 的一致性（多模态契约 10）：
 // 1. sourceRef 存在且属于当前 Turn；2. span 在 rune 范围内；3. quote 与原文切片完全一致；
-// 4. ObservationRef 属于当前 Turn；5. 多个 Task 不得拥有完全相同的 spans+intent/subIntent。
+// 4. ObservationRef 属于当前 Turn；5. 多个 Task 不得拥有完全相同的来源 spans。
 func ValidateIntentTaskSources(envelope contextcompiler.TurnInputEnvelope, tasks []IntentTaskV3) []SourceSpanIssue {
 	issues := make([]SourceSpanIssue, 0)
 	utteranceByRef := make(map[string]contextcompiler.EnvelopeUtterance, len(envelope.Utterances))
@@ -98,7 +100,8 @@ func taskSourceIdentity(task IntentTaskV3) string {
 	for _, span := range task.SourceSpans {
 		parts = append(parts, fmt.Sprintf("%s[%d:%d]", span.SourceRef, span.Start, span.End))
 	}
-	return strings.Join([]string{task.Intent, task.SubIntent, task.RequestMode, strings.Join(parts, ",")}, "|")
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 // QuestionUnit 是规范化后的独立问题（多模态契约 11）：带真实来源、canonical hash 和关系。
@@ -129,7 +132,7 @@ type RequirementSeed struct {
 type TaskNormalizationResult struct {
 	AcceptedUnits   []QuestionUnit
 	SuppressedUnits []SuppressedUnit
-	Status          string // accepted/repaired/degraded_single_task
+	Status          string // accepted/repaired/degraded_clause_tasks
 }
 
 // SuppressedUnit 是被去重抑制的模型任务。
@@ -140,9 +143,10 @@ type SuppressedUnit struct {
 }
 
 // NormalizeIntentTasks 是「多模态契约 12」的本地规范化：
-// 校验 -> 构建 QuestionUnit -> 同源精确去重（相同 canonicalQuestionHash + intent/subIntent 只留一个）。
-// Span 全部非法时降级为每个唯一非空 utterance 一个全文 QuestionUnit（degraded_single_task），
-// 不复制多个 Task，不转人工。
+// 校验 -> 构建 QuestionUnit -> 同源精确去重。任务身份只由真实来源决定，
+// 不允许模型在重试时通过改变 intent/subIntent/requestMode 创建第二个任务。
+// Span 全部非法时按通用句末边界重建来源明确的澄清 QuestionUnit，
+// 不复制全文到多个 Task，也不转人工。
 func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []IntentTaskV3) TaskNormalizationResult {
 	result := TaskNormalizationResult{AcceptedUnits: make([]QuestionUnit, 0, len(tasks)), SuppressedUnits: []SuppressedUnit{}}
 
@@ -151,7 +155,7 @@ func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []In
 		utteranceByRef[utterance.Ref] = utterance
 	}
 
-	// 第一步：同身份（相同 spans + intent/subIntent/requestMode）先收敛为 same_source_duplicate。
+	// 第一步：相同来源 spans 先收敛为 same_source_duplicate。
 	// 这是文档 10.5 与 12.3 的同源重复：即使 Span 本身合法，也只允许一个 Task 存活。
 	seenIdentity := make(map[string]IntentTaskV3, len(tasks))
 	deduped := make([]IntentTaskV3, 0, len(tasks))
@@ -212,28 +216,111 @@ func NormalizeIntentTasks(envelope contextcompiler.TurnInputEnvelope, tasks []In
 	return result
 }
 
-// degradedSingleTaskResult 按「每个唯一非空文字/语音 utterance 一个全文 QuestionUnit」降级。
+// degradedSingleTaskResult 保留旧函数名以减少调用面变更；实际按通用句末边界
+// 生成独立 QuestionUnit。来源协议失效时只允许澄清，不得猜成酒店知识。
 func degradedSingleTaskResult(envelope contextcompiler.TurnInputEnvelope) TaskNormalizationResult {
-	result := TaskNormalizationResult{AcceptedUnits: []QuestionUnit{}, SuppressedUnits: []SuppressedUnit{}, Status: "degraded_single_task"}
+	result := TaskNormalizationResult{AcceptedUnits: []QuestionUnit{}, SuppressedUnits: []SuppressedUnit{}, Status: "degraded_clause_tasks"}
 	seq := 0
+	nonEmptyRemaining := countNonEmptyEnvelopeUtterances(envelope.Utterances)
 	for _, utterance := range envelope.Utterances {
 		text := strings.TrimSpace(utterance.Text)
 		if text == "" {
 			continue
 		}
-		seq++
-		span := IntentSourceSpan{SourceRef: utterance.Ref, Start: 0, End: len([]rune(text)), Quote: text}
-		result.AcceptedUnits = append(result.AcceptedUnits, QuestionUnit{
-			QuestionKey: envelopeRefQ(seq), Sequence: seq,
-			PrimarySourceMessageID: utterance.MessageID,
-			SourceSpans:            []IntentSourceSpan{span},
-			Intent:                 "hotel_info", SubIntent: "store_knowledge",
-			RequestMode: "answer", Text: text,
-			CanonicalQuestionHash: CanonicalQuestionHash("hotel_info", "store_knowledge", []string{text}, "answer"),
-			Relation:              "new_topic",
-		})
+		maxClauses := 12 - seq - (nonEmptyRemaining - 1)
+		if maxClauses < 1 {
+			maxClauses = 1
+		}
+		for _, clause := range splitFallbackUtteranceClauses(utterance.Text, maxClauses) {
+			seq++
+			span := IntentSourceSpan{SourceRef: utterance.Ref, Start: clause.Start, End: clause.End, Quote: clause.Quote}
+			result.AcceptedUnits = append(result.AcceptedUnits, QuestionUnit{
+				QuestionKey: envelopeRefQ(seq), Sequence: seq,
+				PrimarySourceMessageID: utterance.MessageID,
+				SourceSpans:            []IntentSourceSpan{span},
+				Intent:                 "interaction", SubIntent: "clarify",
+				RequestMode: "clarify_previous", Text: clause.Quote,
+				Requirements:          []RequirementSeed{{Sequence: 1, Kind: "clarification", Required: true}},
+				CanonicalQuestionHash: CanonicalQuestionHash("interaction", "clarify", []string{clause.Quote}, "clarify_previous"),
+				Relation:              "new_topic",
+			})
+		}
+		nonEmptyRemaining--
 	}
 	return result
+}
+
+type fallbackClauseSpan struct {
+	Start int
+	End   int
+	Quote string
+}
+
+// splitFallbackUtteranceClauses is domain-agnostic. It uses punctuation and
+// newlines that commonly separate independent requests, preserves exact rune
+// offsets, and merges overflow into the final span so intent_tasks.v3 stays
+// within its 12-task limit.
+func splitFallbackUtteranceClauses(text string, maxClauses int) []fallbackClauseSpan {
+	runes := []rune(text)
+	if maxClauses <= 0 {
+		maxClauses = 1
+	}
+	spans := make([]fallbackClauseSpan, 0, min(maxClauses, 4))
+	start := 0
+	flush := func(end int) {
+		trimmedStart, trimmedEnd := start, end
+		for trimmedStart < trimmedEnd && unicode.IsSpace(runes[trimmedStart]) {
+			trimmedStart++
+		}
+		for trimmedEnd > trimmedStart && unicode.IsSpace(runes[trimmedEnd-1]) {
+			trimmedEnd--
+		}
+		if trimmedEnd > trimmedStart {
+			spans = append(spans, fallbackClauseSpan{
+				Start: trimmedStart, End: trimmedEnd, Quote: string(runes[trimmedStart:trimmedEnd]),
+			})
+		}
+		start = end
+	}
+	for index := 0; index < len(runes); index++ {
+		if !isFallbackClauseTerminal(runes[index]) {
+			continue
+		}
+		end := index + 1
+		for end < len(runes) && isFallbackClauseTerminal(runes[end]) {
+			end++
+		}
+		flush(end)
+		index = end - 1
+	}
+	flush(len(runes))
+	if len(spans) <= maxClauses {
+		return spans
+	}
+	mergedStart := spans[maxClauses-1].Start
+	mergedEnd := spans[len(spans)-1].End
+	ret := append([]fallbackClauseSpan(nil), spans[:maxClauses-1]...)
+	ret = append(ret, fallbackClauseSpan{Start: mergedStart, End: mergedEnd, Quote: string(runes[mergedStart:mergedEnd])})
+	return ret
+}
+
+func isFallbackClauseTerminal(value rune) bool {
+	switch value {
+	case '。', '！', '!', '？', '?', '；', ';', '，', ',', '\n', '\r', '…':
+		return true
+	default:
+		return false
+	}
+}
+
+func countNonEmptyEnvelopeUtterances(utterances []contextcompiler.EnvelopeUtterance) int {
+	count := 0
+	for _, utterance := range utterances {
+		if strings.TrimSpace(utterance.Text) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func buildQuestionUnit(seq int, task IntentTaskV3, utteranceByRef map[string]contextcompiler.EnvelopeUtterance) QuestionUnit {
@@ -245,10 +332,10 @@ func buildQuestionUnit(seq int, task IntentTaskV3, utteranceByRef map[string]con
 		}
 		quotes = append(quotes, span.Quote)
 	}
-	text := strings.TrimSpace(task.NormalizedText)
-	if text == "" && len(quotes) > 0 {
-		text = strings.Join(quotes, " ")
-	}
+	// The model-provided normalizedText is descriptive metadata only. Retrieval
+	// and reply objectives must be derived from the exact, server-verified source
+	// quotes so a model rewrite cannot merge topics or inject a new question.
+	text := strings.TrimSpace(strings.Join(quotes, " "))
 	return QuestionUnit{
 		QuestionKey: envelopeRefQ(seq), Sequence: seq,
 		PrimarySourceMessageID: primaryMessageID,
@@ -264,17 +351,17 @@ func envelopeRefQ(seq int) string {
 	return fmt.Sprintf("Q%d", seq)
 }
 
-// CanonicalQuestionHash 按「多模态契约 11.2」计算：使用真实 source quotes，
-// 不使用模型自由改写文本。规范化：NFKC 等价（小写英文/合并空格/去尾标点），保留数字与否定词。
-func CanonicalQuestionHash(intent, subIntent string, exactSourceQuotes []string, requestMode string) string {
+// CanonicalQuestionHash 按「多模态契约 11.2」计算：只使用真实 source quotes，
+// 不使用模型自由改写文本或模型判断出的 intent/subIntent/requestMode。
+// 规范化：NFKC 等价（小写英文/合并空格/去尾标点），保留数字与否定词。
+func CanonicalQuestionHash(_ string, _ string, exactSourceQuotes []string, _ string) string {
 	joined := normalizeQuestionText(strings.Join(exactSourceQuotes, "\x1e"))
-	parts := []string{strings.TrimSpace(intent), strings.TrimSpace(subIntent), joined, strings.TrimSpace(requestMode)}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	sum := sha256.Sum256([]byte(joined))
 	return hex.EncodeToString(sum[:])
 }
 
 func normalizeQuestionText(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
+	text = norm.NFKC.String(strings.ToLower(strings.TrimSpace(text)))
 	var b strings.Builder
 	lastSpace := false
 	for _, r := range text {

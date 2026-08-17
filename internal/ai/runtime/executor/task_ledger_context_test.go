@@ -55,7 +55,7 @@ func TestBuildRuntimeTaskInputsMapsSeparateMessagesAndLabelsExactDuplicate(t *te
 		{Intent: "hotel_info", SubIntent: "service_facility", Text: "有咖啡吗", Output: "knowledge_text_reply"},
 		{Intent: "hotel_info", SubIntent: "parking", Text: "停车场在哪里", Output: "knowledge_text_reply"},
 	}
-	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 14, messages)
+	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 14, messages, 101, 202)
 	if err != nil {
 		t.Fatalf("build runtime task inputs: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestBuildRuntimeTaskInputsMapsSeparateMessagesAndLabelsExactDuplicate(t *te
 	}
 }
 
-func TestBuildRuntimeTaskInputsSkipsPunctuationOnlyPlan(t *testing.T) {
+func TestBuildRuntimeTaskInputsPreservesQuestionMarkAsClarification(t *testing.T) {
 	messages := []models.Message{
 		{ID: 21, MessageType: enums.IMMessageTypeText, Content: "怎么办理入住"},
 		{ID: 22, MessageType: enums.IMMessageTypeText, Content: "？？？"},
@@ -86,15 +86,86 @@ func TestBuildRuntimeTaskInputsSkipsPunctuationOnlyPlan(t *testing.T) {
 		{Intent: "hotel_info", SubIntent: "checkin_process", Text: "怎么办理入住", Output: "knowledge_text_reply"},
 		{Intent: "interaction", SubIntent: "chat", Text: "？？？", Output: "text_reply"},
 	}
-	inputs, _, err := buildRuntimeTaskInputs(plans, 22, messages)
+	inputs, _, err := buildRuntimeTaskInputs(plans, 22, messages, 101, 202)
 	if err != nil {
 		t.Fatalf("build runtime task inputs: %v", err)
 	}
-	if len(inputs) != 1 {
-		t.Fatalf("punctuation-only plan must not create a task, got %d inputs: %#v", len(inputs), inputs)
+	if len(inputs) != 2 {
+		t.Fatalf("question mark must create a clarification task, got %d inputs: %#v", len(inputs), inputs)
 	}
 	if inputs[0].SourceMessageID != 21 {
 		t.Fatalf("expected source=21, got %d", inputs[0].SourceMessageID)
+	}
+	if inputs[1].SourceMessageID != 22 || inputs[1].TaskType != enums.AIReplyTurnTaskTypeText {
+		t.Fatalf("question mark source was not preserved: %#v", inputs[1])
+	}
+}
+
+func TestRuntimeCoverageOnlyTreatsTerminalEvidenceAsResolved(t *testing.T) {
+	for _, status := range []string{"scheduled", "waiting", "handoff_pending", ""} {
+		if runtimeCoverageStatusResolved(status) {
+			t.Fatalf("non-terminal coverage %q must not suppress intent", status)
+		}
+	}
+	for _, status := range []string{"covered", "routed", "ignored", "failed", "skipped", "superseded"} {
+		if !runtimeCoverageStatusResolved(status) {
+			t.Fatalf("terminal coverage %q must be recognized", status)
+		}
+	}
+}
+
+func TestBuildRuntimeTaskInputsV3RejectsGuessedSource(t *testing.T) {
+	messages := []models.Message{
+		{ID: 31, MessageType: enums.IMMessageTypeText, Content: "停车场在哪里"},
+		{ID: 32, MessageType: enums.IMMessageTypeText, Content: "有没有咖啡"},
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Intent: "hotel_info", SubIntent: "parking", Text: "停车场在哪里", Output: "knowledge_text_reply",
+		QuestionUnitKey: "Q1", SourceMessageID: 32, SourceSpanStart: 0, SourceSpanEnd: 6,
+		SourceBindings: []callbacks.TaskSourceBindingTraceData{{MessageID: 31, SpanStart: 0, SpanEnd: 7}},
+	}}
+	if _, _, err := buildRuntimeTaskInputs(plans, 32, messages, 101, 202); err == nil {
+		t.Fatal("v3 task must reject a primary source that is not proven by its source bindings")
+	}
+}
+
+func TestRuntimeTaskObservationBindingPersistsAndRestoresByMessageRevision(t *testing.T) {
+	messages := []models.Message{
+		{ID: 41, MessageType: enums.IMMessageTypeImage, Content: "room.jpg"},
+		{ID: 42, MessageType: enums.IMMessageTypeText, Content: "这个是什么"},
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Intent: "interaction", SubIntent: "media_context_follow_up", Text: "这个是什么", Output: "text_reply",
+		QuestionUnitKey: "Q1", SourceMessageID: 42, SourceSpanStart: 0, SourceSpanEnd: 5,
+		SourceBindings:      []callbacks.TaskSourceBindingTraceData{{MessageID: 42, SpanStart: 0, SpanEnd: 5}},
+		ObservationBindings: []callbacks.TaskObservationBindingTraceData{{MessageID: 41, SourceRevision: 2}},
+	}}
+	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 42, messages, 101, 202)
+	if err != nil {
+		t.Fatalf("build runtime task inputs: %v", err)
+	}
+	if len(inputs) != 1 || inputs[0].ObservationBindingsJSON != `[{"messageId":41,"sourceRevision":2}]` {
+		t.Fatalf("observation binding was not persisted canonically: %+v", inputs)
+	}
+	taskKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[0])
+	planned := plannedByKey[taskKey]
+	if len(planned.ObservationBindings) != 1 || planned.ObservationBindings[0].MessageID != 41 {
+		t.Fatalf("planned task lost observation binding: %+v", planned)
+	}
+	stored := models.AIReplyTurnTask{
+		TaskKey: taskKey, SequenceNo: inputs[0].SequenceNo, TaskType: inputs[0].TaskType,
+		Intent: inputs[0].Intent, SubIntent: inputs[0].SubIntent, RequestMode: inputs[0].RequestMode,
+		SourceMessageID: inputs[0].SourceMessageID, SourceSpanStart: inputs[0].SourceSpanStart,
+		SourceSpanEnd: inputs[0].SourceSpanEnd, SourceBindingsJSON: inputs[0].SourceBindingsJSON,
+		ObservationBindingsJSON: inputs[0].ObservationBindingsJSON,
+	}
+	restored, err := replyTaskPlanFromLedgerTask(stored, messages)
+	if err != nil {
+		t.Fatalf("restore runtime task: %v", err)
+	}
+	if len(restored.ObservationBindings) != 1 || restored.ObservationBindings[0].MessageID != 41 ||
+		restored.ObservationBindings[0].SourceRevision != 2 {
+		t.Fatalf("restored task lost durable observation identity: %+v", restored.ObservationBindings)
 	}
 }
 
@@ -105,7 +176,7 @@ func TestMatchRuntimeTaskSourceMessagePrefersExactHash(t *testing.T) {
 	}
 	plan := callbacks.ReplyTaskPlanTraceData{Sequence: 2, Text: "停车场在哪里"}
 	// 严格相等优先：sequence=2 会指到 32，但文本哈希只等于 31，必须选 31 而非 contains 匹配。
-	got := matchRuntimeTaskSourceMessage(plan, 31, messages, map[int64]struct{}{})
+	got := matchRuntimeTaskSourceMessage(plan, 31, messages)
 	if got != 31 {
 		t.Fatalf("expected exact-hash match to 31, got %d", got)
 	}

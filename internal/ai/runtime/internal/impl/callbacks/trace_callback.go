@@ -203,33 +203,69 @@ type IntentTraceData struct {
 	ResourceAction       string   `json:"resourceAction,omitempty"`
 	ResourceActions      []string `json:"resourceActions,omitempty"`
 	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"），服务端负责 ID 与状态机。
-	Requirements     []string              `json:"requirements,omitempty"`
-	MixedSubTasks    []string              `json:"mixedSubTasks,omitempty"`
-	IntentTasks      []IntentTaskTraceData `json:"intentTasks,omitempty"`
-	ToolCodes        []string              `json:"toolCodes,omitempty"`
-	HumanRoutePolicy string                `json:"humanRoutePolicy,omitempty"`
-	MatchedConfigID  int64                 `json:"matchedConfigId,omitempty"`
-	MatchedConfig    string                `json:"matchedConfig,omitempty"`
-	MatchMode        string                `json:"matchMode,omitempty"`
-	Reason           string                `json:"reason,omitempty"`
+	Requirements      []string                  `json:"requirements,omitempty"`
+	MixedSubTasks     []string                  `json:"mixedSubTasks,omitempty"`
+	IntentTasks       []IntentTaskTraceData     `json:"intentTasks,omitempty"`
+	UtteranceCoverage []IntentCoverageTraceData `json:"utteranceCoverage,omitempty"`
+	ToolCodes         []string                  `json:"toolCodes,omitempty"`
+	HumanRoutePolicy  string                    `json:"humanRoutePolicy,omitempty"`
+	MatchedConfigID   int64                     `json:"matchedConfigId,omitempty"`
+	MatchedConfig     string                    `json:"matchedConfig,omitempty"`
+	MatchMode         string                    `json:"matchMode,omitempty"`
+	Reason            string                    `json:"reason,omitempty"`
+}
+
+// IntentCoverageTraceData records the durable outcome of one current-turn
+// utterance without copying the customer text. MessageID is the stable bridge
+// from the ephemeral U* reference to the persisted reply job coverage ledger.
+type IntentCoverageTraceData struct {
+	MessageID     int64  `json:"messageId"`
+	Status        string `json:"status"`
+	ReasonCode    string `json:"reasonCode,omitempty"`
+	TaskSequences []int  `json:"taskSequences,omitempty"`
 }
 
 type IntentTaskTraceData struct {
-	Sequence        int     `json:"sequence,omitempty"`
-	Intent          string  `json:"intent,omitempty"`
-	SubIntent       string  `json:"subIntent,omitempty"`
-	Text            string  `json:"text,omitempty"`
-	RequestMode     string  `json:"requestMode,omitempty"`
-	Confidence      float64 `json:"confidence,omitempty"`
-	NeedsKnowledge  bool    `json:"needsKnowledge,omitempty"`
-	NeedsResource   bool    `json:"needsResource,omitempty"`
-	NeedsTool       bool    `json:"needsTool,omitempty"`
-	NeedsHumanRoute bool    `json:"needsHumanRoute,omitempty"`
-	ResourceAction  string  `json:"resourceAction,omitempty"`
-	MatchedConfigID int64   `json:"matchedConfigId,omitempty"`
+	Sequence              int                               `json:"sequence,omitempty"`
+	Intent                string                            `json:"intent,omitempty"`
+	SubIntent             string                            `json:"subIntent,omitempty"`
+	Text                  string                            `json:"text,omitempty"`
+	RequestMode           string                            `json:"requestMode,omitempty"`
+	Confidence            float64                           `json:"confidence,omitempty"`
+	QuestionUnitKey       string                            `json:"questionUnitKey,omitempty"`
+	SourceMessageID       int64                             `json:"sourceMessageId,omitempty"`
+	AnalysisRevision      int                               `json:"analysisRevision,omitempty"`
+	SourceSpanStart       int                               `json:"sourceSpanStart,omitempty"`
+	SourceSpanEnd         int                               `json:"sourceSpanEnd,omitempty"`
+	SourceBindings        []TaskSourceBindingTraceData      `json:"sourceBindings,omitempty"`
+	ObservationBindings   []TaskObservationBindingTraceData `json:"observationBindings,omitempty"`
+	SourceSetFingerprint  string                            `json:"sourceSetFingerprint,omitempty"`
+	CanonicalQuestionHash string                            `json:"canonicalQuestionHash,omitempty"`
+	NeedsKnowledge        bool                              `json:"needsKnowledge,omitempty"`
+	NeedsResource         bool                              `json:"needsResource,omitempty"`
+	NeedsTool             bool                              `json:"needsTool,omitempty"`
+	NeedsHumanRoute       bool                              `json:"needsHumanRoute,omitempty"`
+	ResourceAction        string                            `json:"resourceAction,omitempty"`
+	MatchedConfigID       int64                             `json:"matchedConfigId,omitempty"`
 	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
 	Requirements []string `json:"requirements,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
+}
+
+// TaskSourceBindingTraceData 只记录稳定消息 ID 与 rune span，不复制客户正文。
+// Envelope 内临时 U*/O* 引用不会持久化到 Task 或 RunLog。
+type TaskSourceBindingTraceData struct {
+	MessageID int64 `json:"messageId"`
+	SpanStart int   `json:"spanStart"`
+	SpanEnd   int   `json:"spanEnd"`
+}
+
+// TaskObservationBindingTraceData converts envelope-local O* references into a
+// durable media-analysis identity. O* values are intentionally not persisted
+// because they are renumbered whenever an envelope is rebuilt.
+type TaskObservationBindingTraceData struct {
+	MessageID      int64 `json:"messageId"`
+	SourceRevision int   `json:"sourceRevision"`
 }
 
 type CommitMessageTraceData struct {
@@ -309,16 +345,25 @@ type ReplyPlanTraceData struct {
 }
 
 type ReplyTaskPlanTraceData struct {
-	TaskKey        string `json:"taskKey,omitempty"`
-	Sequence       int    `json:"sequence,omitempty"`
-	AnswerGroup    string `json:"answerGroup,omitempty"`
-	Intent         string `json:"intent,omitempty"`
-	SubIntent      string `json:"subIntent,omitempty"`
-	Text           string `json:"text,omitempty"`
-	RequestMode    string `json:"requestMode,omitempty"`
-	RelationType   string `json:"relationType,omitempty"`
-	Output         string `json:"output,omitempty"`
-	ResourceAction string `json:"resourceAction,omitempty"`
+	TaskKey               string                            `json:"taskKey,omitempty"`
+	Sequence              int                               `json:"sequence,omitempty"`
+	AnswerGroup           string                            `json:"answerGroup,omitempty"`
+	Intent                string                            `json:"intent,omitempty"`
+	SubIntent             string                            `json:"subIntent,omitempty"`
+	Text                  string                            `json:"text,omitempty"`
+	RequestMode           string                            `json:"requestMode,omitempty"`
+	RelationType          string                            `json:"relationType,omitempty"`
+	QuestionUnitKey       string                            `json:"questionUnitKey,omitempty"`
+	SourceMessageID       int64                             `json:"sourceMessageId,omitempty"`
+	AnalysisRevision      int                               `json:"analysisRevision,omitempty"`
+	SourceSpanStart       int                               `json:"sourceSpanStart,omitempty"`
+	SourceSpanEnd         int                               `json:"sourceSpanEnd,omitempty"`
+	SourceBindings        []TaskSourceBindingTraceData      `json:"sourceBindings,omitempty"`
+	ObservationBindings   []TaskObservationBindingTraceData `json:"observationBindings,omitempty"`
+	SourceSetFingerprint  string                            `json:"sourceSetFingerprint,omitempty"`
+	CanonicalQuestionHash string                            `json:"canonicalQuestionHash,omitempty"`
+	Output                string                            `json:"output,omitempty"`
+	ResourceAction        string                            `json:"resourceAction,omitempty"`
 	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
 	Requirements []string `json:"requirements,omitempty"`
 }

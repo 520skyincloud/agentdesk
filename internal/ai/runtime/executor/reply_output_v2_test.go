@@ -11,6 +11,7 @@ import (
 )
 
 func TestRuntimeStructuredOutputContractsAreInvocationScoped(t *testing.T) {
+	t.Setenv("AI_RUNTIME_MULTIMODAL_V3", "off")
 	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
 	intentConfig, err := withRuntimeIntentStructuredOutput(base)
 	if err != nil {
@@ -27,6 +28,26 @@ func TestRuntimeStructuredOutputContractsAreInvocationScoped(t *testing.T) {
 	assertRuntimeStructuredOutput(t, replyConfig, "reply_output_v2", contracts.SchemaReplyOutputV2)
 }
 
+func TestRuntimeStructuredOutputUsesV3ContractsAsAGroup(t *testing.T) {
+	t.Setenv("AI_RUNTIME_MULTIMODAL_V3", "on")
+	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
+	replyConfig, err := withRuntimeReplyStructuredOutput(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRuntimeStructuredOutput(t, replyConfig, "reply_output_v3", contracts.SchemaReplyOutputV3)
+}
+
+func TestJoinResolvedReplyPartsV3NeverUsesCustomerVisibleControlMarker(t *testing.T) {
+	got := joinResolvedReplyPartsV3([]contracts.ResolvedPartV3{
+		{GroupKey: "g1", TaskKeys: []string{"t1"}, Content: "第一条回复。"},
+		{GroupKey: "g2", TaskKeys: []string{"t2"}, Content: "第二条回复。"},
+	})
+	if got != "第一条回复。\n\n第二条回复。" {
+		t.Fatalf("unexpected V3 aggregate: %q", got)
+	}
+}
+
 func TestRuntimeIntentStructuredOutputAcceptsInvocationSchema(t *testing.T) {
 	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
 	runtimeSchema, _, err := contracts.BuildRuntimeIntentSchema(contracts.MustSchema(contracts.SchemaIntentTasksV2), nil)
@@ -37,7 +58,7 @@ func TestRuntimeIntentStructuredOutputAcceptsInvocationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configured, err := withRuntimeIntentStructuredOutputSchema(base, runtimeSchema)
+	configured, err := withRuntimeIntentStructuredOutputSchema(base, contracts.SchemaIntentTasksV2, runtimeSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,13 +85,16 @@ func assertRuntimeStructuredOutput(t *testing.T, config modelconfig.Config, name
 	}
 }
 
-func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
+func TestParseRuntimeReplyOutputV2AcceptsKnownTransportWrapperOnly(t *testing.T) {
 	valid := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"酒店提供免费停车。","evidenceRefs":["K1"],"actionRefs":[]}]}`
 	if parsed, err := parseRuntimeReplyOutputV2(valid); err != nil || len(parsed.Parts) != 1 {
 		t.Fatalf("parse valid reply output=%+v err=%v", parsed, err)
 	}
+	if parsed, err := parseRuntimeReplyOutputV2("```json\n" + valid + "\n```"); err != nil || len(parsed.Parts) != 1 {
+		t.Fatalf("known markdown transport wrapper must be normalized: %+v err=%v", parsed, err)
+	}
 	for name, raw := range map[string]string{
-		"markdown":           "```json\n" + valid + "\n```",
+		"arbitrary prose":    "好的，结果是 " + valid,
 		"extra field":        `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"ok","evidenceRefs":[],"actionRefs":[]}],"reason":"extra"}`,
 		"duplicate task key": `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1","task_1"],"content":"ok","evidenceRefs":[],"actionRefs":[]}]}`,
 	} {

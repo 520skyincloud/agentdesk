@@ -47,6 +47,20 @@ func (r *messageAnalysisRepository) GetLatestInTenant(db *gorm.DB, tenantID, mes
 	return ret
 }
 
+// FindLatestForMessagesInTenant 批量读取每条消息的最新 revision。返回结果仍按
+// source_revision/id 倒序，调用方取每个 message_id 的第一条即可。
+func (r *messageAnalysisRepository) FindLatestForMessagesInTenant(db *gorm.DB, tenantID int64, messageIDs []int64) []models.MessageAnalysis {
+	if db == nil || tenantID <= 0 || len(messageIDs) == 0 {
+		return nil
+	}
+	var list []models.MessageAnalysis
+	if err := db.Where("tenant_id = ? AND message_id IN ?", tenantID, messageIDs).
+		Order("message_id ASC, source_revision DESC, id DESC").Find(&list).Error; err != nil {
+		return nil
+	}
+	return list
+}
+
 func (r *messageAnalysisRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.MessageAnalysis, error) {
 	if db == nil || id <= 0 || tenantID <= 0 {
 		return nil, nil

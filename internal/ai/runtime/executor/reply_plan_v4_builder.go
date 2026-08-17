@@ -25,6 +25,8 @@ type ReplyPlanBuildInput struct {
 	Groups      []AnswerGroup
 	// EvidenceByTask: taskKey -> 证据摘要
 	EvidenceByTask map[string]TaskEvidenceResultView
+	// ObservationRefsByTask: taskKey -> 当前 Envelope 内允许该任务读取的 O*。
+	ObservationRefsByTask map[string][]string
 	// ActionRefsByTask: taskKey -> 服务端已准备 Action 引用
 	ActionRefsByTask map[string][]string
 	// RequiredFactsByTask: taskKey -> 权威事实引用（S*）
@@ -41,14 +43,29 @@ type ReplyPlanBuildInput struct {
 
 // BuildReplyPlanV4 构造最终计划；maxPartsPerGroup 固定为 1。
 func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) {
+	readyGroups := make([]AnswerGroup, 0, len(input.Groups))
+	for _, group := range input.Groups {
+		// resource_only/handoff are committed by their own deterministic paths;
+		// they must never become required model output groups.
+		if group.OutputMode == "text" {
+			readyGroups = append(readyGroups, group)
+		}
+	}
+	readyGroups = SelectReadyGroups(readyGroups)
+	selectedTasks := make(map[string]struct{}, len(input.Tasks))
+	for _, group := range readyGroups {
+		for _, taskKey := range group.TaskKeys {
+			selectedTasks[taskKey] = struct{}{}
+		}
+	}
 	plan := contracts.ReplyPlanV4{
 		SchemaVersion:  contracts.ReplyPlanV4SchemaVersion,
 		TurnVersion:    input.TurnVersion,
-		ShouldGenerate: len(input.Groups) > 0,
-		Tasks:          make([]contracts.ReplyPlanTaskV4, 0, len(input.Tasks)),
-		ReplyGroups:    make([]contracts.ReplyPlanGroupV4, 0, len(input.Groups)),
+		ShouldGenerate: len(readyGroups) > 0,
+		Tasks:          make([]contracts.ReplyPlanTaskV4, 0, len(selectedTasks)),
+		ReplyGroups:    make([]contracts.ReplyPlanGroupV4, 0, len(readyGroups)),
 		GlobalConstraints: contracts.ReplyPlanGlobalV4{
-			MaxReplyParts:       minInt(len(SelectReadyGroups(input.Groups)), 3),
+			MaxReplyParts:       minInt(len(readyGroups), 3),
 			MaxQuestionsPerPart: 4,
 			ForbiddenClaims: []string{
 				"unprepared_resource_sent", "uncommitted_handoff", "unexecuted_tool_result",
@@ -62,7 +79,7 @@ func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) 
 		plan.GlobalConstraints.MaxReplyParts = 0
 	}
 	groupKeyByTask := make(map[string]string, len(input.Tasks))
-	for _, group := range input.Groups {
+	for _, group := range readyGroups {
 		for _, key := range group.TaskKeys {
 			groupKeyByTask[key] = group.GroupKey
 		}
@@ -72,6 +89,9 @@ func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) 
 		})
 	}
 	for _, task := range input.Tasks {
+		if _, selected := selectedTasks[task.TaskKey]; !selected {
+			continue
+		}
 		decision := input.Decisions[task.TaskKey]
 		evidence := input.EvidenceByTask[task.TaskKey]
 		actionRefs := input.ActionRefsByTask[task.TaskKey]
@@ -82,6 +102,7 @@ func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) 
 			Sequence:       task.Sequence,
 			Intent:         nonEmpty(task.Intent, "general"),
 			SubIntent:      task.SubIntent,
+			ClaimType:      nonEmpty(evidence.ClaimType, "unknown"),
 			AnswerGroupKey: groupKeyByTask[task.TaskKey],
 			Objective:      objectiveFor(task, decision),
 			OutputMode:     outputMode,
@@ -89,6 +110,7 @@ func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) 
 				Policy: policy, Status: status, ReasonCode: reason,
 			},
 			EvidenceRefs:     evidenceRefsFor(evidence),
+			ObservationRefs:  append([]string(nil), input.ObservationRefsByTask[task.TaskKey]...),
 			RequiredFactRefs: input.RequiredFactsByTask[task.TaskKey],
 			ActionRefs:       actionRefs,
 			ResourcePolicy:   resourcePolicyFor(decision, outputMode),
@@ -99,6 +121,9 @@ func BuildReplyPlanV4(input ReplyPlanBuildInput) (contracts.ReplyPlanV4, error) 
 		}
 		if planTask.ActionRefs == nil {
 			planTask.ActionRefs = []string{}
+		}
+		if planTask.ObservationRefs == nil {
+			planTask.ObservationRefs = []string{}
 		}
 		if planTask.RequiredFactRefs == nil {
 			planTask.RequiredFactRefs = []string{}
@@ -152,14 +177,13 @@ func evidenceRefsFor(evidence TaskEvidenceResultView) []string {
 }
 
 func objectiveFor(task TaskRuntimeView, decision CapabilityDecisionV1) string {
-	objective := decision.TaskKey
-	if decision.Route != "" {
-		objective = decision.Route
+	// Objective 是给 Generate 的客户请求，不是内部 route 描述。SourceText 已由
+	// task ledger 依据消息 ID 和 rune span 校验，截断只服务于内部 JSON 上限。
+	if sourceText := boundedIntentCatalogText(task.SourceText, 500); sourceText != "" {
+		return sourceText
 	}
-	if objective == "" {
-		objective = task.TaskKey
-	}
-	return fmt.Sprintf("task=%s intent=%s/%s route=%s", task.TaskKey, task.Intent, task.SubIntent, objective)
+	// 非持久 Task 的防御兜底；正常 V3 ledger 路径不应走到这里。
+	return fmt.Sprintf("回答当前任务 %s", task.TaskKey)
 }
 
 func resourcePolicyFor(decision CapabilityDecisionV1, outputMode string) contracts.ReplyResourcePolicy {
@@ -177,6 +201,9 @@ func constraintsFor(decision CapabilityDecisionV1, evidence TaskEvidenceResultVi
 	}
 	if decision.Route == "knowledge_answer" && evidence.Status == "no_context" {
 		constraints = append(constraints, "acknowledge_uncertainty")
+	}
+	if evidence.ClaimType == "recommendation" {
+		constraints = append(constraints, "recommendation_evidence_only")
 	}
 	if decision.Route == "business_handoff" {
 		constraints = append(constraints, "do_not_repeat_resolved_answer")
@@ -215,6 +242,7 @@ func PlanFingerprintV4(input ReplyPlanBuildInput, plan contracts.ReplyPlanV4) (s
 		"capabilityFingerprints":         decisionFingerprints,
 		"answerGroupKeys":                groupKeys,
 		"evidenceFingerprints":           evidenceFingerprints,
+		"observationRefsByTask":          input.ObservationRefsByTask,
 		"factSnapshotFingerprint":        input.FactSnapshotFingerprint,
 		"resourceEligibilityFingerprint": input.ResourceEligibilityFingerprint,
 		"actionLedgerFingerprint":        input.ActionLedgerFingerprint,

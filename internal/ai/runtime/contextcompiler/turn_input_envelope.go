@@ -3,6 +3,8 @@ package contextcompiler
 import (
 	"strings"
 
+	"agent-desk/internal/ai/replyengine"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
@@ -12,55 +14,59 @@ import (
 // 媒体观察（observations）、上一 AI 批次与未完成任务。替代 mergeRecentCustomerBurstMessage
 // 生成的无标签拼接字符串，让 Intent 能按 U*/O* 引用真实来源。
 type TurnInputEnvelope struct {
-	Scope           EnvelopeScope
-	Utterances      []EnvelopeUtterance
-	Observations    []EnvelopeObservation
-	PriorAssistant  *EnvelopePriorAssistant
-	UnresolvedTasks []EnvelopeUnresolvedTask
+	SchemaVersion   string                   `json:"schemaVersion"`
+	Scope           EnvelopeScope            `json:"scope"`
+	Utterances      []EnvelopeUtterance      `json:"utterances"`
+	Observations    []EnvelopeObservation    `json:"observations"`
+	PriorAssistant  *EnvelopePriorAssistant  `json:"priorAssistant"`
+	UnresolvedTasks []EnvelopeUnresolvedTask `json:"unresolvedTasks"`
 }
 
 type EnvelopeScope struct {
-	TenantID       int64
-	StoreID        int64
-	ConversationID int64
-	SessionNo      int
-	TurnID         int64
-	TurnVersion    int
+	TenantID       int64 `json:"tenantId"`
+	StoreID        int64 `json:"storeId"`
+	ConversationID int64 `json:"conversationId"`
+	SessionNo      int   `json:"sessionNo"`
+	TurnID         int64 `json:"turnId"`
+	TurnVersion    int   `json:"turnVersion"`
 }
 
 type EnvelopeUtterance struct {
-	Ref             string // U1..Un，仅在本 Envelope 内有效，不入库
-	MessageID       int64
-	MessageType     string
-	Text            string // 当前文字或已 ready 的语音 transcript；pending 媒体为空
-	SentAt          string
-	AnalysisStatus  string // not_required/pending/processing/ready/failed_*
-	ObservationRefs []string
+	Ref                 string                                `json:"ref"` // U1..Un，仅在本 Envelope 内有效，不入库
+	MessageID           int64                                 `json:"messageId"`
+	MessageType         string                                `json:"messageType"`
+	Text                string                                `json:"text"` // 当前文字、ASR transcript，或仅媒体输入时的分析摘要
+	TextOrigin          string                                `json:"textOrigin"`
+	SentAt              string                                `json:"sentAt"`
+	AnalysisStatus      string                                `json:"analysisStatus"` // not_required/pending/processing/ready/failed_*
+	ObservationRefs     []string                              `json:"observationRefs"`
+	ResponseExpectation *contracts.MediaResponseExpectationV1 `json:"responseExpectation"`
 }
 
 type EnvelopeObservation struct {
-	Ref             string // O1..On
-	MessageID       int64
-	SourceRevision  int
-	Status          string // pending/ready/failed
-	SourceType      string
-	ObservationType string
-	Text            string
-	Confidence      float64
-	AllowedUses     []string
-	ForbiddenUses   []string
+	Ref             string   `json:"ref"` // O1..On
+	MessageID       int64    `json:"sourceMessageId"`
+	SourceRevision  int      `json:"sourceRevision"`
+	Status          string   `json:"status"` // pending/ready/failed
+	SourceType      string   `json:"sourceType"`
+	ObservationType string   `json:"observationType"`
+	Text            string   `json:"text"`
+	Confidence      float64  `json:"confidence"`
+	AllowedUses     []string `json:"allowedUses"`
+	ForbiddenUses   []string `json:"forbiddenUses"`
 }
 
 type EnvelopePriorAssistant struct {
-	MessageID int64
-	Summary   string
+	MessageID int64    `json:"messageId"`
+	TaskKeys  []string `json:"taskKeys"`
+	Summary   string   `json:"summary"`
 }
 
 type EnvelopeUnresolvedTask struct {
-	TaskKey   string
-	Intent    string
-	SubIntent string
-	Status    string
+	TaskKey   string `json:"taskKey"`
+	Intent    string `json:"intent"`
+	SubIntent string `json:"subIntent"`
+	Status    string `json:"status"`
 }
 
 // BuildTurnInputEnvelope 从当前 Turn 的客户消息构建 Envelope：
@@ -69,7 +75,14 @@ type EnvelopeUnresolvedTask struct {
 // - 图片/附件 -> utterance（text 空）+ 按 ObservationPolicy 投影的观察
 // pending 媒体分配 O* 占位（status=pending, text=""），Intent 可引用但不作事实。
 func BuildTurnInputEnvelope(scope EnvelopeScope, messages []models.Message) TurnInputEnvelope {
-	envelope := TurnInputEnvelope{Scope: scope}
+	return BuildTurnInputEnvelopeWithAnalyses(scope, messages, nil)
+}
+
+// BuildTurnInputEnvelopeWithAnalyses 优先读取持久化 message_analysis.v2；Payload
+// 只作为灰度兼容来源，并始终按最低权限投影，不能成为门店事实或动作依据。
+func BuildTurnInputEnvelopeWithAnalyses(scope EnvelopeScope, messages []models.Message, analyses map[int64]contracts.MessageAnalysisV2) TurnInputEnvelope {
+	envelope := TurnInputEnvelope{SchemaVersion: contracts.SchemaTurnInputEnvelopeV1, Scope: scope}
+	mediaTextByRef := make(map[string]string)
 	utteranceSeq, observationSeq := 0, 0
 	for _, message := range messages {
 		if message.SenderType != enums.IMSenderTypeCustomer {
@@ -77,30 +90,56 @@ func BuildTurnInputEnvelope(scope EnvelopeScope, messages []models.Message) Turn
 		}
 		utteranceSeq++
 		utterance := EnvelopeUtterance{
-			Ref:         envelopeRef("U", utteranceSeq),
-			MessageID:   message.ID,
-			MessageType: string(message.MessageType),
-			SentAt:      envelopeSentAt(message),
+			Ref:             envelopeRef("U", utteranceSeq),
+			MessageID:       message.ID,
+			MessageType:     string(message.MessageType),
+			TextOrigin:      "none",
+			SentAt:          envelopeSentAt(message),
+			ObservationRefs: []string{},
 		}
+		analysis, hasAnalysis := analyses[message.ID]
 		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
 		understood := strings.TrimSpace(status) == "understood"
+		if hasAnalysis {
+			mediaText = strings.TrimSpace(analysis.NormalizedText)
+			mediaSummary = mediaText
+			status = analysis.Status
+			understood = analysis.Status == "ready"
+			utterance.ResponseExpectation = cloneMediaResponseExpectation(analysis.ResponseExpectation)
+		}
+		if utterance.ResponseExpectation == nil {
+			if mode, basis, confidence, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+				utterance.ResponseExpectation = &contracts.MediaResponseExpectationV1{Mode: mode, Basis: basis, Confidence: confidence}
+			}
+		}
+		if utterance.ResponseExpectation == nil && understood && message.MessageType != enums.IMMessageTypeVoice &&
+			replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " ")) {
+			utterance.ResponseExpectation = &contracts.MediaResponseExpectationV1{Mode: "reply", Basis: "unknown", Confidence: 0.5}
+		}
+		mediaTextByRef[utterance.Ref] = strings.TrimSpace(mediaText)
 		switch message.MessageType {
 		case enums.IMMessageTypeText, enums.IMMessageTypeHTML:
 			utterance.AnalysisStatus = "not_required"
 			utterance.Text = strings.TrimSpace(message.Content)
+			utterance.TextOrigin = "customer_text"
 		case enums.IMMessageTypeVoice:
 			// 语音 transcript 是 L6 当前输入；未 ready 时 text 为空、等待事件。
 			utterance.AnalysisStatus = envelopeAnalysisStatus(status)
 			if understood {
 				utterance.Text = strings.TrimSpace(mediaText)
-				observationSeq++
-				utterance.ObservationRefs = append(utterance.ObservationRefs, envelopeRef("O", observationSeq))
-				envelope.Observations = append(envelope.Observations, EnvelopeObservation{
-					Ref: envelopeRef("O", observationSeq), MessageID: message.ID, SourceRevision: 1,
-					Status: "ready", SourceType: "voice", ObservationType: "transcript",
-					Text: firstNonEmptyTrimmed(mediaText, mediaSummary), Confidence: 0.9,
-					AllowedUses: []string{}, ForbiddenUses: forbiddenObservationUses(),
-				})
+				utterance.TextOrigin = "asr_transcript"
+				if hasAnalysis {
+					appendAnalysisObservations(&envelope, &utterance, analysis, &observationSeq)
+				} else {
+					observationSeq++
+					utterance.ObservationRefs = append(utterance.ObservationRefs, envelopeRef("O", observationSeq))
+					envelope.Observations = append(envelope.Observations, EnvelopeObservation{
+						Ref: envelopeRef("O", observationSeq), MessageID: message.ID, SourceRevision: 1,
+						Status: "ready", SourceType: "voice", ObservationType: "transcript",
+						Text: firstNonEmptyTrimmed(mediaText, mediaSummary), Confidence: 0.9,
+						AllowedUses: []string{}, ForbiddenUses: forbiddenObservationUses(),
+					})
+				}
 			} else {
 				observationSeq++
 				utterance.ObservationRefs = append(utterance.ObservationRefs, envelopeRef("O", observationSeq))
@@ -112,24 +151,84 @@ func BuildTurnInputEnvelope(scope EnvelopeScope, messages []models.Message) Turn
 			}
 		default: // image/video/gif/attachment
 			utterance.AnalysisStatus = envelopeAnalysisStatus(status)
-			observationSeq++
-			utterance.ObservationRefs = append(utterance.ObservationRefs, envelopeRef("O", observationSeq))
-			obs := EnvelopeObservation{
-				Ref: envelopeRef("O", observationSeq), MessageID: message.ID, SourceRevision: 1,
-				Status: envelopeObsStatus(status), SourceType: envelopeSourceType(message.MessageType),
-				ObservationType: envelopeObservationType(message.MessageType),
-				ForbiddenUses:   forbiddenObservationUses(),
+			if hasAnalysis && understood && len(analysis.Observations) > 0 {
+				appendAnalysisObservations(&envelope, &utterance, analysis, &observationSeq)
+			} else {
+				observationSeq++
+				utterance.ObservationRefs = append(utterance.ObservationRefs, envelopeRef("O", observationSeq))
+				obs := EnvelopeObservation{
+					Ref: envelopeRef("O", observationSeq), MessageID: message.ID, SourceRevision: 1,
+					Status: envelopeObsStatus(status), SourceType: envelopeSourceType(message.MessageType),
+					ObservationType: envelopeObservationType(message.MessageType),
+					ForbiddenUses:   forbiddenObservationUses(),
+				}
+				if understood {
+					obs.Text = firstNonEmptyTrimmed(mediaText, mediaSummary)
+					// Legacy Payload 没有可验证 contentRole，只允许描述和当前指代，
+					// 禁止作为知识事实或资源资格。
+					obs.AllowedUses = []string{"describe_media", "resolve_reference"}
+					obs.Confidence = 0.6
+				}
+				envelope.Observations = append(envelope.Observations, obs)
 			}
-			if understood {
-				obs.Text = firstNonEmptyTrimmed(mediaText, mediaSummary)
-				obs.AllowedUses = []string{"describe_media", "resolve_reference"}
-				obs.Confidence = 0.9
-			}
-			envelope.Observations = append(envelope.Observations, obs)
 		}
 		envelope.Utterances = append(envelope.Utterances, utterance)
 	}
+	promoteStandaloneMediaAnalysis(&envelope, mediaTextByRef)
 	return envelope
+}
+
+func cloneMediaResponseExpectation(value *contracts.MediaResponseExpectationV1) *contracts.MediaResponseExpectationV1 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+// promoteStandaloneMediaAnalysis gives Intent a source-bound text only when a
+// turn otherwise contains no customer-authored text or ASR transcript. It does
+// not promote ordinary media (mode=none), and it keeps the observation policy
+// restrictions alongside the derived text.
+func promoteStandaloneMediaAnalysis(envelope *TurnInputEnvelope, mediaTextByRef map[string]string) {
+	if envelope == nil {
+		return
+	}
+	for _, utterance := range envelope.Utterances {
+		if strings.TrimSpace(utterance.Text) != "" {
+			return
+		}
+	}
+	for index := range envelope.Utterances {
+		utterance := &envelope.Utterances[index]
+		if utterance.ResponseExpectation == nil ||
+			!replyengine.MediaResponseExpectationTriggersAI(utterance.ResponseExpectation.Mode) {
+			continue
+		}
+		text := strings.TrimSpace(mediaTextByRef[utterance.Ref])
+		if text == "" || utterance.AnalysisStatus != "ready" {
+			continue
+		}
+		utterance.Text = text
+		utterance.TextOrigin = "media_analysis"
+	}
+}
+
+func appendAnalysisObservations(envelope *TurnInputEnvelope, utterance *EnvelopeUtterance, analysis contracts.MessageAnalysisV2, observationSeq *int) {
+	if envelope == nil || utterance == nil || observationSeq == nil {
+		return
+	}
+	for _, item := range analysis.Observations {
+		(*observationSeq)++
+		ref := envelopeRef("O", *observationSeq)
+		utterance.ObservationRefs = append(utterance.ObservationRefs, ref)
+		envelope.Observations = append(envelope.Observations, EnvelopeObservation{
+			Ref: ref, MessageID: item.SourceMessageID, SourceRevision: item.SourceRevision,
+			Status: item.Status, SourceType: item.SourceType, ObservationType: item.ObservationType,
+			Text: item.Text, Confidence: item.Confidence,
+			AllowedUses: append([]string{}, item.AllowedUses...), ForbiddenUses: append([]string{}, item.ForbiddenUses...),
+		})
+	}
 }
 
 // HasCurrentVoiceWithoutTranscript 判定当前输入是否包含「尚无 transcript 的语音」：
@@ -183,11 +282,11 @@ func intToDecimal(v int) string {
 
 func envelopeAnalysisStatus(status string) string {
 	switch strings.TrimSpace(status) {
-	case "understood":
+	case "understood", "ready":
 		return "ready"
-	case "failed":
+	case "failed", "failed_terminal":
 		return "failed_terminal"
-	case "retrying":
+	case "retrying", "pending", "processing", "failed_retryable":
 		return "pending"
 	default:
 		return "pending"
@@ -195,7 +294,7 @@ func envelopeAnalysisStatus(status string) string {
 }
 
 func envelopeObsStatus(status string) string {
-	if strings.TrimSpace(status) == "understood" {
+	if strings.TrimSpace(status) == "understood" || strings.TrimSpace(status) == "ready" {
 		return "ready"
 	}
 	if strings.TrimSpace(status) == "failed" {

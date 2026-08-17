@@ -18,9 +18,11 @@ const (
 
 	runtimeReplyContractLegacy = "legacy"
 	runtimeReplyContractV2     = "v2"
+	runtimeReplyContractV3     = "v3"
 
 	runtimeValidatorLegacy = "legacy"
 	runtimeValidatorV2     = "v2"
+	runtimeValidatorV3     = "v3"
 
 	runtimeActionLedgerShadow        = "shadow"
 	runtimeActionLedgerAuthoritative = "authoritative"
@@ -43,23 +45,25 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	modes := runtimeFeatureModes{
 		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerV2, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
 		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2, runtimeIntentContractV3),
-		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2),
-		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2),
+		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2, runtimeReplyContractV3),
+		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2, runtimeValidatorV3),
 		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
 	}
-	// 成组开关：V3 只允许整组启用（Intent V3 + Context V2），
-	// 禁止单独打开 IntentTasksV3 而其它部分仍为 legacy。
+	// 成组开关：V3 必须整组启用。禁止只切 Intent，随后又把 ReplyOutputV3
+	// 降成 V2 校验；这种半链正是生产中协议修复放大和事实边界失效的根因。
 	if multimodalV3Enabled() {
 		modes.IntentContract = runtimeIntentContractV3
 		modes.ContextCompiler = runtimeContextCompilerV2
+		modes.ReplyContract = runtimeReplyContractV3
+		modes.Validator = runtimeValidatorV3
+		modes.ActionLedger = runtimeActionLedgerAuthoritative
 	}
 	return modes
 }
 
 // multimodalV3Enabled 契约 2.1 成组总开关：AI_RUNTIME_MULTIMODAL_V3=on 时
-// Intent 必须走 intent_tasks.v3（Envelope + SourceSpan + QuestionUnit）。
-// Reply/Validator 侧的 V3 语义（服务端派生引用、组覆盖）已在 V2 主链通过
-// deterministic autofix 与 AnswerGroup 落地；OutputV3 传输协议切换保持灰度。
+// Intent、Reply、Validator 必须分别走 intent_tasks.v3、reply_output.v3 和
+// validator.v3；三者不能拆开灰度。
 func multimodalV3Enabled() bool {
 	return strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on"
 }
@@ -79,8 +83,15 @@ func validateRuntimeFeatureModes(modes runtimeFeatureModes) error {
 	if modes.Validator == runtimeValidatorV2 && modes.ReplyContract != runtimeReplyContractV2 {
 		return fmt.Errorf("AI runtime validator v2 requires reply contract v2")
 	}
-	if modes.ActionLedger == runtimeActionLedgerAuthoritative && modes.ReplyContract != runtimeReplyContractV2 {
-		return fmt.Errorf("AI runtime authoritative action ledger requires reply contract v2")
+	if modes.ReplyContract == runtimeReplyContractV3 && modes.ContextCompiler != runtimeContextCompilerV2 {
+		return fmt.Errorf("AI runtime reply contract v3 requires context compiler v2")
+	}
+	if modes.Validator == runtimeValidatorV3 && modes.ReplyContract != runtimeReplyContractV3 {
+		return fmt.Errorf("AI runtime validator v3 requires reply contract v3")
+	}
+	if modes.ActionLedger == runtimeActionLedgerAuthoritative &&
+		modes.ReplyContract != runtimeReplyContractV2 && modes.ReplyContract != runtimeReplyContractV3 {
+		return fmt.Errorf("AI runtime authoritative action ledger requires reply contract v2 or v3")
 	}
 	if modes.IntentContract == runtimeIntentContractV3 && modes.ContextCompiler != runtimeContextCompilerV2 {
 		return fmt.Errorf("AI runtime intent contract v3 requires context compiler v2")

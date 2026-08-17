@@ -88,7 +88,7 @@ func extractAssertedPlaceNames(content string) []string {
 				startByte -= size
 			}
 			name := strings.TrimSpace(content[startByte:endByte])
-			if utf8.RuneCountInString(name) >= 3 {
+			if utf8.RuneCountInString(name) >= 3 && !genericStoreCategoryPhrase(name) {
 				if _, dup := seen[name]; !dup {
 					seen[name] = struct{}{}
 					found = append(found, name)
@@ -98,6 +98,19 @@ func extractAssertedPlaceNames(content string) []string {
 		}
 	}
 	return found
+}
+
+func genericStoreCategoryPhrase(name string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(strings.TrimSpace(name))
+	for _, prefix := range []string{"我们", "你们", "咱们", "这个", "这家", "那家", "本", "该", "当前"} {
+		compact = strings.TrimPrefix(compact, prefix)
+	}
+	switch compact {
+	case "酒店", "公寓", "宾馆", "大厦", "旅店", "民宿":
+		return true
+	default:
+		return false
+	}
 }
 
 // decodeLastRune 返回 s 中最后一个 rune 及其字节长度。

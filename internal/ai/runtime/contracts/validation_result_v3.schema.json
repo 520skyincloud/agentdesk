@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/validation_result.v3.json",
+  "title": "ValidationResultV3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "normalizedParts", "checks", "errors", "warnings", "recoveryStage"],
+  "properties": {
+    "schemaVersion": {"const": "validation_result.v3"},
+    "status": {"enum": ["passed", "warning", "retryable_content_error", "repairable_protocol_error", "rejected"]},
+    "normalizedParts": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["groupKey", "taskKeys", "content", "groundingEvidenceRefs", "resolvedActionRefs"],
+        "properties": {
+          "groupKey": {"type": "string", "maxLength": 128},
+          "taskKeys": {
+            "type": "array", "maxItems": 12, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128}
+          },
+          "content": {"type": "string", "maxLength": 2000},
+          "groundingEvidenceRefs": {
+            "type": "array", "maxItems": 24, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[KSM][1-9][0-9]*$"}
+          },
+          "resolvedActionRefs": {
+            "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128}
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "groupCoverage", "taskCoverage", "serverResolvedRefs", "duplicateContent",
+        "factSource", "knowledgeQuality", "actionClaims", "safety", "commitInvariants"
+      ],
+      "properties": {
+        "schema": {"enum": ["passed", "failed"]},
+        "groupCoverage": {"enum": ["passed", "failed"]},
+        "taskCoverage": {"enum": ["passed", "failed"]},
+        "serverResolvedRefs": {"enum": ["passed", "failed"]},
+        "duplicateContent": {"enum": ["passed", "failed"]},
+        "factSource": {"enum": ["passed", "failed"]},
+        "knowledgeQuality": {"enum": ["passed", "failed"]},
+        "actionClaims": {"enum": ["passed", "failed"]},
+        "safety": {"enum": ["passed", "failed"]},
+        "commitInvariants": {"enum": ["passed", "failed"]}
+      }
+    },
+    "errors": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "path", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 80},
+          "path": {"type": "string", "maxLength": 200},
+          "message": {"type": "string", "maxLength": 500}
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "path", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 80},
+          "path": {"type": "string", "maxLength": 200},
+          "message": {"type": "string", "maxLength": 500}
+        }
+      }
+    },
+    "recoveryStage": {"enum": ["none", "generate", "commit"]}
+  }
+}

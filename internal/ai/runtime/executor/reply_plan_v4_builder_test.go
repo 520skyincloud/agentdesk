@@ -65,7 +65,7 @@ func TestBuildReplyPlanV4ProjectsDeterministically(t *testing.T) {
 	input := ReplyPlanBuildInput{
 		TurnID: 7, TurnVersion: 2,
 		Tasks: []TaskRuntimeView{
-			{TurnID: 7, TaskKey: "t1", Sequence: 1, Intent: "hotel_info", SubIntent: "facility"},
+			{TurnID: 7, TaskKey: "t1", Sequence: 1, Intent: "hotel_info", SubIntent: "facility", SourceText: "酒店有没有咖啡？"},
 		},
 		Decisions: map[string]CapabilityDecisionV1{
 			"t1": {TaskKey: "t1", Route: "knowledge_answer", PolicyFingerprint: "pf-1", CapabilityCode: "hotel_info/facility"},
@@ -88,6 +88,9 @@ func TestBuildReplyPlanV4ProjectsDeterministically(t *testing.T) {
 	}
 	if len(built.Tasks) != 1 || built.Tasks[0].AnswerGroupKey != "grp_x" {
 		t.Fatalf("task projection broken: %+v", built.Tasks)
+	}
+	if built.Tasks[0].Objective != "酒店有没有咖啡？" {
+		t.Fatalf("objective must be the verified customer request: %+v", built.Tasks[0])
 	}
 	if built.Tasks[0].Knowledge.Policy != "required" || built.Tasks[0].Knowledge.Status != "has_context" {
 		t.Fatalf("knowledge projection broken: %+v", built.Tasks[0].Knowledge)

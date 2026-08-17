@@ -20,6 +20,7 @@ const (
 
 	ReplyContractLegacy ReplyContract = "legacy"
 	ReplyContractV2     ReplyContract = "v2"
+	ReplyContractV3     ReplyContract = "v3"
 )
 
 type RuntimeScope struct {
@@ -44,8 +45,14 @@ type CompileInput struct {
 	RecentHistory                    []models.Message
 	Memory                           *models.ConversationSessionSummary
 	DialogueState                    *contracts.DialogueStateSnapshotV1
+	DialogueAct                      string
 	ReplyPlan                        *contracts.ReplyPlanV2
 	Evidence                         *contracts.EvidenceBundleV1
+	ReplyPlanV4                      *contracts.ReplyPlanV4
+	EvidenceV2                       *contracts.EvidenceBundleV2
+	Observations                     []contracts.ObservationV1
+	AuthoritativeFacts               []contracts.RuntimeContextFactV2
+	ResourceEligibility              *contracts.ResourceEligibilityV1
 	PreparedActions                  []contracts.ActionLedgerItemV1
 	ReplyTagText                     string
 	Resume                           bool

@@ -54,12 +54,28 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		summary.FailedTaskKeys = append([]string(nil), plan.TaskState.FailedTaskKeys...)
 		summary.HumanTaskKeys = append([]string(nil), plan.TaskState.HumanTaskKeys...)
 		summary.HasRemainingTasks = plan.TaskState.HasMore
-		summary.NeedsHumanDispatch = len(plan.TaskState.FailedTaskKeys) > 0
+		// 失败 Task 是技术恢复信号，不等于客户或业务要求人工。
+		// 只有显式的人工作业才能向 Trace/UI 暴露 NeedsHumanDispatch。
+		summary.NeedsHumanDispatch = len(plan.TaskState.HumanTaskKeys) > 0
 		summary.CoveredByTaskID = plan.TaskState.CoveredByTaskID
 	}
 	if collector != nil {
 		collector.SetPipeline(plan.Normalize, plan.Intent, plan.PromptSelect, plan.Context, plan.ToolKnowledge, plan.ReplyPlan, plan.Generate, plan.Validate)
 		collector.SetActionLedger(buildInitialActionLedger(plan.Intent))
+	}
+	if len(plan.DeferredTaskKeys) > 0 && len(plan.ReplyPlan.TaskPlans) == 0 {
+		if summary != nil {
+			summary.RuntimeDeferred = true
+			summary.RuntimeDeferReason = firstNonEmpty(plan.DeferredReason, runtimeObservationDeferredReason)
+			summary.SkipGeneration = true
+		}
+		if collector != nil {
+			collector.Data.Pipeline.Generate.Status = "deferred"
+			collector.Data.Pipeline.Generate.Reason = runtimeObservationDeferredReason
+			collector.Data.Pipeline.Validate.Status = "deferred"
+			collector.Data.Pipeline.Validate.Reason = runtimeObservationDeferredReason
+		}
+		return nil, nil
 	}
 	if plan.PrefetchedKnowledge != nil {
 		if summary != nil {
@@ -77,6 +93,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		if summary != nil {
 			summary.SkipReply = true
 			summary.SkipGeneration = true
+			summary.PolicySkipReason = "task_plan_no_reply"
 		}
 		return nil, nil
 	}
@@ -85,13 +102,16 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 			summary.ReplyText = ""
 			summary.SkipReply = true
 			summary.SkipGeneration = true
+			summary.PolicySkipReason = "intent_no_reply"
 		}
 		return nil, nil
 	}
 	preparedActions := []contracts.PreparedActionV1(nil)
 	if modes.ActionLedger == runtimeActionLedgerAuthoritative {
 		actionLedger := plan.ActionLedgerV2
-		preparedActions, actionLedger, err = prepareRuntimeActions(req, plan.TaskState, plan.ReplyPlanV2, plan.Evidence, actionLedger)
+		preparedActions, actionLedger, err = prepareRuntimeActionsWithEligibility(
+			req, plan.TaskState, plan.ReplyPlanV2, plan.Evidence, &plan.ResourceEligibility, actionLedger,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -99,13 +119,26 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	}
 	if summary != nil {
 		summary.ReplyPlanV2 = &plan.ReplyPlanV2
+		if modes.ReplyContract == runtimeReplyContractV3 {
+			summary.ReplyPlanV4 = &plan.ReplyPlanV4
+			summary.EvidenceBundleV2 = &plan.EvidenceV2
+			summary.ResourceEligibility = &plan.ResourceEligibility
+			summary.Observations = append([]contracts.ObservationV1(nil), plan.Observations...)
+			summary.AuthoritativeFacts = append([]contracts.RuntimeContextFactV2(nil), plan.AuthoritativeFacts...)
+		}
 		summary.EvidenceBundle = &plan.Evidence
 		summary.ActionLedgerV2 = &plan.ActionLedgerV2
 		summary.PreparedActions = preparedActions
 		summary.UseRuntimeV2Generate = modes.ReplyContract == runtimeReplyContractV2
 		summary.UseRuntimeV2DirectGenerate = summary.UseRuntimeV2Generate && !plan.Intent.NeedsTool
+		summary.UseRuntimeV3Generate = modes.ReplyContract == runtimeReplyContractV3
+		summary.UseRuntimeV3DirectGenerate = summary.UseRuntimeV3Generate && !plan.Intent.NeedsTool
 		summary.RuntimeValidatorMode = modes.Validator
 		summary.ActionLedgerAuthoritative = modes.ActionLedger == runtimeActionLedgerAuthoritative
+	}
+	shouldGenerate := plan.ReplyPlanV2.ShouldGenerate
+	if modes.ReplyContract == runtimeReplyContractV3 {
+		shouldGenerate = plan.ReplyPlanV4.ShouldGenerate
 	}
 	if modes.ContextCompiler == runtimeContextCompilerLegacy {
 		return buildLegacyGenerateMessagesStrict(ctx, req, history, plan, summary, collector, gate)
@@ -115,7 +148,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		if legacyErr != nil {
 			return nil, legacyErr
 		}
-		if plan.ReplyPlanV2.ShouldGenerate {
+		if shouldGenerate {
 			if _, shadowErr := compileRuntimeGenerateMessages(ctx, req, history, plan, nil, collector, modes, false); shadowErr != nil {
 				slog.Warn("AI runtime context compiler shadow failed", "conversation_id", req.Conversation.ID, "error", shadowErr)
 				if collector != nil {
@@ -126,7 +159,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		}
 		return legacyMessages, nil
 	}
-	if !plan.ReplyPlanV2.ShouldGenerate {
+	if !shouldGenerate {
 		if summary != nil {
 			summary.SkipGeneration = true
 		}
@@ -225,11 +258,18 @@ func compileRuntimeGenerateMessages(
 		Stage: contextcompiler.CompileStageGenerate,
 		Scope: runtimeCompilerScope(req, resolved, instance), Model: *resolved, Instance: *instance, Agent: req.AIAgent,
 		CurrentMessages: currentMessages, RecentHistory: history.RawItems, Memory: history.Memory, DialogueState: dialogueState,
-		ReplyPlan: &plan.ReplyPlanV2, Evidence: &plan.Evidence, PreparedActions: preparedActions,
+		ReplyPlan: &plan.ReplyPlanV2, Evidence: &plan.Evidence,
+		ReplyPlanV4: &plan.ReplyPlanV4, EvidenceV2: &plan.EvidenceV2,
+		Observations: plan.Observations, AuthoritativeFacts: plan.AuthoritativeFacts,
+		ResourceEligibility: &plan.ResourceEligibility, PreparedActions: preparedActions,
+		DialogueAct:  plan.Intent.DialogueAct,
 		ReplyTagText: tagText, IntentProfileRevision: runtimeIntentProfileRevision(req),
 		GenerationInstruction:            buildCompiledGenerationInstruction(ctx, req, history, plan, modes),
 		ReplyContract:                    contextcompiler.ReplyContract(modes.ReplyContract),
 		ExpectedEvidenceScopeFingerprint: plan.Evidence.ScopeFingerprint,
+	}
+	if modes.ReplyContract == runtimeReplyContractV3 {
+		compileInput.ExpectedEvidenceScopeFingerprint = plan.EvidenceV2.ScopeFingerprint
 	}
 	compiled, err := contextcompiler.New(nil).Compile(ctx, compileInput)
 	if err != nil {
@@ -296,7 +336,7 @@ func validateRuntimeTaskPlan(plan runtimePipelinePlan) (bool, error) {
 	if len(plan.TaskState.FailedTaskKeys) > 0 || plan.TaskState.HasMore {
 		return false, services.NewAIReplyExecutionError(
 			services.AIReplyExecutionErrorKnowledgeUnavailable,
-			fmt.Errorf("AI reply turn has no runnable task and still requires handoff or continuation"),
+			fmt.Errorf("AI reply turn has no runnable task and still requires technical recovery or continuation"),
 		)
 	}
 	return true, nil

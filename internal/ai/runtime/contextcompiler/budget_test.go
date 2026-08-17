@@ -7,7 +7,7 @@ func TestCalculateBudgetUsesMinimumContextAndStageCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if budget.ContextLimit != 8000 || budget.ReservedOutput != 512 || budget.SafetyMargin != 400 || budget.AvailableInput != 7088 {
+	if budget.ContextLimit != 8000 || budget.ReservedOutput != 1024 || budget.SafetyMargin != 400 || budget.AvailableInput != 6576 {
 		t.Fatalf("budget=%+v", budget)
 	}
 	intent, err := CalculateBudget(CompileStageIntent, 8192, 8000, 4096)

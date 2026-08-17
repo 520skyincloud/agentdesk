@@ -23,12 +23,29 @@ func TestAIReplyTurnActionLifecycleTracksCommitAndDeliveryEvidence(t *testing.T)
 	if err != nil || len(actions) != 1 || actions[0].Status != "requested" {
 		t.Fatalf("ensure requested actions=%+v err=%v", actions, err)
 	}
-	prepared, err := AIReplyTurnActionService.PrepareDB(db, turn.TenantID, turn.ID, turn.Version, actions[0].ActionKey, "location-revision-1")
+	reply := createAIReplyTurnReply(t, db, conversation, turn, turn.Version, "action-lifecycle-reply", time.Now())
+	reply.MessageType = enums.IMMessageTypeLocation
+	reply.Content = "Turn Test Store"
+	reply.Payload = `{"latitude":31.8,"longitude":117.2,"name":"Turn Test Store"}`
+	if err := db.Model(&models.Message{}).Where("id = ?", reply.ID).Updates(map[string]any{
+		"message_type": reply.MessageType, "content": reply.Content, "payload": reply.Payload,
+	}).Error; err != nil {
+		t.Fatalf("update reply payload: %v", err)
+	}
+	revision := AIReplyTurnActionService.PreparedRevision(AIReplyPreparedActionProof{
+		ActionKey: actions[0].ActionKey, TaskKey: task.TaskKey, ActionType: actions[0].ActionType,
+		ResourceType: actions[0].ResourceType, MessageType: string(reply.MessageType), Content: reply.Content, Payload: reply.Payload,
+	})
+	prepared, err := AIReplyTurnActionService.PrepareDB(db, turn.TenantID, turn.ID, turn.Version, actions[0].ActionKey, revision)
 	if err != nil || prepared == nil || prepared.Status != "prepared" {
 		t.Fatalf("prepare action=%+v err=%v", prepared, err)
 	}
-
-	reply := createAIReplyTurnReply(t, db, conversation, turn, turn.Version, "action-lifecycle-reply", time.Now())
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+		"stage": enums.AIReplyTurnTaskStageDelivery, "status": enums.AIReplyTurnTaskStatusCommitted,
+		"committed_message_id": reply.ID,
+	}); err != nil {
+		t.Fatalf("bind task commit evidence: %v", err)
+	}
 	outbox := &models.ChannelMessageOutbox{
 		TenantID: conversation.TenantID, ChannelType: enums.ChannelTypeWxWorkProtocol,
 		ConversationID: conversation.ID, MessageID: reply.ID, SendStatus: "pending",
@@ -38,7 +55,8 @@ func TestAIReplyTurnActionLifecycleTracksCommitAndDeliveryEvidence(t *testing.T)
 		t.Fatalf("create outbox: %v", err)
 	}
 	if err := AIReplyTurnActionService.CommitEvidenceDB(db, turn.TenantID, turn.ID, turn.Version, []AIReplyTurnActionCommitEvidence{{
-		ActionKey: actions[0].ActionKey, PreparedRevision: "location-revision-1",
+		ActionKey: actions[0].ActionKey, PreparedRevision: revision, TaskKeys: []string{task.TaskKey},
+		MessageType: reply.MessageType, Content: reply.Content, Payload: reply.Payload,
 		MessageID: reply.ID, OutboxID: outbox.ID, At: time.Now(),
 	}}); err != nil {
 		t.Fatalf("commit action evidence: %v", err)
@@ -98,6 +116,99 @@ func TestAIReplyTurnActionSupersededVersionCanBeRequestedAgain(t *testing.T) {
 	}
 	if rerequested[0].Status != "requested" || rerequested[0].RequestedVersion != turn.Version || rerequested[0].ResultCode != "" {
 		t.Fatalf("re-requested action has stale evidence: %+v", rerequested[0])
+	}
+}
+
+func TestAIReplyTurnActionOutboxCancelsWhenCommittedPayloadNoLongerMatchesProof(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	message := createAIReplyTurnCustomerMessage(t, db, conversation, "action-outbox-proof", "酒店定位发我", time.Now())
+	turn := assignAIReplyTurnMessage(t, db, conversation, message)
+	task := ensureAIReplyTurnActionTask(t, db, turn, message, "酒店定位发我")
+	actions, err := AIReplyTurnActionService.EnsureRequestedDB(db, turn, []AIReplyTurnActionInput{{
+		TaskKey: task.TaskKey, ActionType: "send_location", ResourceType: "location:store",
+	}})
+	if err != nil || len(actions) != 1 {
+		t.Fatalf("ensure action=%+v err=%v", actions, err)
+	}
+	reply := createAIReplyTurnReply(t, db, conversation, turn, turn.Version, "action-outbox-proof-reply", time.Now())
+	reply.MessageType = enums.IMMessageTypeLocation
+	reply.Content = "Turn Test Store"
+	reply.Payload = `{"latitude":31.8,"longitude":117.2,"name":"Turn Test Store"}`
+	if err := db.Model(&models.Message{}).Where("id = ?", reply.ID).Updates(map[string]any{
+		"message_type": reply.MessageType, "content": reply.Content, "payload": reply.Payload,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	revision := AIReplyTurnActionService.PreparedRevision(AIReplyPreparedActionProof{
+		ActionKey: actions[0].ActionKey, TaskKey: task.TaskKey, ActionType: actions[0].ActionType,
+		ResourceType: actions[0].ResourceType, MessageType: string(reply.MessageType), Content: reply.Content, Payload: reply.Payload,
+	})
+	if _, err := AIReplyTurnActionService.PrepareDB(db, turn.TenantID, turn.ID, turn.Version, actions[0].ActionKey, revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+		"stage": enums.AIReplyTurnTaskStageDelivery, "status": enums.AIReplyTurnTaskStatusCommitted,
+		"committed_message_id": reply.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outbox := &models.ChannelMessageOutbox{
+		TenantID: conversation.TenantID, ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversation.ID, MessageID: reply.ID, SendStatus: string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := db.Create(outbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := AIReplyTurnActionService.CommitEvidenceDB(db, turn.TenantID, turn.ID, turn.Version, []AIReplyTurnActionCommitEvidence{{
+		ActionKey: actions[0].ActionKey, PreparedRevision: revision, TaskKeys: []string{task.TaskKey},
+		MessageType: reply.MessageType, Content: reply.Content, Payload: reply.Payload,
+		MessageID: reply.ID, OutboxID: outbox.ID, At: time.Now(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.Message{}).Where("id = ?", reply.ID).Update("payload", `{"latitude":0,"longitude":0,"name":"wrong"}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
+	if err != nil || claimed {
+		t.Fatalf("tampered action outbox claimed=%v err=%v", claimed, err)
+	}
+	storedOutbox := repositories.ChannelMessageOutboxRepository.GetInTenant(db, outbox.ID, outbox.TenantID)
+	if storedOutbox == nil || storedOutbox.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) || storedOutbox.LastError != "cancelled_stale_action" {
+		t.Fatalf("tampered action outbox was not cancelled: %+v", storedOutbox)
+	}
+	assertAIReplyTurnActionStatus(t, db, turn, task.TaskKey, actions[0].ActionKey, "superseded", "cancelled_stale_action")
+}
+
+func TestAIReplyTurnStructuredOutboxWithoutActionEvidenceIsCancelled(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	message := createAIReplyTurnCustomerMessage(t, db, conversation, "missing-action-proof", "发图片", time.Now())
+	turn := assignAIReplyTurnMessage(t, db, conversation, message)
+	reply := createAIReplyTurnReply(t, db, conversation, turn, turn.Version, "missing-action-proof-reply", time.Now())
+	reply.MessageType = enums.IMMessageTypeImage
+	reply.Content = "unexpected.png"
+	reply.Payload = `{"assetId":"unexpected"}`
+	if err := db.Model(&models.Message{}).Where("id = ?", reply.ID).Updates(map[string]any{
+		"message_type": reply.MessageType, "content": reply.Content, "payload": reply.Payload,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	outbox := &models.ChannelMessageOutbox{
+		TenantID: conversation.TenantID, ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversation.ID, MessageID: reply.ID, SendStatus: string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields: models.AuditFields{CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := db.Create(outbox).Error; err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID, outbox.TenantID)
+	if err != nil || claimed {
+		t.Fatalf("actionless structured outbox claimed=%v err=%v", claimed, err)
+	}
+	stored := repositories.ChannelMessageOutboxRepository.GetInTenant(db, outbox.ID, outbox.TenantID)
+	if stored == nil || stored.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) || stored.LastError != "cancelled_stale_action" {
+		t.Fatalf("actionless structured outbox was not cancelled: %+v", stored)
 	}
 }
 

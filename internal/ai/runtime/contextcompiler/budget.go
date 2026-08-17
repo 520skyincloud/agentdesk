@@ -8,7 +8,7 @@ import (
 
 const (
 	intentOutputCap   = 1024
-	generateOutputCap = 512
+	generateOutputCap = 1024
 	minimumInputLimit = 1024
 )
 

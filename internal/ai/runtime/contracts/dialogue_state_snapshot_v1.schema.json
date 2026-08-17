@@ -39,6 +39,10 @@
       "type": "integer",
       "minimum": 0
     },
+    "basedOnTurnId": {
+      "type": "integer",
+      "minimum": 0
+    },
     "basedOnTurnVersion": {
       "type": "integer",
       "minimum": 0

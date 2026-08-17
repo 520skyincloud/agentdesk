@@ -41,13 +41,18 @@ type sendMessageOptions struct {
 }
 
 type AIOutboundMessageDraft struct {
-	ClientMsgID            string
-	MessageType            enums.IMMessageType
-	Content                string
-	Payload                string
-	TaskKeys               []string
-	ActionKey              string
-	ActionPreparedRevision string
+	ClientMsgID                  string
+	MessageType                  enums.IMMessageType
+	Content                      string
+	Payload                      string
+	TaskKeys                     []string
+	ActionKey                    string
+	ActionPreparedRevision       string
+	ActionEligibilityFingerprint string
+	ActionSourceEvidenceRef      string
+	ActionSourceRecordID         string
+	ActionResourcePurpose        string
+	ActionEligibilityReasonCode  string
 }
 
 type AIReplyTurnActionSuppression struct {
@@ -55,6 +60,7 @@ type AIReplyTurnActionSuppression struct {
 	TaskKey            string
 	PreparedRevision   string
 	CoveredByMessageID int64
+	CoveredByActionKey string
 	ResultCode         string
 }
 
@@ -421,8 +427,17 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestIDAndActions(conver
 		seenClientIDs[draft.ClientMsgID] = struct{}{}
 		draft.ActionKey = strings.TrimSpace(draft.ActionKey)
 		draft.ActionPreparedRevision = strings.TrimSpace(draft.ActionPreparedRevision)
+		draft.ActionEligibilityFingerprint = strings.TrimSpace(draft.ActionEligibilityFingerprint)
+		draft.ActionSourceEvidenceRef = strings.TrimSpace(draft.ActionSourceEvidenceRef)
+		draft.ActionSourceRecordID = strings.TrimSpace(draft.ActionSourceRecordID)
+		draft.ActionResourcePurpose = strings.TrimSpace(draft.ActionResourcePurpose)
+		draft.ActionEligibilityReasonCode = strings.TrimSpace(draft.ActionEligibilityReasonCode)
 		if (draft.ActionKey == "") != (draft.ActionPreparedRevision == "") {
 			return nil, errorsx.InvalidParam("AI 回复动作提交证据不完整")
+		}
+		if draft.ActionKey == "" && (draft.ActionEligibilityFingerprint != "" || draft.ActionSourceEvidenceRef != "" ||
+			draft.ActionSourceRecordID != "" || draft.ActionResourcePurpose != "" || draft.ActionEligibilityReasonCode != "") {
+			return nil, errorsx.InvalidParam("AI 回复动作资格证据缺少动作标识")
 		}
 		if strs.IsBlank(string(draft.MessageType)) {
 			draft.MessageType = enums.IMMessageTypeText
@@ -553,7 +568,14 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestIDAndActions(conver
 				}
 				actionEvidence = append(actionEvidence, AIReplyTurnActionCommitEvidence{
 					ActionKey: actionKey, PreparedRevision: normalized[index].ActionPreparedRevision,
-					MessageID: message.ID, OutboxID: outboxID, Delivered: outboxID == 0, At: now,
+					TaskKeys: normalized[index].TaskKeys, MessageType: message.MessageType,
+					Content: message.Content, Payload: message.Payload,
+					EligibilityFingerprint: normalized[index].ActionEligibilityFingerprint,
+					SourceEvidenceRef:      normalized[index].ActionSourceEvidenceRef,
+					SourceRecordID:         normalized[index].ActionSourceRecordID,
+					ResourcePurpose:        normalized[index].ActionResourcePurpose,
+					EligibilityReasonCode:  normalized[index].ActionEligibilityReasonCode,
+					MessageID:              message.ID, OutboxID: outboxID, Delivered: outboxID == 0, At: now,
 				})
 			}
 			var readErr error
@@ -619,10 +641,28 @@ func (s *messageService) SendAIMessageBatchForTurnWithRequestIDAndActions(conver
 			if turn == nil {
 				return fmt.Errorf("AI 回复动作抑制缺少有效轮次")
 			}
-			if err := AIReplyTurnTaskService.MarkSuppressedActionsDB(ctx.Tx, turn, jobID, normalizedSuppressions, now); err != nil {
+			resolvedSuppressions := append([]AIReplyTurnActionSuppression(nil), normalizedSuppressions...)
+			messageIDByActionKey := make(map[string]int64, len(actionEvidence))
+			for _, evidence := range actionEvidence {
+				if key := strings.TrimSpace(evidence.ActionKey); key != "" && evidence.MessageID > 0 {
+					messageIDByActionKey[key] = evidence.MessageID
+				}
+			}
+			for index := range resolvedSuppressions {
+				if resolvedSuppressions[index].CoveredByMessageID > 0 {
+					continue
+				}
+				coveredByActionKey := strings.TrimSpace(resolvedSuppressions[index].CoveredByActionKey)
+				coveredByMessageID := messageIDByActionKey[coveredByActionKey]
+				if coveredByActionKey == "" || coveredByMessageID <= 0 {
+					return fmt.Errorf("AI 回复动作抑制缺少同批覆盖消息证据")
+				}
+				resolvedSuppressions[index].CoveredByMessageID = coveredByMessageID
+			}
+			if err := AIReplyTurnTaskService.MarkSuppressedActionsDB(ctx.Tx, turn, jobID, resolvedSuppressions, now); err != nil {
 				return err
 			}
-			if err := AIReplyTurnActionService.SuppressDB(ctx.Tx, conversation.TenantID, turn.ID, commitVersion, normalizedSuppressions, now); err != nil {
+			if err := AIReplyTurnActionService.SuppressDB(ctx.Tx, conversation.TenantID, turn.ID, commitVersion, resolvedSuppressions, now); err != nil {
 				return err
 			}
 		}
@@ -655,8 +695,10 @@ func normalizeAIReplyTurnActionSuppressions(items []AIReplyTurnActionSuppression
 		item.ActionKey = strings.TrimSpace(item.ActionKey)
 		item.TaskKey = strings.TrimSpace(item.TaskKey)
 		item.PreparedRevision = strings.TrimSpace(item.PreparedRevision)
+		item.CoveredByActionKey = strings.TrimSpace(item.CoveredByActionKey)
 		item.ResultCode = strings.TrimSpace(item.ResultCode)
-		if item.ActionKey == "" || item.TaskKey == "" || item.PreparedRevision == "" || item.CoveredByMessageID <= 0 || item.ResultCode == "" {
+		if item.ActionKey == "" || item.TaskKey == "" || item.PreparedRevision == "" ||
+			(item.CoveredByMessageID <= 0 && item.CoveredByActionKey == "") || item.ResultCode == "" {
 			return nil, errorsx.InvalidParam("AI 回复动作抑制证据不完整")
 		}
 		if _, duplicate := seen[item.ActionKey]; duplicate {
@@ -1277,7 +1319,7 @@ func (s *messageService) ensureCommittedOutboundMessage(conversation *models.Con
 		return
 	}
 	if message.OutboundChannelType == enums.ChannelTypeWxWorkProtocol {
-		go WxWorkProtocolService.DispatchPendingOutbox(10)
+		WxWorkProtocolService.WakePendingOutbox()
 	}
 }
 

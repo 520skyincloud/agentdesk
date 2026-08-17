@@ -28,6 +28,7 @@ type replyCommitInput struct {
 	AIAgent                   models.AIAgent
 	ReplyText                 string
 	ReplyParts                []contracts.ReplyPartV2
+	ResolvedReplyPartsV3      []contracts.ResolvedPartV3
 	PreparedActions           []contracts.PreparedActionV1
 	ActionLedgerV2            *contracts.ActionLedgerV1
 	ActionLedgerAuthoritative bool
@@ -38,15 +39,29 @@ type replyCommitInput struct {
 }
 
 type structuredVariableReply struct {
-	ResourceType     string
-	ResourceRef      string
-	ActionKey        string
-	TaskKey          string
-	Sequence         int
-	PreparedRevision string
-	MessageType      enums.IMMessageType
-	Content          string
-	Payload          string
+	ResourceType           string
+	ResourceRef            string
+	ActionKey              string
+	TaskKey                string
+	CoveredTaskKeys        []string
+	Sequence               int
+	PreparedRevision       string
+	EligibilityFingerprint string
+	SourceEvidenceRef      string
+	SourceRecordID         string
+	ResourcePurpose        string
+	EligibilityReasonCode  string
+	MessageType            enums.IMMessageType
+	Content                string
+	Payload                string
+}
+
+type commitTextPart struct {
+	GroupKey              string
+	TaskKeys              []string
+	Content               string
+	GroundingEvidenceRefs []string
+	ResolvedActionRefs    []string
 }
 
 func newReplyCommitService() *replyCommitService {
@@ -89,7 +104,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 		if replyText == "" {
 			replyText = manualResumeCustomerNotice
 		} else {
-			replyText = manualResumeCustomerNotice + "\n<<NEXT_MESSAGE>>\n" + replyText
+			replyText = manualResumeCustomerNotice + "\n\n" + replyText
 		}
 	}
 	var suppressedActions []svc.AIReplyTurnActionSuppression
@@ -107,7 +122,12 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 	}
 	metadata := make([]commitMetadata, 0, len(structuredReplies)+1)
 	if replyText != "" {
-		textParts := normalizedCommitReplyParts(input.ReplyParts, replyText)
+		textParts, textPartsErr := normalizedCommitTextParts(input, replyText)
+		if textPartsErr != nil {
+			controlledErr := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorResourceInvariantBroken, textPartsErr)
+			s.updateCommitTrace(input, commitStartedAt, nil, nil, controlledErr)
+			return nil, controlledErr
+		}
 		textMessages := make([]string, 0, len(textParts))
 		textTaskGroups := make([][]string, 0, len(textParts))
 		for _, part := range textParts {
@@ -127,7 +147,11 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			if index < len(textTaskGroups) {
 				taskKeys = append([]string(nil), textTaskGroups[index]...)
 				if len(taskKeys) > 0 {
-					clientMessageID = stableTurnClientMsgID(input, "text", taskKeys)
+					kind := "text"
+					if index < len(textParts) && textParts[index].GroupKey != "" {
+						kind = "text_v3:" + textParts[index].GroupKey
+					}
+					clientMessageID = stableTurnClientMsgID(input, kind, taskKeys)
 				}
 			}
 			taskIndex := index
@@ -149,6 +173,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 		} else {
 			taskKeys = structuredCommitTaskKeysFromTrace(input.Trace, structured.ResourceType, index)
 		}
+		taskKeys = appendUniqueCommitTaskKeys(taskKeys, structured.CoveredTaskKeys...)
 		clientMessageID := fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID)
 		if strings.TrimSpace(structured.ActionKey) != "" {
 			clientMessageID = stableTurnClientMsgID(input, "action", []string{structured.ActionKey})
@@ -159,6 +184,11 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			ClientMsgID: clientMessageID,
 			MessageType: structured.MessageType, Content: structured.Content, Payload: structured.Payload, TaskKeys: taskKeys,
 			ActionKey: structured.ActionKey, ActionPreparedRevision: structured.PreparedRevision,
+			ActionEligibilityFingerprint: structured.EligibilityFingerprint,
+			ActionSourceEvidenceRef:      structured.SourceEvidenceRef,
+			ActionSourceRecordID:         structured.SourceRecordID,
+			ActionResourcePurpose:        structured.ResourcePurpose,
+			ActionEligibilityReasonCode:  structured.EligibilityReasonCode,
 		})
 		metadata = append(metadata, commitMetadata{messageType: structured.MessageType, resourceType: structured.ResourceType, content: structuredRunLogReplyText(structured), taskID: structured.TaskKey})
 	}
@@ -199,6 +229,23 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 	replyMessage := &messages[len(messages)-1]
 	s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, nil)
 	return messages, nil
+}
+
+func appendUniqueCommitTaskKeys(items []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(items)+len(values))
+	ret := make([]string, 0, len(items)+len(values))
+	for _, item := range append(append([]string(nil), items...), values...) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
 }
 
 func validateAuthoritativePreparedActions(input replyCommitInput, replies []structuredVariableReply) error {
@@ -614,8 +661,14 @@ func preparedStructuredReplies(actions []contracts.PreparedActionV1) []structure
 		ret = append(ret, structuredVariableReply{
 			ResourceType: resourceType, ResourceRef: strings.TrimSpace(action.ResourceRef),
 			ActionKey: action.ActionKey, TaskKey: action.TaskKey, Sequence: action.Sequence,
-			PreparedRevision: action.PreparedRevision, MessageType: messageType,
-			Content: strings.TrimSpace(action.Content), Payload: strings.TrimSpace(action.Payload),
+			PreparedRevision:       action.PreparedRevision,
+			EligibilityFingerprint: strings.TrimSpace(action.EligibilityFingerprint),
+			SourceEvidenceRef:      strings.TrimSpace(action.SourceEvidenceRef),
+			SourceRecordID:         strings.TrimSpace(action.SourceRecordID),
+			ResourcePurpose:        strings.TrimSpace(action.ResourcePurpose),
+			EligibilityReasonCode:  strings.TrimSpace(action.EligibilityReasonCode),
+			MessageType:            messageType,
+			Content:                strings.TrimSpace(action.Content), Payload: strings.TrimSpace(action.Payload),
 		})
 	}
 	sort.SliceStable(ret, func(i, j int) bool {
@@ -636,7 +689,7 @@ func normalizedCommitReplyParts(parts []contracts.ReplyPartV2, replyText string)
 	for _, part := range parts {
 		part.Content = strings.TrimSpace(part.Content)
 		part.TaskKeys = uniqueCommitStrings(part.TaskKeys)
-		if part.Content == "" || len(part.TaskKeys) == 0 {
+		if part.Content == "" || len(part.TaskKeys) == 0 || containsReplyControlMarker(part.Content) {
 			return nil
 		}
 		texts = append(texts, part.Content)
@@ -646,6 +699,62 @@ func normalizedCommitReplyParts(parts []contracts.ReplyPartV2, replyText string)
 		return nil
 	}
 	return ret
+}
+
+func normalizedCommitTextParts(input replyCommitInput, replyText string) ([]commitTextPart, error) {
+	if len(input.ResolvedReplyPartsV3) > 0 {
+		ret := make([]commitTextPart, 0, len(input.ResolvedReplyPartsV3))
+		texts := make([]string, 0, len(input.ResolvedReplyPartsV3))
+		seenGroups := make(map[string]struct{}, len(input.ResolvedReplyPartsV3))
+		for _, part := range input.ResolvedReplyPartsV3 {
+			part.GroupKey = strings.TrimSpace(part.GroupKey)
+			part.Content = strings.TrimSpace(part.Content)
+			part.TaskKeys = uniqueCommitStrings(part.TaskKeys)
+			if part.GroupKey == "" || part.Content == "" || len(part.TaskKeys) == 0 || containsReplyControlMarker(part.Content) {
+				return nil, fmt.Errorf("invalid V3 resolved reply part %q", part.GroupKey)
+			}
+			if _, exists := seenGroups[part.GroupKey]; exists {
+				return nil, fmt.Errorf("duplicate V3 resolved reply group %q", part.GroupKey)
+			}
+			seenGroups[part.GroupKey] = struct{}{}
+			texts = append(texts, part.Content)
+			ret = append(ret, commitTextPart{
+				GroupKey: part.GroupKey, TaskKeys: part.TaskKeys, Content: part.Content,
+				GroundingEvidenceRefs: uniqueCommitStrings(part.GroundingEvidenceRefs),
+				ResolvedActionRefs:    uniqueCommitStrings(part.ResolvedActionRefs),
+			})
+		}
+		baseText := strings.TrimSpace(strings.Join(texts, "\n\n"))
+		actualText := strings.TrimSpace(replyText)
+		switch {
+		case actualText == baseText:
+		case strings.HasPrefix(actualText, baseText+"\n\n"):
+			suffix := strings.TrimSpace(strings.TrimPrefix(actualText, baseText))
+			if suffix == "" || containsReplyControlMarker(suffix) {
+				return nil, fmt.Errorf("invalid V3 reply suffix")
+			}
+			ret[len(ret)-1].Content = strings.TrimSpace(ret[len(ret)-1].Content + "\n\n" + suffix)
+		case strings.HasSuffix(actualText, "\n\n"+baseText):
+			prefix := strings.TrimSpace(strings.TrimSuffix(actualText, baseText))
+			if prefix == "" || containsReplyControlMarker(prefix) {
+				return nil, fmt.Errorf("invalid V3 reply prefix")
+			}
+			ret[0].Content = strings.TrimSpace(prefix + "\n\n" + ret[0].Content)
+		default:
+			return nil, fmt.Errorf("V3 resolved reply parts do not match reply text")
+		}
+		return ret, nil
+	}
+	parts := normalizedCommitReplyParts(input.ReplyParts, replyText)
+	ret := make([]commitTextPart, 0, len(parts))
+	for _, part := range parts {
+		ret = append(ret, commitTextPart{
+			TaskKeys: part.TaskKeys, Content: part.Content,
+			GroundingEvidenceRefs: uniqueCommitStrings(part.EvidenceRefs),
+			ResolvedActionRefs:    uniqueCommitStrings(part.ActionRefs),
+		})
+	}
+	return ret, nil
 }
 
 func uniqueCommitStrings(items []string) []string {
@@ -912,6 +1021,15 @@ func splitReplyTextForCommit(trace *aiReplyTraceData, replyText string) []string
 		return capReplyTextParts(parts, 3)
 	}
 	return []string{replyText}
+}
+
+func containsReplyControlMarker(text string) bool {
+	for _, marker := range []string{"<<NEXT_MESSAGE>>", "<NEXT_MESSAGE>", "[[NEXT_MESSAGE]]"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func capReplyTextParts(parts []string, limit int) []string {

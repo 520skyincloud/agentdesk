@@ -8,11 +8,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/ai/runtime/knowledgepolicy"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -21,17 +23,22 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const runtimeKnowledgeTaskConcurrency = 4
+const (
+	runtimeKnowledgeTaskConcurrency = 4
+	runtimeEvidenceMaxItems         = 24
+)
 
 type runtimeTaskKnowledgeOutcome struct {
-	Prefetched       *retrievers.KnowledgeRetrieveResult
-	ActiveTaskPlans  []callbacks.ReplyTaskPlanTraceData
-	FailedTaskKeys   []string
-	NoHitTaskKeys    []string
-	KnowledgeTaskIDs []string
-	KnowledgeByTask  map[string]AnswerabilityOutcome
-	TaskActionCodes  map[string]string
-	Evidence         *contracts.EvidenceBundleV1
+	Prefetched          *retrievers.KnowledgeRetrieveResult
+	ActiveTaskPlans     []callbacks.ReplyTaskPlanTraceData
+	FailedTaskKeys      []string
+	NoHitTaskKeys       []string
+	KnowledgeTaskIDs    []string
+	KnowledgeByTask     map[string]AnswerabilityOutcome
+	TaskActionCodes     map[string]string
+	Evidence            *contracts.EvidenceBundleV1
+	EvidenceV2          *contracts.EvidenceBundleV2
+	ResourceEligibility contracts.ResourceEligibilityV1
 }
 
 type runtimeTaskKnowledgeItem struct {
@@ -39,6 +46,7 @@ type runtimeTaskKnowledgeItem struct {
 	Query       string
 	Intent      string
 	SubIntent   string
+	RequestMode string
 	AnswerGroup string
 	Result      *retrievers.KnowledgeRetrieveResult
 	Status      enums.AIReplyTurnTaskKnowledgeStatus
@@ -46,8 +54,11 @@ type runtimeTaskKnowledgeItem struct {
 }
 
 type runtimeEvidenceIndex struct {
-	index     int
-	sourceKey string
+	legacyIndex  int
+	qualityIndex int
+	ref          string
+	sourceKey    string
+	supporting   bool
 }
 
 type runtimeTaskKnowledgeRetriever interface {
@@ -55,11 +66,11 @@ type runtimeTaskKnowledgeRetriever interface {
 	RetrieveContextByOptions(context.Context, retrievers.KnowledgeRetrieveOptions, string) (*retrievers.KnowledgeRetrieveResult, error)
 }
 
-func retrieveRuntimeTaskKnowledge(ctx context.Context, req RunInput, plans []callbacks.ReplyTaskPlanTraceData, probe *retrievers.KnowledgeRetrieveResult, taskState runtimeTaskBatchState) (runtimeTaskKnowledgeOutcome, error) {
-	return retrieveRuntimeTaskKnowledgeWithRetriever(ctx, req, plans, probe, taskState, retrievers.NewKnowledgeRetriever(req.AIAgent))
+func retrieveRuntimeTaskKnowledge(ctx context.Context, req RunInput, plans []callbacks.ReplyTaskPlanTraceData, probes runtimeConditionalKnowledgeProbes, taskState runtimeTaskBatchState) (runtimeTaskKnowledgeOutcome, error) {
+	return retrieveRuntimeTaskKnowledgeWithRetriever(ctx, req, plans, probes, taskState, retrievers.NewKnowledgeRetriever(req.AIAgent))
 }
 
-func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput, plans []callbacks.ReplyTaskPlanTraceData, probe *retrievers.KnowledgeRetrieveResult, taskState runtimeTaskBatchState, retriever runtimeTaskKnowledgeRetriever) (runtimeTaskKnowledgeOutcome, error) {
+func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput, plans []callbacks.ReplyTaskPlanTraceData, probes runtimeConditionalKnowledgeProbes, taskState runtimeTaskBatchState, retriever runtimeTaskKnowledgeRetriever) (runtimeTaskKnowledgeOutcome, error) {
 	outcome := runtimeTaskKnowledgeOutcome{
 		ActiveTaskPlans: append([]callbacks.ReplyTaskPlanTraceData(nil), plans...),
 		KnowledgeByTask: make(map[string]AnswerabilityOutcome),
@@ -74,18 +85,23 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	if len(knowledgePlans) == 0 {
 		return outcome, nil
 	}
-	// 意图模型未把 task.text 拆成子句、而是整句复制到每个任务时，逐任务检索会错配。
-	// 确定性兜底：按连接词拆分整句为子句，按任务 Sequence 顺序一一对应，不靠 subIntent 锚点。
-	knowledgePlans = redistributeMultiTopicClauses(knowledgePlans)
+	// Legacy/V2 compatibility only. V3 tasks already carry validated source
+	// spans, so redistributing a full sentence by sequence would discard the
+	// authoritative binding and can cross-wire two questions.
+	if !runtimePlansHaveAuthoritativeSources(knowledgePlans) {
+		knowledgePlans = redistributeMultiTopicClauses(knowledgePlans)
+	}
 
 	items := make([]runtimeTaskKnowledgeItem, len(knowledgePlans))
-	semaphore := make(chan struct{}, runtimeKnowledgeTaskConcurrency)
+	semaphore := make(chan struct{}, knowledgeTaskConcurrencyForDB(sqls.DB()))
 	var wg sync.WaitGroup
 	for index, plan := range knowledgePlans {
-		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent}
-		if index == 0 && len(knowledgePlans) == 1 && probe != nil {
-			items[index].Result = probe
-			items[index].Status = runtimeKnowledgeStatus(probe, nil)
+		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent, RequestMode: plan.RequestMode}
+		if probe := probes[conditionalKnowledgeProbeIdentityForPlan(plan)]; probe != nil {
+			promoted, promoteErr := promoteConditionalProbeCheckpoint(req, taskState, items[index], probe)
+			items[index].Result = promoted
+			items[index].Err = promoteErr
+			items[index].Status = runtimeKnowledgeStatus(promoted, promoteErr)
 			continue
 		}
 		if len(retriever.KnowledgeBaseIDs()) == 0 {
@@ -118,8 +134,8 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			}
 			// 契约 4.18/22.12：统一执行器——checkpoint 复用 + 租约 + 有界并发。
 			plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
-				items[itemIndex].Query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
-			result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
+				items[itemIndex].Query, "answer", taskState.TurnID, taskState.TurnVersion, options.TaskID, items[itemIndex].TaskKey)
+			result, err := ExecuteKnowledgeQuery(ctx, plan, retriever, options, sqls.DB())
 			items[itemIndex].Result = result
 			items[itemIndex].Err = err
 			items[itemIndex].Status = runtimeKnowledgeStatus(result, err)
@@ -169,28 +185,140 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	}
 	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
 	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
-	outcome.Evidence, outcome.KnowledgeByTask, outcome.TaskActionCodes = buildRuntimeEvidenceBundle(req, items, outcome.Prefetched)
+	artifacts := buildRuntimeEvidenceArtifacts(req, items, outcome.Prefetched)
+	outcome.Evidence = artifacts.Legacy
+	outcome.EvidenceV2 = artifacts.Quality
+	outcome.ResourceEligibility = artifacts.ResourceEligibility
+	outcome.KnowledgeByTask = artifacts.ByTask
+	outcome.TaskActionCodes = artifacts.TaskActionCodes
 	return outcome, nil
 }
 
+func runtimePlansHaveAuthoritativeSources(plans []callbacks.ReplyTaskPlanTraceData) bool {
+	if len(plans) == 0 {
+		return false
+	}
+	for _, plan := range plans {
+		if !runtimeTaskPlanHasAuthoritativeSource(plan) {
+			return false
+		}
+	}
+	return true
+}
+
+type runtimeEvidenceArtifacts struct {
+	Legacy              *contracts.EvidenceBundleV1
+	Quality             *contracts.EvidenceBundleV2
+	ResourceEligibility contracts.ResourceEligibilityV1
+	ByTask              map[string]AnswerabilityOutcome
+	TaskActionCodes     map[string]string
+}
+
+func promoteConditionalProbeCheckpoint(req RunInput, taskState runtimeTaskBatchState, item runtimeTaskKnowledgeItem, probe *retrievers.KnowledgeRetrieveResult) (*retrievers.KnowledgeRetrieveResult, error) {
+	if probe == nil || probe.RetrieveLogID <= 0 || !taskState.Enabled || taskState.TurnID <= 0 || taskState.TurnVersion <= 0 {
+		return probe, nil
+	}
+	taskID := taskState.TaskIDByTaskKey[item.TaskKey]
+	if taskID <= 0 {
+		return nil, fmt.Errorf("conditional knowledge probe lacks persisted task identity")
+	}
+	plan := BuildKnowledgeQueryPlan(
+		req.Conversation.TenantID,
+		req.Conversation.StoreID,
+		req.Conversation.ID,
+		req.UserMessage.SessionNo,
+		item.Query,
+		"answer",
+		taskState.TurnID,
+		taskState.TurnVersion,
+		taskID,
+		item.TaskKey,
+	)
+	if cached := findTerminalCheckpoint(sqls.DB(), plan, probe.Options); cached != nil {
+		_ = sqls.DB().Model(&models.KnowledgeRetrieveLog{}).
+			Where("id = ? AND tenant_id = ? AND task_id = 0", probe.RetrieveLogID, req.Conversation.TenantID).
+			Updates(map[string]any{"execution_status": "superseded", "completed_at": time.Now()}).Error
+		return cached, nil
+	}
+	checkpointKey := plan.CheckpointKey
+	result := sqls.DB().Model(&models.KnowledgeRetrieveLog{}).
+		Where("id = ? AND tenant_id = ? AND turn_id = ? AND task_id = 0 AND query_fingerprint = ? AND execution_status IN ?",
+			probe.RetrieveLogID,
+			req.Conversation.TenantID,
+			taskState.TurnID,
+			plan.QueryFingerprint,
+			[]string{"succeeded", "no_hit"},
+		).
+		Updates(map[string]any{
+			"turn_version":      taskState.TurnVersion,
+			"task_id":           taskID,
+			"task_key":          item.TaskKey,
+			"query_key":         plan.QueryKey,
+			"query_purpose":     "answer",
+			"scope_fingerprint": plan.ScopeFingerprint,
+			"checkpoint_key":    &checkpointKey,
+		})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, fmt.Errorf("conditional knowledge probe checkpoint could not be promoted")
+	}
+	probe.Options.TurnID = taskState.TurnID
+	probe.Options.TurnVersion = taskState.TurnVersion
+	probe.Options.TaskID = taskID
+	probe.Options.TaskKey = item.TaskKey
+	probe.Options.QueryKey = plan.QueryKey
+	probe.Options.QueryPurpose = "answer"
+	probe.Options.ScopeFingerprint = plan.ScopeFingerprint
+	return probe, nil
+}
+
 func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, merged *retrievers.KnowledgeRetrieveResult) (*contracts.EvidenceBundleV1, map[string]AnswerabilityOutcome, map[string]string) {
+	artifacts := buildRuntimeEvidenceArtifacts(req, items, merged)
+	return artifacts.Legacy, artifacts.ByTask, artifacts.TaskActionCodes
+}
+
+func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeItem, merged *retrievers.KnowledgeRetrieveResult) runtimeEvidenceArtifacts {
 	byTask := make(map[string]AnswerabilityOutcome, len(items))
 	taskActionCodes := make(map[string]string, len(items))
+	scopeFingerprint := runtimeEvidenceScopeFingerprint(req, items)
 	bundle := &contracts.EvidenceBundleV1{
 		SchemaVersion:    contracts.EvidenceBundleV1SchemaVersion,
-		ScopeFingerprint: runtimeEvidenceScopeFingerprint(req, items),
+		ScopeFingerprint: scopeFingerprint,
 		RetrievalStatus:  "not_needed", Items: []contracts.EvidenceItemV1{}, Resources: []contracts.EvidenceResourceV1{},
 	}
+	quality := &contracts.EvidenceBundleV2{
+		SchemaVersion: contracts.EvidenceBundleV2SchemaVersion, ScopeFingerprint: scopeFingerprint,
+		RetrievalStatus: "not_needed", Items: []contracts.EvidenceItemV2{}, Resources: []contracts.EvidenceResourceV2{},
+	}
+	eligibility := contracts.ResourceEligibilityV1{SchemaVersion: contracts.ResourceEligibilityV1SchemaVersion, Items: []contracts.ResourceEligibilityItemV1{}}
+	metadataBySource := loadRuntimeKnowledgeMetadata(req, items)
 	indexes := make(map[string]runtimeEvidenceIndex)
+	sourceEntries := make(map[string][]runtimeEvidenceIndex)
+	itemByTask := make(map[string]runtimeTaskKnowledgeItem, len(items))
 	storeFactSeq := 0
 	addressTaskKeys := make([]string, 0, len(items))
 	for _, item := range items {
+		itemByTask[item.TaskKey] = item
 		// ProtectedFact Phase1（文档 9.3/18.2）：地址类任务的 store.address 是权威事实，
 		// 从 hydrate 后实例确定性取值注入 S* 证据。Generate 只能用它声明酒店地址，
 		// FactSourceBoundaryValidator 拒绝任何与它不一致的地址断言（如客户 OCR 里的壹间公寓）。
-		if isAddressTextSubIntent(item.SubIntent) {
+		if runtimeTaskRequiresStoreAddress(item) {
 			addressTaskKeys = append(addressTaskKeys, item.TaskKey)
 		}
+	}
+	storeAddress := ""
+	knowledgeEvidenceLimit := runtimeEvidenceMaxItems
+	if len(addressTaskKeys) > 0 {
+		storeAddress = authoritativeStoreAddress(req)
+		if storeAddress != "" {
+			// evidence_bundle.v2 最多 24 项。地址任务必须为权威 store.address
+			// 预留一个 S* 槽，不能先塞满 24 条 FastGPT Evidence 再越界追加。
+			knowledgeEvidenceLimit--
+		}
+	}
+	for _, item := range items {
 		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
 		switch item.Status {
 		case enums.AIReplyTurnTaskKnowledgeStatusFailed:
@@ -207,47 +335,85 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				results = item.Result.Hits
 			}
 		}
-		// Evidence Judge Phase1（文档 7.5/判定矩阵）：派生元问题（出题式/审题式内容）
-		// 不得成为客户可见答案——先从候选中剔除，再构建证据。全部为元问题时任务降为
-		// no_context（reasonCode=knowledge_meta_content），按“资料未写明”澄清处理，
-		// 不默认转人工。判定来源：侧车表 metadata（claimType=meta）+ 确定性模式兜底。
-		var kept []rag.RetrieveResult
+		supportingResults := make([]rag.RetrieveResult, 0, len(results))
 		droppedMeta := 0
-		if gateEnabled(gateEvidenceQuality, req) {
-			kept, droppedMeta = filterKnowledgeMetaEvidence(req, results)
-		} else {
-			kept = results
-		}
-		if len(kept) == 0 && droppedMeta > 0 && outcome.Status == "has_context" {
-			outcome.Status = "no_context"
-			outcome.ReasonCode = "knowledge_meta_content"
-		}
-		results = kept
+		droppedQuality := 0
 		for _, result := range results {
-			if len(bundle.Items) >= 24 || strings.TrimSpace(result.Content) == "" {
+			if len(quality.Items) >= knowledgeEvidenceLimit || strings.TrimSpace(result.Content) == "" {
 				break
 			}
-			key := runtimeEvidenceResultKey(result)
+			sourceKey := runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)
+			metadata := metadataBySource[sourceKey]
+			var metadataPtr *models.KnowledgeEvidenceMetadata
+			if metadata.ID > 0 {
+				metadataCopy := metadata
+				metadataPtr = &metadataCopy
+			}
+			judgement := knowledgepolicy.Judge(knowledgepolicy.EvidenceJudgeInput{
+				TenantID: req.Conversation.TenantID, StoreID: req.Conversation.StoreID,
+				Task:      knowledgepolicy.Task{TaskKey: item.TaskKey, Intent: item.Intent, SubIntent: item.SubIntent, Query: item.Query, RequestMode: item.RequestMode},
+				Candidate: result, Metadata: metadataPtr,
+			})
+			if !gateEnabled(gateEvidenceQuality, req) {
+				judgement.Answerability = "supporting"
+				judgement.AllowedUses = []string{"answer_text", "prepare_resource"}
+				judgement.BlockedReasons = []string{}
+			}
+			key := runtimeEvidenceResultKey(result) + "|" + runtimeEvidenceJudgementKey(judgement)
 			entry, exists := indexes[key]
 			if !exists {
-				ref := fmt.Sprintf("K%d", len(bundle.Items)+1)
-				bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
-					Ref: ref, SourceType: "fastgpt", TaskKeys: []string{item.TaskKey},
-					Title:   boundedEvidenceText(firstNonEmpty(result.Title, result.DocumentTitle), 200),
-					Content: boundedEvidenceText(result.Content, 4000), Score: clampEvidenceScore(float64(result.Score)),
-					Answerability: "supporting", ResourceRefs: []string{},
+				ref := fmt.Sprintf("K%d", len(quality.Items)+1)
+				quality.Items = append(quality.Items, contracts.EvidenceItemV2{
+					Ref: ref, SourceType: "fastgpt", SourceClass: judgement.SourceClass,
+					SourceRecordID: strings.TrimSpace(result.SourceRecordID), TaskKeys: []string{item.TaskKey},
+					Title: boundedEvidenceText(firstNonEmpty(result.Title, result.DocumentTitle), 200), Content: boundedEvidenceText(result.Content, 4000),
+					Score: clampEvidenceScore(float64(result.Score)), FactScope: judgement.FactScope, ClaimType: judgement.ClaimType,
+					TrustLevel: judgement.TrustLevel, Freshness: judgement.Freshness, TopicLabels: limitEvidenceStrings(knowledgepolicy.SortedUnique(judgement.TopicLabels), 8),
+					TopicMatch: judgement.TopicMatch, Answerability: judgement.Answerability,
+					AllowedUses: nonNilStrings(judgement.AllowedUses), BlockedReasons: nonNilStrings(judgement.BlockedReasons), ResourceRefs: []string{},
 				})
-				entry = runtimeEvidenceIndex{index: len(bundle.Items) - 1, sourceKey: runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)}
+				entry = runtimeEvidenceIndex{legacyIndex: -1, qualityIndex: len(quality.Items) - 1, ref: ref, sourceKey: sourceKey, supporting: judgement.Answerability == "supporting"}
+				if entry.supporting {
+					bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
+						Ref: ref, SourceType: "fastgpt", TaskKeys: []string{item.TaskKey},
+						Title: quality.Items[entry.qualityIndex].Title, Content: quality.Items[entry.qualityIndex].Content,
+						Score: quality.Items[entry.qualityIndex].Score, Answerability: "supporting", ResourceRefs: []string{},
+					})
+					entry.legacyIndex = len(bundle.Items) - 1
+				}
 				indexes[key] = entry
+				sourceEntries[sourceKey] = append(sourceEntries[sourceKey], entry)
 			} else {
-				bundle.Items[entry.index].TaskKeys = appendUniqueStrings(bundle.Items[entry.index].TaskKeys, item.TaskKey)
+				quality.Items[entry.qualityIndex].TaskKeys = appendUniqueStrings(quality.Items[entry.qualityIndex].TaskKeys, item.TaskKey)
+				if entry.supporting && entry.legacyIndex >= 0 {
+					bundle.Items[entry.legacyIndex].TaskKeys = appendUniqueStrings(bundle.Items[entry.legacyIndex].TaskKeys, item.TaskKey)
+				}
 			}
-			outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, bundle.Items[entry.index].Ref)
+			if entry.supporting {
+				outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, entry.ref)
+				supportingResults = append(supportingResults, result)
+			} else {
+				droppedQuality++
+				if judgement.ClaimType == "meta" || stringInSlice("meta_content", judgement.BlockedReasons) {
+					droppedMeta++
+				}
+			}
+		}
+		if len(outcome.SupportingRefs) == 0 && outcome.Status == "has_context" {
+			outcome.Status = "no_context"
+			switch {
+			case droppedMeta > 0 && droppedMeta == droppedQuality:
+				outcome.ReasonCode = "knowledge_meta_content"
+			case droppedQuality > 0:
+				outcome.ReasonCode = "knowledge_quality_blocked"
+			default:
+				outcome.ReasonCode = "knowledge_no_context"
+			}
 		}
 		// 只有「排名第一」的检索结果（实际采用的答案）才允许触发"转接"判定；
 		// 后续候选只是噪声，不能因为它们正文里出现"转接"就误判转人工。
-		if outcome.Status == "has_context" && strings.TrimSpace(taskActionCodes[item.TaskKey]) == "" && len(results) > 0 {
-			top := results[0]
+		if outcome.Status == "has_context" && strings.TrimSpace(taskActionCodes[item.TaskKey]) == "" && len(supportingResults) > 0 {
+			top := supportingResults[0]
 			if actionCode := services.KnowledgeActionBindingService.ActionCodeForHit(
 				req.Conversation.TenantID, req.Conversation.StoreID, top.KnowledgeBaseID, top.SourceRecordID,
 			); actionCode != "" {
@@ -256,15 +422,6 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				taskActionCodes[item.TaskKey] = "human_handoff"
 			}
 		}
-		// 要动作（service_request）但知识库没有任何答案（no_context）：系统没有自动执行能力，
-		// 统一转人工二次确认，不再让模型在"没答案"时自由发挥、口头编造"帮你办/改成1203"。
-		if outcome.Status == "no_context" && strings.TrimSpace(item.Intent) == "service_request" {
-			taskActionCodes[item.TaskKey] = "human_handoff"
-		}
-		if outcome.Status == "has_context" && len(outcome.SupportingRefs) == 0 {
-			outcome.Status = "unanswerable"
-			outcome.ReasonCode = "knowledge_context_not_supporting"
-		}
 		byTask[item.TaskKey] = outcome
 	}
 
@@ -272,13 +429,20 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	// 有值时地址任务至少 has_context 且 S ref 进入 SupportingRefs；
 	// 未配置时不伪造，地址断言由边界校验兜底（禁止从 OCR/历史猜地址）。
 	if len(addressTaskKeys) > 0 {
-		if address := authoritativeStoreAddress(req); address != "" {
+		if address := storeAddress; address != "" {
 			storeFactSeq++
 			ref := fmt.Sprintf("S%d", storeFactSeq)
 			bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
 				Ref: ref, SourceType: "store_fact", TaskKeys: append([]string(nil), addressTaskKeys...),
 				Title: "当前门店地址（系统权威）", Content: address, Score: 1,
 				Answerability: "supporting", ResourceRefs: []string{},
+			})
+			quality.Items = append(quality.Items, contracts.EvidenceItemV2{
+				Ref: ref, SourceType: "store_fact", SourceClass: "authoritative_store_fact", FactKey: "store.address",
+				TaskKeys: append([]string(nil), addressTaskKeys...), Title: "当前门店地址（系统权威）", Content: address, Score: 1,
+				FactScope: "store", ClaimType: "fact", TrustLevel: "authoritative", Freshness: "current",
+				TopicLabels: []string{"store.address"}, TopicMatch: "exact", Answerability: "supporting",
+				AllowedUses: []string{"answer_text"}, BlockedReasons: []string{}, ResourceRefs: []string{},
 			})
 			for _, taskKey := range addressTaskKeys {
 				outcome := byTask[taskKey]
@@ -293,13 +457,19 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	}
 
 	if merged != nil {
-		resourceTaskKeys := runtimeEvidenceResourceTaskKeys(items)
 		for _, resource := range resolveRuntimeKnowledgeResources(req, merged) {
 			if len(bundle.Resources) >= 16 || strings.TrimSpace(resource.AssetID) == "" {
 				break
 			}
 			sourceKey := runtimeEvidenceSourceKey(resource.KnowledgeBaseID, resource.SourceRecordID)
-			taskKeys := append([]string(nil), resourceTaskKeys[sourceKey]...)
+			taskKeys := make([]string, 0, 4)
+			entries := sourceEntries[sourceKey]
+			for _, entry := range entries {
+				if !entry.supporting || entry.qualityIndex < 0 || entry.qualityIndex >= len(quality.Items) {
+					continue
+				}
+				taskKeys = appendUniqueStrings(taskKeys, quality.Items[entry.qualityIndex].TaskKeys...)
+			}
 			if len(taskKeys) == 0 {
 				continue
 			}
@@ -309,11 +479,28 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				Ref: ref, Type: "image", AssetID: &assetID,
 				Title: boundedEvidenceText(firstNonEmpty(resource.Title, resource.Description), 200), TaskKeys: taskKeys,
 			})
-			for index := range bundle.Items {
-				if !evidenceItemMatchesSource(bundle.Items[index], indexes, sourceKey) {
+			quality.Resources = append(quality.Resources, contracts.EvidenceResourceV2{
+				Ref: ref, Type: "image", AssetID: &assetID,
+				Title: boundedEvidenceText(firstNonEmpty(resource.Title, resource.Description), 200), TaskKeys: append([]string(nil), taskKeys...),
+			})
+			for _, entry := range entries {
+				if !entry.supporting {
 					continue
 				}
-				bundle.Items[index].ResourceRefs = appendUniqueStrings(bundle.Items[index].ResourceRefs, ref)
+				if entry.qualityIndex >= 0 && entry.qualityIndex < len(quality.Items) {
+					quality.Items[entry.qualityIndex].ResourceRefs = appendUniqueStrings(quality.Items[entry.qualityIndex].ResourceRefs, ref)
+				}
+				if entry.legacyIndex >= 0 && entry.legacyIndex < len(bundle.Items) {
+					bundle.Items[entry.legacyIndex].ResourceRefs = appendUniqueStrings(bundle.Items[entry.legacyIndex].ResourceRefs, ref)
+				}
+			}
+			metadata := metadataBySource[sourceKey]
+			for _, taskKey := range taskKeys {
+				entry := firstSupportingEvidenceEntryForTask(entries, quality.Items, taskKey)
+				if entry == nil {
+					continue
+				}
+				eligibility.Items = append(eligibility.Items, buildKnowledgeImageEligibility(itemByTask[taskKey], ref, *entry, metadata))
 			}
 		}
 	}
@@ -325,14 +512,142 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	switch {
 	case statusCounts["has_context"] > 0:
 		bundle.RetrievalStatus = "has_context"
+		quality.RetrievalStatus = "has_context"
 	case statusCounts["unavailable"] > 0:
 		bundle.RetrievalStatus = "unavailable"
+		quality.RetrievalStatus = "unavailable"
 	case statusCounts["unanswerable"] > 0:
 		bundle.RetrievalStatus = "unanswerable"
+		quality.RetrievalStatus = "unanswerable"
 	case len(byTask) > 0:
 		bundle.RetrievalStatus = "no_context"
+		quality.RetrievalStatus = "no_context"
 	}
-	return bundle, byTask, taskActionCodes
+	return runtimeEvidenceArtifacts{Legacy: bundle, Quality: quality, ResourceEligibility: eligibility, ByTask: byTask, TaskActionCodes: taskActionCodes}
+}
+
+// runtimeTaskRequiresStoreAddress is the protected-fact selector for the
+// address category. It primarily trusts the structured sub-intent, then uses a
+// narrow domain classifier over the verified source quote so an unusual but
+// valid address request still receives the authoritative store.address fact.
+// It never selects an address from history, OCR, retrieval, or model output.
+func runtimeTaskRequiresStoreAddress(item runtimeTaskKnowledgeItem) bool {
+	if isAddressTextSubIntent(item.SubIntent) {
+		return true
+	}
+	query := compactDialogueText(stripKnowledgeQueryTransportWrapper(item.Query))
+	if query == "" {
+		return false
+	}
+	for _, marker := range []string{"酒店地址", "门店地址", "外卖地址", "收货地址", "导航地址", "酒店定位", "门店定位"} {
+		if strings.Contains(query, marker) {
+			return true
+		}
+	}
+	return strings.Contains(query, "外卖") &&
+		(strings.Contains(query, "填哪") || strings.Contains(query, "填哪里") || strings.Contains(query, "送到哪"))
+}
+
+func loadRuntimeKnowledgeMetadata(req RunInput, items []runtimeTaskKnowledgeItem) map[string]models.KnowledgeEvidenceMetadata {
+	ret := make(map[string]models.KnowledgeEvidenceMetadata)
+	if req.Conversation.TenantID <= 0 || req.Conversation.StoreID <= 0 || sqls.DB() == nil {
+		return ret
+	}
+	byKnowledgeBase := make(map[int64][]string)
+	for _, item := range items {
+		if item.Result == nil {
+			continue
+		}
+		results := append([]rag.RetrieveResult(nil), item.Result.ContextResults...)
+		results = append(results, item.Result.Hits...)
+		for _, result := range results {
+			if result.KnowledgeBaseID <= 0 || strings.TrimSpace(result.SourceRecordID) == "" {
+				continue
+			}
+			byKnowledgeBase[result.KnowledgeBaseID] = appendUniqueStrings(byKnowledgeBase[result.KnowledgeBaseID], result.SourceRecordID)
+		}
+	}
+	for knowledgeBaseID, sourceRecordIDs := range byKnowledgeBase {
+		metadata := services.KnowledgeEvidenceMetadataService.JudgeBySourceRecords(
+			req.Conversation.TenantID, req.Conversation.StoreID, knowledgeBaseID, sourceRecordIDs,
+		)
+		for sourceRecordID, item := range metadata {
+			ret[runtimeEvidenceSourceKey(knowledgeBaseID, sourceRecordID)] = item
+		}
+	}
+	return ret
+}
+
+func runtimeEvidenceJudgementKey(result knowledgepolicy.EvidenceJudgeResult) string {
+	return strings.Join([]string{
+		result.SourceClass, result.FactScope, result.ClaimType, result.TrustLevel,
+		result.Freshness, result.TopicMatch, result.Answerability,
+		strings.Join(result.AllowedUses, ","), strings.Join(result.BlockedReasons, ","),
+	}, "|")
+}
+
+func firstSupportingEvidenceEntryForTask(entries []runtimeEvidenceIndex, items []contracts.EvidenceItemV2, taskKey string) *contracts.EvidenceItemV2 {
+	for _, entry := range entries {
+		if !entry.supporting || entry.qualityIndex < 0 || entry.qualityIndex >= len(items) {
+			continue
+		}
+		if stringInSlice(taskKey, items[entry.qualityIndex].TaskKeys) {
+			return &items[entry.qualityIndex]
+		}
+	}
+	return nil
+}
+
+func buildKnowledgeImageEligibility(task runtimeTaskKnowledgeItem, resourceRef string, source contracts.EvidenceItemV2, metadata models.KnowledgeEvidenceMetadata) contracts.ResourceEligibilityItemV1 {
+	purpose := strings.TrimSpace(metadata.ResourcePurpose)
+	if purpose == "" {
+		purpose = "unknown"
+	}
+	explicit := explicitKnowledgeImageRequest(task.Query)
+	requestMatch := "not_requested"
+	if explicit {
+		requestMatch = "explicit"
+	} else if metadata.AutoAttachResource {
+		requestMatch = "implicit_allowed"
+	}
+	item := contracts.ResourceEligibilityItemV1{
+		ResourceRef: resourceRef, TaskKey: task.TaskKey, SourceEvidenceRef: source.Ref,
+		SourceRecordID: source.SourceRecordID, ResourceType: "image", ResourcePurpose: purpose,
+		TopicMatch: source.TopicMatch, RequestMatch: requestMatch, AutoAttach: metadata.AutoAttachResource,
+		Decision: "blocked", ReasonCode: "resource_not_requested",
+	}
+	switch {
+	case source.Answerability != "supporting":
+		item.ReasonCode = "source_evidence_not_supporting"
+	case source.TopicMatch != "exact":
+		item.ReasonCode = "resource_topic_mismatch"
+	case purpose == "unknown":
+		item.ReasonCode = "resource_metadata_missing"
+	case explicit:
+		item.Decision = "eligible"
+		item.ReasonCode = "eligible_explicit_request"
+	case metadata.AutoAttachResource:
+		item.Decision = "eligible"
+		item.ReasonCode = "eligible_auto_attach"
+	}
+	return item
+}
+
+func explicitKnowledgeImageRequest(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	mediaNoun := strings.Contains(text, "图片") || strings.Contains(text, "照片") || strings.Contains(text, "相片") || strings.Contains(text, "图给") || text == "图"
+	requestVerb := strings.Contains(text, "发") || strings.Contains(text, "给我") || strings.Contains(text, "看看") || strings.Contains(text, "看下") || strings.Contains(text, "看一下")
+	return mediaNoun && requestVerb
+}
+
+func limitEvidenceStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	return append([]string(nil), values[:limit]...)
 }
 
 func runtimeEvidenceScopeFingerprint(req RunInput, items []runtimeTaskKnowledgeItem) string {
@@ -373,36 +688,6 @@ func runtimeEvidenceScopeFingerprint(req RunInput, items []runtimeTaskKnowledgeI
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "/")))
 	return hex.EncodeToString(sum[:])
-}
-
-func runtimeEvidenceResourceTaskKeys(items []runtimeTaskKnowledgeItem) map[string][]string {
-	ret := make(map[string][]string)
-	for _, item := range items {
-		if item.Result == nil {
-			continue
-		}
-		// 检索与回答保持 top 多条；此处只是记录「哪个命中记录关联哪些任务」，
-		// 图片是否真的发送由 runtimeActionInputs 的 ResourceEligibility 门禁决定
-		//（如地址文字任务禁图），不在绑定层做限制。
-		results := append([]rag.RetrieveResult(nil), item.Result.ContextResults...)
-		results = append(results, item.Result.Hits...)
-		for _, result := range results {
-			key := runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)
-			if key != "" {
-				ret[key] = appendUniqueStrings(ret[key], item.TaskKey)
-			}
-		}
-	}
-	return ret
-}
-
-func evidenceItemMatchesSource(item contracts.EvidenceItemV1, indexes map[string]runtimeEvidenceIndex, sourceKey string) bool {
-	for _, entry := range indexes {
-		if entry.sourceKey == sourceKey && item.Ref == fmt.Sprintf("K%d", entry.index+1) {
-			return true
-		}
-	}
-	return false
 }
 
 func runtimeEvidenceResultKey(item rag.RetrieveResult) string {

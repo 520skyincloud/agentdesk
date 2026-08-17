@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	"agent-desk/internal/models"
 	svc "agent-desk/internal/services"
 )
 
@@ -28,9 +29,14 @@ type aiReplyService struct {
 	eligibility *replyEligibility
 	executor    *runtimeReplyExecutor
 	interrupts  *replyInterruptService
-	commit      *replyCommitService
+	commit      replyCommitter
 	runlog      *replyRunLogService
 	memory      *conversationMemoryService
+}
+
+type replyCommitter interface {
+	HasStructuredVariableReply(trace *aiReplyTraceData) bool
+	CommitAIReplyBatch(input replyCommitInput) ([]models.Message, error)
 }
 
 func firstInvokedToolCode(summary *applicationruntime.Summary) string {

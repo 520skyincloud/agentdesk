@@ -64,6 +64,9 @@ type RunResult struct {
 	TraceData                  string
 	ErrorMessage               string
 	SkipReply                  bool
+	PolicySkipReason           string
+	RuntimeDeferred            bool
+	RuntimeDeferReason         string
 	ModelUsageCalls            []ModelUsageCall
 	TaskLedgerEnabled          bool
 	TaskKeys                   []string
@@ -74,15 +77,24 @@ type RunResult struct {
 	SkipGeneration             bool
 	CoveredByTaskID            int64
 	ReplyParts                 []contracts.ReplyPartV2
+	ResolvedReplyPartsV3       []contracts.ResolvedPartV3
 	ReplyPlanV2                *contracts.ReplyPlanV2
+	ReplyPlanV4                *contracts.ReplyPlanV4
 	EvidenceBundle             *contracts.EvidenceBundleV1
+	EvidenceBundleV2           *contracts.EvidenceBundleV2
+	ResourceEligibility        *contracts.ResourceEligibilityV1
+	Observations               []contracts.ObservationV1
+	AuthoritativeFacts         []contracts.RuntimeContextFactV2
 	ActionLedgerV2             *contracts.ActionLedgerV1
 	PreparedActions            []contracts.PreparedActionV1
 	ValidationResult           *contracts.ValidationResultV1
+	ValidationResultV3         *contracts.ValidationResultV3
 	CompiledContext            *contextcompiler.CompiledModelContext
 	GenerateCompileInput       *contextcompiler.CompileInput
 	UseRuntimeV2Generate       bool
 	UseRuntimeV2DirectGenerate bool
+	UseRuntimeV3Generate       bool
+	UseRuntimeV3DirectGenerate bool
 	ReplyModelAttempted        bool
 	RuntimeValidatorMode       string
 	ActionLedgerAuthoritative  bool

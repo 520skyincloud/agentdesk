@@ -73,7 +73,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	intentConfig, err := withRuntimeIntentStructuredOutputSchema(resolved.RuntimeConfig(), runtimeSchema)
+	intentConfig, err := withRuntimeIntentStructuredOutputSchema(resolved.RuntimeConfig(), contracts.SchemaIntentTasksV2, runtimeSchema)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
@@ -206,12 +206,6 @@ func buildRuntimeIntentProtocolFallback(req RunInput, configs []models.ReplyInte
 		intent.NeedsHumanRoute = true
 		intent.HumanRoutePolicy = "managed_mode"
 		intent.IntentTasks[0].NeedsHumanRoute = true
-	case explicitCheckinKnowledgeRequest(text) && runtimeIntentConfigEnabled(configs, "hotel_info"):
-		setTask("hotel_info", "checkin_process", "question")
-		intent.NeedsKnowledge = true
-		if runtimeIntentConfigEnabled(configs, "hotel_variable") {
-			intent = ensureCheckinProcessMiniProgramTask(intent, req)
-		}
 	case explicitCurrentHotelResourceRequest(text, "phone") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
 		setTask("hotel_variable", "phone", "request_action")
 		applyRuntimeProtocolFallbackResource(&intent, "provide_phone")
@@ -252,17 +246,6 @@ func explicitRuntimeHumanRequest(text string) bool {
 	return containsAny(compact, []string{"转人工", "人工客服", "找人工", "找客服", "真人客服", "找真人", "人工接待", "客服人员"})
 }
 
-func explicitCheckinKnowledgeRequest(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" || strings.Contains(compact, "小程序") || strings.Contains(compact, "入口") {
-		return false
-	}
-	return containsAny(compact, []string{
-		"办理入住", "怎么入住", "咋入住", "怎么办入住", "入住怎么办", "入住怎么弄",
-		"如何入住", "入住流程", "入住步骤", "我想入住", "我要入住", "入住",
-	})
-}
-
 func explicitCurrentHotelResourceRequest(text, resourceType string) bool {
 	compact := compactRuntimeProtocolText(text)
 	if compact == "" {
@@ -297,7 +280,8 @@ func parseRuntimeIntentTasksV2(content string, runtimeSchema []byte, configs []m
 	if len(runtimeSchema) == 0 {
 		runtimeSchema = contracts.MustSchema(contracts.SchemaIntentTasksV2)
 	}
-	parsed, err := strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(content), strictjson.DecodeOptions{
+	normalized, _ := normalizeStructuredModelObject(content)
+	parsed, err := strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(normalized), strictjson.DecodeOptions{
 		MaxBytes: 32 * 1024,
 		Schema:   runtimeSchema,
 	})
@@ -628,7 +612,8 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 }
 
 func parseRuntimeIntentDetectJSON(content string) (contracts.IntentTasksV2, error) {
-	return strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(content), strictjson.DecodeOptions{
+	normalized, _ := normalizeStructuredModelObject(content)
+	return strictjson.DecodeObject[contracts.IntentTasksV2]([]byte(normalized), strictjson.DecodeOptions{
 		MaxBytes: 32 * 1024,
 		Schema:   contracts.MustSchema(contracts.SchemaIntentTasksV2),
 	})
@@ -728,19 +713,6 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 			intent.HumanRoutePolicy = "managed_mode"
 		}
 	}
-	if explicitCheckinKnowledgeRequest(req.UserMessage.Content) && intent.PrimaryIntent != "human_complaint_risk" &&
-		runtimeIntentConfigEnabled(configs, "hotel_info") {
-		intent.PrimaryIntent = "hotel_info"
-		intent.MatchedIntentCode = "hotel_info"
-		intent.SubIntent = "checkin_process"
-		intent.NeedsClarification = false
-		intent.NeedsKnowledge = true
-		intent.Reason = appendIntentReason(intent.Reason, "deterministic checkin rule")
-		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
-	}
-	if shouldAttachCheckinMiniProgramTask(intent) {
-		intent = ensureCheckinProcessMiniProgramTask(intent, req)
-	}
 	if len(intent.ResourceActions) > 0 && intent.PrimaryIntent != "human_complaint_risk" {
 		intent.NeedsResource = true
 		if strings.TrimSpace(intent.ResourceAction) == "" {
@@ -767,17 +739,6 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.MatchMode = "model"
 	}
 	return intent
-}
-
-func ensureCheckinProcessMiniProgramTaskIfConfigured(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
-	if !runtimeIntentConfigEnabled(configs, "hotel_variable") {
-		intent.NeedsResource = false
-		intent.ResourceActions = nil
-		intent.ResourceAction = ""
-		intent.ResourceType = ""
-		return intent
-	}
-	return ensureCheckinProcessMiniProgramTask(intent, req)
 }
 
 func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
@@ -933,21 +894,6 @@ func intentHasMixedHotelInfoTask(intent callbacks.IntentTraceData) bool {
 	return false
 }
 
-func shouldAttachCheckinMiniProgramTask(intent callbacks.IntentTraceData) bool {
-	if intent.PrimaryIntent != "hotel_info" {
-		return false
-	}
-	if isCheckinProcessSubIntent(intent.SubIntent) {
-		return true
-	}
-	for _, task := range intent.IntentTasks {
-		if task.Intent == "hotel_info" && isCheckinProcessSubIntent(task.SubIntent) {
-			return true
-		}
-	}
-	return false
-}
-
 func isCheckinProcessSubIntent(subIntent string) bool {
 	switch strings.TrimSpace(subIntent) {
 	case "checkin_process", "check_in", "checkin", "check_in_process", "checkin_steps", "check_in_steps", "checkin_guide":
@@ -955,63 +901,6 @@ func isCheckinProcessSubIntent(subIntent string) bool {
 	default:
 		return false
 	}
-}
-
-func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req RunInput) callbacks.IntentTraceData {
-	intent.NeedsKnowledge = true
-	intent.NeedsResource = true
-	intent.ResourceActions = normalizeHotelVariableResourceActions(append(intent.ResourceActions, "provide_mini_program"), intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
-	if strings.TrimSpace(intent.ResourceAction) == "" {
-		intent.ResourceAction = "provide_mini_program"
-	}
-	if strings.TrimSpace(intent.SubIntent) == "" || intent.SubIntent == "check_in" || intent.SubIntent == "checkin" {
-		intent.SubIntent = "checkin_process"
-	}
-	currentText := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
-	if currentText == "" {
-		currentText = "办理入住"
-	}
-	hasKnowledgeTask := false
-	hasMiniProgramTask := false
-	for i := range intent.IntentTasks {
-		if intent.IntentTasks[i].Intent == "hotel_info" && isCheckinProcessSubIntent(intent.IntentTasks[i].SubIntent) {
-			intent.IntentTasks[i].SubIntent = "checkin_process"
-			intent.IntentTasks[i].NeedsKnowledge = true
-			if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
-				intent.IntentTasks[i].Text = currentText
-			}
-			hasKnowledgeTask = true
-		}
-		if intent.IntentTasks[i].Intent == "hotel_variable" && strings.TrimSpace(intent.IntentTasks[i].ResourceAction) == "provide_mini_program" {
-			intent.IntentTasks[i].SubIntent = "mini_program"
-			intent.IntentTasks[i].NeedsResource = true
-			if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
-				intent.IntentTasks[i].Text = "发送入住小程序入口"
-			}
-			hasMiniProgramTask = true
-		}
-	}
-	if !hasKnowledgeTask {
-		intent.IntentTasks = append([]callbacks.IntentTaskTraceData{{
-			Intent:         "hotel_info",
-			SubIntent:      "checkin_process",
-			Text:           currentText,
-			NeedsKnowledge: true,
-			Reason:         "checkin process needs knowledge tutorial",
-		}}, intent.IntentTasks...)
-	}
-	if !hasMiniProgramTask {
-		intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{
-			Intent:         "hotel_variable",
-			SubIntent:      "mini_program",
-			Text:           "发送入住小程序入口",
-			NeedsResource:  true,
-			ResourceAction: "provide_mini_program",
-			Reason:         "checkin process should also provide configured mini program entry",
-		})
-	}
-	intent.Reason = appendIntentReason(intent.Reason, "checkin_process attached mini program resource action")
-	return intent
 }
 
 func promptForModelDetectedIntent(intent callbacks.IntentTraceData, configs []models.ReplyIntentConfig) callbacks.IntentPromptTraceData {

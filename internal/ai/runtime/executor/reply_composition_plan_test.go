@@ -40,6 +40,28 @@ func TestAnswerGroupsDoNotMergeDifferentEvidence(t *testing.T) {
 	}
 }
 
+func TestAnswerGroupsDoNotMergeDifferentNoContextQuestions(t *testing.T) {
+	evidence := map[string]TaskEvidenceResultView{
+		"food": {Status: "no_context"},
+		"play": {Status: "no_context"},
+	}
+	decisions := map[string]CapabilityDecisionView{"food": knowledgeDecision("food"), "play": knowledgeDecision("play")}
+	tasks := []TaskRuntimeView{
+		{TurnID: 1, TaskKey: "food", Sequence: 1, Intent: "hotel_info", SubIntent: "nearby_food"},
+		{TurnID: 1, TaskKey: "play", Sequence: 2, Intent: "hotel_info", SubIntent: "nearby_attractions"},
+	}
+	groups := BuildFinalAnswerGroups(1, tasks, decisions, evidence, nil)
+	if len(groups) != 2 {
+		t.Fatalf("different no-context questions must remain independently accountable: %+v", groups)
+	}
+
+	tasks[1].SubIntent = "nearby_food"
+	groups = BuildFinalAnswerGroups(1, tasks, decisions, evidence, nil)
+	if len(groups) != 1 || len(groups[0].TaskKeys) != 2 {
+		t.Fatalf("equivalent no-context questions may share one answer: %+v", groups)
+	}
+}
+
 func TestAnswerGroupsHandoffIsolated(t *testing.T) {
 	evidence := map[string]TaskEvidenceResultView{"t1": {Status: "approved", Fingerprint: "ev-1"}, "t2": {}}
 	decisions := map[string]CapabilityDecisionView{

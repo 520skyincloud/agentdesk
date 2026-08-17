@@ -41,6 +41,11 @@ const (
 	SchemaValidationIssueV1         = "validation_issue.v1"
 	SchemaHandoffDecisionV2         = "handoff_decision.v2"
 	SchemaHandoffPendingActionV2    = "handoff_pending_action.v2"
+	SchemaAnswerRequirementSetV1    = "answer_requirement_set.v1"
+	SchemaRequirementStateSetV1     = "requirement_state_set.v1"
+	SchemaResolvedTurnCoverageV1    = "resolved_turn_coverage.v1"
+	SchemaGenerateTaskInputV1       = "generate_task_input.v1"
+	SchemaValidationResultV3        = "validation_result.v3"
 )
 
 //go:embed *.schema.json
@@ -77,6 +82,11 @@ var schemaFilenameByName = map[string]string{
 	SchemaValidationIssueV1:         "validation_issue_v1.schema.json",
 	SchemaHandoffDecisionV2:         "handoff_decision_v2.schema.json",
 	SchemaHandoffPendingActionV2:    "handoff_pending_action_v2.schema.json",
+	SchemaAnswerRequirementSetV1:    "answer_requirement_set_v1.schema.json",
+	SchemaRequirementStateSetV1:     "requirement_state_set_v1.schema.json",
+	SchemaResolvedTurnCoverageV1:    "resolved_turn_coverage_v1.schema.json",
+	SchemaGenerateTaskInputV1:       "generate_task_input_v1.schema.json",
+	SchemaValidationResultV3:        "validation_result_v3.schema.json",
 }
 
 func Schema(name string) ([]byte, error) {

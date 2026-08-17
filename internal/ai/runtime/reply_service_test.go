@@ -1,13 +1,17 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
+	svc "agent-desk/internal/services"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"github.com/glebarez/sqlite"
@@ -15,6 +19,21 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
+
+type recordingReplyCommitter struct {
+	inputs   []replyCommitInput
+	messages []models.Message
+	err      error
+}
+
+func (s *recordingReplyCommitter) HasStructuredVariableReply(*aiReplyTraceData) bool {
+	return false
+}
+
+func (s *recordingReplyCommitter) CommitAIReplyBatch(input replyCommitInput) ([]models.Message, error) {
+	s.inputs = append(s.inputs, input)
+	return append([]models.Message(nil), s.messages...), s.err
+}
 
 func TestReplyEligibilityCanReply(t *testing.T) {
 	eligibility := newReplyEligibility()
@@ -301,6 +320,132 @@ func TestCanCommitReplySkipsWhenTrailingUnderstoodVoiceArrives(t *testing.T) {
 	}
 }
 
+func TestCommitPreparedActionsAfterRuntimeErrorCommitsResourceImmediately(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	committer := &recordingReplyCommitter{messages: []models.Message{{ID: 9001, MessageType: enums.IMMessageTypeMiniProgram}}}
+	service.commit = committer
+	now := time.Now()
+	message := models.Message{
+		ID: 10, TenantID: 1, ConversationID: 20, SessionNo: 1, RequestID: "req-checkin",
+		ClientMsgID: "customer-checkin", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "给我办理入住", SentAt: &now,
+	}
+	if err := sqls.DB().Create(&message).Error; err != nil {
+		t.Fatalf("create customer message: %v", err)
+	}
+	runtimeErr := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, errors.New("reply protocol failed"))
+	summary := &applicationruntime.Summary{
+		ActionLedgerAuthoritative: true,
+		ActionLedgerV2: &contracts.ActionLedgerV1{
+			SchemaVersion: contracts.ActionLedgerV1SchemaVersion,
+			Actions: []contracts.ActionLedgerItemV1{{
+				ActionKey: "action-checkin", TaskKey: "task-checkin-card", ActionType: "send_mini_program", Status: "prepared",
+			}},
+		},
+		PreparedActions: []contracts.PreparedActionV1{{
+			ActionKey: "action-checkin", TaskKey: "task-checkin-card", ActionType: "send_mini_program",
+			PreparedRevision: "revision-1", Content: "e秒安心住", Payload: `{}`,
+		}},
+		TaskLedgerEnabled: true,
+		TaskKeys:          []string{"task-checkin-text", "task-checkin-card"},
+		FailedTaskKeys:    []string{"task-checkin-text"},
+	}
+	trace := &aiReplyTraceData{}
+	result, gotErr, handled := service.commitPreparedActionsAfterRuntimeError(context.Background(), aiReplyContext{
+		Conversation: models.Conversation{ID: 20, TenantID: 1}, Message: message,
+		AIAgent: models.AIAgent{ID: 30}, Trace: trace,
+	}, summary, runtimeErr)
+	result = executionResultWithTaskSummary(result, summary)
+	if !handled {
+		t.Fatal("prepared resource action should handle the runtime error path")
+	}
+	if !errors.Is(gotErr, runtimeErr) {
+		t.Fatalf("text generation error must remain visible after resource commit: %v", gotErr)
+	}
+	if result.Status != svc.AIReplyExecutionStatusCompleted || len(result.CommittedMessageIDs) != 1 || result.CommittedMessageIDs[0] != 9001 {
+		t.Fatalf("unexpected partial commit result: %+v", result)
+	}
+	if !result.TaskLedgerEnabled || len(result.FailedTaskKeys) != 1 || result.FailedTaskKeys[0] != "task-checkin-text" {
+		t.Fatalf("task outcome was not preserved: %+v", result)
+	}
+	if len(committer.inputs) != 1 || len(committer.inputs[0].PreparedActions) != 1 || strings.TrimSpace(committer.inputs[0].ReplyText) != "" {
+		t.Fatalf("expected one resource-only commit, got %#v", committer.inputs)
+	}
+	if !trace.ReplySent {
+		t.Fatal("successful resource commit must mark the trace as sent")
+	}
+}
+
+func TestPolicySkippedExecutionResultPreservesTaskLedger(t *testing.T) {
+	summary := &applicationruntime.Summary{
+		PolicySkipped:     true,
+		PolicySkipReason:  "intent_no_reply",
+		TaskLedgerEnabled: true,
+		TaskKeys:          []string{"task-social"},
+	}
+	result := policySkippedExecutionResult(summary)
+	if result.Status != svc.AIReplyExecutionStatusSkipped || result.ReasonCode != "intent_no_reply" {
+		t.Fatalf("policy skip result=%+v", result)
+	}
+	if !result.TaskLedgerEnabled || len(result.TaskKeys) != 1 || result.TaskKeys[0] != "task-social" {
+		t.Fatalf("policy skip lost task ledger=%+v", result)
+	}
+}
+
+func TestPolicySkippedExecutionResultPreservesCanonicalCoverage(t *testing.T) {
+	summary := &applicationruntime.Summary{
+		PolicySkipped:     true,
+		TaskLedgerEnabled: true,
+		TaskKeys:          []string{"task-duplicate"},
+		CoveredByTaskID:   81,
+	}
+	result := policySkippedExecutionResult(summary)
+	if result.Status != svc.AIReplyExecutionStatusSuperseded || result.ReasonCode != "covered_by_existing_task" ||
+		result.CoveredByTaskID != 81 || !result.TaskLedgerEnabled {
+		t.Fatalf("canonical coverage result=%+v", result)
+	}
+}
+
+func TestCommitPreparedActionsAfterRuntimeErrorRejectsStaleMessage(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	committer := &recordingReplyCommitter{messages: []models.Message{{ID: 9002}}}
+	service.commit = committer
+	now := time.Now()
+	message := models.Message{
+		ID: 10, TenantID: 1, ConversationID: 21, SessionNo: 1, RequestID: "req-old",
+		ClientMsgID: "customer-old", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "给我办理入住", SentAt: &now,
+	}
+	newerAt := now.Add(time.Second)
+	newer := models.Message{
+		ID: 11, TenantID: 1, ConversationID: 21, SessionNo: 1, RequestID: "req-new",
+		ClientMsgID: "customer-new", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "先等等", SentAt: &newerAt,
+	}
+	for _, item := range []models.Message{message, newer} {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create customer message %d: %v", item.ID, err)
+		}
+	}
+	summary := &applicationruntime.Summary{
+		ActionLedgerAuthoritative: true,
+		ActionLedgerV2:            &contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion},
+		PreparedActions:           []contracts.PreparedActionV1{{ActionKey: "action-checkin", TaskKey: "task-checkin-card"}},
+	}
+	result, gotErr, handled := service.commitPreparedActionsAfterRuntimeError(context.Background(), aiReplyContext{
+		Conversation: models.Conversation{ID: 21, TenantID: 1}, Message: message,
+		AIAgent: models.AIAgent{ID: 30}, Trace: &aiReplyTraceData{},
+	}, summary, errors.New("generation failed"))
+	if !handled || gotErr != nil || result.Status != svc.AIReplyExecutionStatusSuperseded || result.ReasonCode != "newer_customer_message" {
+		t.Fatalf("stale resource commit should be superseded: result=%+v err=%v handled=%v", result, gotErr, handled)
+	}
+	if len(committer.inputs) != 0 {
+		t.Fatalf("stale resource action must not reach commit: %#v", committer.inputs)
+	}
+}
+
 func setupRuntimeReplyMessageTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := "runtime_reply_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
@@ -317,7 +462,7 @@ func setupRuntimeReplyMessageTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() {
 		_ = sqlDB.Close()
 	})
-	if err := db.AutoMigrate(&models.Message{}); err != nil {
+	if err := db.AutoMigrate(&models.Conversation{}, &models.Message{}); err != nil {
 		t.Fatalf("migrate message: %v", err)
 	}
 	sqls.SetDB(db)

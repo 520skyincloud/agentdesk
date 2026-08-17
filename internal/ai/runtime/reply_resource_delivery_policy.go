@@ -41,9 +41,10 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicyDetailed(input rep
 	if len(replies) == 0 || strings.TrimSpace(input.ClientPrefix) != "ai_reply" || strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_") {
 		return replies, replyText, nil
 	}
+	replies, suppressions := s.dedupeCurrentResourceBatch(input, replies)
 	previous := s.findRecentAIResourceDeliveries(input)
 	if len(previous) == 0 {
-		return replies, replyText, nil
+		return replies, replyText, suppressions
 	}
 
 	directive := detectResourceResendDirective(input.Message.Content, previous)
@@ -55,7 +56,9 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicyDetailed(input rep
 	}
 
 	filtered := make([]structuredVariableReply, 0, len(replies))
-	suppressions := make([]svc.AIReplyTurnActionSuppression, 0, len(replies))
+	if suppressions == nil {
+		suppressions = make([]svc.AIReplyTurnActionSuppression, 0, len(replies))
+	}
 	suppressedTypes := make([]string, 0, len(replies))
 	pendingReused := false
 	for _, reply := range replies {
@@ -102,6 +105,43 @@ func (s *replyCommitService) applyRecentResourceDeliveryPolicyDetailed(input rep
 		replyText = recentResourceAlreadySentNotice(suppressedTypes)
 	}
 	return filtered, strings.TrimSpace(replyText), suppressions
+}
+
+func (s *replyCommitService) dedupeCurrentResourceBatch(input replyCommitInput, replies []structuredVariableReply) ([]structuredVariableReply, []svc.AIReplyTurnActionSuppression) {
+	if len(replies) < 2 {
+		return replies, nil
+	}
+	filtered := make([]structuredVariableReply, 0, len(replies))
+	indexByFingerprint := make(map[string]int, len(replies))
+	suppressions := make([]svc.AIReplyTurnActionSuppression, 0, len(replies)-1)
+	for _, reply := range replies {
+		fingerprint := structuredResourceFingerprint(input.Conversation.StoreID, reply)
+		if fingerprint == "" {
+			filtered = append(filtered, reply)
+			continue
+		}
+		keptIndex, duplicate := indexByFingerprint[fingerprint]
+		if !duplicate {
+			indexByFingerprint[fingerprint] = len(filtered)
+			filtered = append(filtered, reply)
+			continue
+		}
+		kept := &filtered[keptIndex]
+		keptActionKey := strings.TrimSpace(kept.ActionKey)
+		duplicateActionKey := strings.TrimSpace(reply.ActionKey)
+		if duplicateActionKey != "" && keptActionKey != "" && duplicateActionKey != keptActionKey {
+			suppressions = append(suppressions, svc.AIReplyTurnActionSuppression{
+				ActionKey: duplicateActionKey, TaskKey: strings.TrimSpace(reply.TaskKey),
+				PreparedRevision:   strings.TrimSpace(reply.PreparedRevision),
+				CoveredByActionKey: keptActionKey,
+				ResultCode:         "same_batch_duplicate_suppressed",
+			})
+		} else if taskKey := strings.TrimSpace(reply.TaskKey); taskKey != "" {
+			kept.CoveredTaskKeys = appendUniqueCommitTaskKeys(kept.CoveredTaskKeys, taskKey)
+		}
+		s.recordResourceDeliveryDecision(input.Trace, reply, "suppressed", "same_batch_duplicate_suppressed")
+	}
+	return filtered, suppressions
 }
 
 func appendPreparedActionSuppression(items []svc.AIReplyTurnActionSuppression, reply structuredVariableReply, previous recentAIResourceDelivery, reason string) []svc.AIReplyTurnActionSuppression {
@@ -423,7 +463,7 @@ func appendResourcePolicyNotice(replyText string, notice string, force bool) str
 	if replyText == "" {
 		return notice
 	}
-	return replyText + "\n<<NEXT_MESSAGE>>\n" + notice
+	return replyText + "\n\n" + notice
 }
 
 func recentResourceAlreadySentNotice(resourceTypes []string) string {

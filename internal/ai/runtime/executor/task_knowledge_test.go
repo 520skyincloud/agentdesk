@@ -3,14 +3,17 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
 
@@ -161,14 +164,14 @@ func TestRuntimeKnowledgeAnswerGroupRequiresFullEvidenceSet(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeEvidenceBundleServiceRequestNoContextHandsOff(t *testing.T) {
-	// 要动作（service_request）且知识库无答案（no_context）→ 转人工二次确认，不再模型自由发挥。
+func TestBuildRuntimeEvidenceBundleServiceRequestNoContextDoesNotAutoHandoff(t *testing.T) {
+	// 知识无命中不是人工业务决定；只能由能力路由明确拒绝、澄清或执行。
 	items := []runtimeTaskKnowledgeItem{
 		{TaskKey: "t-change-room", Intent: "service_request", Query: "换1203", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit},
 	}
 	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
-	if got := actionCodes["t-change-room"]; got != "human_handoff" {
-		t.Fatalf("expected service_request no_context to hand off, got %q", got)
+	if got := actionCodes["t-change-room"]; got != "" {
+		t.Fatalf("knowledge no-context must not auto hand off, got %q", got)
 	}
 }
 
@@ -199,6 +202,87 @@ func TestBuildRuntimeEvidenceBundleServiceRequestHitWithoutHandoffKeywordAnswers
 	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
 	if got := actionCodes["t-bed"]; got != "" {
 		t.Fatalf("expected service_request with concrete answer not to hand off, got %q", got)
+	}
+}
+
+func TestBuildRuntimeEvidenceArtifactsReservesAddressFactSlot(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	store := &models.Store{
+		ID: 77, TenantID: 1, StoreCode: "evidence-address-store", Name: "证据边界酒店",
+		Address: "安徽省合肥市蜀山区测试路88号", Status: enums.StatusOk,
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatal(err)
+	}
+	instance := &models.WxWorkProtocolInstance{
+		ID: 88, TenantID: 1, Guid: "evidence-address-instance", StoreID: store.ID,
+		AIReplyEnabled: true, Status: enums.StatusOk,
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: 1, ConversationID: 7, StoreID: store.ID, WxWorkInstanceID: instance.ID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	hits := make([]rag.RetrieveResult, 0, runtimeEvidenceMaxItems)
+	for index := 1; index <= runtimeEvidenceMaxItems; index++ {
+		hits = append(hits, rag.RetrieveResult{
+			SourceRecordID: fmt.Sprintf("address-source-%02d", index),
+			Title:          "外卖地址说明", Content: fmt.Sprintf("地址相关知识片段 %02d", index), Score: 0.9,
+		})
+	}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{
+		Conversation: models.Conversation{ID: 7, TenantID: 1, StoreID: store.ID},
+	}, []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-address", Intent: "hotel_info", SubIntent: "address_for_delivery", Query: "点外卖地址填哪里",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{
+			Hits: hits, ContextResults: hits,
+		},
+	}}, nil)
+	if artifacts.Quality == nil {
+		t.Fatal("expected evidence_bundle.v2")
+	}
+	if got := len(artifacts.Quality.Items); got != runtimeEvidenceMaxItems {
+		t.Fatalf("knowledge evidence plus store fact must stay within schema max: got %d", got)
+	}
+	knowledgeCount := 0
+	storeFactCount := 0
+	for _, item := range artifacts.Quality.Items {
+		switch item.SourceType {
+		case "fastgpt":
+			knowledgeCount++
+		case "store_fact":
+			storeFactCount++
+			if item.Ref != "S1" || item.FactKey != "store.address" || item.Content != store.Address {
+				t.Fatalf("unexpected authoritative store fact: %+v", item)
+			}
+		}
+	}
+	if knowledgeCount != runtimeEvidenceMaxItems-1 || storeFactCount != 1 {
+		t.Fatalf("expected 23 FastGPT items plus one store fact, got knowledge=%d storeFacts=%d", knowledgeCount, storeFactCount)
+	}
+
+	plan := contracts.ReplyPlanV4{
+		SchemaVersion: contracts.ReplyPlanV4SchemaVersion, TurnVersion: 1,
+		PlanFingerprint: strings.Repeat("a", 64), ShouldGenerate: false,
+		Tasks: []contracts.ReplyPlanTaskV4{}, ReplyGroups: []contracts.ReplyPlanGroupV4{},
+		GlobalConstraints: contracts.ReplyPlanGlobalV4{
+			MaxReplyParts: 0, MaxQuestionsPerPart: 1, ForbiddenClaims: []string{},
+		},
+	}
+	if err := validateRuntimeReplyPlanV4Contract(plan, *artifacts.Quality, contracts.ActionLedgerV1{}, nil); err != nil {
+		t.Fatalf("bounded evidence must satisfy embedded schema: %v", err)
+	}
+
+	overflow := *artifacts.Quality
+	overflow.Items = append(append([]contracts.EvidenceItemV2(nil), artifacts.Quality.Items...), artifacts.Quality.Items[0])
+	overflow.Items[len(overflow.Items)-1].Ref = "K24"
+	if err := validateRuntimeReplyPlanV4Contract(plan, overflow, contracts.ActionLedgerV1{}, nil); err == nil {
+		t.Fatal("oversized evidence bundle must be rejected before Generate")
 	}
 }
 

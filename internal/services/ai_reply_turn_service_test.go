@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,7 +102,7 @@ func TestAIReplyTurnFeatureControlsFailClosed(t *testing.T) {
 	}
 }
 
-func TestAIReplyTurnTaskExactDuplicateIsCoveredByCanonicalTask(t *testing.T) {
+func TestAIReplyTurnTaskExactDuplicateWaitsForCanonicalCommit(t *testing.T) {
 	db, conversation := setupAIReplyTurnTestDB(t)
 	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
 	first := createAIReplyTurnCustomerMessage(t, db, conversation, "task-source-1", "有咖啡吗？", t0)
@@ -124,10 +125,10 @@ func TestAIReplyTurnTaskExactDuplicateIsCoveredByCanonicalTask(t *testing.T) {
 
 	duplicate := createAIReplyTurnCustomerMessage(t, db, conversation, "task-source-2", " 有咖啡吗。 ", t0.Add(time.Second))
 	turn = assignAIReplyTurnMessage(t, db, conversation, duplicate)
-	var covered []models.AIReplyTurnTask
+	var duplicateTasks []models.AIReplyTurnTask
 	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 		var err error
-		covered, err = AIReplyTurnTaskService.EnsureTasksDB(ctx.Tx, turn, []AIReplyTurnTaskInput{{
+		duplicateTasks, err = AIReplyTurnTaskService.EnsureTasksDB(ctx.Tx, turn, []AIReplyTurnTaskInput{{
 			SourceMessageID: duplicate.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
 			Intent: "hotel_info", SubIntent: "service_facility", QuestionText: duplicate.Content,
 		}})
@@ -135,9 +136,216 @@ func TestAIReplyTurnTaskExactDuplicateIsCoveredByCanonicalTask(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create duplicate task: %v", err)
 	}
-	if len(covered) != 1 || covered[0].Status != enums.AIReplyTurnTaskStatusCovered ||
-		covered[0].CoveredByTaskID != canonical[0].ID || covered[0].ResultCode != "covered_by_existing_task" {
-		t.Fatalf("duplicate task was not covered by canonical task: canonical=%#v duplicate=%#v", canonical, covered)
+	if len(duplicateTasks) != 1 || duplicateTasks[0].Status != enums.AIReplyTurnTaskStatusWaitingCoverage ||
+		duplicateTasks[0].CoveredByTaskID != canonical[0].ID || duplicateTasks[0].CommittedMessageID != 0 {
+		t.Fatalf("duplicate task did not wait for canonical evidence: canonical=%#v duplicate=%#v", canonical, duplicateTasks)
+	}
+	if !AIReplyTurnTaskService.HasWorkPending(turn.TenantID, turn.ID) {
+		t.Fatal("waiting duplicate must keep the turn unfinished until canonical evidence exists")
+	}
+
+	const jobID int64 = 9001
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		claimed, _, err := AIReplyTurnTaskService.ClaimBatchDB(ctx.Tx, turn, jobID)
+		if err != nil {
+			return err
+		}
+		if len(claimed) != 1 || claimed[0].ID != canonical[0].ID {
+			return fmt.Errorf("claimed tasks=%#v want canonical %d only", claimed, canonical[0].ID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reply := createAIReplyTurnReply(t, db, conversation, turn, turn.Version, "canonical-commit", time.Now())
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		return AIReplyTurnTaskService.MarkCommittedMessagesDB(ctx.Tx, turn, jobID, map[string]int64{
+			canonical[0].TaskKey: reply.ID,
+		}, false, time.Now())
+	}); err != nil {
+		t.Fatalf("commit canonical task: %v", err)
+	}
+	resolved := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, turn.TenantID, turn.ID, duplicateTasks[0].TaskKey)
+	if resolved == nil || resolved.Status != enums.AIReplyTurnTaskStatusCovered ||
+		resolved.CoveredByTaskID != canonical[0].ID || resolved.CommittedMessageID != reply.ID || resolved.CompletedAt == nil {
+		t.Fatalf("duplicate task was not resolved by committed evidence: %#v", resolved)
+	}
+}
+
+func TestAIReplyTurnTaskSameDeicticTextWithDifferentImagesIsNotDuplicate(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	imageA := createAIReplyTurnCustomerMessage(t, db, conversation, "image-a", "a.jpg", t0)
+	imageA.MessageType = enums.IMMessageTypeImage
+	if err := db.Model(&models.Message{}).Where("id = ?", imageA.ID).Update("message_type", imageA.MessageType).Error; err != nil {
+		t.Fatal(err)
+	}
+	turn := assignAIReplyTurnMessage(t, db, conversation, imageA)
+	questionA := createAIReplyTurnCustomerMessage(t, db, conversation, "question-a", "这个是什么", t0.Add(time.Second))
+	turn = assignAIReplyTurnMessage(t, db, conversation, questionA)
+	first, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: questionA.ID, SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent: "hotel_info", SubIntent: "media_follow_up", QuestionText: questionA.Content,
+		ObservationBindingsJSON: fmt.Sprintf(`[{"messageId":%d,"sourceRevision":1}]`, imageA.ID),
+	}})
+	if err != nil || len(first) != 1 || first[0].Status != enums.AIReplyTurnTaskStatusPending {
+		t.Fatalf("create image A task: tasks=%+v err=%v", first, err)
+	}
+
+	imageB := createAIReplyTurnCustomerMessage(t, db, conversation, "image-b", "b.jpg", t0.Add(2*time.Second))
+	imageB.MessageType = enums.IMMessageTypeImage
+	if err := db.Model(&models.Message{}).Where("id = ?", imageB.ID).Update("message_type", imageB.MessageType).Error; err != nil {
+		t.Fatal(err)
+	}
+	turn = assignAIReplyTurnMessage(t, db, conversation, imageB)
+	questionB := createAIReplyTurnCustomerMessage(t, db, conversation, "question-b", "这个是什么", t0.Add(3*time.Second))
+	turn = assignAIReplyTurnMessage(t, db, conversation, questionB)
+	second, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: questionB.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent: "hotel_info", SubIntent: "media_follow_up", QuestionText: questionB.Content,
+		ObservationBindingsJSON: fmt.Sprintf(`[{"messageId":%d,"sourceRevision":1}]`, imageB.ID),
+	}})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("create image B task: tasks=%+v err=%v", second, err)
+	}
+	if second[0].Status != enums.AIReplyTurnTaskStatusPending || second[0].CoveredByTaskID != 0 {
+		t.Fatalf("image B was incorrectly covered by image A: first=%+v second=%+v", first[0], second[0])
+	}
+}
+
+func TestAIReplyTurnTaskSameTextWithDifferentResourceActionsIsNotDuplicate(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	firstMessage := createAIReplyTurnCustomerMessage(t, db, conversation, "resource-source-a", "再发一下", t0)
+	turn := assignAIReplyTurnMessage(t, db, conversation, firstMessage)
+	first, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: firstMessage.ID, SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeResource,
+		Intent: "hotel_variable", ResourceAction: "provide_location", QuestionText: firstMessage.Content,
+	}})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("create first resource task: tasks=%+v err=%v", first, err)
+	}
+	secondMessage := createAIReplyTurnCustomerMessage(t, db, conversation, "resource-source-b", "再发一下", t0.Add(time.Second))
+	turn = assignAIReplyTurnMessage(t, db, conversation, secondMessage)
+	second, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: secondMessage.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeResource,
+		Intent: "hotel_variable", ResourceAction: "provide_mini_program", QuestionText: secondMessage.Content,
+	}})
+	if err != nil || len(second) != 1 {
+		t.Fatalf("create second resource task: tasks=%+v err=%v", second, err)
+	}
+	if second[0].Status != enums.AIReplyTurnTaskStatusPending || second[0].CoveredByTaskID != 0 {
+		t.Fatalf("different resource action was incorrectly covered: first=%+v second=%+v", first[0], second[0])
+	}
+}
+
+func TestAIReplyTurnTaskCanonicalFailureTerminatesWaitingDuplicate(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	first := createAIReplyTurnCustomerMessage(t, db, conversation, "failure-source-1", "有咖啡吗？", t0)
+	turn := assignAIReplyTurnMessage(t, db, conversation, first)
+	canonical, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: first.ID, SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent: "hotel_info", SubIntent: "service_facility", QuestionText: first.Content,
+	}})
+	if err != nil || len(canonical) != 1 {
+		t.Fatalf("create canonical task: tasks=%#v err=%v", canonical, err)
+	}
+	second := createAIReplyTurnCustomerMessage(t, db, conversation, "failure-source-2", "有咖啡吗。", t0.Add(time.Second))
+	turn = assignAIReplyTurnMessage(t, db, conversation, second)
+	duplicateTasks, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: second.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent: "hotel_info", SubIntent: "service_facility", QuestionText: second.Content,
+	}})
+	if err != nil || len(duplicateTasks) != 1 || duplicateTasks[0].Status != enums.AIReplyTurnTaskStatusWaitingCoverage {
+		t.Fatalf("create waiting duplicate: tasks=%#v err=%v", duplicateTasks, err)
+	}
+	if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(db, turn, canonical[0].TaskKey, "model_protocol", 1, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	resolved := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, turn.TenantID, turn.ID, duplicateTasks[0].TaskKey)
+	if resolved == nil || resolved.Status != enums.AIReplyTurnTaskStatusFailed ||
+		resolved.CoveredByTaskID != canonical[0].ID || resolved.CompletedAt == nil ||
+		resolved.ResultCode != "covered_by_canonical_failure" {
+		t.Fatalf("waiting duplicate did not inherit canonical failure: %#v", resolved)
+	}
+}
+
+func TestAIReplyTurnTaskCanonicalHandoffCoversDuplicateWithoutSecondDispatch(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	t0 := time.Now().Add(-10 * time.Second).Truncate(time.Second)
+	first := createAIReplyTurnCustomerMessage(t, db, conversation, "handoff-source-1", "需要人工处理", t0)
+	turn := assignAIReplyTurnMessage(t, db, conversation, first)
+	canonical, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: first.ID, SequenceNo: 1, TaskType: enums.AIReplyTurnTaskTypeHuman,
+		Intent: "human_complaint_risk", SubIntent: "human_request", QuestionText: first.Content,
+	}})
+	if err != nil || len(canonical) != 1 {
+		t.Fatalf("create canonical handoff task: tasks=%#v err=%v", canonical, err)
+	}
+	second := createAIReplyTurnCustomerMessage(t, db, conversation, "handoff-source-2", "需要人工处理。", t0.Add(time.Second))
+	turn = assignAIReplyTurnMessage(t, db, conversation, second)
+	duplicateTasks, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		SourceMessageID: second.ID, SequenceNo: 2, TaskType: enums.AIReplyTurnTaskTypeHuman,
+		Intent: "human_complaint_risk", SubIntent: "human_request", QuestionText: second.Content,
+	}})
+	if err != nil || len(duplicateTasks) != 1 || duplicateTasks[0].Status != enums.AIReplyTurnTaskStatusWaitingCoverage {
+		t.Fatalf("create handoff duplicate: tasks=%#v err=%v", duplicateTasks, err)
+	}
+	if err := AIReplyTurnTaskService.MarkTaskKeysHandoffDB(
+		db, turn.TenantID, turn.ID, []string{canonical[0].TaskKey}, "human_route_requested", time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	resolved := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, turn.TenantID, turn.ID, duplicateTasks[0].TaskKey)
+	if resolved == nil || resolved.Status != enums.AIReplyTurnTaskStatusHandoff ||
+		resolved.CoveredByTaskID != canonical[0].ID || resolved.ResultCode != "covered_by_canonical_handoff" {
+		t.Fatalf("duplicate handoff did not share canonical dispatch: %#v", resolved)
+	}
+}
+
+func TestAIReplyTurnTaskStableKeySurvivesReanalysis(t *testing.T) {
+	base := AIReplyTurnTaskInput{
+		TenantID: 101, TurnID: 202, SourceMessageID: 303,
+		TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent:   "hotel_info", SubIntent: "parking", QuestionText: "停车场在哪里",
+		AnalysisRevision: 1, SourceSpanStart: 0, SourceSpanEnd: 6,
+		SourceSetFingerprint: "source-set", CanonicalQuestionHash: "canonical-question",
+	}
+	first := AIReplyTurnTaskService.StableTaskKey(base)
+	base.AnalysisRevision = 9
+	base.Intent = "interaction"
+	base.SubIntent = "clarify"
+	base.RequestMode = "clarify_previous"
+	base.TaskType = enums.AIReplyTurnTaskTypeText
+	second := AIReplyTurnTaskService.StableTaskKey(base)
+	if first == "" || first != second {
+		t.Fatalf("stable task key drifted across analysis revisions or intent/type changes: %q != %q", first, second)
+	}
+
+	base.SourceMessageID++
+	if other := AIReplyTurnTaskService.StableTaskKey(base); other == first {
+		t.Fatalf("different source messages must not share a physical task key: %q", other)
+	}
+
+	base.SourceMessageID--
+	base.SourceSetFingerprint = "different-source-set"
+	if other := AIReplyTurnTaskService.StableTaskKey(base); other == first {
+		t.Fatalf("different source spans must not share a physical task key: %q", other)
+	}
+}
+
+func TestAIReplyTurnTaskFallbackStableKeyKeepsDuplicateSourcesSeparate(t *testing.T) {
+	base := AIReplyTurnTaskInput{
+		TenantID: 101, TurnID: 202, SourceMessageID: 303,
+		TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		Intent:   "hotel_info", SubIntent: "service_facility", QuestionText: "有咖啡吗",
+	}
+	first := AIReplyTurnTaskService.StableTaskKey(base)
+	base.SourceMessageID++
+	second := AIReplyTurnTaskService.StableTaskKey(base)
+	if first == "" || second == "" || first == second {
+		t.Fatalf("fallback task keys must preserve source identity: first=%q second=%q", first, second)
 	}
 }
 
@@ -429,6 +637,75 @@ func TestAIReplyTurnDeliveryEvidenceDoesNotReopenInterruptedTurn(t *testing.T) {
 	if updated == nil || updated.Status != enums.AIReplyTurnStatusInterrupted || updated.LastDeliveredVersion != 1 ||
 		updated.LastDeliveredAt == nil {
 		t.Fatalf("terminal turn delivery evidence mismatch: %+v", updated)
+	}
+}
+
+func TestAIReplyTurnTaskAnalysisRevisionKeepsStableKeyAndClearsKnowledgeCheckpoint(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	message := createAIReplyTurnCustomerMessage(t, db, conversation, "analysis-revision", "你好", time.Now())
+	turn := assignAIReplyTurnMessage(t, db, conversation, message)
+	initial, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		TenantID: turn.TenantID, TurnID: turn.ID, SourceMessageID: message.ID,
+		SourceSpanStart: 0, SourceSpanEnd: len([]rune(message.Content)),
+		TaskType: enums.AIReplyTurnTaskTypeKnowledge, Intent: "hotel_info", SubIntent: "store_knowledge",
+		RequestMode: "answer", QuestionText: message.Content,
+	}})
+	if err != nil || len(initial) != 1 {
+		t.Fatalf("ensure initial task=%+v err=%v", initial, err)
+	}
+	nextRetryAt := time.Now().Add(time.Minute)
+	completedAt := time.Now()
+	if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, initial[0].ID, initial[0].TenantID, map[string]any{
+		"stage": enums.AIReplyTurnTaskStageGenerate, "status": enums.AIReplyTurnTaskStatusReady,
+		"knowledge_status": enums.AIReplyTurnTaskKnowledgeStatusHit, "knowledge_hit_count": 4,
+		"knowledge_retrieve_log_id": int64(77), "knowledge_query_fingerprint": "old-query",
+		"requirement_state_json": `{"schemaVersion":"requirement_state.v1","states":[]}`,
+		"evidence_fingerprint":   "old-evidence", "answer_group_key": "old-group",
+		"result_code": "old-result", "failure_class": "old-failure", "attempt_count": 2,
+		"covered_by_task_id": int64(999), "next_retry_at": &nextRetryAt, "completed_at": &completedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	revised, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		TenantID: turn.TenantID, TurnID: turn.ID, SourceMessageID: message.ID,
+		SourceSpanStart: 0, SourceSpanEnd: len([]rune(message.Content)),
+		TaskType: enums.AIReplyTurnTaskTypeText, Intent: "interaction", SubIntent: "greeting",
+		RequestMode: "social", QuestionText: message.Content,
+	}})
+	if err != nil || len(revised) != 1 {
+		t.Fatalf("ensure revised task=%+v err=%v", revised, err)
+	}
+	got := revised[0]
+	if got.TaskKey != initial[0].TaskKey {
+		t.Fatalf("analysis revision created a second task: before=%s after=%s", initial[0].TaskKey, got.TaskKey)
+	}
+	if got.TaskType != enums.AIReplyTurnTaskTypeText || got.Intent != "interaction" || got.SubIntent != "greeting" ||
+		got.RequestMode != "social" || got.Stage != enums.AIReplyTurnTaskStageGenerate || got.Status != enums.AIReplyTurnTaskStatusPending ||
+		got.KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusNone {
+		t.Fatalf("revised task classification/state mismatch: %+v", got)
+	}
+	if got.KnowledgeHitCount != 0 || got.KnowledgeRetrieveLogID != 0 || got.KnowledgeQueryFingerprint != "" ||
+		got.RequirementStateJSON != "" || got.EvidenceFingerprint != "" || got.AnswerGroupKey != "" ||
+		got.ResultCode != "" || got.FailureClass != "" || got.AttemptCount != 0 || got.CoveredByTaskID != 0 ||
+		got.NextRetryAt != nil || got.CompletedAt != nil {
+		t.Fatalf("revised task retained stale downstream evidence: %+v", got)
+	}
+}
+
+func TestAIReplyTurnTaskRejectsInvalidAnswerRequirementContract(t *testing.T) {
+	db, conversation := setupAIReplyTurnTestDB(t)
+	message := createAIReplyTurnCustomerMessage(t, db, conversation, "invalid-requirements", "有咖啡吗", time.Now())
+	turn := assignAIReplyTurnMessage(t, db, conversation, message)
+	_, err := AIReplyTurnTaskService.EnsureTasksDB(db, turn, []AIReplyTurnTaskInput{{
+		TenantID: turn.TenantID, TurnID: turn.ID, SourceMessageID: message.ID,
+		SourceSpanStart: 0, SourceSpanEnd: len([]rune(message.Content)),
+		TaskType: enums.AIReplyTurnTaskTypeKnowledge, Intent: "hotel_info",
+		RequestMode: "answer", QuestionText: message.Content,
+		AnswerRequirementsJSON: `{"schemaVersion":"answer_requirements.v1","requirements":[]}`,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "answer requirements are invalid") {
+		t.Fatalf("invalid answer requirement contract error=%v", err)
 	}
 }
 

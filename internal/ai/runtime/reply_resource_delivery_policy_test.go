@@ -36,6 +36,61 @@ func TestDuplicateResourceKnowledgeImageKeepsTextAndSuppressesImage(t *testing.T
 	assertResourcePolicyTraceReason(t, input.Trace, "recent_duplicate_suppressed")
 }
 
+func TestDuplicateResourceWithinCurrentBatchKeepsOneMessageAndCoversOtherAction(t *testing.T) {
+	setupReplyResourcePolicyTestDB(t)
+	now := time.Now()
+	input := resourcePolicyInput(now, "帮我看看图片")
+	replies := []structuredVariableReply{
+		{
+			ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage,
+			Payload:   `{"assetId":"shared-knowledge-image"}`,
+			ActionKey: "action-image-1", TaskKey: "task-image-1", PreparedRevision: "revision-1",
+		},
+		{
+			ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage,
+			Payload:   `{"assetId":"shared-knowledge-image"}`,
+			ActionKey: "action-image-2", TaskKey: "task-image-2", PreparedRevision: "revision-2",
+		},
+	}
+
+	filtered, replyText, suppressions := newReplyCommitService().applyRecentResourceDeliveryPolicyDetailed(input, replies, "这是对应的图片。")
+	if len(filtered) != 1 || filtered[0].ActionKey != "action-image-1" || replyText != "这是对应的图片。" {
+		t.Fatalf("unexpected same-batch dedupe result: replies=%#v text=%q", filtered, replyText)
+	}
+	if len(suppressions) != 1 || suppressions[0].ActionKey != "action-image-2" ||
+		suppressions[0].CoveredByActionKey != "action-image-1" || suppressions[0].CoveredByMessageID != 0 {
+		t.Fatalf("same-batch suppression did not reference the kept action: %#v", suppressions)
+	}
+	assertResourcePolicyTraceReason(t, input.Trace, "same_batch_duplicate_suppressed")
+}
+
+// 生产消息 1452/1456-1458 回放：三个独立知识任务命中同一张用品图片时，
+// Task 可以分别完成，但当前提交批次只能保留一个实际资源消息。
+func TestProductionMessage1452SameKnowledgeImageCommitsOnce(t *testing.T) {
+	setupReplyResourcePolicyTestDB(t)
+	input := resourcePolicyInput(time.Now(), productionMessage1452TranscriptForResourcePolicy)
+	replies := []structuredVariableReply{
+		{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"b97ee22c00d24d6d91e6716b68a1c522"}`, ActionKey: "action-1452-1", TaskKey: "task-1452-play", PreparedRevision: "revision-1"},
+		{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"b97ee22c00d24d6d91e6716b68a1c522"}`, ActionKey: "action-1452-2", TaskKey: "task-1452-room", PreparedRevision: "revision-2"},
+		{ResourceType: "knowledge_image", MessageType: enums.IMMessageTypeImage, Payload: `{"assetId":"b97ee22c00d24d6d91e6716b68a1c522"}`, ActionKey: "action-1452-3", TaskKey: "task-1452-coffee", PreparedRevision: "revision-3"},
+	}
+
+	filtered, _, suppressions := newReplyCommitService().applyRecentResourceDeliveryPolicyDetailed(input, replies, "")
+	if len(filtered) != 1 || filtered[0].ActionKey != "action-1452-1" {
+		t.Fatalf("production 1452 image batch=%#v want one committed resource", filtered)
+	}
+	if len(suppressions) != 2 {
+		t.Fatalf("production 1452 suppressions=%#v want two covered actions", suppressions)
+	}
+	for _, suppression := range suppressions {
+		if suppression.CoveredByActionKey != "action-1452-1" || suppression.ResultCode != "same_batch_duplicate_suppressed" {
+			t.Fatalf("production 1452 suppression is not linked to kept action: %#v", suppression)
+		}
+	}
+}
+
+const productionMessage1452TranscriptForResourcePolicy = "这附近有附近有什么地方好玩儿的呀，什么景点啊，好吃的之类的有没有啊？我就换个安静点的房间，别帮我换了吧，你就说有没有安静的房间吧。最后告诉我有什么酒店什么。好困，能不能搞点咖啡来呀？"
+
 func TestExplicitResendAllowsDuplicateImageResource(t *testing.T) {
 	db := setupReplyResourcePolicyTestDB(t)
 	now := time.Now()

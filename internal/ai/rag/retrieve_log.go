@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var RetrieveLog = &retrieveLog{}
@@ -46,11 +48,24 @@ type CreateRetrieveLogRequest struct {
 	PromptTokens     int
 	CompletionTokens int
 	ModelName        string
-	// TurnID/TaskID/TaskKey/QueryFingerprint 绑定 Task 审计链（契约 4.17）。
-	TurnID          int64
-	TaskID          int64
-	TaskKey         string
-	QueryFingerprint string
+	// Turn/Task/Query 字段绑定 Task 审计链和统一检索 checkpoint。
+	TurnID                       int64
+	TurnVersion                  int
+	TaskID                       int64
+	TaskKey                      string
+	QueryFingerprint             string
+	QueryKey                     string
+	QueryPurpose                 string
+	ScopeFingerprint             string
+	RequirementKeysJSON          string
+	RetrievalPolicyFingerprint   string
+	KnowledgeRevisionFingerprint string
+	EvidenceFingerprint          string
+	CheckpointKey                *string
+	ExecutionStatus              string
+	LeaseOwner                   string
+	LeaseExpiresAt               *time.Time
+	CompletedAt                  *time.Time
 }
 
 type retrieveTraceData struct {
@@ -122,37 +137,50 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 	traceData := buildRetrieveTraceData(req)
 
 	log := &models.KnowledgeRetrieveLog{
-		TenantID:         tenantID,
-		KnowledgeBaseID:  req.KnowledgeBaseID,
-		SourceType:       "fastgpt",
-		Channel:          req.Channel,
-		Scene:            req.Scene,
-		SessionID:        req.SessionID,
-		ConversationID:   req.ConversationID,
-		RequestID:        requestID,
-		Question:         req.Question,
-		RewriteQuestion:  req.RewriteQuestion,
-		Answer:           req.Answer,
-		AnswerStatus:     req.AnswerStatus,
-		HitCount:         len(req.Hits),
-		TopScore:         topScore,
-		ChunkProvider:    string(enums.KnowledgeChunkProviderFastGPT),
-		RerankEnabled:    req.RerankEnabled,
-		RerankLimit:      req.RerankLimit,
-		CitationCount:    len(req.Citations),
-		UsedChunkCount:   len(req.UsedHits),
-		LatencyMs:        req.LatencyMs,
-		RetrieveMs:       req.RetrieveMs,
-		GenerateMs:       req.GenerateMs,
-		PromptTokens:     req.PromptTokens,
-		CompletionTokens: req.CompletionTokens,
-		ModelName:        req.ModelName,
-		TurnID:           req.TurnID,
-		TaskID:           req.TaskID,
-		TaskKey:          req.TaskKey,
-		QueryFingerprint: req.QueryFingerprint,
-		TraceData:        traceData,
-		CreatedAt:        now,
+		TenantID:                     tenantID,
+		KnowledgeBaseID:              req.KnowledgeBaseID,
+		SourceType:                   "fastgpt",
+		Channel:                      req.Channel,
+		Scene:                        req.Scene,
+		SessionID:                    req.SessionID,
+		ConversationID:               req.ConversationID,
+		RequestID:                    requestID,
+		Question:                     req.Question,
+		RewriteQuestion:              req.RewriteQuestion,
+		Answer:                       req.Answer,
+		AnswerStatus:                 req.AnswerStatus,
+		HitCount:                     len(req.Hits),
+		TopScore:                     topScore,
+		ChunkProvider:                string(enums.KnowledgeChunkProviderFastGPT),
+		RerankEnabled:                req.RerankEnabled,
+		RerankLimit:                  req.RerankLimit,
+		CitationCount:                len(req.Citations),
+		UsedChunkCount:               len(req.UsedHits),
+		LatencyMs:                    req.LatencyMs,
+		RetrieveMs:                   req.RetrieveMs,
+		GenerateMs:                   req.GenerateMs,
+		PromptTokens:                 req.PromptTokens,
+		CompletionTokens:             req.CompletionTokens,
+		ModelName:                    req.ModelName,
+		TurnID:                       req.TurnID,
+		TurnVersion:                  req.TurnVersion,
+		TaskID:                       req.TaskID,
+		TaskKey:                      req.TaskKey,
+		QueryFingerprint:             req.QueryFingerprint,
+		QueryKey:                     req.QueryKey,
+		QueryPurpose:                 normalizedQueryPurpose(req.QueryPurpose),
+		RequirementKeysJSON:          req.RequirementKeysJSON,
+		ScopeFingerprint:             req.ScopeFingerprint,
+		RetrievalPolicyFingerprint:   req.RetrievalPolicyFingerprint,
+		KnowledgeRevisionFingerprint: req.KnowledgeRevisionFingerprint,
+		EvidenceFingerprint:          req.EvidenceFingerprint,
+		CheckpointKey:                req.CheckpointKey,
+		ExecutionStatus:              normalizedRetrieveExecutionStatus(req.ExecutionStatus),
+		LeaseOwner:                   req.LeaseOwner,
+		LeaseExpiresAt:               req.LeaseExpiresAt,
+		CompletedAt:                  req.CompletedAt,
+		TraceData:                    traceData,
+		CreatedAt:                    now,
 	}
 
 	usedHitKeys := make(map[string]struct{}, len(req.UsedHits))
@@ -207,6 +235,168 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, operator 
 	}
 
 	return log, nil
+}
+
+// CompleteRetrieveLogCheckpointDB 将统一执行器预先 Claim 的 checkpoint、真实
+// hits 与终态一次性提交。它不会创建第二条 RetrieveLog。
+func (s *retrieveLog) CompleteRetrieveLogCheckpointDB(
+	db *gorm.DB,
+	logID, tenantID int64,
+	leaseOwner, executionStatus string,
+	req *CreateRetrieveLogRequest,
+) (*models.KnowledgeRetrieveLog, error) {
+	if db == nil || logID <= 0 || tenantID <= 0 || req == nil {
+		return nil, fmt.Errorf("invalid retrieve checkpoint completion")
+	}
+	resolvedTenantID, err := resolveRetrieveLogTenant(req, nil)
+	if err != nil {
+		return nil, err
+	}
+	if resolvedTenantID != tenantID {
+		return nil, fmt.Errorf("retrieve checkpoint tenant %d conflicts with result tenant %d", tenantID, resolvedTenantID)
+	}
+	status := normalizedRetrieveExecutionStatus(executionStatus)
+	if status != "succeeded" && status != "no_hit" {
+		return nil, fmt.Errorf("retrieve checkpoint terminal status %q is invalid", status)
+	}
+	now := time.Now()
+	topScore := 0.0
+	if len(req.Hits) > 0 {
+		topScore = req.Hits[0].Score
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+	req.RequestID = requestID
+	traceData := buildRetrieveTraceData(req)
+
+	usedHitKeys := make(map[string]struct{}, len(req.UsedHits))
+	for _, item := range req.UsedHits {
+		usedHitKeys[buildKnowledgeSearchResultKey(item)] = struct{}{}
+	}
+	usedHitRanks := make(map[int]struct{}, len(req.UsedHitRankNos))
+	for _, rankNo := range req.UsedHitRankNos {
+		if rankNo > 0 {
+			usedHitRanks[rankNo] = struct{}{}
+		}
+	}
+	citationKeys := make(map[string]struct{}, len(req.Citations))
+	for _, item := range req.Citations {
+		citationKeys[buildKnowledgeCitationKey(item)] = struct{}{}
+	}
+
+	var completed models.KnowledgeRetrieveLog
+	err = db.Transaction(func(tx *gorm.DB) error {
+		current := &models.KnowledgeRetrieveLog{}
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND tenant_id = ? AND execution_status = ?", logID, tenantID, "running")
+		if strings.TrimSpace(leaseOwner) != "" {
+			query = query.Where("lease_owner = ?", leaseOwner)
+		}
+		if err := query.Take(current).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("tenant_id = ? AND retrieve_log_id = ?", tenantID, logID).
+			Delete(&models.KnowledgeRetrieveHit{}).Error; err != nil {
+			return err
+		}
+		for index, hit := range req.Hits {
+			hitKey := buildKnowledgeSearchResultKey(hit)
+			usedInAnswer := hasHitKey(usedHitKeys, hitKey)
+			if len(usedHitRanks) > 0 {
+				_, usedInAnswer = usedHitRanks[index+1]
+			}
+			hitRecord := &models.KnowledgeRetrieveHit{
+				TenantID:        tenantID,
+				RetrieveLogID:   logID,
+				KnowledgeBaseID: hit.KnowledgeBaseID,
+				SourceRecordID:  strings.TrimSpace(hit.SourceRecordID),
+				DocumentTitle:   hit.DocumentTitle,
+				Title:           hit.Title,
+				SectionPath:     hit.SectionPath,
+				Provider:        string(enums.KnowledgeChunkProviderFastGPT),
+				RankNo:          index + 1,
+				Score:           hit.Score,
+				RerankScore:     hit.RerankScore,
+				UsedInAnswer:    usedInAnswer,
+				IsCitation:      hasHitKey(citationKeys, hitKey),
+				Snippet:         hit.Content,
+				CreatedAt:       now,
+			}
+			if err := tx.Create(hitRecord).Error; err != nil {
+				return err
+			}
+		}
+		updates := map[string]any{
+			"knowledge_base_id":              req.KnowledgeBaseID,
+			"channel":                        req.Channel,
+			"scene":                          req.Scene,
+			"session_id":                     req.SessionID,
+			"conversation_id":                req.ConversationID,
+			"request_id":                     requestID,
+			"question":                       req.Question,
+			"rewrite_question":               req.RewriteQuestion,
+			"answer":                         req.Answer,
+			"answer_status":                  req.AnswerStatus,
+			"hit_count":                      len(req.Hits),
+			"top_score":                      topScore,
+			"chunk_provider":                 string(enums.KnowledgeChunkProviderFastGPT),
+			"rerank_enabled":                 req.RerankEnabled,
+			"rerank_limit":                   req.RerankLimit,
+			"citation_count":                 len(req.Citations),
+			"used_chunk_count":               len(req.UsedHits),
+			"latency_ms":                     req.LatencyMs,
+			"retrieve_ms":                    req.RetrieveMs,
+			"generate_ms":                    req.GenerateMs,
+			"prompt_tokens":                  req.PromptTokens,
+			"completion_tokens":              req.CompletionTokens,
+			"model_name":                     req.ModelName,
+			"turn_id":                        req.TurnID,
+			"turn_version":                   req.TurnVersion,
+			"task_id":                        req.TaskID,
+			"task_key":                       req.TaskKey,
+			"query_fingerprint":              req.QueryFingerprint,
+			"query_key":                      req.QueryKey,
+			"query_purpose":                  normalizedQueryPurpose(req.QueryPurpose),
+			"requirement_keys_json":          req.RequirementKeysJSON,
+			"scope_fingerprint":              req.ScopeFingerprint,
+			"retrieval_policy_fingerprint":   req.RetrievalPolicyFingerprint,
+			"knowledge_revision_fingerprint": req.KnowledgeRevisionFingerprint,
+			"evidence_fingerprint":           req.EvidenceFingerprint,
+			"execution_status":               status,
+			"lease_owner":                    "",
+			"lease_expires_at":               nil,
+			"completed_at":                   now,
+			"trace_data":                     traceData,
+		}
+		if err := tx.Model(&models.KnowledgeRetrieveLog{}).
+			Where("id = ? AND tenant_id = ?", logID, tenantID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Take(&completed, "id = ? AND tenant_id = ?", logID, tenantID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &completed, nil
+}
+
+func normalizedQueryPurpose(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "answer"
+	}
+	return value
+}
+
+func normalizedRetrieveExecutionStatus(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "pending"
+	}
+	return value
 }
 
 func resolveRetrieveLogTenant(req *CreateRetrieveLogRequest, operator *dto.AuthPrincipal) (int64, error) {

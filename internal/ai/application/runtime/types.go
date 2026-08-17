@@ -58,6 +58,9 @@ type Summary struct {
 	TraceData                 string
 	ErrorMessage              string
 	PolicySkipped             bool
+	PolicySkipReason          string
+	RuntimeDeferred           bool
+	RuntimeDeferReason        string
 	ReplyModelAttempted       bool
 	ModelUsageCalls           []ModelUsageCall
 	TaskLedgerEnabled         bool
@@ -68,6 +71,7 @@ type Summary struct {
 	NeedsHumanDispatch        bool
 	CoveredByTaskID           int64
 	ReplyParts                []contracts.ReplyPartV2
+	ResolvedReplyPartsV3      []contracts.ResolvedPartV3
 	PreparedActions           []contracts.PreparedActionV1
 	ActionLedgerV2            *contracts.ActionLedgerV1
 	ActionLedgerAuthoritative bool

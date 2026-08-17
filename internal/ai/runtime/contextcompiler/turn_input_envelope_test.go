@@ -67,6 +67,32 @@ func TestBuildTurnInputEnvelopeReadyVoiceIsUtterance(t *testing.T) {
 	}
 }
 
+func TestBuildTurnInputEnvelopePromotesStandaloneActionableImageAnalysis(t *testing.T) {
+	messages := []models.Message{{
+		ID: 1361, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage,
+		Content: "error.jpg", Payload: `{"mediaText":"电视屏幕显示网络连接失败。","mediaUnderstandingStatus":"understood","responseExpectation":{"mode":"reply","basis":"visible_error","confidence":0.98}}`,
+	}}
+	envelope := BuildTurnInputEnvelope(envelopeTestScope(), messages)
+	if got := envelope.Utterances[0]; got.Text != "电视屏幕显示网络连接失败。" || got.TextOrigin != "media_analysis" {
+		t.Fatalf("standalone actionable media must become a provenance-labelled intent input: %+v", got)
+	}
+	if envelope.Utterances[0].ResponseExpectation == nil || envelope.Utterances[0].ResponseExpectation.Mode != "reply" {
+		t.Fatalf("response expectation missing from envelope: %+v", envelope.Utterances[0])
+	}
+}
+
+func TestBuildTurnInputEnvelopeDoesNotPromoteMediaWhenCustomerTextExists(t *testing.T) {
+	messages := []models.Message{
+		{ID: 1362, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage,
+			Content: "error.jpg", Payload: `{"mediaText":"电视屏幕显示网络连接失败。","mediaUnderstandingStatus":"understood","responseExpectation":{"mode":"reply","basis":"visible_error","confidence":0.98}}`},
+		{ID: 1363, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "这个怎么处理"},
+	}
+	envelope := BuildTurnInputEnvelope(envelopeTestScope(), messages)
+	if envelope.Utterances[0].Text != "" || envelope.Utterances[0].TextOrigin != "none" {
+		t.Fatalf("media analysis must remain an observation when customer text supplies the request: %+v", envelope.Utterances[0])
+	}
+}
+
 func TestRenderEnvelopeJSONCarriesRefs(t *testing.T) {
 	messages := []models.Message{
 		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "有咖啡吗"},

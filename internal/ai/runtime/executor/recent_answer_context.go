@@ -166,7 +166,11 @@ func runtimeAnsweredResourceLabel(messageType enums.IMMessageType) string {
 }
 
 func resolveClarifyKnowledgeProbeQuery(req RunInput, history adapter.HistoryBuildResult) string {
-	currentText := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	return resolveConditionalKnowledgeProbeQuery(req, history, req.UserMessage.Content)
+}
+
+func resolveConditionalKnowledgeProbeQuery(req RunInput, history adapter.HistoryBuildResult, taskText string) string {
+	currentText := strings.TrimSpace(currentTurnDisplayText(taskText))
 	if currentText == "" {
 		return ""
 	}

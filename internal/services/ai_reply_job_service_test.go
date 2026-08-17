@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
+	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 )
 
@@ -456,7 +458,7 @@ func TestAIReplyJobRecoversCommittedReplyWithoutRepeatingRuntime(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
+func TestAIReplyJobRetryScheduleEndsWithTechnicalNotice(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "空调不制冷")
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
 		return AIReplyExecutionResult{}, errors.New("upstream unavailable")
@@ -489,12 +491,13 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.AttemptCount != aiReplyJobMaxAttempts ||
-		current.ResultCode != "technical_failure_no_handoff" || dispatchCalls.Load() != 0 {
+		current.ResultCode != "technical_failure_notified" || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
+	assertAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
-func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *testing.T) {
+func TestAIReplyJobControlledModelFailureTerminatesWithoutJobRetryOrHandoff(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
@@ -509,29 +512,19 @@ func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *te
 		dispatchCalls.Add(1)
 		return nil
 	}
-	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
-		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
-		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
-			current.LastErrorClass != "generation_failed" || dispatchCalls.Load() != 0 {
-			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
-		}
-	}
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
-		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_notified" ||
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
+	assertAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
-func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
+func TestAIReplyJobTechnicalFailureNeverEntersDispatchRetry(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
@@ -548,29 +541,16 @@ func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
 		}
 		return nil
 	}
-	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
-		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
-		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
-			runtimeCalls.Load() != int32(attempt+1) || dispatchCalls.Load() != 0 {
-			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
-		}
-	}
-
-	// 契约 22.16：generation_failed 属技术失败，耗尽预算后进入确定性终态，
-	// 不再触发人工派单，也不进入 human_dispatch_retry 循环。
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
-		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_notified" ||
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
+	assertAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) {
@@ -590,9 +570,10 @@ func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) 
 	}
 	// 契约 22.16：commit_failed 属技术失败，不触发人工派单。
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
+		current.ResultCode != "technical_failure_notified" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
+	assertAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobAcceptsTurnHashCompletionEvidence(t *testing.T) {
@@ -682,11 +663,25 @@ func TestAIReplyJobRejectsInvalidTurnHashCompletionEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-				current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" ||
+				current.ResultCode != "technical_failure_notified" || current.LastErrorClass != "commit_failed" ||
 				dispatchCalls.Load() != 0 {
 				t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 			}
+			assertAIReplyTechnicalFailureNotice(t, fixture, current)
 		})
+	}
+}
+
+func assertAIReplyTechnicalFailureNotice(t *testing.T, fixture *aiReplyJobTestFixture, job *models.AIReplyJob) {
+	t.Helper()
+	if fixture == nil || job == nil || job.ProgressNoticeMessageID <= 0 {
+		t.Fatalf("technical failure notice evidence missing: fixture=%#v job=%#v", fixture, job)
+	}
+	notice := repositories.MessageRepository.GetInTenant(fixture.db, job.ProgressNoticeMessageID, job.TenantID)
+	if notice == nil || notice.SenderType != enums.IMSenderTypeAI || notice.MessageType != enums.IMMessageTypeText ||
+		notice.RequestID != job.RequestID || notice.AIReplyTurnID != job.TurnID || notice.AIReplyTurnVersion != job.TurnVersion ||
+		strings.Contains(notice.Content, "转人工") || strings.TrimSpace(notice.Content) == "" {
+		t.Fatalf("invalid technical failure notice: %#v", notice)
 	}
 }
 
@@ -752,7 +747,7 @@ func TestAIReplyJobAgentMessageStopsAI(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobExpiresIntoExistingHumanPool(t *testing.T) {
+func TestAIReplyJobExpiryIsTechnicalAndDoesNotCreateHumanHandoff(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "还在吗")
 	var dispatchCalls atomic.Int32
 	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
@@ -768,8 +763,15 @@ func TestAIReplyJobExpiresIntoExistingHumanPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_human_dispatch" || dispatchCalls.Load() != 1 {
+	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_technical_failure" || dispatchCalls.Load() != 0 {
 		t.Fatalf("expired job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	}
+	if current.ProgressNoticeMessageID <= 0 {
+		t.Fatalf("expired technical job must leave a customer-visible terminal notice: %#v", current)
+	}
+	notice := repositories.MessageRepository.GetInTenant(fixture.db, current.ProgressNoticeMessageID, current.TenantID)
+	if notice == nil || notice.SenderType != enums.IMSenderTypeAI || !strings.Contains(notice.Content, "暂时没有处理成功") {
+		t.Fatalf("expired technical notice=%#v", notice)
 	}
 }
 
@@ -814,6 +816,115 @@ func TestAIReplyJobMediaUsesSingleDurableRuntimePath(t *testing.T) {
 	})
 }
 
+func TestAIReplyJobNoActionMediaTurnClosesAfterConsecutiveImages(t *testing.T) {
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_ENABLED", "true")
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_BINDING_IDS", "")
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeImage, "first.jpg")
+	var turn *models.AIReplyTurn
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		var err error
+		turn, _, err = AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, fixture.conversation, fixture.message)
+		if err != nil {
+			return err
+		}
+		return ctx.Tx.Model(&models.AIReplyJob{}).
+			Where("id = ? AND tenant_id = ?", fixture.job.ID, fixture.job.TenantID).
+			Updates(map[string]any{"turn_id": turn.ID, "turn_version": turn.Version}).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondAt := time.Now().Add(time.Second)
+	second := createAIReplyJobTestMessage(t, fixture.db, fixture.conversation, 2, "no-action-second-image", secondAt, false)
+	second.MessageType = enums.IMMessageTypeImage
+	second.Content = "second.jpg"
+	second.Payload = `{"mediaText":"普通室内照片，无明确服务诉求。","mediaUnderstandingStatus":"understood"}`
+	if err := fixture.db.Model(&models.Message{}).Where("id = ?", second.ID).Updates(map[string]any{
+		"message_type": second.MessageType,
+		"content":      second.Content,
+		"payload":      second.Payload,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		var err error
+		turn, _, err = AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, fixture.conversation, second)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	secondJob, created, err := fixture.service.EnsureForMessage(second.ID)
+	if err != nil || !created || secondJob == nil {
+		t.Fatalf("second media job=%#v created=%v err=%v", secondJob, created, err)
+	}
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return AIReplyExecutionResult{}, nil
+	})
+	makeAIReplyJobDue(t, fixture.db, secondJob.ID)
+	current, err := fixture.service.ProcessMessageNow(second.ID)
+	if err != nil || current == nil || current.Status != enums.AIReplyJobStatusSkipped ||
+		current.ResultCode != "media_without_actionable_request" || runtimeCalls.Load() != 0 {
+		t.Fatalf("job=%#v runtimeCalls=%d err=%v", current, runtimeCalls.Load(), err)
+	}
+	closed := repositories.AIReplyTurnRepository.GetInTenant(fixture.db, turn.ID, turn.TenantID)
+	if closed == nil || closed.Status != enums.AIReplyTurnStatusClosed ||
+		closed.TerminalReason != "media_without_actionable_request" || closed.CompletedAt == nil {
+		t.Fatalf("turn did not close after no-action media: %#v", closed)
+	}
+}
+
+func TestAIReplyJobTrailingNoActionImageStillProcessesEarlierTurnText(t *testing.T) {
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_ENABLED", "true")
+	t.Setenv("AI_REPLY_TURN_COORDINATOR_BINDING_IDS", "")
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点开始")
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		turn, _, err := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, fixture.conversation, fixture.message)
+		if err != nil {
+			return err
+		}
+		return ctx.Tx.Model(&models.AIReplyJob{}).
+			Where("id = ? AND tenant_id = ?", fixture.job.ID, fixture.job.TenantID).
+			Updates(map[string]any{"turn_id": turn.ID, "turn_version": turn.Version}).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	imageAt := time.Now().Add(time.Second)
+	image := createAIReplyJobTestMessage(t, fixture.db, fixture.conversation, 2, "trailing-room-image", imageAt, false)
+	image.MessageType = enums.IMMessageTypeImage
+	image.Content = "room.jpg"
+	image.Payload = `{"mediaText":"普通客房照片，无明确服务诉求。","mediaUnderstandingStatus":"understood"}`
+	if err := fixture.db.Model(&models.Message{}).Where("id = ?", image.ID).Updates(map[string]any{
+		"message_type": image.MessageType,
+		"content":      image.Content,
+		"payload":      image.Payload,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		_, _, err := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, fixture.conversation, image)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	imageJob, created, err := fixture.service.EnsureForMessage(image.ID)
+	if err != nil || !created || imageJob == nil {
+		t.Fatalf("image job=%#v created=%v err=%v", imageJob, created, err)
+	}
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
+	})
+	makeAIReplyJobDue(t, fixture.db, imageJob.ID)
+	current, err := fixture.service.ProcessMessageNow(image.ID)
+	if err != nil || current == nil || current.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 1 {
+		t.Fatalf("job=%#v runtimeCalls=%d err=%v", current, runtimeCalls.Load(), err)
+	}
+}
+
 func TestVoiceTranscriptionFailureNoticeIsIdempotent(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeVoice, "voice.amr")
 	MediaUnderstandingService.sendVoiceTranscriptionFailedReply(fixture.message)
@@ -854,7 +965,7 @@ func setupAIReplyJobFixture(t *testing.T, messageType enums.IMMessageType, conte
 	}
 	instance := &models.WxWorkProtocolInstance{
 		TenantID: 101, StoreID: store.ID, StoreStaffBindingID: binding.ID,
-		Guid: "ai-job-instance-" + testNameKey(t.Name()), AIReplyEnabled: true, Status: enums.StatusOk,
+		ChannelID: 11, Guid: "ai-job-instance-" + testNameKey(t.Name()), AIReplyEnabled: true, Status: enums.StatusOk,
 		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
 	}
 	if err := db.Create(instance).Error; err != nil {

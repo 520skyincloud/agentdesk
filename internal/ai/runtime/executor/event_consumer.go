@@ -54,7 +54,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 				continue
 			}
 			if replyText != "" {
-				if summary.UseRuntimeV2Generate {
+				if summary.UseRuntimeV2Generate || summary.UseRuntimeV3Generate {
 					summary.RawReplyOutput = replyText
 				} else {
 					var normalizeErr error

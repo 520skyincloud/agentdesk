@@ -34,7 +34,7 @@ type runtimeReplyResumeInput struct {
 	Trace            *aiReplyTraceData
 }
 
-const runtimeReplyMaxOutputTokens = 512
+const runtimeReplyMaxOutputTokens = 1024
 
 func newRuntimeReplyExecutor() *runtimeReplyExecutor {
 	return &runtimeReplyExecutor{}

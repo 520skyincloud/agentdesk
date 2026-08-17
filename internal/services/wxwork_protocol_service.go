@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-desk/internal/models"
@@ -35,6 +36,8 @@ import (
 const wxWorkProtocolSystemOperatorName = "wxwork_protocol"
 
 const wxWorkProtocolSeatExpiredMessage = "该企微员工号实例已过期，请先续费或更换有效实例"
+
+const wxWorkProtocolOutboxBatchSize = 50
 
 const (
 	wxWorkReplyStatusReady                = "ready"
@@ -79,14 +82,20 @@ var wxProtocolURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 var WxWorkProtocolService = newWxWorkProtocolService()
 
 func newWxWorkProtocolService() *wxWorkProtocolService {
-	svc := &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}}
+	svc := &wxWorkProtocolService{
+		httpClient:   &http.Client{Timeout: 45 * time.Second},
+		outboxWakeCh: make(chan struct{}, 1),
+	}
 	svc.adapter = newDefaultWxWorkProtocolAdapter(svc)
 	return svc
 }
 
 type wxWorkProtocolService struct {
-	httpClient *http.Client
-	adapter    WxWorkProtocolAdapter
+	httpClient       *http.Client
+	adapter          WxWorkProtocolAdapter
+	outboxDispatchMu sync.Mutex
+	outboxWorkerOnce sync.Once
+	outboxWakeCh     chan struct{}
 }
 
 type WxWorkProtocolCallbackError struct {
@@ -241,7 +250,65 @@ func (s *wxWorkProtocolService) runContactAutomationCallback(instanceID int64, n
 	}
 }
 
+// StartOutboxWorker starts the process-wide wxwork outbox dispatcher. Every
+// producer only wakes this worker; a bounded channel coalesces bursty commits.
+func (s *wxWorkProtocolService) StartOutboxWorker(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.outboxWorkerOnce.Do(func() {
+		if s.outboxWakeCh == nil {
+			s.outboxWakeCh = make(chan struct{}, 1)
+		}
+		go s.runOutboxWorker(ctx)
+	})
+	s.WakePendingOutbox()
+}
+
+func (s *wxWorkProtocolService) WakePendingOutbox() {
+	if s == nil || s.outboxWakeCh == nil {
+		return
+	}
+	select {
+	case s.outboxWakeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *wxWorkProtocolService) runOutboxWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.outboxWakeCh:
+			total := 0
+			for {
+				count := s.DispatchPendingOutbox(wxWorkProtocolOutboxBatchSize)
+				total += count
+				if count < wxWorkProtocolOutboxBatchSize {
+					break
+				}
+			}
+			if total > 0 {
+				slog.Info("wxwork protocol outbox dispatched", "count", total)
+			}
+		}
+	}
+}
+
 func (s *wxWorkProtocolService) DispatchPendingOutbox(limit int) int {
+	if s == nil {
+		return 0
+	}
+	s.outboxDispatchMu.Lock()
+	defer s.outboxDispatchMu.Unlock()
+	return s.dispatchPendingOutboxLocked(limit)
+}
+
+func (s *wxWorkProtocolService) dispatchPendingOutboxLocked(limit int) int {
 	items := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkProtocol, limit)
 	now := time.Now()
 	count := 0
@@ -256,6 +323,22 @@ func (s *wxWorkProtocolService) DispatchPendingOutbox(limit int) int {
 		count++
 	}
 	return count
+}
+
+func (s *wxWorkProtocolService) dispatchOutboxNow(outboxID, tenantID int64) error {
+	if s == nil || outboxID <= 0 || tenantID <= 0 {
+		return errorsx.InvalidParam("企微协议投递任务范围无效")
+	}
+	s.outboxDispatchMu.Lock()
+	defer s.outboxDispatchMu.Unlock()
+	outbox := ChannelMessageOutboxService.GetInTenant(outboxID, tenantID)
+	if outbox == nil {
+		return errorsx.BusinessError(66, "企微协议投递任务不存在")
+	}
+	if outbox.SendStatus == string(enums.ChannelMessageOutboxStatusSent) {
+		return nil
+	}
+	return s.dispatchOutbox(*outbox)
 }
 
 func (s *wxWorkProtocolService) SendArrivalCard(conversationID, instanceID int64, clientMsgID string) (enums.ArrivalDeliveryStatus, error) {
@@ -290,7 +373,7 @@ func (s *wxWorkProtocolService) SendArrivalCard(conversationID, instanceID int64
 	if outbox.SendStatus == string(enums.ChannelMessageOutboxStatusSent) {
 		return enums.ArrivalDeliveryStatusSent, nil
 	}
-	if err := s.dispatchOutbox(*outbox); err != nil {
+	if err := s.dispatchOutboxNow(outbox.ID, outbox.TenantID); err != nil {
 		return enums.ArrivalDeliveryStatusFailed, err
 	}
 	outbox = ChannelMessageOutboxService.GetInTenant(outbox.ID, conversation.TenantID)
@@ -3161,17 +3244,17 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 	if err != nil {
 		return true, err
 	}
+	// 出站媒体回显必须在 buildInboundMessageContent 之前完成对账。后者会把
+	// 媒体下载并注册成新的 Asset；先对账既避免 AI 图片被误建为人工消息，
+	// 也避免同一张回显图片制造第二份入站资源。
+	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, msg, rawPayload); reconciled {
+		return true, nil
+	}
 	content, payload, err := s.buildInboundMessageContent(instance, messageType, msg)
 	if err != nil {
 		_ = s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusFailed)
 		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return true, err
-	}
-	// 契约 5.1/3.9.10：出站回显先做来源对账。能与平台已发送的 AI 消息精确
-	// 匹配时按 ai_outbox_echo 处理：补齐渠道送达证据，不创建 Agent Message、
-	// 不打断 Turn、不切人工路由。只有无法对账的员工出站才走人工语义。
-	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, content, rawPayload); reconciled {
-		return true, nil
 	}
 	message, err := MessageService.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo", sessionNo)
 	if err != nil {
@@ -3191,12 +3274,12 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 // reconcileAIOutboxEcho 在同会话、同 session 的短时间窗内寻找与回显内容完全
 // 一致的平台 AI 出站消息。命中则把 MessageRef 绑定到原 AI Message 并记录
 // 送达同步日志；未命中返回 false（保持原人工出站语义）。
-func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, content, rawPayload string) bool {
+func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, msg request.WxProtocolChatMsg, rawPayload string) bool {
 	if instance == nil || conversationID <= 0 {
 		return false
 	}
-	normalized := normalizeEchoCompareText(content)
-	if normalized == "" {
+	echoKeys := wxWorkProtocolOutgoingEchoKeys(messageType, msg)
+	if len(echoKeys) == 0 {
 		return false
 	}
 	windowStart := time.Now().Add(-5 * time.Minute)
@@ -3205,17 +3288,19 @@ func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkPro
 		Eq("conversation_id", conversationID).
 		Eq("sender_type", enums.IMSenderTypeAI).
 		Eq("message_type", messageType).
-		Eq("content", content).
 		Gte("created_at", windowStart).
 		Desc("id").
-		Limit(5))
+		Limit(12))
 	var matched *models.Message
 	for index := range candidates {
 		candidate := &candidates[index]
 		if sessionNo > 0 && candidate.SessionNo > 0 && candidate.SessionNo != sessionNo {
 			continue
 		}
-		if normalizeEchoCompareText(candidate.Content) == normalized {
+		if !wxWorkProtocolAIMessageWasDispatched(candidate) {
+			continue
+		}
+		if echoKeySetsIntersect(echoKeys, wxWorkProtocolAIMessageEchoKeys(*candidate)) {
 			matched = candidate
 			break
 		}
@@ -3228,6 +3313,163 @@ func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkPro
 	}
 	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, matched.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "ai_outbox_echo_reconciled")
 	return true
+}
+
+func wxWorkProtocolAIMessageWasDispatched(message *models.Message) bool {
+	if message == nil || message.ID <= 0 || message.TenantID <= 0 {
+		return false
+	}
+	outbox := repositories.ChannelMessageOutboxRepository.Take(
+		sqls.DB(),
+		"tenant_id = ? AND conversation_id = ? AND message_id = ?",
+		message.TenantID,
+		message.ConversationID,
+		message.ID,
+	)
+	if outbox == nil {
+		return false
+	}
+	switch enums.ChannelMessageOutboxStatus(strings.TrimSpace(outbox.SendStatus)) {
+	case enums.ChannelMessageOutboxStatusSending, enums.ChannelMessageOutboxStatusSent:
+		return true
+	default:
+		return false
+	}
+}
+
+func wxWorkProtocolOutgoingEchoKeys(messageType enums.IMMessageType, msg request.WxProtocolChatMsg) []string {
+	keys := make([]string, 0, 4)
+	add := func(prefix, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := prefix + ":" + value
+		for _, existing := range keys {
+			if existing == key {
+				return
+			}
+		}
+		keys = append(keys, key)
+	}
+	switch messageType {
+	case enums.IMMessageTypeText:
+		add("text", normalizeEchoCompareText(msg.Content))
+	case enums.IMMessageTypeImage, enums.IMMessageTypeGIF, enums.IMMessageTypeVideo,
+		enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
+		add("file_id", firstNonBlank(msg.CDN.FileID, msg.URL))
+		add("md5", strings.ToLower(strings.TrimSpace(firstNonBlank(msg.CDN.MD5, msg.CDN.FileMD5))))
+	case enums.IMMessageTypeLocation:
+		if msg.Longitude != 0 && msg.Latitude != 0 {
+			add("location", fmt.Sprintf("%.6f/%.6f/%s/%s", msg.Longitude, msg.Latitude,
+				normalizeEchoCompareText(msg.Title), normalizeEchoCompareText(msg.Address)))
+		}
+	case enums.IMMessageTypeMiniProgram:
+		appID := firstNonBlank(msg.AppID, msg.Username)
+		if appID != "" {
+			add("mini_program", strings.ToLower(strings.TrimSpace(appID))+"/"+strings.TrimSpace(msg.PagePath))
+		}
+	default:
+		add("content", normalizeEchoCompareText(msg.Content))
+	}
+	return keys
+}
+
+func wxWorkProtocolAIMessageEchoKeys(message models.Message) []string {
+	keys := make([]string, 0, 5)
+	add := func(prefix, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := prefix + ":" + value
+		for _, existing := range keys {
+			if existing == key {
+				return
+			}
+		}
+		keys = append(keys, key)
+	}
+	switch message.MessageType {
+	case enums.IMMessageTypeText:
+		add("text", normalizeEchoCompareText(message.Content))
+	case enums.IMMessageTypeImage, enums.IMMessageTypeGIF, enums.IMMessageTypeVideo,
+		enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
+		body := wxWorkProtocolPayloadMap(message.Payload)
+		media := wxWorkProtocolNestedPayloadMap(body, "wxMedia", "wx_media", "cdn")
+		add("file_id", firstWxWorkProtocolPayloadString(media, "file_id", "fileId", "url"))
+		add("md5", strings.ToLower(firstWxWorkProtocolPayloadString(media, "md5", "file_md5", "fileMd5")))
+	case enums.IMMessageTypeLocation:
+		body := wxWorkProtocolPayloadMap(message.Payload)
+		longitude := firstWxWorkProtocolPayloadFloat(body, "longitude", "lng")
+		latitude := firstWxWorkProtocolPayloadFloat(body, "latitude", "lat")
+		if longitude != 0 && latitude != 0 {
+			add("location", fmt.Sprintf("%.6f/%.6f/%s/%s", longitude, latitude,
+				normalizeEchoCompareText(firstWxWorkProtocolPayloadString(body, "title", "name")),
+				normalizeEchoCompareText(firstWxWorkProtocolPayloadString(body, "address"))))
+		}
+	case enums.IMMessageTypeMiniProgram:
+		body := wxWorkProtocolPayloadMap(message.Payload)
+		appID := firstWxWorkProtocolPayloadString(body, "appid", "appId", "app_id", "username")
+		pagePath := firstWxWorkProtocolPayloadString(body, "page_path", "pagePath", "path")
+		if appID != "" {
+			add("mini_program", strings.ToLower(strings.TrimSpace(appID))+"/"+strings.TrimSpace(pagePath))
+		}
+	default:
+		add("content", normalizeEchoCompareText(message.Content))
+	}
+	return keys
+}
+
+func echoKeySetsIntersect(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	set := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		set[item] = struct{}{}
+	}
+	for _, item := range right {
+		if _, ok := set[item]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func wxWorkProtocolPayloadMap(payload string) map[string]any {
+	body := map[string]any{}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(payload)), &body)
+	return body
+}
+
+func wxWorkProtocolNestedPayloadMap(body map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if nested, ok := body[key].(map[string]any); ok {
+			return nested
+		}
+	}
+	return map[string]any{}
+}
+
+func firstWxWorkProtocolPayloadString(body map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(fmt.Sprint(body[key]))
+		if value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstWxWorkProtocolPayloadFloat(body map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		value, err := strconv.ParseFloat(strings.TrimSpace(fmt.Sprint(body[key])), 64)
+		if err == nil && value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 // normalizeEchoCompareText 做回显比对的确定性归一（去空白；不改写正文）。

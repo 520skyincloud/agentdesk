@@ -7,6 +7,7 @@ type ConversationDialogueState struct {
 	SessionNo          int    `gorm:"type:int;not null;default:1;index;uniqueIndex:uk_dialogue_state,priority:3"`
 	Revision           int64  `gorm:"type:bigint;not null;default:1;index"`
 	BasedOnMessageID   int64  `gorm:"type:bigint;not null;default:0;index:idx_dialogue_state_message"`
+	BasedOnTurnID      int64  `gorm:"type:bigint;not null;default:0;index:idx_dialogue_state_turn"`
 	BasedOnTurnVersion int    `gorm:"type:int;not null;default:0"`
 	SchemaVersion      string `gorm:"type:varchar(40);not null;default:'dialogue_state_snapshot.v1'"`
 	SnapshotJSON       string `gorm:"type:text"`

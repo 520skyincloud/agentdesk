@@ -57,7 +57,7 @@ func (s *conversationDialogueStateService) reduceCASDB(db *gorm.DB, tenantID, co
 			now := reduced.UpdatedAt
 			created, err := repositories.ConversationDialogueStateRepository.CreateIfAbsent(db, &models.ConversationDialogueState{
 				TenantID: tenantID, ConversationID: conversationID, SessionNo: sessionNo, Revision: 1,
-				BasedOnMessageID: reduced.BasedOnMessageID, BasedOnTurnVersion: reduced.BasedOnTurnVersion,
+				BasedOnMessageID: reduced.BasedOnMessageID, BasedOnTurnID: reduced.BasedOnTurnID, BasedOnTurnVersion: reduced.BasedOnTurnVersion,
 				SchemaVersion: contracts.DialogueStateSnapshotV1SchemaVersion, SnapshotJSON: string(raw),
 				AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now, CreateUserName: "dialogue_state", UpdateUserName: "dialogue_state"},
 			})
@@ -83,7 +83,8 @@ func (s *conversationDialogueStateService) reduceCASDB(db *gorm.DB, tenantID, co
 			return nil, err
 		}
 		updated, err := repositories.ConversationDialogueStateRepository.CASUpdate(db, item.ID, tenantID, item.Revision, map[string]any{
-			"revision": reduced.Revision, "based_on_message_id": reduced.BasedOnMessageID, "based_on_turn_version": reduced.BasedOnTurnVersion,
+			"revision": reduced.Revision, "based_on_message_id": reduced.BasedOnMessageID,
+			"based_on_turn_id": reduced.BasedOnTurnID, "based_on_turn_version": reduced.BasedOnTurnVersion,
 			"schema_version": contracts.DialogueStateSnapshotV1SchemaVersion, "snapshot_json": string(raw),
 			"updated_at": reduced.UpdatedAt, "update_user_name": "dialogue_state",
 		})
@@ -160,13 +161,9 @@ func (s *conversationDialogueStateService) CatchUpAssistantBatch(turn *models.AI
 	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID)
 	actions := repositories.AIReplyTurnActionRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID)
 	last := messages[len(messages)-1]
-	activeKeys := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		activeKeys = append(activeKeys, task.TaskKey)
-	}
 	return s.ReduceCAS(turn.TenantID, turn.ConversationID, turn.SessionNo, DialogueStateEvent{
-		Kind: DialogueStateEventAssistantCommitted, MessageID: last.ID, TurnVersion: turn.Version,
-		ActiveTaskKeys: activeKeys, Tasks: tasks, Actions: actions,
+		Kind: DialogueStateEventAssistantCommitted, MessageID: last.ID, TurnID: turn.ID, TurnVersion: turn.Version,
+		Tasks: tasks, Actions: actions,
 		ResolvedTaskKeys: resolvedTaskKeys, AssistantMessage: &last, ConversationMode: "ai_serving", Now: dialogueStateMessageEventTime(&last),
 	})
 }
@@ -177,17 +174,13 @@ func (s *conversationDialogueStateService) CatchUpTurn(turn *models.AIReplyTurn,
 	}
 	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID)
 	actions := repositories.AIReplyTurnActionRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID)
-	activeKeys := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		activeKeys = append(activeKeys, task.TaskKey)
-	}
 	eventTime := time.Now().UTC()
 	if message := repositories.MessageRepository.GetInTenant(sqls.DB(), messageID, turn.TenantID); message != nil {
 		eventTime = dialogueStateMessageEventTime(message)
 	}
 	return s.ReduceCAS(turn.TenantID, turn.ConversationID, turn.SessionNo, DialogueStateEvent{
-		Kind: DialogueStateEventTasksChanged, MessageID: messageID, TurnVersion: turn.Version,
-		DialogueAct: dialogueAct, Topic: topic, ActiveTaskKeys: activeKeys, Tasks: tasks, Actions: actions, Now: eventTime,
+		Kind: DialogueStateEventTasksChanged, MessageID: messageID, TurnID: turn.ID, TurnVersion: turn.Version,
+		DialogueAct: dialogueAct, Topic: topic, Tasks: tasks, Actions: actions, Now: eventTime,
 	})
 }
 
@@ -218,7 +211,8 @@ func (s *conversationDialogueStateService) decode(item *models.ConversationDialo
 		return nil, err
 	}
 	if decoded.ConversationID != item.ConversationID || decoded.SessionNo != item.SessionNo || decoded.Revision != item.Revision ||
-		decoded.BasedOnMessageID != item.BasedOnMessageID || decoded.BasedOnTurnVersion != item.BasedOnTurnVersion {
+		decoded.BasedOnMessageID != item.BasedOnMessageID || decoded.BasedOnTurnID != item.BasedOnTurnID ||
+		decoded.BasedOnTurnVersion != item.BasedOnTurnVersion {
 		return nil, fmt.Errorf("dialogue state snapshot scope does not match row")
 	}
 	return &decoded, nil

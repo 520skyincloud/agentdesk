@@ -24,6 +24,7 @@ const (
 type DialogueStateEvent struct {
 	Kind             DialogueStateEventKind
 	MessageID        int64
+	TurnID           int64
 	TurnVersion      int
 	DialogueAct      string
 	Topic            string
@@ -41,6 +42,8 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 	if dialogueStateEventIsStale(current, event) {
 		return current
 	}
+	lateForFocus := dialogueStateEventIsLateForFocus(current, event)
+	startsNewTurn := dialogueStateEventStartsNewTurn(current, event)
 	if event.Now.IsZero() {
 		event.Now = time.Now().UTC()
 	}
@@ -50,8 +53,15 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 	if event.MessageID > current.BasedOnMessageID {
 		current.BasedOnMessageID = event.MessageID
 	}
-	if event.Kind != DialogueStateEventCustomerCommitted && event.TurnVersion > current.BasedOnTurnVersion {
-		current.BasedOnTurnVersion = event.TurnVersion
+	if event.Kind != DialogueStateEventCustomerCommitted && !lateForFocus {
+		if startsNewTurn {
+			// Open tasks belong to one turn. Rebuild them from the authoritative
+			// task ledger carried by the new turn event instead of leaking stale
+			// tasks into the next customer question.
+			current.OpenTasks = nil
+			current.Focus.ActiveTaskKeys = nil
+		}
+		advanceDialogueTurnEvidence(&current, event)
 	}
 	if event.Kind == DialogueStateEventCustomerCommitted {
 		boundDialogueState(&current, event.Now)
@@ -59,17 +69,16 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 		current.UpdatedAt = event.Now.UTC()
 		return current
 	}
-	if mode := normalizeDialogueConversationMode(event.ConversationMode); mode != "" {
-		current.ConversationMode = mode
-	}
-	if relation := normalizeDialogueStateRelation(event.DialogueAct); relation != "" {
-		current.Focus.RelationToPrior = relation
-	}
-	if topic := boundedDialogueText(event.Topic, 120); topic != "" {
-		current.Focus.Topic = topic
-	}
-	if len(event.ActiveTaskKeys) > 0 {
-		current.Focus.ActiveTaskKeys = uniqueBoundedStrings(event.ActiveTaskKeys, 12, 128)
+	if !lateForFocus {
+		if mode := normalizeDialogueConversationMode(event.ConversationMode); mode != "" {
+			current.ConversationMode = mode
+		}
+		if relation := normalizeDialogueStateRelation(event.DialogueAct); relation != "" {
+			current.Focus.RelationToPrior = relation
+		}
+		if topic := boundedDialogueText(event.Topic, 120); topic != "" {
+			current.Focus.Topic = topic
+		}
 	}
 	if len(event.Tasks) > 0 {
 		applyDialogueTasks(&current, event.Tasks, event.Now)
@@ -82,7 +91,7 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 			resolveDialogueTask(&current, taskKey, "answered", assistantMessageID(event.AssistantMessage), event.Now)
 		}
 	}
-	if event.AssistantMessage != nil && event.AssistantMessage.ID > 0 {
+	if !lateForFocus && event.AssistantMessage != nil && event.AssistantMessage.ID > 0 {
 		senderType := "ai"
 		if event.AssistantMessage.SenderType == enums.IMSenderTypeAgent {
 			senderType = "agent"
@@ -92,7 +101,7 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 			TaskKeys: uniqueBoundedStrings(event.ResolvedTaskKeys, 12, 128),
 		}
 	}
-	if len(event.SessionFacts) > 0 {
+	if !lateForFocus && len(event.SessionFacts) > 0 {
 		current.SessionFacts = mergeDialogueFacts(current.SessionFacts, event.SessionFacts, event.Now)
 	}
 	boundDialogueState(&current, event.Now)
@@ -101,18 +110,51 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 	return current
 }
 
-func dialogueStateEventIsStale(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) bool {
-	if event.MessageID > 0 && current.BasedOnMessageID > 0 {
-		if event.Kind == DialogueStateEventCustomerCommitted && event.MessageID <= current.BasedOnMessageID {
-			return true
-		}
-		if event.MessageID < current.BasedOnMessageID {
-			return true
-		}
+func dialogueStateEventStartsNewTurn(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) bool {
+	if event.Kind == DialogueStateEventCustomerCommitted || event.TurnID <= 0 {
+		return false
 	}
-	return event.Kind != DialogueStateEventCustomerCommitted &&
-		event.TurnVersion > 0 && current.BasedOnTurnVersion > 0 &&
-		event.TurnVersion < current.BasedOnTurnVersion
+	if current.BasedOnTurnID <= 0 {
+		return true
+	}
+	return event.TurnID > current.BasedOnTurnID
+}
+
+func dialogueStateEventIsStale(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) bool {
+	if event.Kind == DialogueStateEventCustomerCommitted {
+		return event.MessageID > 0 && current.BasedOnMessageID > 0 && event.MessageID <= current.BasedOnMessageID
+	}
+	// Task and assistant terminal events are commutative ledger updates. They
+	// must still close old open tasks after a newer customer message arrives.
+	// Only semantic intent events are dropped wholesale when their focus is old.
+	return event.Kind == DialogueStateEventIntentCompleted && dialogueStateEventIsLateForFocus(current, event)
+}
+
+func dialogueStateEventIsLateForFocus(current contracts.DialogueStateSnapshotV1, event DialogueStateEvent) bool {
+	if event.MessageID > 0 && current.BasedOnMessageID > 0 && event.MessageID < current.BasedOnMessageID {
+		return true
+	}
+	if event.TurnID <= 0 || current.BasedOnTurnID <= 0 {
+		return false
+	}
+	if event.TurnID != current.BasedOnTurnID {
+		return event.TurnID < current.BasedOnTurnID
+	}
+	return event.TurnVersion > 0 && current.BasedOnTurnVersion > 0 && event.TurnVersion < current.BasedOnTurnVersion
+}
+
+func advanceDialogueTurnEvidence(state *contracts.DialogueStateSnapshotV1, event DialogueStateEvent) {
+	if state == nil || event.TurnID <= 0 {
+		return
+	}
+	if event.TurnID > state.BasedOnTurnID {
+		state.BasedOnTurnID = event.TurnID
+		state.BasedOnTurnVersion = max(event.TurnVersion, 0)
+		return
+	}
+	if event.TurnID == state.BasedOnTurnID && event.TurnVersion > state.BasedOnTurnVersion {
+		state.BasedOnTurnVersion = event.TurnVersion
+	}
 }
 
 func applyDialogueTasks(state *contracts.DialogueStateSnapshotV1, tasks []models.AIReplyTurnTask, now time.Time) {
@@ -163,6 +205,13 @@ func resolveDialogueTask(state *contracts.DialogueStateSnapshotV1, taskKey, outc
 		}
 	}
 	state.OpenTasks = filtered
+	active := state.Focus.ActiveTaskKeys[:0]
+	for _, activeTaskKey := range state.Focus.ActiveTaskKeys {
+		if activeTaskKey != taskKey {
+			active = append(active, activeTaskKey)
+		}
+	}
+	state.Focus.ActiveTaskKeys = active
 	resolved := contracts.DialogueStateResolvedTask{TaskKey: taskKey, Outcome: outcome, AnswerMessageID: max(answerMessageID, 0), ResolvedAt: now.UTC()}
 	for i := range state.ResolvedTasks {
 		if state.ResolvedTasks[i].TaskKey == taskKey {
@@ -206,6 +255,8 @@ func dialogueOpenTaskState(task models.AIReplyTurnTask) string {
 	switch task.Status {
 	case enums.AIReplyTurnTaskStatusHandoffPending:
 		return "awaiting_human"
+	case enums.AIReplyTurnTaskStatusWaitingCoverage:
+		return "awaiting_action"
 	}
 	switch task.KnowledgeStatus {
 	case enums.AIReplyTurnTaskKnowledgeStatusPending:
@@ -255,10 +306,14 @@ func boundDialogueState(state *contracts.DialogueStateSnapshotV1, now time.Time)
 	if state.Focus.RelationToPrior == "" {
 		state.Focus.RelationToPrior = "unknown"
 	}
-	state.Focus.ActiveTaskKeys = uniqueBoundedStrings(state.Focus.ActiveTaskKeys, 12, 128)
 	if len(state.OpenTasks) > 12 {
 		state.OpenTasks = state.OpenTasks[len(state.OpenTasks)-12:]
 	}
+	activeTaskKeys := make([]string, 0, len(state.OpenTasks))
+	for _, task := range state.OpenTasks {
+		activeTaskKeys = append(activeTaskKeys, task.TaskKey)
+	}
+	state.Focus.ActiveTaskKeys = uniqueBoundedStrings(activeTaskKeys, 12, 128)
 	sort.SliceStable(state.ResolvedTasks, func(i, j int) bool {
 		return state.ResolvedTasks[i].ResolvedAt.Before(state.ResolvedTasks[j].ResolvedAt)
 	})
@@ -281,6 +336,8 @@ func normalizeDialogueStateRelation(value string) string {
 	switch strings.TrimSpace(value) {
 	case "new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "unknown":
 		return strings.TrimSpace(value)
+	case "refinement":
+		return "follow_up"
 	default:
 		return ""
 	}

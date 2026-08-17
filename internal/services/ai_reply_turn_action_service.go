@@ -10,6 +10,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
 
 	"github.com/mlogclub/simple/sqls"
@@ -21,24 +22,68 @@ var AIReplyTurnActionService = &aiReplyTurnActionService{}
 type aiReplyTurnActionService struct{}
 
 type AIReplyTurnActionInput struct {
-	TaskKey      string
-	ActionType   string
-	ResourceType string
+	TaskKey                string
+	ActionType             string
+	ResourceType           string
+	EligibilityFingerprint string
+	SourceEvidenceRef      string
+	SourceRecordID         string
+	ResourcePurpose        string
+	EligibilityReasonCode  string
 }
 
 type AIReplyTurnActionCommitEvidence struct {
-	ActionKey        string
-	PreparedRevision string
-	MessageID        int64
-	OutboxID         int64
-	Delivered        bool
-	At               time.Time
+	ActionKey              string
+	PreparedRevision       string
+	TaskKeys               []string
+	MessageType            enums.IMMessageType
+	Content                string
+	Payload                string
+	EligibilityFingerprint string
+	SourceEvidenceRef      string
+	SourceRecordID         string
+	ResourcePurpose        string
+	EligibilityReasonCode  string
+	MessageID              int64
+	OutboxID               int64
+	Delivered              bool
+	At                     time.Time
+}
+
+type AIReplyPreparedActionProof struct {
+	ActionKey              string
+	TaskKey                string
+	ActionType             string
+	ResourceType           string
+	ResourceRef            string
+	MessageType            string
+	Content                string
+	Payload                string
+	EligibilityFingerprint string
+	SourceEvidenceRef      string
+	SourceRecordID         string
+	ResourcePurpose        string
+	EligibilityReasonCode  string
 }
 
 func (s *aiReplyTurnActionService) StableActionKey(turnID int64, taskKey, actionType, resourceType string) string {
 	payload := strconv.FormatInt(turnID, 10) + "\n" + strings.TrimSpace(taskKey) + "\n" + strings.TrimSpace(actionType) + "\n" + strings.TrimSpace(resourceType)
 	sum := sha256.Sum256([]byte(payload))
 	return "action_" + hex.EncodeToString(sum[:16])
+}
+
+func (s *aiReplyTurnActionService) PreparedRevision(proof AIReplyPreparedActionProof) string {
+	payload := strings.Join([]string{
+		strings.TrimSpace(proof.ActionKey), strings.TrimSpace(proof.TaskKey),
+		strings.TrimSpace(proof.ActionType), strings.TrimSpace(proof.ResourceType),
+		strings.TrimSpace(proof.ResourceRef), strings.TrimSpace(proof.MessageType),
+		strings.TrimSpace(proof.Content), strings.TrimSpace(proof.Payload),
+		strings.TrimSpace(proof.EligibilityFingerprint), strings.TrimSpace(proof.SourceEvidenceRef),
+		strings.TrimSpace(proof.SourceRecordID), strings.TrimSpace(proof.ResourcePurpose),
+		strings.TrimSpace(proof.EligibilityReasonCode),
+	}, "\n")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:16])
 }
 
 func (s *aiReplyTurnActionService) EnsureRequestedDB(db *gorm.DB, turn *models.AIReplyTurn, inputs []AIReplyTurnActionInput) ([]models.AIReplyTurnAction, error) {
@@ -54,6 +99,11 @@ func (s *aiReplyTurnActionService) EnsureRequestedDB(db *gorm.DB, turn *models.A
 		input.TaskKey = strings.TrimSpace(input.TaskKey)
 		input.ActionType = strings.TrimSpace(input.ActionType)
 		input.ResourceType = strings.TrimSpace(input.ResourceType)
+		input.EligibilityFingerprint = strings.TrimSpace(input.EligibilityFingerprint)
+		input.SourceEvidenceRef = strings.TrimSpace(input.SourceEvidenceRef)
+		input.SourceRecordID = strings.TrimSpace(input.SourceRecordID)
+		input.ResourcePurpose = strings.TrimSpace(input.ResourcePurpose)
+		input.EligibilityReasonCode = strings.TrimSpace(input.EligibilityReasonCode)
 		if input.TaskKey == "" || !validAIReplyActionType(input.ActionType) {
 			return nil, fmt.Errorf("AI reply action type or task is invalid")
 		}
@@ -69,7 +119,11 @@ func (s *aiReplyTurnActionService) EnsureRequestedDB(db *gorm.DB, turn *models.A
 		now := time.Now()
 		item := &models.AIReplyTurnAction{
 			TenantID: turn.TenantID, TurnID: turn.ID, TaskKey: input.TaskKey, ActionKey: actionKey,
-			ActionType: input.ActionType, ResourceType: input.ResourceType, Status: "requested", RequestedVersion: turn.Version,
+			ActionType: input.ActionType, ResourceType: input.ResourceType,
+			EligibilityFingerprint: input.EligibilityFingerprint, SourceEvidenceRef: input.SourceEvidenceRef,
+			SourceRecordID: input.SourceRecordID, ResourcePurpose: input.ResourcePurpose,
+			EligibilityReasonCode: input.EligibilityReasonCode,
+			Status:                "requested", RequestedVersion: turn.Version,
 			CreatedAt: now, UpdatedAt: now, CreateUserName: "ai_reply_action", UpdateUserName: "ai_reply_action",
 		}
 		created, err := repositories.AIReplyTurnActionRepository.CreateIfAbsent(db, item)
@@ -84,7 +138,12 @@ func (s *aiReplyTurnActionService) EnsureRequestedDB(db *gorm.DB, turn *models.A
 			if item.RequestedVersion < turn.Version && item.Status == "superseded" {
 				updated, err := repositories.AIReplyTurnActionRepository.CASStatusInTenant(db, item.ID, turn.TenantID, []string{"superseded"}, map[string]any{
 					"status": "requested", "requested_version": turn.Version,
-					"prepared_revision": "", "committed_message_id": int64(0), "outbox_id": int64(0),
+					"eligibility_fingerprint": input.EligibilityFingerprint,
+					"source_evidence_ref":     input.SourceEvidenceRef,
+					"source_record_id":        input.SourceRecordID,
+					"resource_purpose":        input.ResourcePurpose,
+					"eligibility_reason_code": input.EligibilityReasonCode,
+					"prepared_revision":       "", "committed_message_id": int64(0), "outbox_id": int64(0),
 					"result_code": "", "delivered_at": nil,
 					"updated_at": now, "update_user_name": "ai_reply_action",
 				})
@@ -168,15 +227,69 @@ func (s *aiReplyTurnActionService) CommitEvidenceDB(db *gorm.DB, tenantID, turnI
 	if db == nil || tenantID <= 0 || turnID <= 0 || turnVersion <= 0 {
 		return fmt.Errorf("AI reply action commit scope is invalid")
 	}
+	turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(db, turnID, tenantID)
+	if err != nil {
+		return err
+	}
+	if turn == nil || turn.Version != turnVersion {
+		return fmt.Errorf("AI reply action commit belongs to stale turn version")
+	}
 	items := repositories.AIReplyTurnActionRepository.FindPreparedByTurnInTenant(db, tenantID, turnID, turnVersion)
 	byKey := make(map[string]*models.AIReplyTurnAction, len(items))
 	for i := range items {
 		byKey[items[i].ActionKey] = &items[i]
 	}
+	seen := make(map[string]struct{}, len(evidence))
 	for _, item := range evidence {
-		action := byKey[strings.TrimSpace(item.ActionKey)]
-		if action == nil || item.MessageID <= 0 || strings.TrimSpace(item.PreparedRevision) == "" || action.PreparedRevision != strings.TrimSpace(item.PreparedRevision) {
+		item.ActionKey = strings.TrimSpace(item.ActionKey)
+		item.PreparedRevision = strings.TrimSpace(item.PreparedRevision)
+		item.EligibilityFingerprint = strings.TrimSpace(item.EligibilityFingerprint)
+		item.SourceEvidenceRef = strings.TrimSpace(item.SourceEvidenceRef)
+		item.SourceRecordID = strings.TrimSpace(item.SourceRecordID)
+		item.ResourcePurpose = strings.TrimSpace(item.ResourcePurpose)
+		item.EligibilityReasonCode = strings.TrimSpace(item.EligibilityReasonCode)
+		item.TaskKeys = uniqueTaskKeys(item.TaskKeys)
+		if _, duplicate := seen[item.ActionKey]; duplicate {
+			return fmt.Errorf("AI reply action commit evidence is duplicated")
+		}
+		seen[item.ActionKey] = struct{}{}
+		action := byKey[item.ActionKey]
+		if action == nil || action.RequestedVersion != turnVersion || action.Status != "prepared" ||
+			item.MessageID <= 0 || item.PreparedRevision == "" || action.PreparedRevision != item.PreparedRevision ||
+			!containsActionTaskKey(item.TaskKeys, action.TaskKey) {
 			return fmt.Errorf("AI reply action commit evidence is incomplete")
+		}
+		message := repositories.MessageRepository.GetInTenant(db, item.MessageID, tenantID)
+		if message == nil || message.SenderType != enums.IMSenderTypeAI || message.AIReplyTurnID != turnID ||
+			message.AIReplyTurnVersion != turnVersion || message.ConversationID != turn.ConversationID ||
+			message.SessionNo != turn.SessionNo || message.MessageType != item.MessageType ||
+			message.Content != item.Content || message.Payload != item.Payload {
+			return fmt.Errorf("AI reply action message evidence is inconsistent")
+		}
+		if item.OutboxID > 0 {
+			outbox := repositories.ChannelMessageOutboxRepository.GetInTenant(db, item.OutboxID, tenantID)
+			if outbox == nil || outbox.MessageID != message.ID || outbox.ConversationID != turn.ConversationID || item.Delivered {
+				return fmt.Errorf("AI reply action outbox evidence is inconsistent")
+			}
+		} else if !item.Delivered || strings.TrimSpace(message.OutboundChannelType) != "" {
+			return fmt.Errorf("AI reply action delivery evidence is inconsistent")
+		}
+		task := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, tenantID, turnID, action.TaskKey)
+		if task == nil || task.ConversationID != turn.ConversationID || task.SessionNo != turn.SessionNo ||
+			task.CommittedMessageID != message.ID || (task.Status != enums.AIReplyTurnTaskStatusCommitted && task.Status != enums.AIReplyTurnTaskStatusDelivered) {
+			return fmt.Errorf("AI reply action task evidence is inconsistent")
+		}
+		if action.EligibilityFingerprint != item.EligibilityFingerprint || action.SourceEvidenceRef != item.SourceEvidenceRef ||
+			action.SourceRecordID != item.SourceRecordID || action.ResourcePurpose != item.ResourcePurpose ||
+			action.EligibilityReasonCode != item.EligibilityReasonCode {
+			return fmt.Errorf("AI reply action eligibility evidence is inconsistent")
+		}
+		if err := validateKnowledgeImageActionEligibility(action); err != nil {
+			return err
+		}
+		proof := preparedActionProofFromEvidence(action, message, item)
+		if s.PreparedRevision(proof) != action.PreparedRevision {
+			return fmt.Errorf("AI reply action prepared revision is invalid")
 		}
 		at := item.At
 		if at.IsZero() {
@@ -200,6 +313,102 @@ func (s *aiReplyTurnActionService) CommitEvidenceDB(db *gorm.DB, tenantID, turnI
 		}
 	}
 	return nil
+}
+
+func containsActionTaskKey(taskKeys []string, taskKey string) bool {
+	taskKey = strings.TrimSpace(taskKey)
+	for _, item := range taskKeys {
+		if strings.TrimSpace(item) == taskKey {
+			return true
+		}
+	}
+	return false
+}
+
+func preparedActionProofFromEvidence(action *models.AIReplyTurnAction, message *models.Message, evidence AIReplyTurnActionCommitEvidence) AIReplyPreparedActionProof {
+	return AIReplyPreparedActionProof{
+		ActionKey: action.ActionKey, TaskKey: action.TaskKey, ActionType: action.ActionType,
+		ResourceType: action.ResourceType, ResourceRef: actionResourceRef(action),
+		MessageType: string(message.MessageType), Content: message.Content, Payload: message.Payload,
+		EligibilityFingerprint: evidence.EligibilityFingerprint, SourceEvidenceRef: evidence.SourceEvidenceRef,
+		SourceRecordID: evidence.SourceRecordID, ResourcePurpose: evidence.ResourcePurpose,
+		EligibilityReasonCode: evidence.EligibilityReasonCode,
+	}
+}
+
+func actionResourceRef(action *models.AIReplyTurnAction) string {
+	if action == nil || action.ActionType != "send_knowledge_image" {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(action.ResourceType, "image:"))
+}
+
+func validateKnowledgeImageActionEligibility(action *models.AIReplyTurnAction) error {
+	if action == nil || action.ActionType != "send_knowledge_image" {
+		return nil
+	}
+	if actionResourceRef(action) == "" || strings.TrimSpace(action.EligibilityFingerprint) == "" ||
+		strings.TrimSpace(action.SourceEvidenceRef) == "" || strings.TrimSpace(action.SourceRecordID) == "" ||
+		strings.TrimSpace(action.ResourcePurpose) == "" {
+		return fmt.Errorf("AI reply knowledge image eligibility evidence is incomplete")
+	}
+	switch strings.TrimSpace(action.EligibilityReasonCode) {
+	case "eligible_explicit_request", "eligible_auto_attach":
+		return nil
+	default:
+		return fmt.Errorf("AI reply knowledge image eligibility reason is invalid")
+	}
+}
+
+func (s *aiReplyTurnActionService) CanDispatchOutboxDB(db *gorm.DB, outbox *models.ChannelMessageOutbox, message *models.Message) (bool, string, error) {
+	if db == nil || outbox == nil || outbox.ID <= 0 {
+		return false, "cancelled_stale_action", nil
+	}
+	// Action Ledger only governs AI Turn output. Legacy/non-AI outboxes keep
+	// their channel-specific missing-message and tenant-isolation handling.
+	if message == nil || message.SenderType != enums.IMSenderTypeAI || message.AIReplyTurnID <= 0 || message.AIReplyTurnVersion <= 0 {
+		return true, "", nil
+	}
+	if message.ID <= 0 || outbox.TenantID != message.TenantID || outbox.ConversationID != message.ConversationID || outbox.MessageID != message.ID {
+		return false, "cancelled_stale_action", nil
+	}
+	actions := repositories.AIReplyTurnActionRepository.FindByOutboxInTenant(db, message.TenantID, outbox.ID)
+	requiresAction := message.MessageType == enums.IMMessageTypeImage || message.MessageType == enums.IMMessageTypeLocation ||
+		message.MessageType == enums.IMMessageTypeMiniProgram
+	if len(actions) == 0 {
+		if requiresAction {
+			return false, "cancelled_stale_action", nil
+		}
+		return true, "", nil
+	}
+	for index := range actions {
+		action := &actions[index]
+		if (action.Status != "committed" && action.Status != "delivery_failed") ||
+			action.TurnID != message.AIReplyTurnID || action.RequestedVersion != message.AIReplyTurnVersion ||
+			action.OutboxID != outbox.ID || action.CommittedMessageID != message.ID || strings.TrimSpace(action.PreparedRevision) == "" {
+			return false, "cancelled_stale_action", nil
+		}
+		task := repositories.AIReplyTurnTaskRepository.GetByKeyInTenant(db, message.TenantID, action.TurnID, action.TaskKey)
+		if task == nil || task.ConversationID != message.ConversationID || task.SessionNo != message.SessionNo ||
+			task.CommittedMessageID != message.ID || (task.Status != enums.AIReplyTurnTaskStatusCommitted && task.Status != enums.AIReplyTurnTaskStatusDelivered) {
+			return false, "cancelled_stale_action", nil
+		}
+		if validateKnowledgeImageActionEligibility(action) != nil {
+			return false, "cancelled_stale_action", nil
+		}
+		proof := AIReplyPreparedActionProof{
+			ActionKey: action.ActionKey, TaskKey: action.TaskKey, ActionType: action.ActionType,
+			ResourceType: action.ResourceType, ResourceRef: actionResourceRef(action),
+			MessageType: string(message.MessageType), Content: message.Content, Payload: message.Payload,
+			EligibilityFingerprint: action.EligibilityFingerprint, SourceEvidenceRef: action.SourceEvidenceRef,
+			SourceRecordID: action.SourceRecordID, ResourcePurpose: action.ResourcePurpose,
+			EligibilityReasonCode: action.EligibilityReasonCode,
+		}
+		if s.PreparedRevision(proof) != action.PreparedRevision {
+			return false, "cancelled_stale_action", nil
+		}
+	}
+	return true, "", nil
 }
 
 func (s *aiReplyTurnActionService) SuppressDB(db *gorm.DB, tenantID, turnID int64, turnVersion int, items []AIReplyTurnActionSuppression, now time.Time) error {

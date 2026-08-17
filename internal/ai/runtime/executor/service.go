@@ -59,6 +59,13 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, err
 	}
+	if summary.RuntimeDeferred {
+		summary.Status = "deferred"
+		collector.Data.Status = summary.Status
+		collector.Data.Output.FinishReason = firstNonEmpty(summary.RuntimeDeferReason, runtimeObservationDeferredReason)
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
 	if summary.SkipReply {
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
@@ -71,8 +78,8 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
-	if summary.UseRuntimeV2Generate {
-		structuredConfig, configErr := withRuntimeReplyStructuredOutput(req.ModelConfig)
+	if summary.UseRuntimeV2Generate || summary.UseRuntimeV3Generate {
+		structuredConfig, configErr := withRuntimeReplyStructuredOutputForContract(req.ModelConfig, summary.UseRuntimeV3Generate)
 		if configErr != nil {
 			return markRuntimePreparationError(summary, collector, configErr)
 		}
@@ -112,7 +119,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
-	if summary.UseRuntimeV2DirectGenerate {
+	if summary.UseRuntimeV2DirectGenerate || summary.UseRuntimeV3DirectGenerate {
 		if err := s.executeRuntimeV2DirectGeneration(ctx, req, messages, summary, collector); err != nil {
 			summary.TraceData = collector.Marshal()
 			return summary, err
@@ -179,16 +186,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		req.ModelConfig.ModelName,
 		generateStartedAt,
 	)
-	if summary.UseRuntimeV2Generate {
+	if summary.UseRuntimeV2Generate || summary.UseRuntimeV3Generate {
 		var protocolErr *replyOutputProtocolError
 		if errors.As(err, &protocolErr) {
-			resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_output_v2_protocol_repair")
+			resetRuntimeGenerationForProtocolRepair(summary, collector, runtimeReplyProtocolRepairReason(summary))
 			repairMessages, compileErr := compileRuntimeReplyOutputRepairMessages(ctx, summary, protocolErr)
 			if compileErr != nil {
 				err = markRuntimeGenerationError(summary, collector, generateStartedAt, compileErr)
 			} else {
 				err = finishRuntimeGeneration(
-					runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-reply-output-v2-repair")...),
+					runner.Run(ctx, repairMessages, buildRunOptions(checkPointID+"-"+runtimeReplyProtocolRepairReason(summary))...),
 					summary,
 					collector,
 					tooling.toolDefsByModelName,
@@ -201,7 +208,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 						summary,
 						collector,
 						generateStartedAt,
-						fmt.Errorf("reply_output.v2 protocol repair failed: %w", err),
+						fmt.Errorf("%s protocol repair failed: %w", runtimeReplyContractName(summary), err),
 					)
 				}
 			}
@@ -251,17 +258,27 @@ func markRuntimePreparationError(summary *RunResult, collector *callbacks.Runtim
 }
 
 func withRuntimeIntentStructuredOutput(config modelconfig.Config) (modelconfig.Config, error) {
-	return withRuntimeIntentStructuredOutputSchema(config, contracts.MustSchema(contracts.SchemaIntentTasksV2))
+	return withRuntimeIntentStructuredOutputSchema(config, contracts.SchemaIntentTasksV2, contracts.MustSchema(contracts.SchemaIntentTasksV2))
 }
 
-func withRuntimeIntentStructuredOutputSchema(config modelconfig.Config, schema []byte) (modelconfig.Config, error) {
+func withRuntimeIntentStructuredOutputSchema(config modelconfig.Config, schemaName string, schema []byte) (modelconfig.Config, error) {
 	return config.WithJSONSchema(
-		contracts.SchemaIntentTasksV2,
+		schemaName,
 		schema,
 	)
 }
 
 func withRuntimeReplyStructuredOutput(config modelconfig.Config) (modelconfig.Config, error) {
+	return withRuntimeReplyStructuredOutputForContract(config, multimodalV3Enabled())
+}
+
+func withRuntimeReplyStructuredOutputForContract(config modelconfig.Config, useV3 bool) (modelconfig.Config, error) {
+	if useV3 {
+		return config.WithJSONSchema(
+			contracts.SchemaReplyOutputV3,
+			contracts.MustSchema(contracts.SchemaReplyOutputV3),
+		)
+	}
 	return config.WithJSONSchema(
 		contracts.SchemaReplyOutputV2,
 		contracts.MustSchema(contracts.SchemaReplyOutputV2),
@@ -274,7 +291,9 @@ func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *call
 		summary.ReplyText = ""
 		summary.RawReplyOutput = ""
 		summary.ReplyParts = nil
+		summary.ResolvedReplyPartsV3 = nil
 		summary.ValidationResult = nil
+		summary.ValidationResultV3 = nil
 		summary.ErrorMessage = ""
 		summary.Interrupted = false
 		summary.Interrupts = nil
@@ -468,8 +487,8 @@ func finishRuntimeGeneration(
 	}
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	summary.ModelName = modelName
-	if summary.UseRuntimeV2Generate {
-		if err := applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector, summary.RunRequest); err != nil {
+	if summary.UseRuntimeV2Generate || summary.UseRuntimeV3Generate {
+		if err := applyRuntimeStructuredReplyOutput(summary.RawReplyOutput, summary, collector, summary.RunRequest); err != nil {
 			var protocolErr *replyOutputProtocolError
 			if errors.As(err, &protocolErr) {
 				return err

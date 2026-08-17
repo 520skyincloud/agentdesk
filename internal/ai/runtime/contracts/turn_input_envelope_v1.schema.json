@@ -66,9 +66,11 @@
           "messageId",
           "messageType",
           "text",
+          "textOrigin",
           "sentAt",
           "analysisStatus",
-          "observationRefs"
+          "observationRefs",
+          "responseExpectation"
         ],
         "properties": {
           "ref": {
@@ -98,6 +100,14 @@
             "type": "string",
             "maxLength": 4000
           },
+          "textOrigin": {
+            "enum": [
+              "none",
+              "customer_text",
+              "asr_transcript",
+              "media_analysis"
+            ]
+          },
           "sentAt": {
             "type": "string",
             "format": "date-time"
@@ -121,6 +131,45 @@
               "type": "string",
               "pattern": "^O[1-9][0-9]*$"
             }
+          },
+          "responseExpectation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode",
+                  "basis",
+                  "confidence"
+                ],
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "none",
+                      "reply",
+                      "uncertain"
+                    ]
+                  },
+                  "basis": {
+                    "enum": [
+                      "explicit_question",
+                      "visible_error",
+                      "customer_spoken_input",
+                      "ordinary_media",
+                      "unknown"
+                    ]
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              }
+            ]
           }
         }
       }

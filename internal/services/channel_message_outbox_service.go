@@ -116,6 +116,23 @@ func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, 
 			}
 			return AIReplyTurnActionService.SupersedeByOutboxDB(ctx.Tx, tenantID, outbox.ID, cancelReason, now)
 		}
+		allowed, reason, err = AIReplyTurnActionService.CanDispatchOutboxDB(ctx.Tx, outbox, message)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			now := time.Now()
+			cancelReason := controlledOutboxCancelReason(reason)
+			if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, tenantID, map[string]any{
+				"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+				"next_retry_at": nil,
+				"last_error":    cancelReason,
+				"updated_at":    now,
+			}); err != nil {
+				return err
+			}
+			return AIReplyTurnActionService.SupersedeByOutboxDB(ctx.Tx, tenantID, outbox.ID, cancelReason, now)
+		}
 		claimed, err = repositories.ChannelMessageOutboxRepository.TryMarkSending(ctx.Tx, id, tenantID, time.Now())
 		return err
 	})
@@ -125,7 +142,7 @@ func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, 
 func controlledOutboxCancelReason(reason string) string {
 	reason = strings.TrimSpace(reason)
 	switch reason {
-	case "cancelled_stale_turn", "cancelled_stale_task", "cancelled_turn_inactive", "cancelled_turn_scope_invalid":
+	case "cancelled_stale_turn", "cancelled_stale_task", "cancelled_stale_action", "cancelled_turn_inactive", "cancelled_turn_scope_invalid":
 		return reason
 	default:
 		return "cancelled_stale_turn"

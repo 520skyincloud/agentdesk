@@ -142,6 +142,11 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 		rerankLimit = resolveRerankLimit(req.RerankLimit, knowledgeBase.DefaultRerankLimit)
 	}
 
+	executionStatus := "succeeded"
+	if len(hits) == 0 {
+		executionStatus = "no_hit"
+	}
+	completedAt := time.Now()
 	logItem, err := RetrieveLog.CreateRetrieveLog(&CreateRetrieveLogRequest{
 		KnowledgeBaseID:  firstKnowledgeBaseID(req.KnowledgeBaseIDs),
 		Channel:          defaultRetrieveChannel(req.Channel),
@@ -163,6 +168,8 @@ func (s *answer) DebugAnswer(ctx context.Context, req request.KnowledgeAnswerReq
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		ModelName:        modelName,
+		ExecutionStatus:  executionStatus,
+		CompletedAt:      &completedAt,
 	}, operator)
 	if err != nil {
 		return nil, err

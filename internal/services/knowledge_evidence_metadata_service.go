@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/knowledgepolicy"
 	"agent-desk/internal/models"
 	"agent-desk/internal/repositories"
 
@@ -25,6 +26,7 @@ func newKnowledgeEvidenceMetadataService() *knowledgeEvidenceMetadataService {
 type MetadataCandidate struct {
 	KnowledgeBaseID int64
 	SourceRecordID  string
+	DocumentTitle   string
 	Question        string
 	Answer          string
 }
@@ -35,7 +37,11 @@ type MetadataCandidate struct {
 func (s *knowledgeEvidenceMetadataService) Classify(candidate MetadataCandidate) models.KnowledgeEvidenceMetadata {
 	meta := DetectKnowledgeMetaContent(candidate.Question, candidate.Answer)
 	sourceClass := "unknown"
-	claimType := "fact"
+	if strings.TrimSpace(candidate.DocumentTitle) != "" {
+		sourceClass = "imported_faq"
+	}
+	claimType := knowledgepolicy.InferClaimType(candidate.Question, candidate.Question, candidate.Answer)
+	factScope := knowledgepolicy.InferFactScope(candidate.Question, claimType)
 	trustLevel := "supported"
 	if meta {
 		sourceClass = "derived_qa"
@@ -44,7 +50,7 @@ func (s *knowledgeEvidenceMetadataService) Classify(candidate MetadataCandidate)
 	}
 	return models.KnowledgeEvidenceMetadata{
 		SourceClass:     sourceClass,
-		FactScope:       "store",
+		FactScope:       factScope,
 		ClaimType:       claimType,
 		TrustLevel:      trustLevel,
 		Freshness:       "unknown",
@@ -104,23 +110,7 @@ func (s *knowledgeEvidenceMetadataService) JudgeBySourceRecords(tenantID, storeI
 // 审题式（这个表格是否包含/缺少了什么关键信息/如果填充真实数据）等。
 // 这类内容是对原始资料的二次生成，不能作为客户可见答案或推荐依据。
 func DetectKnowledgeMetaContent(question, answer string) bool {
-	text := strings.TrimSpace(question)
-	if text == "" {
-		text = strings.TrimSpace(answer)
-	}
-	patterns := []string{
-		"用户可能通过", "用户可能怎么问", "用户会如何", "可能通过哪些不同的方式",
-		"首先介绍了哪", "分为哪两个类别", "分为哪几类", "分为以下几个类别",
-		"这个表格是否包含", "表格中是否包含", "缺少了什么关键信息", "缺少哪些关键信息",
-		"如果填充真实数据", "填充真实对话", "隐私方面，如果", "如果这是对话记录",
-		"原文提到了哪", "文中提到哪", "上文中哪", "材料中哪",
-	}
-	for _, pattern := range patterns {
-		if strings.Contains(text, pattern) {
-			return true
-		}
-	}
-	return false
+	return knowledgepolicy.LooksLikeMetaContent(question, answer)
 }
 
 // BackfillFromRetrieveHits 契约 17.3.1：从历史检索命中的 sourceRecord 快照
@@ -133,7 +123,7 @@ func (s *knowledgeEvidenceMetadataService) BackfillFromRetrieveHits(limit int) (
 	rows := make([]knowledgeMetadataHitRow, 0, limit)
 	err := sqls.DB().Raw(`
 		SELECT h.tenant_id, h.knowledge_base_id, h.source_record_id,
-		       MAX(h.title) AS title, MAX(h.snippet) AS snippet
+		       MAX(h.document_title) AS document_title, MAX(h.title) AS title, MAX(h.snippet) AS snippet
 		FROM t_knowledge_retrieve_hit h
 		JOIN t_knowledge_base kb ON kb.id = h.knowledge_base_id AND kb.tenant_id = h.tenant_id
 		WHERE h.source_record_id <> '' AND kb.store_id > 0
@@ -160,6 +150,7 @@ func (s *knowledgeEvidenceMetadataService) BackfillFromRetrieveHits(limit int) (
 		grouped[key] = append(grouped[key], MetadataCandidate{
 			KnowledgeBaseID: row.KnowledgeBaseID,
 			SourceRecordID:  row.SourceRecordID,
+			DocumentTitle:   row.DocumentTitle,
 			Question:        row.Title,
 			Answer:          row.Snippet,
 		})
@@ -184,6 +175,7 @@ type knowledgeMetadataHitRow struct {
 	TenantID        int64
 	KnowledgeBaseID int64
 	SourceRecordID  string
+	DocumentTitle   string
 	Title           string
 	Snippet         string
 }

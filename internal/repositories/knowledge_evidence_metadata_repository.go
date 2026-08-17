@@ -48,18 +48,37 @@ func (r *knowledgeEvidenceMetadataRepository) UpsertBatch(db *gorm.DB, items []m
 			return err
 		}
 		if existing.SourceDigest != "" && existing.SourceDigest == item.SourceDigest {
-			continue // 内容未变化，不覆盖人工审核状态
+			// 内容未变化时仍允许把旧的 unknown/pending 自动分类升级为更具体的
+			// imported_faq/derived_qa。人工 approved/rejected 结论永不覆盖。
+			if existing.ReviewStatus == "approved" || existing.ReviewStatus == "rejected" ||
+				(existing.SourceClass != "unknown" && existing.ClaimType != "fact") {
+				continue
+			}
+			updates := map[string]any{
+				"source_class": item.SourceClass, "fact_scope": item.FactScope,
+				"claim_type": item.ClaimType, "trust_level": item.TrustLevel,
+				"freshness": item.Freshness, "topic_labels": item.TopicLabels,
+				"resource_purpose": item.ResourcePurpose, "auto_attach_resource": item.AutoAttachResource,
+				"updated_at": item.UpdatedAt,
+			}
+			if err := db.Model(existing).Updates(updates).Error; err != nil {
+				return err
+			}
+			continue
 		}
 		updates := map[string]any{
-			"source_class":      item.SourceClass,
-			"fact_scope":        item.FactScope,
-			"claim_type":        item.ClaimType,
-			"trust_level":       item.TrustLevel,
-			"freshness":         item.Freshness,
-			"topic_labels":      item.TopicLabels,
-			"source_digest":     item.SourceDigest,
-			"metadata_revision": gorm.Expr("metadata_revision + 1"),
-			"updated_at":        item.UpdatedAt,
+			"source_class":         item.SourceClass,
+			"fact_scope":           item.FactScope,
+			"claim_type":           item.ClaimType,
+			"trust_level":          item.TrustLevel,
+			"freshness":            item.Freshness,
+			"topic_labels":         item.TopicLabels,
+			"resource_purpose":     item.ResourcePurpose,
+			"auto_attach_resource": item.AutoAttachResource,
+			"review_status":        "pending",
+			"source_digest":        item.SourceDigest,
+			"metadata_revision":    gorm.Expr("metadata_revision + 1"),
+			"updated_at":           item.UpdatedAt,
 		}
 		if err := db.Model(existing).Updates(updates).Error; err != nil {
 			return err

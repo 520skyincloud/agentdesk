@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
@@ -242,7 +244,7 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 	}
 }
 
-func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *testing.T) {
+func TestNormalizeModelIntentTraceDoesNotOverrideIntentByCheckinKeyword(t *testing.T) {
 	configs := []models.ReplyIntentConfig{
 		{Code: "hotel_info", Status: enums.StatusOk},
 		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
@@ -253,27 +255,18 @@ func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *te
 		IntentConfidence: 0.8,
 		ShouldReply:      true,
 	}, RunInput{UserMessage: models.Message{Content: "我想办理入住"}}, adapter.HistoryBuildResult{}, configs)
-	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || !intent.NeedsResource {
-		t.Fatalf("expected deterministic checkin normalization, got %#v", intent)
+	if intent.PrimaryIntent != "interaction" || intent.SubIntent != "chat" {
+		t.Fatalf("current text must not override model intent, got %#v", intent)
 	}
-	if !containsString(intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("expected checkin mini program action, got %#v", intent.ResourceActions)
+	if intent.NeedsKnowledge || intent.NeedsResource || intent.NeedsHumanRoute || len(intent.ResourceActions) != 0 {
+		t.Fatalf("keyword-only postprocessing must not create capabilities, got %#v", intent)
 	}
-	var knowledgeTask, resourceTask bool
-	for _, task := range intent.IntentTasks {
-		if task.Intent == "hotel_info" && task.SubIntent == "checkin_process" && task.NeedsKnowledge {
-			knowledgeTask = true
-		}
-		if task.Intent == "hotel_variable" && task.ResourceAction == "provide_mini_program" && task.NeedsResource {
-			resourceTask = true
-		}
-	}
-	if !knowledgeTask || !resourceTask {
-		t.Fatalf("expected both checkin knowledge and resource tasks, got %#v", intent.IntentTasks)
+	if len(intent.IntentTasks) != 0 {
+		t.Fatalf("keyword-only postprocessing must not synthesize tasks, got %#v", intent.IntentTasks)
 	}
 }
 
-func TestRuntimeIntentProtocolFallbackPreservesCheckinHandling(t *testing.T) {
+func TestRuntimeIntentProtocolFallbackUsesSafeClarification(t *testing.T) {
 	configs := []models.ReplyIntentConfig{
 		{Code: "hotel_info", Status: enums.StatusOk},
 		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
@@ -286,8 +279,11 @@ func TestRuntimeIntentProtocolFallbackPreservesCheckinHandling(t *testing.T) {
 	if !ok {
 		t.Fatal("expected deterministic protocol fallback")
 	}
-	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || !containsString(intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("protocol fallback lost checkin handling: %#v", intent)
+	if intent.PrimaryIntent != "interaction" || intent.SubIntent != "clarify" || !intent.NeedsClarification {
+		t.Fatalf("protocol fallback must use safe clarification: %#v", intent)
+	}
+	if intent.NeedsKnowledge || intent.NeedsResource || intent.NeedsHumanRoute {
+		t.Fatalf("protocol fallback must not invent capabilities: %#v", intent)
 	}
 }
 
@@ -821,6 +817,61 @@ func TestRuntimePipelineDerivesSummaryFromIntentTasks(t *testing.T) {
 	}
 }
 
+func TestConditionalKnowledgeProbePromotesOnlyMatchedTask(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	if err := db.AutoMigrate(&models.KnowledgeBase{}, &models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.KnowledgeBase{
+		ID: 1, TenantID: 1, StoreID: 1, Name: "test knowledge", Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			"有咖啡吗": {
+				KnowledgeBaseIDs: []int64{1}, Query: "有咖啡吗",
+				Hits:           []rag.RetrieveResult{{KnowledgeBaseID: 1, SourceRecordID: "coffee", Content: "洗衣房有速溶咖啡。", Score: 0.9}},
+				ContextResults: []rag.RetrieveResult{{KnowledgeBaseID: 1, SourceRecordID: "coffee", Content: "洗衣房有速溶咖啡。", Score: 0.9}},
+				ContextText:    "洗衣房有速溶咖啡。",
+			},
+			"来一杯生椰拿铁": {KnowledgeBaseIDs: []int64{1}, Query: "来一杯生椰拿铁"},
+		},
+	}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true, NeedsClarification: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Sequence: 1, Intent: "interaction", SubIntent: "clarify", RequestMode: "clarify_previous", Text: "有咖啡吗", CanonicalQuestionHash: "coffee-hash"},
+			{Sequence: 2, Intent: "hotel_info", SubIntent: "parking", RequestMode: "answer", Text: "停车怎么收费", NeedsKnowledge: true, CanonicalQuestionHash: "parking-hash"},
+			{Sequence: 3, Intent: "interaction", SubIntent: "clarify", RequestMode: "clarify_previous", Text: "来一杯生椰拿铁", CanonicalQuestionHash: "latte-hash"},
+		},
+	}
+	req := RunInput{
+		Conversation: models.Conversation{ID: 2, TenantID: 1, StoreID: 1},
+		UserMessage:  models.Message{ID: 10, TenantID: 1, ConversationID: 2, SessionNo: 1, AIReplyTurnID: 3, AIReplyTurnVersion: 1},
+	}
+	if err := db.Create(&req.Conversation).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, probes, err := probeConditionalKnowledgeTasksWithRetriever(context.Background(), req, adapter.HistoryBuildResult{}, intent, retriever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.IntentTasks) != 3 || got.IntentTasks[0].Intent != "hotel_info" || !got.IntentTasks[0].NeedsKnowledge {
+		t.Fatalf("matched conditional task was not promoted: %+v", got.IntentTasks)
+	}
+	if got.IntentTasks[1].SubIntent != "parking" || !got.IntentTasks[1].NeedsKnowledge {
+		t.Fatalf("existing knowledge task was overwritten: %+v", got.IntentTasks[1])
+	}
+	if got.IntentTasks[2].Intent != "interaction" || got.IntentTasks[2].SubIntent != "clarify" {
+		t.Fatalf("no-hit conditional task must remain clarification: %+v", got.IntentTasks[2])
+	}
+	if len(probes) != 1 || len(retriever.queries) != 2 {
+		t.Fatalf("unexpected probes=%d queries=%v", len(probes), retriever.queries)
+	}
+}
+
 func actionLedgerHas(items []callbacks.ActionLedgerItem, action string, resourceType string) bool {
 	for _, item := range items {
 		if item.Action == action && item.ResourceType == resourceType {
@@ -830,7 +881,7 @@ func actionLedgerHas(items []callbacks.ActionLedgerItem, action string, resource
 	return false
 }
 
-func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
+func TestRuntimePipelineCheckinProcessDoesNotInventMiniProgramTask(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 90, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
@@ -843,26 +894,20 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 		NeedsKnowledge:   true,
 		Reason:           "模型识别为办理入住流程",
 	}})
-	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" {
-		t.Fatalf("expected checkin to remain hotel_info/checkin_process, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "hotel_info" || !isCheckinProcessSubIntent(plan.Intent.SubIntent) {
+		t.Fatalf("expected checkin to remain one hotel knowledge capability, got %#v", plan.Intent)
 	}
-	if !plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || plan.Intent.NeedsHumanRoute {
-		t.Fatalf("expected checkin to need knowledge and mini program resource only, got %#v", plan.Intent)
+	if !plan.Intent.NeedsKnowledge || plan.Intent.NeedsResource || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("checkin must not gain an unrequested resource capability, got %#v", plan.Intent)
 	}
-	if len(plan.Intent.ResourceActions) != 1 || plan.Intent.ResourceActions[0] != "provide_mini_program" {
-		t.Fatalf("expected checkin to attach mini program resource action, got %#v", plan.Intent.ResourceActions)
+	if len(plan.Intent.ResourceActions) != 0 {
+		t.Fatalf("checkin must not synthesize resource actions, got %#v", plan.Intent.ResourceActions)
 	}
-	if len(plan.ReplyPlan.TaskPlans) != 2 {
-		t.Fatalf("expected checkin knowledge task and mini program commit task, got %#v", plan.ReplyPlan.TaskPlans)
+	if len(plan.ReplyPlan.TaskPlans) != 1 {
+		t.Fatalf("expected exactly one checkin knowledge task, got %#v", plan.ReplyPlan.TaskPlans)
 	}
-	if plan.ReplyPlan.TaskPlans[0].Output != "knowledge_text_reply" || plan.ReplyPlan.TaskPlans[0].SubIntent != "checkin_process" {
+	if plan.ReplyPlan.TaskPlans[0].Output != "knowledge_text_reply" || !isCheckinProcessSubIntent(plan.ReplyPlan.TaskPlans[0].SubIntent) {
 		t.Fatalf("expected first task to answer checkin steps with knowledge, got %#v", plan.ReplyPlan.TaskPlans)
-	}
-	if plan.ReplyPlan.TaskPlans[1].Output != "structured_resource_commit" || plan.ReplyPlan.TaskPlans[1].ResourceAction != "provide_mini_program" {
-		t.Fatalf("expected second task to commit mini program, got %#v", plan.ReplyPlan.TaskPlans)
-	}
-	if !strings.Contains(plan.Prompt, "结构化变量任务只由 Commit 阶段发送") {
-		t.Fatalf("expected checkin plan to preserve the commit boundary, got %q", plan.Prompt)
 	}
 }
 
@@ -1322,11 +1367,11 @@ func TestRuntimePipelineOrderAttachmentFollowUpUsesCheckInKnowledge(t *testing.T
 		Payload:        `{"mediaText":"文件是一张订单确认单，显示入住人为张先生，入住日期为今天。","mediaUnderstandingStatus":"understood"}`,
 	}}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, history, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "hotel_info", SubIntent: "check_in", IntentConfidence: 0.86, ShouldReply: true, NeedsKnowledge: true, Reason: "模型结合订单附件识别为入住问题"}})
-	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" {
-		t.Fatalf("expected order attachment follow-up to use hotel_info/checkin_process, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "hotel_info" || !isCheckinProcessSubIntent(plan.Intent.SubIntent) {
+		t.Fatalf("expected order attachment follow-up to use hotel_info/checkin capability, got %#v", plan.Intent)
 	}
-	if !plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || !containsString(plan.Intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("order attachment follow-up should use knowledge plus mini program resource injection, got %#v", plan.Intent)
+	if !plan.Intent.NeedsKnowledge || plan.Intent.NeedsResource || len(plan.Intent.ResourceActions) != 0 {
+		t.Fatalf("order attachment follow-up must not invent a mini program action, got %#v", plan.Intent)
 	}
 }
 

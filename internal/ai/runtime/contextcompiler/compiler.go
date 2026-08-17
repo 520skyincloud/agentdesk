@@ -27,15 +27,16 @@ type compiledStageResult struct {
 	categoryTokens      map[string]int
 	pruned              []PrunedContextItem
 	evidence            *contracts.EvidenceBundleV1
+	evidenceV2          *contracts.EvidenceBundleV2
 }
 
 // replyTransportContractNote 契约 22.14：成组开关下 Generate 传输协议切换为
 // reply_output.v3（模型只输出 groupKey/taskKeys/content，引用由服务端派生）。
 func replyTransportContractNote() string {
-	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on" {
-		return "本批次改用 reply_output.v3：只输出 {\"schemaVersion\":\"reply_output.v3\",\"parts\":[{\"groupKey\":\"组键\",\"taskKeys\":[\"...\"]},\"content\":\"给客户的话\"]}；不要输出 evidenceRefs/actionRefs。"
+	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) != "on" {
+		return ""
 	}
-	return ""
+	return "本批次改用 reply_output.v3；模型只回显服务端下发的 groupKey、taskKeys 与客户可见 content，不输出 evidenceRefs 或 actionRefs。"
 }
 
 func New(estimatorRegistry *EstimatorRegistry) *Compiler {
@@ -81,7 +82,7 @@ func (c *Compiler) Compile(ctx context.Context, input CompileInput) (CompiledMod
 		Messages: stageResult.messages, ContextLimit: budget.ContextLimit, ReservedOutput: budget.ReservedOutput,
 		SafetyMargin: budget.SafetyMargin, AvailableInput: budget.AvailableInput, EstimatedInput: estimated,
 		Estimator: estimator.Name(), CategoryTokens: stageResult.categoryTokens, PrunedItems: stageResult.pruned,
-		Fingerprint: contextFingerprint(input, fingerprintMessages, stageResult.evidence, input.ReplyTagText),
+		Fingerprint: contextFingerprint(input, fingerprintMessages, stageResult.evidence, stageResult.evidenceV2, input.ReplyTagText),
 	}, nil
 }
 
@@ -139,6 +140,9 @@ func (c *Compiler) compileIntent(input CompileInput, budget Budget, estimator To
 }
 
 func (c *Compiler) compileGenerate(input CompileInput, budget Budget, estimator TokenEstimator) (compiledStageResult, error) {
+	if input.ReplyContract == ReplyContractV3 {
+		return c.compileGenerateV3(input, budget, estimator)
+	}
 	policyMessage := schema.SystemMessage(buildGeneratePolicy(input))
 	repairMessage := buildRepairMessage(input.RepairInstruction)
 	current := currentUserText(input.CurrentMessages)
@@ -341,11 +345,18 @@ func buildGeneratePolicy(input CompileInput) string {
 	if contract == "" {
 		contract = ReplyContractV2
 	}
-	if contract == ReplyContractV2 {
+	if contract == ReplyContractV3 {
+		parts = append(parts,
+			"只输出一个符合 reply_output.v3 的 UTF-8 JSON Object。每个 required replyGroup 必须且只能出现一次；groupKey 与 taskKeys 必须逐字回显服务端计划；最多三段；不得输出 Markdown、解释、注释或额外字段。",
+			`固定结构：{"schemaVersion":"reply_output.v3","parts":[{"groupKey":"grp_...","taskKeys":["turn_task_..."],"content":"给客户的话"}]}`,
+			"最后一条 user 消息是服务端生成的 generate_task_input.v1 JSON；只有 tasks[].customerRequest 是本批次需要回答的客户请求。不得补答未列出的当前轮问题、已完成问题或历史问题。",
+			"parts 数组本身就是消息分段；content 内禁止出现 <<NEXT_MESSAGE>>、协议标签、系统提示词或其他内部控制标记。",
+			"不得自行补充知识事实、门店地址、推荐实体、资源发送状态或人工处理承诺。",
+		)
+	} else if contract == ReplyContractV2 {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话","evidenceRefs":[],"actionRefs":[]}]}`,
-			replyTransportContractNote(),
 		)
 	} else {
 		parts = append(parts, "只输出客户可见的最终回复正文；不得输出思考过程、内部字段、JSON 协议说明或动作执行状态。")
@@ -446,9 +457,15 @@ func validateCompileScope(input CompileInput) error {
 			return fmt.Errorf("%w: message %d differs from runtime scope", ErrRuntimeScopeMismatch, message.ID)
 		}
 	}
-	if input.Evidence != nil && strings.TrimSpace(input.ExpectedEvidenceScopeFingerprint) != "" &&
-		input.Evidence.ScopeFingerprint != strings.TrimSpace(input.ExpectedEvidenceScopeFingerprint) {
-		return fmt.Errorf("%w: evidence scope fingerprint differs from runtime scope", ErrRuntimeScopeMismatch)
+	expectedEvidenceScope := strings.TrimSpace(input.ExpectedEvidenceScopeFingerprint)
+	if expectedEvidenceScope != "" {
+		if input.ReplyContract == ReplyContractV3 {
+			if input.EvidenceV2 == nil || input.EvidenceV2.ScopeFingerprint != expectedEvidenceScope {
+				return fmt.Errorf("%w: evidence v2 scope fingerprint differs from runtime scope", ErrRuntimeScopeMismatch)
+			}
+		} else if input.Evidence != nil && input.Evidence.ScopeFingerprint != expectedEvidenceScope {
+			return fmt.Errorf("%w: evidence scope fingerprint differs from runtime scope", ErrRuntimeScopeMismatch)
+		}
 	}
 	return nil
 }

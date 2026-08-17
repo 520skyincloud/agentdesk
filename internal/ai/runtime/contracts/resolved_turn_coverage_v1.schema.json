@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdesk.local/schemas/resolved_turn_coverage.v1.json",
+  "title": "ResolvedTurnCoverageV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "turnId", "turnVersion", "items"],
+  "properties": {
+    "schemaVersion": {"const": "resolved_turn_coverage.v1"},
+    "turnId": {"type": "integer", "minimum": 1},
+    "turnVersion": {"type": "integer", "minimum": 1},
+    "items": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["messageId", "canonicalHash", "taskId", "taskKey", "status", "coveredByTaskId", "reasonCode"],
+        "properties": {
+          "messageId": {"type": "integer", "minimum": 1},
+          "canonicalHash": {"type": "string", "maxLength": 64},
+          "taskId": {"type": "integer", "minimum": 0},
+          "taskKey": {"type": "string", "maxLength": 128},
+          "status": {
+            "enum": ["scheduled", "waiting", "handoff_pending", "covered", "routed", "ignored", "failed", "skipped", "superseded"]
+          },
+          "coveredByTaskId": {"type": "integer", "minimum": 0},
+          "reasonCode": {"type": "string", "maxLength": 80}
+        }
+      }
+    }
+  }
+}

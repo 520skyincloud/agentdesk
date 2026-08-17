@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
 
 // 契约 22.12：最终 AnswerGroup 由服务端在知识、能力和 Action 状态都已确定后构造，
@@ -39,6 +41,10 @@ type TaskRuntimeView struct {
 	Sequence  int
 	Intent    string
 	SubIntent string
+	// SourceText 是服务端按 SourceMessageID + SourceSpan 验证后的客户原文片段。
+	// Generate 只能看到本批 ReplyPlan 中选中 Task 的该字段，禁止回放整个 Turn。
+	SourceText          string
+	ObservationBindings []callbacks.TaskObservationBindingTraceData
 }
 
 // TaskEvidenceResultView 是分组所需的证据摘要。
@@ -48,6 +54,7 @@ type TaskEvidenceResultView struct {
 	EvidenceRefs       []string
 	AuthoritativeFacts []string
 	Answerability      string
+	ClaimType          string
 }
 
 // AnswerGroupSignature 是分组的确定性签名。
@@ -165,9 +172,35 @@ func appendOrStartDeterministicGroup(
 }
 
 func sameGroupSignature(a, b AnswerGroupSignature) bool {
-	return a.OutputMode == b.OutputMode && a.CapabilityRoute == b.CapabilityRoute &&
-		a.EvidenceFingerprint == b.EvidenceFingerprint && a.ActionFingerprint == b.ActionFingerprint &&
-		a.ClarificationSet == b.ClarificationSet
+	if a.OutputMode != b.OutputMode || a.CapabilityRoute != b.CapabilityRoute ||
+		a.EvidenceFingerprint != b.EvidenceFingerprint || a.ActionFingerprint != b.ActionFingerprint ||
+		a.ClarificationSet != b.ClarificationSet {
+		return false
+	}
+	leftStatus := knowledgeGroupStatusClass(a.KnowledgeStatus)
+	rightStatus := knowledgeGroupStatusClass(b.KnowledgeStatus)
+	if leftStatus != rightStatus {
+		return false
+	}
+	if leftStatus != "supported" && a.IntentScope != b.IntentScope {
+		return false
+	}
+	return true
+}
+
+func knowledgeGroupStatusClass(status string) string {
+	switch strings.TrimSpace(status) {
+	case "approved", "hit", "has_context":
+		return "supported"
+	case "no_context":
+		return "no_context"
+	case "unavailable":
+		return "unavailable"
+	case "blocked", "unanswerable":
+		return "unanswerable"
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 // knowledgeMergeAllowed 实现规则 2 与规则 3 的合并资格（签名相等已保证

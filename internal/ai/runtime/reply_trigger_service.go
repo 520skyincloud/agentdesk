@@ -370,16 +370,25 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	})
 	replyCtx.setSummary(summary)
 	if err != nil {
+		if result, commitErr, handled := s.commitPreparedActionsAfterRuntimeError(ctx, replyCtx, summary, err); handled {
+			return executionResultWithTaskSummary(result, summary), commitErr
+		}
 		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{}, summary), err
 	}
-	if summary != nil && summary.PolicySkipped {
-		if summary.TaskLedgerEnabled && summary.CoveredByTaskID > 0 {
-			return svc.AIReplyExecutionResult{
-				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "covered_by_existing_task",
-				CoveredByTaskID: summary.CoveredByTaskID, TaskLedgerEnabled: true,
-			}, nil
+	if summary != nil && summary.RuntimeDeferred {
+		retryAt := time.Now().Add(time.Second)
+		reason := strings.TrimSpace(summary.RuntimeDeferReason)
+		if reason == "" {
+			reason = "waiting_bound_observation"
 		}
-		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "policy_skipped"}, nil
+		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{
+			Status:     svc.AIReplyExecutionStatusDeferred,
+			ReasonCode: reason,
+			RetryAt:    &retryAt,
+		}, summary), nil
+	}
+	if summary != nil && summary.PolicySkipped {
+		return policySkippedExecutionResult(summary), nil
 	}
 	if summary != nil && summary.Interrupted {
 		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
@@ -409,6 +418,7 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			AIAgent:                   replyCtx.AIAgent,
 			ReplyText:                 summary.ReplyText,
 			ReplyParts:                summary.ReplyParts,
+			ResolvedReplyPartsV3:      summary.ResolvedReplyPartsV3,
 			PreparedActions:           summary.PreparedActions,
 			ActionLedgerV2:            summary.ActionLedgerV2,
 			ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
@@ -450,6 +460,67 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	)
 }
 
+func (s *aiReplyService) commitPreparedActionsAfterRuntimeError(
+	ctx context.Context,
+	replyCtx aiReplyContext,
+	summary *applicationruntime.Summary,
+	runtimeErr error,
+) (svc.AIReplyExecutionResult, error, bool) {
+	if summary == nil || !summary.ActionLedgerAuthoritative || summary.ActionLedgerV2 == nil || len(summary.PreparedActions) == 0 {
+		return svc.AIReplyExecutionResult{}, nil, false
+	}
+	if err := ctx.Err(); err != nil {
+		return svc.AIReplyExecutionResult{}, err, true
+	}
+	checkpoint, err := svc.AIReplyJobService.ValidateRuntimeCheckpoint(ctx, replyCtx.Conversation, replyCtx.Message)
+	if err != nil {
+		return svc.AIReplyExecutionResult{}, err, true
+	}
+	if checkpoint.Status != svc.AIReplyExecutionStatusCompleted || checkpoint.ReasonCode != "checkpoint_valid" {
+		return checkpoint, nil, true
+	}
+	if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
+		return svc.AIReplyExecutionResult{
+			Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message",
+		}, nil, true
+	}
+	messages, commitErr := s.commit.CommitAIReplyBatch(replyCommitInput{
+		Conversation:              replyCtx.Conversation,
+		Message:                   replyCtx.Message,
+		AIAgent:                   replyCtx.AIAgent,
+		PreparedActions:           summary.PreparedActions,
+		ActionLedgerV2:            summary.ActionLedgerV2,
+		ActionLedgerAuthoritative: true,
+		Trace:                     replyCtx.Trace,
+		ClientPrefix:              "ai_reply",
+		JobID:                     svc.AIReplyJobService.CurrentJobID(ctx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
+	})
+	if commitErr != nil {
+		var covered *svc.AIReplyTurnCoveredError
+		switch {
+		case errors.As(commitErr, &covered):
+			return svc.AIReplyExecutionResult{
+				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: covered.ReasonCode,
+				CoveredByMessageID: covered.CoveredByMessageID,
+			}, nil, true
+		case errors.Is(commitErr, svc.ErrAIReplyTurnStale):
+			return svc.AIReplyExecutionResult{
+				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "stale_turn_version",
+			}, nil, true
+		default:
+			return svc.AIReplyExecutionResult{}, commitErr, true
+		}
+	}
+	if len(messages) == 0 {
+		return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
+			svc.AIReplyExecutionErrorCommitFailed,
+			fmt.Errorf("prepared actions produced no committed messages"),
+		), true
+	}
+	replyCtx.Trace.ReplySent = true
+	return completedInterruptResult("partial_resource_committed_before_runtime_failure", messages, 0), runtimeErr, true
+}
+
 func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {
 	retryCtx := runtimeexecutor.WithGenerationGuardInstruction(ctx, duplicateAnswerRetryInstruction)
 	summary, err := s.executor.Run(retryCtx, runtimeReplyRunInput{
@@ -487,6 +558,7 @@ func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Conte
 		AIAgent:                   replyCtx.AIAgent,
 		ReplyText:                 summary.ReplyText,
 		ReplyParts:                summary.ReplyParts,
+		ResolvedReplyPartsV3:      summary.ResolvedReplyPartsV3,
 		PreparedActions:           summary.PreparedActions,
 		ActionLedgerV2:            summary.ActionLedgerV2,
 		ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
@@ -530,6 +602,22 @@ func executionResultWithTaskSummary(result svc.AIReplyExecutionResult, summary *
 	result.HumanTaskKeys = append([]string(nil), summary.HumanTaskKeys...)
 	result.HasRemainingTasks = summary.HasRemainingTasks
 	return result
+}
+
+func policySkippedExecutionResult(summary *applicationruntime.Summary) svc.AIReplyExecutionResult {
+	if summary != nil && summary.TaskLedgerEnabled && summary.CoveredByTaskID > 0 {
+		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{
+			Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "covered_by_existing_task",
+			CoveredByTaskID: summary.CoveredByTaskID,
+		}, summary)
+	}
+	reason := "policy_skipped"
+	if summary != nil && strings.TrimSpace(summary.PolicySkipReason) != "" {
+		reason = strings.TrimSpace(summary.PolicySkipReason)
+	}
+	return executionResultWithTaskSummary(svc.AIReplyExecutionResult{
+		Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: reason,
+	}, summary)
 }
 
 func (s *aiReplyService) findCommittedReplyEvidence(replyCtx aiReplyContext) []int64 {

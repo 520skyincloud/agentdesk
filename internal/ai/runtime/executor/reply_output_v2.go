@@ -19,16 +19,21 @@ import (
 )
 
 type replyOutputProtocolError struct {
+	Contract    string
 	RawResponse string
 	Reason      string
 	Cause       error
 }
 
 func (e *replyOutputProtocolError) Error() string {
-	if e == nil || strings.TrimSpace(e.Reason) == "" {
-		return "reply_output.v2 protocol invalid"
+	contract := "reply_output.v2"
+	if e != nil && strings.TrimSpace(e.Contract) != "" {
+		contract = strings.TrimSpace(e.Contract)
 	}
-	return "reply_output.v2 protocol invalid: " + strings.TrimSpace(e.Reason)
+	if e == nil || strings.TrimSpace(e.Reason) == "" {
+		return contract + " protocol invalid"
+	}
+	return contract + " protocol invalid: " + strings.TrimSpace(e.Reason)
 }
 
 func (e *replyOutputProtocolError) Unwrap() error {
@@ -77,13 +82,13 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 		} else {
 			summary.RawReplyOutput = strings.TrimSpace(response.Content)
 		}
-		return applyRuntimeReplyOutputV2(summary.RawReplyOutput, summary, collector, req)
+		return applyRuntimeStructuredReplyOutput(summary.RawReplyOutput, summary, collector, req)
 	}
 
 	err = generate(messages)
 	var protocolErr *replyOutputProtocolError
 	if errors.As(err, &protocolErr) {
-		resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_output_v2_protocol_repair")
+		resetRuntimeGenerationForProtocolRepair(summary, collector, runtimeReplyProtocolRepairReason(summary))
 		repairMessages, compileErr := compileRuntimeReplyOutputRepairMessages(ctx, summary, protocolErr)
 		if compileErr != nil {
 			err = compileErr
@@ -95,7 +100,7 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 	if err != nil {
 		var repeatedProtocolErr *replyOutputProtocolError
 		if errors.As(err, &repeatedProtocolErr) {
-			err = fmt.Errorf("reply_output.v2 protocol repair failed: %w", err)
+			err = fmt.Errorf("%s protocol repair failed: %w", runtimeReplyContractName(summary), err)
 		}
 		return markRuntimeGenerationError(summary, collector, startedAt, err)
 	}
@@ -169,27 +174,14 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return fmt.Errorf("reply_output.v2 validation context is incomplete")
 	}
-	var parsed contracts.ReplyOutputV2
-	var err error
-	if multimodalV3Enabled() {
-		// 契约 22.14/15：成组开关下模型只输出 groupKey+taskKeys+content；
-		// Evidence/Action 引用由服务端 deterministic autofix 派生。
-		// 模型仍按 v2 形态输出时兼容解析（引用一律由服务端覆盖派生），
-		// 避免协议切换期回复中断。
-		parsed, err = parseRuntimeReplyOutputV3AsV2(raw)
-		if err != nil {
-			parsed, err = parseRuntimeReplyOutputV2(raw)
-		}
-	} else {
-		parsed, err = parseRuntimeReplyOutputV2(raw)
-	}
+	parsed, err := parseRuntimeReplyOutputV2(raw)
 	if err != nil {
 		if collector != nil {
 			collector.Data.Pipeline.Validate.Status = "failed"
 			collector.Data.Pipeline.Validate.Reason = replyProtocolErrorReason(err)
 		}
 		if runtimeProtocolRepairAllowed(err) {
-			return &replyOutputProtocolError{RawResponse: raw, Reason: replyProtocolErrorReason(err), Cause: err}
+			return &replyOutputProtocolError{Contract: contracts.ReplyOutputV2SchemaVersion, RawResponse: raw, Reason: replyProtocolErrorReason(err), Cause: err}
 		}
 		return err
 	}
@@ -208,7 +200,7 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 		summary.ReplyText = joinValidatedReplyParts(validation.NormalizedParts)
 		return nil
 	case "repairable_protocol_error":
-		return &replyOutputProtocolError{RawResponse: raw, Reason: validationResultReason(validation)}
+		return &replyOutputProtocolError{Contract: contracts.ReplyOutputV2SchemaVersion, RawResponse: raw, Reason: validationResultReason(validation)}
 	default:
 		return fmt.Errorf("reply_output.v2 rejected: %s", validationResultReason(validation))
 	}
@@ -217,7 +209,8 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 // parseRuntimeReplyOutputV3AsV2 解码 reply_output.v3 并映射到 V2 校验输入；
 // groupKey 仅审计不作为权威（分组由服务端知识层证据集合决定）。
 func parseRuntimeReplyOutputV3AsV2(raw string) (contracts.ReplyOutputV2, error) {
-	parsed, err := strictjson.DecodeObject[contracts.ReplyOutputV3]([]byte(raw), strictjson.DecodeOptions{
+	normalized, _ := normalizeStructuredModelObject(raw)
+	parsed, err := strictjson.DecodeObject[contracts.ReplyOutputV3]([]byte(normalized), strictjson.DecodeOptions{
 		MaxBytes: 64 * 1024, Schema: contracts.MustSchema(contracts.SchemaReplyOutputV3),
 	})
 	if err != nil {
@@ -264,8 +257,12 @@ func buildRuntimeReplyOutputRepairInstruction(protocolErr *replyOutputProtocolEr
 		reason = strings.TrimSpace(protocolErr.Reason)
 		raw = boundedRuntimeRepairText(protocolErr.RawResponse, 8*1024)
 	}
+	contract := contracts.ReplyOutputV2SchemaVersion
+	if protocolErr != nil && strings.TrimSpace(protocolErr.Contract) != "" {
+		contract = strings.TrimSpace(protocolErr.Contract)
+	}
 	return strings.Join([]string{
-		"上一版输出存在可修复的 reply_output.v2 协议错误。只修复 JSON 结构和任务覆盖，不新增、删除或改写业务任务。",
+		"上一版输出存在可修复的 " + contract + " 协议错误。只修复 JSON 结构和任务覆盖，不新增、删除或改写业务任务。",
 		"error=" + reason,
 		"第一次输出=" + raw,
 		"重新输出唯一一个严格 JSON Object；不得输出 Markdown、解释、注释或额外文本。",
@@ -348,10 +345,10 @@ func completeRuntimeGeneration(summary *RunResult, collector *callbacks.RuntimeT
 	collector.Data.Output.ReplyText = summary.ReplyText
 	collector.Data.Output.FinishReason = summary.Status
 	collector.Data.Pipeline.Generate.Status = summary.Status
-	collector.Data.Pipeline.Generate.Reason = "reply_output.v2 generated and validated"
+	collector.Data.Pipeline.Generate.Reason = runtimeReplyContractName(summary) + " generated and validated"
 	if strings.TrimSpace(collector.Data.Pipeline.Validate.Status) == "" {
 		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = "reply_output.v2 passed deterministic validation"
+		collector.Data.Pipeline.Validate.Reason = runtimeReplyContractName(summary) + " passed deterministic validation"
 	}
 	return nil
 }

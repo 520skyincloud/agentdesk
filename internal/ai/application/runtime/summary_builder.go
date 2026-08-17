@@ -35,6 +35,9 @@ func toSummary(summary *executor.RunResult) *Summary {
 		TraceData:                 summary.TraceData,
 		ErrorMessage:              summary.ErrorMessage,
 		PolicySkipped:             summary.SkipReply,
+		PolicySkipReason:          strings.TrimSpace(summary.PolicySkipReason),
+		RuntimeDeferred:           summary.RuntimeDeferred,
+		RuntimeDeferReason:        strings.TrimSpace(summary.RuntimeDeferReason),
 		ReplyModelAttempted:       summary.ReplyModelAttempted,
 		TaskLedgerEnabled:         summary.TaskLedgerEnabled,
 		TaskKeys:                  append([]string(nil), summary.TaskKeys...),
@@ -44,6 +47,7 @@ func toSummary(summary *executor.RunResult) *Summary {
 		NeedsHumanDispatch:        summary.NeedsHumanDispatch,
 		CoveredByTaskID:           summary.CoveredByTaskID,
 		ReplyParts:                append([]contracts.ReplyPartV2(nil), summary.ReplyParts...),
+		ResolvedReplyPartsV3:      append([]contracts.ResolvedPartV3(nil), summary.ResolvedReplyPartsV3...),
 		PreparedActions:           append([]contracts.PreparedActionV1(nil), summary.PreparedActions...),
 		ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
 	}

@@ -96,6 +96,38 @@
       "type": "string",
       "maxLength": 4000
     },
+    "responseExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "basis",
+        "confidence"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "reply",
+            "uncertain"
+          ]
+        },
+        "basis": {
+          "enum": [
+            "explicit_question",
+            "visible_error",
+            "customer_spoken_input",
+            "ordinary_media",
+            "unknown"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
     "quality": {
       "type": "object",
       "additionalProperties": false,

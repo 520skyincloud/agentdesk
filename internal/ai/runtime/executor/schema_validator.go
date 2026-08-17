@@ -6,7 +6,8 @@ import (
 )
 
 func parseRuntimeReplyOutputV2(content string) (contracts.ReplyOutputV2, error) {
-	return strictjson.DecodeObject[contracts.ReplyOutputV2]([]byte(content), strictjson.DecodeOptions{
+	normalized, _ := normalizeStructuredModelObject(content)
+	return strictjson.DecodeObject[contracts.ReplyOutputV2]([]byte(normalized), strictjson.DecodeOptions{
 		MaxBytes: 64 * 1024,
 		Schema:   contracts.MustSchema(contracts.SchemaReplyOutputV2),
 	})

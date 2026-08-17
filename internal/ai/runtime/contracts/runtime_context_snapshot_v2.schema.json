@@ -4,12 +4,12 @@
   "title": "RuntimeContextSnapshotV2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "conversationMode", "dialogueAct", "focus", "tasks", "observations", "preparedActions", "responsePolicy"],
+  "required": ["schemaVersion", "conversationMode", "dialogueAct", "focus", "tasks", "observations", "facts", "preparedActions", "responsePolicy"],
   "properties": {
     "schemaVersion": {"const": "runtime_context_snapshot.v2"},
     "conversationMode": {"enum": ["ai_serving", "resume"]},
     "dialogueAct": {
-      "enum": ["new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "greeting", "thanks", "closing", "unknown"]
+      "enum": ["new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "greeting", "thanks", "closing", "social", "unknown"]
     },
     "focus": {
       "type": "object",
@@ -32,16 +32,21 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["taskKey", "sequence", "objective", "outputMode", "knowledgeStatus", "evidenceRefs", "requiredFactRefs", "actionRefs", "constraints"],
+        "required": ["taskKey", "sequence", "objective", "claimType", "outputMode", "knowledgeStatus", "evidenceRefs", "observationRefs", "requiredFactRefs", "actionRefs", "constraints"],
         "properties": {
           "taskKey": {"type": "string", "minLength": 1, "maxLength": 128},
           "sequence": {"type": "integer", "minimum": 1, "maximum": 12},
           "objective": {"type": "string", "minLength": 1, "maxLength": 500},
+          "claimType": {"enum": ["fact", "procedure", "policy", "recommendation", "meta", "unknown"]},
           "outputMode": {"enum": ["text", "text_and_resource", "clarification"]},
           "knowledgeStatus": {"enum": ["not_needed", "has_context", "no_context", "unanswerable", "unavailable"]},
           "evidenceRefs": {
             "type": "array", "maxItems": 12, "uniqueItems": true,
             "items": {"type": "string", "pattern": "^[KSM][1-9][0-9]*$"}
+          },
+          "observationRefs": {
+            "type": "array", "maxItems": 8, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^O[1-9][0-9]*$"}
           },
           "requiredFactRefs": {
             "type": "array", "maxItems": 4, "uniqueItems": true,
@@ -81,6 +86,20 @@
             "type": "array", "maxItems": 5, "uniqueItems": true,
             "items": {"enum": ["assert_store_fact", "recommend", "send_resource", "answer_text", "prepare_resource"]}
           }
+        }
+      }
+    },
+    "facts": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "key", "value"],
+        "properties": {
+          "ref": {"type": "string", "pattern": "^S[1-9][0-9]*$"},
+          "key": {"type": "string", "minLength": 1, "maxLength": 120},
+          "value": {"type": "string", "minLength": 1, "maxLength": 1000}
         }
       }
     },

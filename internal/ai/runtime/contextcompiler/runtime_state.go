@@ -152,6 +152,10 @@ func normalizeDialogueRelation(value string) string {
 	switch strings.TrimSpace(value) {
 	case "new_topic", "follow_up", "repeat", "correction", "confirmation", "cancellation", "unknown":
 		return strings.TrimSpace(value)
+	case "refinement":
+		// refinement is a narrower follow-up. DialogueState deliberately keeps
+		// the smaller stable enum while preserving the history-reference right.
+		return "follow_up"
 	default:
 		return "unknown"
 	}

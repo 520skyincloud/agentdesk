@@ -9,18 +9,19 @@ const MessageAnalysisV2SchemaVersion = SchemaMessageAnalysisV2
 
 // MessageAnalysisV2 是媒体分析的权威 JSON 形态。
 type MessageAnalysisV2 struct {
-	SchemaVersion      string                        `json:"schemaVersion"`
-	MessageID          int64                         `json:"messageId"`
-	SourceRevision     int                           `json:"sourceRevision"`
-	ContentFingerprint string                        `json:"contentFingerprint"`
-	Status             string                        `json:"status"`
-	MediaType          string                        `json:"mediaType"` // none/image/voice/attachment
-	Analyzer           MessageAnalysisAnalyzerV2     `json:"analyzer"`
-	NormalizedText     string                        `json:"normalizedText"`
-	Quality            MessageAnalysisQualityV2      `json:"quality"`
-	Observations       []ObservationV2Item           `json:"observations"`
-	Error              *MessageAnalysisErrorV2       `json:"error"`
-	AnalyzedAt         *time.Time                    `json:"analyzedAt"`
+	SchemaVersion       string                      `json:"schemaVersion"`
+	MessageID           int64                       `json:"messageId"`
+	SourceRevision      int                         `json:"sourceRevision"`
+	ContentFingerprint  string                      `json:"contentFingerprint"`
+	Status              string                      `json:"status"`
+	MediaType           string                      `json:"mediaType"` // none/image/voice/attachment
+	Analyzer            MessageAnalysisAnalyzerV2   `json:"analyzer"`
+	NormalizedText      string                      `json:"normalizedText"`
+	Quality             MessageAnalysisQualityV2    `json:"quality"`
+	Observations        []ObservationV2Item         `json:"observations"`
+	ResponseExpectation *MediaResponseExpectationV1 `json:"responseExpectation,omitempty"`
+	Error               *MessageAnalysisErrorV2     `json:"error"`
+	AnalyzedAt          *time.Time                  `json:"analyzedAt"`
 }
 
 // MessageAnalysisAnalyzerV2 是分析器身份。
@@ -34,11 +35,11 @@ type MessageAnalysisAnalyzerV2 struct {
 
 // MessageAnalysisQualityV2 是分析质量元数据。
 type MessageAnalysisQualityV2 struct {
-	OverallConfidence float64                        `json:"overallConfidence"`
-	Completeness      string                         `json:"completeness"` // complete/partial/empty
-	FallbackUsed      bool                           `json:"fallbackUsed"`
-	Warnings          []string                       `json:"warnings"`
-	UncertainRanges   []MessageAnalysisUncertainV2   `json:"uncertainRanges"`
+	OverallConfidence float64                      `json:"overallConfidence"`
+	Completeness      string                       `json:"completeness"` // complete/partial/empty
+	FallbackUsed      bool                         `json:"fallbackUsed"`
+	Warnings          []string                     `json:"warnings"`
+	UncertainRanges   []MessageAnalysisUncertainV2 `json:"uncertainRanges"`
 }
 
 // MessageAnalysisUncertainV2 是不确定区间（rune offset，end exclusive）。

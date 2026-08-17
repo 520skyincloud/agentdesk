@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
@@ -346,6 +347,56 @@ func TestSplitReplyTextForCommitUsesExplicitMultiMessageMarker(t *testing.T) {
 	parts := splitReplyTextForCommit(trace, "停车从繁华大道辅路进。\n<<NEXT_MESSAGE>>\n发票退房后在小程序申请。")
 	if len(parts) != 2 || parts[0] != "停车从繁华大道辅路进。" || parts[1] != "发票退房后在小程序申请。" {
 		t.Fatalf("expected two commit text messages, got %#v", parts)
+	}
+}
+
+func TestNormalizedCommitReplyPartsRejectsEmbeddedControlMarker(t *testing.T) {
+	replyText := "有速溶咖啡。\n<<NEXT_MESSAGE>>\n可以去洗衣房取。"
+	parts := []contracts.ReplyPartV2{{
+		TaskKeys: []string{"task-coffee"}, Content: replyText,
+	}}
+	if normalized := normalizedCommitReplyParts(parts, replyText); normalized != nil {
+		t.Fatalf("embedded control marker must not bypass commit splitting: %#v", normalized)
+	}
+	got := splitReplyTextForCommit(nil, replyText)
+	if len(got) != 2 || got[0] != "有速溶咖啡。" || got[1] != "可以去洗衣房取。" {
+		t.Fatalf("control marker was not consumed before commit: %#v", got)
+	}
+}
+
+func TestNormalizedCommitTextPartsV3KeepsStructuredBoundariesWithoutMarker(t *testing.T) {
+	input := replyCommitInput{
+		ResolvedReplyPartsV3: []contracts.ResolvedPartV3{
+			{GroupKey: "g1", TaskKeys: []string{"t1"}, Content: "第一条回复。"},
+			{GroupKey: "g2", TaskKeys: []string{"t2"}, Content: "第二条回复。"},
+		},
+	}
+	parts, err := normalizedCommitTextParts(input, "第一条回复。\n\n第二条回复。")
+	if err != nil {
+		t.Fatalf("normalize V3 reply parts: %v", err)
+	}
+	if len(parts) != 2 || parts[0].Content != "第一条回复。" || parts[1].Content != "第二条回复。" {
+		t.Fatalf("V3 structured parts were not preserved: %#v", parts)
+	}
+	parts, err = normalizedCommitTextParts(input, "第一条回复。\n\n第二条回复。\n\n刚才的内容正在重新发送，请稍等一下。")
+	if err != nil {
+		t.Fatalf("normalize V3 reply parts with deterministic notice: %v", err)
+	}
+	if len(parts) != 2 || !strings.Contains(parts[1].Content, "正在重新发送") || containsReplyControlMarker(parts[1].Content) {
+		t.Fatalf("deterministic notice was not attached safely: %#v", parts)
+	}
+}
+
+func TestNormalizedCommitTextPartsV3RejectsMismatchedFallbackText(t *testing.T) {
+	input := replyCommitInput{
+		ResolvedReplyPartsV3: []contracts.ResolvedPartV3{
+			{GroupKey: "g1", TaskKeys: []string{"t1"}, Content: "停车场从南门进入。"},
+			{GroupKey: "g2", TaskKeys: []string{"t2"}, Content: "前台可以办理入住。"},
+		},
+	}
+	parts, err := normalizedCommitTextParts(input, "酒店有免费停车场，咖啡也有。")
+	if err == nil || parts != nil {
+		t.Fatalf("invalid V3 structure must not fall back to legacy text: parts=%#v err=%v", parts, err)
 	}
 }
 

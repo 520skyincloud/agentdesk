@@ -102,6 +102,24 @@ func (r *aiReplyTurnTaskRepository) FindByCommittedMessageInTenant(db *gorm.DB, 
 	return ret
 }
 
+func (r *aiReplyTurnTaskRepository) FindCoverageDependentsForUpdateInTenant(
+	db *gorm.DB,
+	tenantID, turnID, canonicalTaskID int64,
+) ([]models.AIReplyTurnTask, error) {
+	if db == nil || tenantID <= 0 || turnID <= 0 || canonicalTaskID <= 0 {
+		return nil, nil
+	}
+	ret := make([]models.AIReplyTurnTask, 0)
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(
+			"tenant_id = ? AND turn_id = ? AND covered_by_task_id = ? AND status = ?",
+			tenantID, turnID, canonicalTaskID, enums.AIReplyTurnTaskStatusWaitingCoverage,
+		).
+		Order("sequence_no ASC, id ASC").
+		Find(&ret).Error
+	return ret, err
+}
+
 func (r *aiReplyTurnTaskRepository) FindByTurnInTenant(db *gorm.DB, tenantID, turnID int64) []models.AIReplyTurnTask {
 	if db == nil || tenantID <= 0 || turnID <= 0 {
 		return nil
@@ -150,6 +168,22 @@ func (r *aiReplyTurnTaskRepository) CountRunnableByTurnInTenant(db *gorm.DB, ten
 	return count
 }
 
+func (r *aiReplyTurnTaskRepository) CountWorkPendingByTurnInTenant(db *gorm.DB, tenantID, turnID int64) int64 {
+	if db == nil || tenantID <= 0 || turnID <= 0 {
+		return 0
+	}
+	var count int64
+	_ = db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND status IN ?", tenantID, turnID, []enums.AIReplyTurnTaskStatus{
+			enums.AIReplyTurnTaskStatusPending,
+			enums.AIReplyTurnTaskStatusReady,
+			enums.AIReplyTurnTaskStatusRunning,
+			enums.AIReplyTurnTaskStatusWaitingCoverage,
+		}).
+		Count(&count).Error
+	return count
+}
+
 func (r *aiReplyTurnTaskRepository) NextRetryAtByTurnInTenant(db *gorm.DB, tenantID, turnID int64, now time.Time) *time.Time {
 	if db == nil || tenantID <= 0 || turnID <= 0 {
 		return nil
@@ -176,6 +210,17 @@ func (r *aiReplyTurnTaskRepository) CountFailureHandoffsByTurnInTenant(db *gorm.
 	_ = db.Model(&models.AIReplyTurnTask{}).
 		Where("tenant_id = ? AND turn_id = ? AND status = ? AND result_code <> ''",
 			tenantID, turnID, enums.AIReplyTurnTaskStatusHandoffPending).
+		Count(&count).Error
+	return count
+}
+
+func (r *aiReplyTurnTaskRepository) CountFailedByTurnInTenant(db *gorm.DB, tenantID, turnID int64) int64 {
+	if db == nil || tenantID <= 0 || turnID <= 0 {
+		return 0
+	}
+	var count int64
+	_ = db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND turn_id = ? AND status = ?", tenantID, turnID, enums.AIReplyTurnTaskStatusFailed).
 		Count(&count).Error
 	return count
 }

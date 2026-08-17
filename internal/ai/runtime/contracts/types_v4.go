@@ -26,11 +26,13 @@ type ReplyPlanTaskV4 struct {
 	Sequence         int                  `json:"sequence"`
 	Intent           string               `json:"intent"`
 	SubIntent        string               `json:"subIntent"`
+	ClaimType        string               `json:"claimType"`
 	AnswerGroupKey   string               `json:"answerGroupKey"`
 	Objective        string               `json:"objective"`
 	OutputMode       string               `json:"outputMode"`
 	Knowledge        ReplyPlanKnowledgeV4 `json:"knowledge"`
 	EvidenceRefs     []string             `json:"evidenceRefs"`
+	ObservationRefs  []string             `json:"observationRefs"`
 	RequiredFactRefs []string             `json:"requiredFactRefs"`
 	ActionRefs       []string             `json:"actionRefs"`
 	ResourcePolicy   ReplyResourcePolicy  `json:"resourcePolicy"`

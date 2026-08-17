@@ -1,8 +1,6 @@
 package executor
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,6 +21,17 @@ func prepareRuntimeActions(
 	evidence contracts.EvidenceBundleV1,
 	ledger contracts.ActionLedgerV1,
 ) ([]contracts.PreparedActionV1, contracts.ActionLedgerV1, error) {
+	return prepareRuntimeActionsWithEligibility(req, taskState, plan, evidence, nil, ledger)
+}
+
+func prepareRuntimeActionsWithEligibility(
+	req RunInput,
+	taskState runtimeTaskBatchState,
+	plan contracts.ReplyPlanV2,
+	evidence contracts.EvidenceBundleV1,
+	eligibility *contracts.ResourceEligibilityV1,
+	ledger contracts.ActionLedgerV1,
+) ([]contracts.PreparedActionV1, contracts.ActionLedgerV1, error) {
 	if len(ledger.Actions) == 0 {
 		return nil, ledger, nil
 	}
@@ -35,7 +44,7 @@ func prepareRuntimeActions(
 		if !runtimeActionRequiresOutboundMessage(action.ActionType) {
 			continue
 		}
-		item, err := buildPreparedRuntimeAction(req, action, sequenceByTask[action.TaskKey], evidence, plan)
+		item, err := buildPreparedRuntimeAction(req, action, sequenceByTask[action.TaskKey], evidence, eligibility, plan)
 		if err != nil {
 			if taskState.Enabled && taskState.TurnID > 0 {
 				markErr := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -109,6 +118,7 @@ func buildPreparedRuntimeAction(
 	action contracts.ActionLedgerItemV1,
 	sequence int,
 	evidence contracts.EvidenceBundleV1,
+	eligibility *contracts.ResourceEligibilityV1,
 	plan contracts.ReplyPlanV2,
 ) (contracts.PreparedActionV1, error) {
 	resourceType := ""
@@ -123,14 +133,19 @@ func buildPreparedRuntimeAction(
 	if err != nil {
 		return contracts.PreparedActionV1{}, err
 	}
-	// P8 Prepare 最终门禁（文档 17.2）：地址文字类任务的图片 Action 在 Prepare 阶段二次拒绝，
-	// 防止 ActionLedger 构建与 Prepare 之间规则漂移；拒绝即 resource invariant broken。
+	// Prepare 最终门禁：知识图片必须仍存在于本轮 ResourceEligibility 的
+	// eligible 集合。地址文字只是其中一种拒绝原因，不再作为专用补丁。
 	if action.ActionType == "send_knowledge_image" && gateEnabled(gateResourceEligibility, req) {
-		for _, task := range plan.Tasks {
-			if task.TaskKey == action.TaskKey && isAddressTextSubIntent(task.SubIntent) {
-				return contracts.PreparedActionV1{}, fmt.Errorf("resource eligibility invariant broken: address text task %s must not send images", action.TaskKey)
-			}
+		resourceRef := strings.TrimPrefix(resourceType, "image:")
+		item := runtimeEligibleResourceItem(eligibility, action.TaskKey, resourceRef, "image")
+		if item == nil {
+			return contracts.PreparedActionV1{}, fmt.Errorf("resource eligibility invariant broken: task %s resource %s is not eligible", action.TaskKey, resourceRef)
 		}
+		prepared.EligibilityFingerprint = runtimeV3JSONFingerprint(*item)
+		prepared.SourceEvidenceRef = item.SourceEvidenceRef
+		prepared.SourceRecordID = item.SourceRecordID
+		prepared.ResourcePurpose = item.ResourcePurpose
+		prepared.EligibilityReasonCode = item.ReasonCode
 	}
 	switch action.ActionType {
 	case "send_location":
@@ -199,13 +214,31 @@ func buildPreparedKnowledgeImage(req RunInput, resourceRef string, evidence cont
 	return "", "", fmt.Errorf("knowledge image resource ref %q is unavailable", resourceRef)
 }
 
+func runtimeEligibleResourceItem(
+	eligibility *contracts.ResourceEligibilityV1,
+	taskKey, resourceRef, resourceType string,
+) *contracts.ResourceEligibilityItemV1 {
+	if eligibility == nil {
+		return nil
+	}
+	for index := range eligibility.Items {
+		item := &eligibility.Items[index]
+		if item.Decision == "eligible" && item.TaskKey == taskKey && item.ResourceRef == resourceRef && item.ResourceType == resourceType {
+			return item
+		}
+	}
+	return nil
+}
+
 func preparedActionRevision(action contracts.PreparedActionV1) string {
-	payload := strings.Join([]string{
-		action.ActionKey, action.TaskKey, action.ActionType, action.ResourceType,
-		action.ResourceRef, action.MessageType, action.Content, action.Payload,
-	}, "\n")
-	sum := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(sum[:16])
+	return services.AIReplyTurnActionService.PreparedRevision(services.AIReplyPreparedActionProof{
+		ActionKey: action.ActionKey, TaskKey: action.TaskKey, ActionType: action.ActionType,
+		ResourceType: action.ResourceType, ResourceRef: action.ResourceRef,
+		MessageType: action.MessageType, Content: action.Content, Payload: action.Payload,
+		EligibilityFingerprint: action.EligibilityFingerprint, SourceEvidenceRef: action.SourceEvidenceRef,
+		SourceRecordID: action.SourceRecordID, ResourcePurpose: action.ResourcePurpose,
+		EligibilityReasonCode: action.EligibilityReasonCode,
+	})
 }
 
 func runtimeActionRequiresOutboundMessage(actionType string) bool {
