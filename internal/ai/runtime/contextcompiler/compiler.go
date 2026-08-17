@@ -33,7 +33,7 @@ type compiledStageResult struct {
 // replyTransportContractNote 契约 22.14：成组开关下 Generate 传输协议切换为
 // reply_output.v3（模型只输出 groupKey/taskKeys/content，引用由服务端派生）。
 func replyTransportContractNote() string {
-	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) != "on" {
+	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3_STRICT")) != "on" {
 		return ""
 	}
 	return "本批次改用 reply_output.v3；模型只回显服务端下发的 groupKey、taskKeys 与客户可见 content，不输出 evidenceRefs 或 actionRefs。"
@@ -357,6 +357,7 @@ func buildGeneratePolicy(input CompileInput) string {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话","evidenceRefs":[],"actionRefs":[]}]}`,
+			"Evidence 只是当前任务的参考资料，不是要原样发送的模板；必须由模型用自然语言回答当前问题，只取与当前 task 直接相关的事实，不要逐条复制标题、FAQ 原文或其他问题的内容。",
 		)
 	} else {
 		parts = append(parts, "只输出客户可见的最终回复正文；不得输出思考过程、内部字段、JSON 协议说明或动作执行状态。")

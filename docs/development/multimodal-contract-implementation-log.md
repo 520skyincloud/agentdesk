@@ -103,4 +103,11 @@
 - 真实会话复核发现，检索命中但“入住都不会？”这类短问法被证据主题门禁误降级为 `no_context`；`businessTopicCore` 现按通用疑问短语归一化后再做 FAQ 主题匹配，不针对单个业务词放行，并增加入住/餐饮短问法及跨主题回归测试。
 - 证据审查使用当前 source-bound 问题分类，父问题只作为检索提示，不改变当前问题的 claim type/fact scope；旧 FAQ 结果不能单独授权新主题。
 - 变更范围：QuestionUnit normalizer、V3 intent 适配、Envelope/QuestionUnit/TaskNormalization schema、trace/plan 投影、Task ledger relation persistence、知识证据审查和 focused tests。无 migration、公开 DTO 或 Intent Schema 变更。
-- 验证：`go test ./internal/ai/runtime/... ./internal/services -count=1`、`go test ./... -run '^$'`、`go vet ./internal/ai/runtime/... ./internal/services` 通过；schema JSON 通过 `jq empty`。
+
+## 2026-08-17：V3 主链降复杂度修复（当前生产策略）
+
+- 旧 `AI_RUNTIME_MULTIMODAL_V3=on` 不再启用严格 V3，避免历史服务器环境变量把客户流量切回 Span/GroupKey 强校验；严格 V3 改为显式实验开关 `AI_RUNTIME_MULTIMODAL_V3_STRICT=on`。
+- 条件澄清知识问题取消“先用 task_id=0 预检索、再升级正式 Task”的两阶段链路；Intent 标记为需要知识后，先创建 `AIReplyTurnTask`，再使用真实 `TaskID + TaskKey` 执行唯一正式检索。
+- 生产主链恢复 V2 Intent/Reply/Validator，保留 Turn Version、Task 标签、CAS、Outbox 和任务级部分成功；模型仍负责组织客户语言，Evidence 不再覆盖模型答案。
+- 失败边界：知识检索失败只记录任务级技术失败，不自动升级人工；无命中由模型按当前任务说明资料不足或追问一个关键点，人工仅由明确业务意图触发。
+- 有效验证：`go test ./internal/ai/runtime/... -count=1`、`go test -tags dev ./internal/services -run 'AIReply|Outbox|MessageBatch' -count=1` 通过；不带 `dev` 标签的服务测试因独立 worktree 未生成 `web/out` 嵌入产物而不适用，未修改业务代码掩盖该环境差异。

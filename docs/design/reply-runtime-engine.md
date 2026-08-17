@@ -8,12 +8,12 @@
 >
 > AI 行为来源：当前仓库 `internal/ai/runtime/`、`internal/services/ai_reply_*` 与本文件
 
-2026-08-15 修复前生产基线为 `726b0f3`，测试2服务器
-`/opt/agentdesk/current -> /opt/agentdesk/releases/20260815-takeover-responsive-726b0f3`，
-`agentdesk.service=active`。环境变量 `AI_RUNTIME_MULTIMODAL_V3=on` 将 Intent、Reply、Validator
-和 authoritative ActionLedger 成组切换到 V3；单独设置某一 V3 模式不构成有效生产配置。
-FastGPT 与 NewAPI 是外部依赖，不部署在测试2服务器。本文件描述本次 V3 修复后的目标运行链；
-具体上线版本以发布目录内 `REVISION` 和仓库 Git SHA 为唯一证据。
+2026-08-17 起，生产主链使用 V2 的模型交互协议（IntentTasksV2、ReplyOutputV2、ValidatorV2）
+和 authoritative TaskLedger/Turn/CAS/Outbox 保护。旧环境变量 `AI_RUNTIME_MULTIMODAL_V3=on` 仅作兼容保留，
+不会再启用严格 V3；严格 Span/GroupKey 协议只有显式设置 `AI_RUNTIME_MULTIMODAL_V3_STRICT=on` 才能进入实验模式。
+条件澄清问题直接在正式 Task 持久化后检索，不再使用 `task_id=0` 的预检索升级链。模型生成的客户可见文本
+是最终语言来源，服务端只做任务覆盖、事实边界、动作和提交幂等校验，不用知识库原文覆盖成功答案。
+FastGPT 与 NewAPI 是外部依赖，不部署在测试2服务器。具体上线版本以发布目录内 `REVISION` 和仓库 Git SHA 为唯一证据。
 
 本轮生产审查使用的最新会话证据为：来一杯生椰拿铁 `conversation_id=2`，最新消息 `1559`、
 Turn `397`；其风 `conversation_id=3`，最新消息 `1557`、Turn `396`。审查同时覆盖 Message、
@@ -392,9 +392,9 @@ Token 预算优先级为稳定规则、当前 Task、权威 Fact、必需 Eviden
 `context_only/resolve_reference` Observation 进入，并显式禁止 `answer_text`、`recommend`、
 `assert_store_fact` 和资源动作。新主题不携带历史业务答案。
 
-V3 使用成组总开关 `AI_RUNTIME_MULTIMODAL_V3=on`。命中时强制设置 Intent V3、ContextCompiler V2
-实现、Reply V3、Validator V3 和 authoritative ActionLedger；禁止只开启其中一个阶段。对应
-`intent_detect_llm` 与 `reply_llm` 必须以 Responses 模式真实通过当前完整 Schema 测试。
+严格 V3 仅用于隔离实验，开关为 `AI_RUNTIME_MULTIMODAL_V3_STRICT=on`。生产不依赖模型计算
+SourceSpan，也不要求模型回显 AnswerGroup/groupKey；正常链路使用 V2 的轻量任务绑定。无论 V2 或实验 V3，
+知识 Evidence 都只是模型参考资料，成功知识答案由模型组织语言；服务端不能把 Evidence 原文投影成客户消息。
 
 ### 5.5 MessageAnalysis、DialogueState 与 Validator V3
 

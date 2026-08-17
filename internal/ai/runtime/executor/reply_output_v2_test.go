@@ -29,7 +29,7 @@ func TestRuntimeStructuredOutputContractsAreInvocationScoped(t *testing.T) {
 }
 
 func TestRuntimeStructuredOutputUsesV3ContractsAsAGroup(t *testing.T) {
-	t.Setenv("AI_RUNTIME_MULTIMODAL_V3", "on")
+	t.Setenv("AI_RUNTIME_MULTIMODAL_V3_STRICT", "on")
 	base := modelconfig.Config{ModelName: "deepseek-v4-flash", APIMode: "responses"}
 	replyConfig, err := withRuntimeReplyStructuredOutput(base)
 	if err != nil {

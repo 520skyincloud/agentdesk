@@ -26,6 +26,12 @@ const (
 
 	runtimeActionLedgerShadow        = "shadow"
 	runtimeActionLedgerAuthoritative = "authoritative"
+
+	// AI_RUNTIME_MULTIMODAL_V3 is retained as a compatibility variable because
+	// older deployments still carry it. It must not silently enable the strict
+	// span/group protocol. That protocol is opt-in through the explicit
+	// experimental switch below.
+	runtimeMultimodalV3StrictEnv = "AI_RUNTIME_MULTIMODAL_V3_STRICT"
 )
 
 type runtimeFeatureModes struct {
@@ -59,13 +65,17 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	// legacyRuntimeFeatureModes() 仅在 runtimeV2ScopeEnabled 白名单排除时作为回退手段保留。
 	modes := runtimeFeatureModes{
 		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerV2, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
-		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2, runtimeIntentContractV3),
-		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2, runtimeReplyContractV3),
-		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2, runtimeValidatorV3),
-		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
+		// V3 is deliberately excluded from ordinary environment overrides. A
+		// stale production variable must not re-enable the fragile span/group
+		// protocol after this rollout.
+		IntentContract: runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2),
+		ReplyContract:  runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2),
+		Validator:      runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2),
+		ActionLedger:   runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
 	}
-	// 成组开关：V3 必须整组启用。禁止只切 Intent，随后又把 ReplyOutputV3
-	// 降成 V2 校验；这种半链正是生产中协议修复放大和事实边界失效的根因。
+	// Strict V3 remains available for isolated experiments, but it is no longer
+	// activated by the old production flag. The normal serving path keeps the
+	// V2 model-facing contracts and the V2 task ledger protections together.
 	if multimodalV3Enabled() {
 		modes.IntentContract = runtimeIntentContractV3
 		modes.ContextCompiler = runtimeContextCompilerV2
@@ -76,11 +86,11 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	return modes
 }
 
-// multimodalV3Enabled 契约 2.1 成组总开关：AI_RUNTIME_MULTIMODAL_V3=on 时
-// Intent、Reply、Validator 必须分别走 intent_tasks.v3、reply_output.v3 和
-// validator.v3；三者不能拆开灰度。
+// multimodalV3Enabled is intentionally an explicit experimental opt-in. The
+// former AI_RUNTIME_MULTIMODAL_V3 flag is ignored for activation so an old
+// server environment cannot put customer traffic back on the strict path.
 func multimodalV3Enabled() bool {
-	return strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on"
+	return strings.TrimSpace(os.Getenv(runtimeMultimodalV3StrictEnv)) == "on"
 }
 
 func legacyRuntimeFeatureModes() runtimeFeatureModes {

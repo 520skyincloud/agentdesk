@@ -302,9 +302,10 @@ func TestV3ProtocolDegradeSplitsOneMultiQuestionVoiceWithoutFullTextCopies(t *te
 	}
 }
 
-// 契约 2.1：成组开关只允许整组（Intent V3 + Context V2）。
+// Strict V3 is an explicit experiment; the old production flag must not
+// silently move traffic back to the span/group protocol.
 func TestV3GroupFlagForcesIntentContract(t *testing.T) {
-	t.Setenv("AI_RUNTIME_MULTIMODAL_V3", "on")
+	t.Setenv("AI_RUNTIME_MULTIMODAL_V3_STRICT", "on")
 	t.Setenv("AI_RUNTIME_INTENT_CONTRACT", "v2")
 	resolved := resolveRuntimeFeatureModes(RunInput{})
 	if resolved.IntentContract != runtimeIntentContractV3 {
