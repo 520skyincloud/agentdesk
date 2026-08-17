@@ -81,3 +81,54 @@ func TestHighVectorScoreAloneCannotBecomeExactEvidence(t *testing.T) {
 		t.Fatalf("vector score alone must not authorize an answer: %+v", byTask["t-play"])
 	}
 }
+
+func TestColloquialProcedureQuestionUsesMatchingFAQEvidence(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "invoice", Title: "如何开具发票？",
+		Content: "问题：如何开具发票？ 答案：退房后在酒店小程序申请电子发票。", Score: 0.7847,
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-invoice", Intent: "hotel_info", SubIntent: "invoice_issuance", Query: "发票咋开",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+	if artifacts.ByTask["t-invoice"].Status != "has_context" {
+		t.Fatalf("matching colloquial FAQ must be answerable: %+v", artifacts.ByTask["t-invoice"])
+	}
+	if len(artifacts.Quality.Items) != 1 || artifacts.Quality.Items[0].TopicMatch != "exact" {
+		t.Fatalf("matching FAQ must become exact evidence: %+v", artifacts.Quality.Items)
+	}
+}
+
+func TestPromptContextResidueCannotBecomeHotelEvidence(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "polluted", Title: "问题。",
+		Content: "问题：问题。 答案：答案。 Okay, I will replicate the Context block first because the instruction explicitly requires it.", Score: 0.91,
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-razor", Intent: "service_request", SubIntent: "amenity_delivery_razor", Query: "有没有刮胡刀",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+	if artifacts.ByTask["t-razor"].Status != "no_context" || artifacts.ByTask["t-razor"].ReasonCode != "knowledge_meta_content" {
+		t.Fatalf("prompt residue must be blocked: %+v", artifacts.ByTask["t-razor"])
+	}
+}
+
+func TestDirectQASharedGenericTimeWordDoesNotCrossTopics(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "checkout", Title: "退房时间是什么时候？",
+		Content: "问题：退房时间是什么时候？ 答案：中午十二点。", Score: 0.92,
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "t-breakfast", Intent: "hotel_info", SubIntent: "breakfast_time", Query: "早餐时间",
+		Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content},
+	}}
+	artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+	if artifacts.ByTask["t-breakfast"].Status != "no_context" {
+		t.Fatalf("generic time wording must not cross business topics: %+v", artifacts.ByTask["t-breakfast"])
+	}
+}

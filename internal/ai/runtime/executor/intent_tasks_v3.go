@@ -106,6 +106,50 @@ const intentV3SystemPrompt = `你是酒店无人化客服系统的 IntentDetect 
 
 const intentV3MaxUtterancesPerBatch = 12
 
+type intentV3ProtocolDiagnostic struct {
+	Code            string
+	Path            string
+	RepairAttempted bool
+	RepairSucceeded bool
+	Degraded        bool
+}
+
+func newIntentV3ProtocolDiagnostic(err error) intentV3ProtocolDiagnostic {
+	code, _ := strictjson.CodeOf(err)
+	if strings.TrimSpace(code) == "" {
+		code = "unknown"
+	}
+	path, _ := strictjson.PathOf(err)
+	if strings.TrimSpace(path) == "" {
+		path = "$"
+	}
+	return intentV3ProtocolDiagnostic{Code: code, Path: path}
+}
+
+func mergeIntentV3ProtocolDiagnostic(current, incoming intentV3ProtocolDiagnostic) intentV3ProtocolDiagnostic {
+	if current.Code == "" {
+		current.Code = incoming.Code
+	}
+	if current.Path == "" {
+		current.Path = incoming.Path
+	}
+	current.RepairAttempted = current.RepairAttempted || incoming.RepairAttempted
+	current.RepairSucceeded = current.RepairSucceeded || incoming.RepairSucceeded
+	current.Degraded = current.Degraded || incoming.Degraded
+	return current
+}
+
+func applyIntentV3ProtocolDiagnostic(trace *callbacks.IntentTraceData, diagnostic intentV3ProtocolDiagnostic) {
+	if trace == nil || diagnostic.Code == "" {
+		return
+	}
+	trace.ProtocolErrorCode = diagnostic.Code
+	trace.ProtocolErrorPath = diagnostic.Path
+	trace.RepairAttempted = diagnostic.RepairAttempted
+	trace.RepairSucceeded = diagnostic.RepairSucceeded
+	trace.ProtocolDegraded = diagnostic.Degraded
+}
+
 // buildIntentV3Envelope constructs the envelope from the authoritative current
 // turn when a persisted turn is available. History is only a compatibility
 // fallback for non-coordinated calls. This prevents history window truncation
@@ -198,7 +242,10 @@ func parseIntentTasksV3Wire(content string) (intentTasksV3Wire, error) {
 		return intentTasksV3Wire{}, err
 	}
 	if parsed.SchemaVersion != contracts.SchemaIntentTasksV3 {
-		return intentTasksV3Wire{}, fmt.Errorf("intent v3 schema version mismatch")
+		return intentTasksV3Wire{}, &strictjson.ProtocolError{
+			Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.schemaVersion",
+			Message: "intent v3 schema version mismatch",
+		}
 	}
 	return parsed, nil
 }
@@ -396,7 +443,10 @@ func adaptIntentV3ToTrace(envelope contextcompiler.TurnInputEnvelope, parsed int
 	units := normalized.AcceptedUnits
 	degraded := strings.HasPrefix(normalized.Status, "degraded_")
 	if len(units) == 0 {
-		return callbacks.IntentTraceData{}, false, fmt.Errorf("intent v3 produced no question units")
+		return callbacks.IntentTraceData{}, false, &strictjson.ProtocolError{
+			Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.tasks",
+			Message: "intent v3 produced no question units",
+		}
 	}
 	// 复用 V2 适配：QuestionUnit -> IntentTaskV2 -> 能力派生 -> legacy trace。
 	v2Tasks := make([]contracts.IntentTaskV2, 0, len(units))
@@ -572,19 +622,33 @@ func detectRuntimeIntentV3(ctx context.Context, req RunInput, history adapter.Hi
 		return callbacks.IntentTraceData{}, fmt.Errorf("intent v3 envelope has no non-empty utterance")
 	}
 	outputs := make([]intentTasksV3Wire, 0, len(batches))
+	diagnostic := intentV3ProtocolDiagnostic{}
 	callNo := 0
 	for _, batch := range batches {
-		parsed, calls, batchErr := detectRuntimeIntentV3Batch(
+		parsed, calls, batchDiagnostic, batchErr := detectRuntimeIntentV3Batch(
 			intentCtx, req, batch, configs, resolved, intentConfig, chatModel, usageCapture, callNo,
 		)
 		callNo += calls
+		diagnostic = mergeIntentV3ProtocolDiagnostic(diagnostic, batchDiagnostic)
 		if batchErr != nil {
 			return callbacks.IntentTraceData{}, batchErr
 		}
 		outputs = append(outputs, parsed)
 	}
 	merged := mergeIntentV3BatchOutputs(outputs)
-	return adaptDone(envelope, merged, configs)
+	trace, adaptErr := adaptDone(envelope, merged, configs)
+	if adaptErr != nil {
+		mergedDiagnostic := newIntentV3ProtocolDiagnostic(adaptErr)
+		mergedDiagnostic.Degraded = true
+		diagnostic = mergeIntentV3ProtocolDiagnostic(diagnostic, mergedDiagnostic)
+		logIntentV3ProtocolDiagnostic(adaptErr, 0, callNo)
+		trace, adaptErr = degradeIntentV3(envelope, merged, configs, adaptErr)
+		if adaptErr != nil {
+			return callbacks.IntentTraceData{}, adaptErr
+		}
+	}
+	applyIntentV3ProtocolDiagnostic(&trace, diagnostic)
+	return trace, nil
 }
 
 func detectRuntimeIntentV3Batch(
@@ -597,10 +661,10 @@ func detectRuntimeIntentV3Batch(
 	chatModel model.ToolCallingChatModel,
 	usageCapture *usagex.Capture,
 	callOffset int,
-) (intentTasksV3Wire, int, error) {
+) (intentTasksV3Wire, int, intentV3ProtocolDiagnostic, error) {
 	userBlock, err := renderIntentV3EnvelopeBlock(envelope, configs)
 	if err != nil {
-		return intentTasksV3Wire{}, 0, err
+		return intentTasksV3Wire{}, 0, intentV3ProtocolDiagnostic{}, err
 	}
 	messages := []*schema.Message{schema.SystemMessage(intentV3SystemPrompt), schema.UserMessage(userBlock)}
 	startedAt := time.Now()
@@ -611,47 +675,48 @@ func detectRuntimeIntentV3Batch(
 	if err != nil {
 		channelbreaker.RecordFailure("intent_detect_v3", resolved.ModelName, time.Now())
 		recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, receiptOffset), callOffset+1, time.Since(startedAt).Milliseconds(), err)
-		return intentTasksV3Wire{}, 1, err
+		return intentTasksV3Wire{}, 1, intentV3ProtocolDiagnostic{}, err
 	}
 	channelbreaker.RecordSuccess("intent_detect_v3", resolved.ModelName)
 	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, receiptOffset), callOffset+1, time.Since(startedAt).Milliseconds(), nil)
 	parsed, protocolErr := parseIntentTasksV3Wire(result.Content)
-	if protocolErr != nil {
-		// 文档 §6.7：HTTP 200 不等于 Intent 合法；脱敏记录确定性错误码。
-		slog.Warn("intent v3 protocol diagnostic",
-			"stage", "intent", "contract", contracts.SchemaIntentTasksV3,
-			"error_code", intentV3ProtocolErrorCode(protocolErr),
-			"raw_bytes", len(result.Content), "attempt", callOffset+1,
-			"provider_status", 200)
-	}
 	if protocolErr == nil {
 		if _, adaptErr := adaptDone(envelope, parsed, configs); adaptErr == nil {
-			return parsed, 1, nil
+			return parsed, 1, intentV3ProtocolDiagnostic{}, nil
 		} else {
 			protocolErr = adaptErr
 		}
 	}
-	if protocolErr == nil || !runtimeProtocolRepairAllowed(protocolErr) {
-		return intentTasksV3Wire{}, 1, protocolErr
+	diagnostic := newIntentV3ProtocolDiagnostic(protocolErr)
+	logIntentV3ProtocolDiagnostic(protocolErr, len(result.Content), callOffset+1)
+	if protocolErr == nil || !runtimeIntentV3RepairAllowed(protocolErr) {
+		return intentTasksV3Wire{}, 1, diagnostic, protocolErr
 	}
-	repairMessages := append(append([]*schema.Message{}, messages...),
-		schema.AssistantMessage(result.Content, nil),
-		schema.UserMessage(buildIntentV3RepairInstruction(protocolErr)))
+	diagnostic.RepairAttempted = true
+	repairMessages := []*schema.Message{
+		schema.SystemMessage(intentV3SystemPrompt + "\n\n" + buildIntentV3RepairInstruction(protocolErr)),
+		schema.UserMessage(userBlock),
+	}
 	retryStartedAt := time.Now()
 	retryOffset := len(usageCapture.Receipts())
 	retryCtx, retryCancel := context.WithTimeout(ctx, runtimeIntentModelInvocationTimeout(intentConfig.TimeoutMS, intentConfig.MaxRetryCount))
 	retry, retryErr := chatModel.Generate(retryCtx, repairMessages)
 	retryCancel()
+	recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryOffset), callOffset+2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 	if retryErr == nil {
-		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryOffset), callOffset+2, time.Since(retryStartedAt).Milliseconds(), nil)
-		if retried, retryParseErr := parseIntentTasksV3Wire(retry.Content); retryParseErr == nil {
-			if _, retryAdaptErr := adaptDone(envelope, retried, configs); retryAdaptErr == nil {
-				return retried, 2, nil
-			}
+		retried, retryProtocolErr := parseIntentTasksV3Wire(retry.Content)
+		if retryProtocolErr == nil {
+			_, retryProtocolErr = adaptDone(envelope, retried, configs)
 		}
+		if retryProtocolErr == nil {
+			diagnostic.RepairSucceeded = true
+			return retried, 2, diagnostic, nil
+		}
+		logIntentV3ProtocolDiagnostic(retryProtocolErr, len(retry.Content), callOffset+2)
 	}
 	degraded, degradeErr := degradeIntentV3Wire(envelope)
-	return degraded, 2, degradeErr
+	diagnostic.Degraded = true
+	return degraded, 2, diagnostic, degradeErr
 }
 
 func splitIntentV3Envelope(envelope contextcompiler.TurnInputEnvelope, maxUtterances int) []contextcompiler.TurnInputEnvelope {
@@ -1049,10 +1114,45 @@ func degradeIntentV3Wire(envelope contextcompiler.TurnInputEnvelope) (intentTask
 }
 
 func buildIntentV3RepairInstruction(err error) string {
-	return "上一次输出违反 intent_tasks.v3 协议：" + err.Error() +
-		"\n请重新输出严格 JSON：每个非空 URef 恰好一条 utteranceCoverage；" +
+	code, _ := strictjson.CodeOf(err)
+	path, _ := strictjson.PathOf(err)
+	if path == "" {
+		path = "$"
+	}
+	return "【协议修复，仅此一次】\n上一次输出违反 intent_tasks.v3 协议。" +
+		"\nerrorCode=" + firstNonEmpty(code, "unknown") +
+		"\njsonPath=" + path +
+		"\n请根据同一份 CURRENT_TURN_ENVELOPE 重新输出完整严格 JSON；不得补写或猜测上一版输出。" +
+		"\n每个非空 URef 恰好一条 utteranceCoverage；" +
 		"sourceSpan.quote 必须是对应 utterance.text 的连续原文片段（0-based rune offset，end exclusive）；" +
 		"ignored 只允许 duplicate_equivalent，且必须存在归一化后完全相同的 covered 输入。"
+}
+
+func runtimeIntentV3RepairAllowed(err error) bool {
+	code, ok := strictjson.CodeOf(err)
+	if !ok {
+		return false
+	}
+	switch code {
+	case strictjson.ErrorJSONRootNotObject, strictjson.ErrorJSONSyntaxInvalid,
+		strictjson.ErrorJSONDuplicateKey, strictjson.ErrorJSONUnknownField,
+		strictjson.ErrorJSONTrailingContent, strictjson.ErrorJSONSchemaInvalid,
+		strictjson.ErrorJSONReferenceInvalid, strictjson.ErrorJSONBusinessInvariant:
+		return true
+	default:
+		return false
+	}
+}
+
+func logIntentV3ProtocolDiagnostic(err error, rawBytes, attempt int) {
+	path, _ := strictjson.PathOf(err)
+	if path == "" {
+		path = "$"
+	}
+	slog.Warn("intent v3 protocol diagnostic",
+		"stage", "intent", "contract", contracts.SchemaIntentTasksV3,
+		"error_code", intentV3ProtocolErrorCode(err), "json_path", path,
+		"raw_bytes", rawBytes, "attempt", attempt, "provider_status", 200)
 }
 
 // intentV3ProtocolErrorCode 从 strictjson/协议错误中提取确定性错误码。

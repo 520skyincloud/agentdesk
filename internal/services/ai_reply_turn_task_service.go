@@ -845,14 +845,13 @@ func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
 		updates := map[string]any{
 			"stage":                stage,
 			"status":               status,
-			"result_code":          "committed",
+			"result_code":          aiReplyTaskCommitResultCode(task, delivered),
 			"committed_message_id": messageID,
 			"updated_at":           now,
 			"update_user_name":     "ai_reply_commit",
 		}
 		if delivered {
 			updates["completed_at"] = now
-			updates["result_code"] = "delivered"
 		}
 		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, updates); err != nil {
 			return err
@@ -866,6 +865,24 @@ func (s *aiReplyTurnTaskService) MarkCommittedMessagesDB(
 		}
 	}
 	return nil
+}
+
+func aiReplyTaskCommitResultCode(task *models.AIReplyTurnTask, delivered bool) string {
+	base := "committed"
+	if delivered {
+		base = "delivered"
+	}
+	if task == nil || task.TaskType != enums.AIReplyTurnTaskTypeKnowledge {
+		return base
+	}
+	switch task.KnowledgeStatus {
+	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
+		return base + "_no_hit"
+	case enums.AIReplyTurnTaskKnowledgeStatusNoContext:
+		return base + "_no_context"
+	default:
+		return base
+	}
 }
 
 func (s *aiReplyTurnTaskService) MarkSuppressedActionsDB(
@@ -925,9 +942,13 @@ func (s *aiReplyTurnTaskService) MarkDeliveredByMessageDB(db *gorm.DB, message *
 		Where("tenant_id = ? AND turn_id = ? AND committed_message_id = ? AND status = ?",
 			message.TenantID, message.AIReplyTurnID, message.ID, enums.AIReplyTurnTaskStatusCommitted).
 		Updates(map[string]any{
-			"stage":            enums.AIReplyTurnTaskStageComplete,
-			"status":           enums.AIReplyTurnTaskStatusDelivered,
-			"result_code":      "delivered",
+			"stage":  enums.AIReplyTurnTaskStageComplete,
+			"status": enums.AIReplyTurnTaskStatusDelivered,
+			"result_code": gorm.Expr(
+				"CASE WHEN knowledge_status = ? THEN ? WHEN knowledge_status = ? THEN ? ELSE ? END",
+				enums.AIReplyTurnTaskKnowledgeStatusNoContext, "delivered_no_context",
+				enums.AIReplyTurnTaskKnowledgeStatusNoHit, "delivered_no_hit", "delivered",
+			),
 			"completed_at":     deliveredAt,
 			"updated_at":       deliveredAt,
 			"update_user_name": "ai_reply_delivery",
@@ -1847,6 +1868,11 @@ func (s *aiReplyTurnTaskService) requirementCommitEvidence(db *gorm.DB, task *mo
 	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
 		if retrieveLog.ExecutionStatus != "no_hit" || retrieveLog.HitCount != 0 {
 			return "", "", fmt.Errorf("AI reply knowledge task %s no-hit evidence is invalid", task.TaskKey)
+		}
+		return "no_hit", retrieveRef, nil
+	case enums.AIReplyTurnTaskKnowledgeStatusNoContext:
+		if retrieveLog.ExecutionStatus != "succeeded" || retrieveLog.HitCount <= 0 {
+			return "", "", fmt.Errorf("AI reply knowledge task %s no-context evidence is invalid", task.TaskKey)
 		}
 		return "no_hit", retrieveRef, nil
 	default:

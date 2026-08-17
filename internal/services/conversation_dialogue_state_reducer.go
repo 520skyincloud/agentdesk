@@ -263,7 +263,7 @@ func dialogueOpenTaskState(task models.AIReplyTurnTask) string {
 	switch task.KnowledgeStatus {
 	case enums.AIReplyTurnTaskKnowledgeStatusPending:
 		return "awaiting_knowledge"
-	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
+	case enums.AIReplyTurnTaskKnowledgeStatusNoHit, enums.AIReplyTurnTaskKnowledgeStatusNoContext:
 		return "awaiting_customer"
 	}
 	if task.TaskType == enums.AIReplyTurnTaskTypeResource || task.TaskType == enums.AIReplyTurnTaskTypeHuman {

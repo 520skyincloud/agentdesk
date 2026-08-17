@@ -12,9 +12,16 @@ type RuntimeTraceCollector struct {
 
 func NewRuntimeTraceCollector() *RuntimeTraceCollector {
 	ret := &RuntimeTraceCollector{}
-	ret.Data.Version = "v1"
+	ret.Data.Version = "v2"
 	ret.Data.Status = "started"
 	return ret
+}
+
+func (c *RuntimeTraceCollector) SetRuntimeMode(version, mode string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.Version = version
+	c.Data.RuntimeMode = mode
 }
 
 func (c *RuntimeTraceCollector) Marshal() string {

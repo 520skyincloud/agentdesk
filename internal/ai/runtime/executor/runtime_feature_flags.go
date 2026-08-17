@@ -36,6 +36,21 @@ type runtimeFeatureModes struct {
 	ActionLedger    string
 }
 
+func runtimeTraceIdentity(modes runtimeFeatureModes) (string, string) {
+	version := "v2"
+	if modes.IntentContract == runtimeIntentContractV3 || modes.ReplyContract == runtimeReplyContractV3 || modes.Validator == runtimeValidatorV3 {
+		version = "v3"
+	}
+	mode := strings.Join([]string{
+		"context=" + modes.ContextCompiler,
+		"intent=" + modes.IntentContract,
+		"reply=" + modes.ReplyContract,
+		"validator=" + modes.Validator,
+		"ledger=" + modes.ActionLedger,
+	}, ";")
+	return version, mode
+}
+
 func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	if !runtimeV2ScopeEnabled(req) {
 		return legacyRuntimeFeatureModes()

@@ -64,6 +64,15 @@ func CodeOf(err error) (string, bool) {
 	return protocolErr.Code, protocolErr.Code != ""
 }
 
+func PathOf(err error) (string, bool) {
+	var protocolErr *ProtocolError
+	if !errors.As(err, &protocolErr) || protocolErr == nil {
+		return "", false
+	}
+	path := strings.TrimSpace(protocolErr.Path)
+	return path, path != ""
+}
+
 func DecodeObject[T any](raw []byte, opts DecodeOptions) (T, error) {
 	var zero T
 	if opts.MaxBytes > 0 && int64(len(raw)) > opts.MaxBytes {

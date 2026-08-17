@@ -1,10 +1,21 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 
 	"agent-desk/internal/models"
 )
+
+func TestRuntimeTraceIdentityReportsEffectiveV3Mode(t *testing.T) {
+	version, mode := runtimeTraceIdentity(runtimeFeatureModes{
+		ContextCompiler: runtimeContextCompilerV2, IntentContract: runtimeIntentContractV3,
+		ReplyContract: runtimeReplyContractV3, Validator: runtimeValidatorV3, ActionLedger: runtimeActionLedgerAuthoritative,
+	})
+	if version != "v3" || !strings.Contains(mode, "intent=v3") || !strings.Contains(mode, "reply=v3") {
+		t.Fatalf("unexpected trace identity: version=%q mode=%q", version, mode)
+	}
+}
 
 func TestResolveRuntimeFeatureModesDefaultsToV2(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{TenantID: 1, StoreID: 2, StoreStaffBindingID: 3}}

@@ -91,11 +91,12 @@ type InstructionTraceSummary struct {
 }
 
 type RuntimeTraceData struct {
-	Version   string         `json:"version"`
-	Status    string         `json:"status"`
-	RunID     string         `json:"runId,omitempty"`
-	Skill     SkillTraceData `json:"skill,omitempty"`
-	Interrupt struct {
+	Version     string         `json:"version"`
+	RuntimeMode string         `json:"runtimeMode,omitempty"`
+	Status      string         `json:"status"`
+	RunID       string         `json:"runId,omitempty"`
+	Skill       SkillTraceData `json:"skill,omitempty"`
+	Interrupt   struct {
 		CheckPointID string                  `json:"checkPointId,omitempty"`
 		Items        []InterruptTraceContext `json:"items,omitempty"`
 	} `json:"interrupt"`
@@ -213,6 +214,11 @@ type IntentTraceData struct {
 	MatchedConfig     string                    `json:"matchedConfig,omitempty"`
 	MatchMode         string                    `json:"matchMode,omitempty"`
 	Reason            string                    `json:"reason,omitempty"`
+	ProtocolErrorCode string                    `json:"protocolErrorCode,omitempty"`
+	ProtocolErrorPath string                    `json:"protocolErrorPath,omitempty"`
+	RepairAttempted   bool                      `json:"repairAttempted,omitempty"`
+	RepairSucceeded   bool                      `json:"repairSucceeded,omitempty"`
+	ProtocolDegraded  bool                      `json:"protocolDegraded,omitempty"`
 }
 
 // IntentCoverageTraceData records the durable outcome of one current-turn

@@ -84,6 +84,15 @@ func Judge(input EvidenceJudgeInput) EvidenceJudgeResult {
 		result.AllowedUses = []string{"resolve_reference"}
 		return result
 	}
+	// Structured FAQ answers are atomic question/answer records. A merely related
+	// question may be useful for reference resolution, but must not become answer
+	// evidence for a different business topic.
+	if looksLikeDirectQA(input.Candidate.Title, input.Candidate.Content) && result.TopicMatch != "exact" {
+		result.Answerability = "context_only"
+		result.BlockedReasons = appendUnique(result.BlockedReasons, "direct_qa_topic_not_exact")
+		result.AllowedUses = []string{"resolve_reference"}
+		return result
+	}
 
 	switch result.ClaimType {
 	case "recommendation":
@@ -161,7 +170,7 @@ func InferClaimType(query, title, content string) string {
 	if containsAny(text, "推荐", "攻略", "好玩", "去哪", "哪里玩", "周边", "附近有什么", "吃什么", "有哪些景点") {
 		return "recommendation"
 	}
-	if containsAny(text, "怎么", "如何", "流程", "步骤", "办理", "操作", "使用方法") {
+	if containsAny(text, "怎么", "如何", "咋", "怎样", "怎么办", "咋办", "咋弄", "流程", "步骤", "办理", "操作", "使用方法") {
 		return "procedure"
 	}
 	if containsAny(text, "政策", "规定", "收费", "退款", "取消", "押金", "最晚", "最早", "能不能", "可以吗") {
@@ -180,6 +189,17 @@ func InferFactScope(query, claimType string) string {
 
 func LooksLikeMetaContent(title, content string) bool {
 	text := normalizeText(strings.Join([]string{title, content}, " "))
+	contentText := normalizeText(content)
+	if containsAny(text,
+		"contextblock", "theinputcontext", "replicatethecontext", "copythecontext",
+		"okayiwill", "tokenlimits", "outputshouldstart", "instructionexplicitly",
+		"standardbehavior", "systemprompt", "userprompt", "assistantmessage",
+		"上下文块", "复制上下文", "输出应该", "指令要求", "令牌限制") {
+		return true
+	}
+	if normalizeText(title) == "问题" && strings.HasPrefix(contentText, "问题问题答案答案") {
+		return true
+	}
 	if containsAny(text, "用户可能通过哪些", "用户可能怎么问", "用户会如何询问", "不同的方式向助手询问") {
 		return true
 	}
@@ -253,7 +273,32 @@ func structuredQATopicMatch(task Task, normalizedQuery string, candidate rag.Ret
 		return InferFactScope(normalizedQuery, queryType) == InferFactScope(candidate.Title, titleType) &&
 			bigramJaccard(normalizedQuery, title) >= 0.08
 	}
-	return bigramJaccard(normalizedQuery, title) >= 0.22
+	return candidate.Score >= 0.64 && businessTopicMatch(normalizedQuery, title)
+}
+
+func businessTopicMatch(query, title string) bool {
+	queryCore := businessTopicCore(query)
+	titleCore := businessTopicCore(title)
+	if queryCore == "" || titleCore == "" {
+		return false
+	}
+	if strings.Contains(queryCore, titleCore) || strings.Contains(titleCore, queryCore) {
+		return true
+	}
+	return bigramJaccard(queryCore, titleCore) >= 0.22
+}
+
+func businessTopicCore(value string) string {
+	value = normalizeText(value)
+	replacer := strings.NewReplacer(
+		"可不可以", "", "可以不可以", "", "是否提供", "", "有没有", "", "是否有", "",
+		"使用方法", "", "怎么办", "", "咋开", "", "咋弄", "", "咋办", "", "怎么样", "", "怎样", "",
+		"在哪里", "", "在哪儿", "", "什么时间", "", "如何", "", "怎么", "", "能不能", "",
+		"开具", "", "申请", "", "办理", "", "操作", "", "流程", "", "步骤", "",
+		"是否", "", "提供", "", "位置", "", "时间", "", "几点", "", "在哪", "",
+		"有吗", "", "可以吗", "", "吗", "", "呢", "", "呀", "", "啊", "",
+	)
+	return strings.TrimSpace(replacer.Replace(value))
 }
 
 func structuredTaskRequestsRecommendation(task Task, normalizedQuery string) bool {

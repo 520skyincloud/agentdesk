@@ -42,6 +42,8 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		InvokedToolCodes: make([]string, 0),
 	}
 	collector := callbacks.NewRuntimeTraceCollector()
+	traceVersion, runtimeMode := runtimeTraceIdentity(resolveRuntimeFeatureModes(req))
+	collector.SetRuntimeMode(traceVersion, runtimeMode)
 	collector.Data.RunID = summary.RunID
 	summary.ModelName = req.ModelConfig.ModelName
 	collector.Data.Model.Provider = string(req.ModelConfig.Provider)

@@ -46,9 +46,10 @@ const (
 type AIReplyTurnTaskKnowledgeStatus string
 
 const (
-	AIReplyTurnTaskKnowledgeStatusNone    AIReplyTurnTaskKnowledgeStatus = "none"
-	AIReplyTurnTaskKnowledgeStatusPending AIReplyTurnTaskKnowledgeStatus = "pending"
-	AIReplyTurnTaskKnowledgeStatusHit     AIReplyTurnTaskKnowledgeStatus = "hit"
-	AIReplyTurnTaskKnowledgeStatusNoHit   AIReplyTurnTaskKnowledgeStatus = "no_hit"
-	AIReplyTurnTaskKnowledgeStatusFailed  AIReplyTurnTaskKnowledgeStatus = "failed"
+	AIReplyTurnTaskKnowledgeStatusNone      AIReplyTurnTaskKnowledgeStatus = "none"
+	AIReplyTurnTaskKnowledgeStatusPending   AIReplyTurnTaskKnowledgeStatus = "pending"
+	AIReplyTurnTaskKnowledgeStatusHit       AIReplyTurnTaskKnowledgeStatus = "hit"
+	AIReplyTurnTaskKnowledgeStatusNoHit     AIReplyTurnTaskKnowledgeStatus = "no_hit"
+	AIReplyTurnTaskKnowledgeStatusNoContext AIReplyTurnTaskKnowledgeStatus = "no_context"
+	AIReplyTurnTaskKnowledgeStatusFailed    AIReplyTurnTaskKnowledgeStatus = "failed"
 )

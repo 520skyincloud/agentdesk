@@ -144,17 +144,29 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	}
 	wg.Wait()
 
+	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
+	artifacts := buildRuntimeEvidenceArtifacts(req, items, outcome.Prefetched)
+	for index := range items {
+		if items[index].Status != enums.AIReplyTurnTaskKnowledgeStatusHit {
+			continue
+		}
+		if taskOutcome := artifacts.ByTask[items[index].TaskKey]; taskOutcome.Status != "has_context" {
+			items[index].Status = enums.AIReplyTurnTaskKnowledgeStatusNoContext
+			items[index].AnswerGroup = ""
+		}
+	}
+
 	updates := make([]services.AIReplyTurnTaskKnowledgeUpdate, 0, len(items))
 	failed := make(map[string]struct{})
 	for _, item := range items {
 		outcome.KnowledgeTaskIDs = append(outcome.KnowledgeTaskIDs, item.TaskKey)
-		resultCode := string(item.Status)
+		taskOutcome := artifacts.ByTask[item.TaskKey]
+		resultCode := runtimeKnowledgeResultCode(item.Status, taskOutcome)
 		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-			resultCode = "knowledge_unavailable"
 			outcome.FailedTaskKeys = append(outcome.FailedTaskKeys, item.TaskKey)
 			failed[item.TaskKey] = struct{}{}
 		}
-		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusNoHit {
+		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusNoHit || item.Status == enums.AIReplyTurnTaskKnowledgeStatusNoContext {
 			outcome.NoHitTaskKeys = append(outcome.NoHitTaskKeys, item.TaskKey)
 		}
 		hitCount := 0
@@ -184,14 +196,58 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 		outcome.ActiveTaskPlans = active
 	}
 	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
-	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
-	artifacts := buildRuntimeEvidenceArtifacts(req, items, outcome.Prefetched)
 	outcome.Evidence = artifacts.Legacy
 	outcome.EvidenceV2 = artifacts.Quality
 	outcome.ResourceEligibility = artifacts.ResourceEligibility
 	outcome.KnowledgeByTask = artifacts.ByTask
 	outcome.TaskActionCodes = artifacts.TaskActionCodes
 	return outcome, nil
+}
+
+func runtimeKnowledgeResultCode(status enums.AIReplyTurnTaskKnowledgeStatus, outcome AnswerabilityOutcome) string {
+	switch status {
+	case enums.AIReplyTurnTaskKnowledgeStatusFailed:
+		return "knowledge_unavailable"
+	case enums.AIReplyTurnTaskKnowledgeStatusNoContext:
+		return firstNonEmpty(strings.TrimSpace(outcome.ReasonCode), "knowledge_no_context")
+	case enums.AIReplyTurnTaskKnowledgeStatusNoHit:
+		return "no_hit"
+	default:
+		return string(status)
+	}
+}
+
+func summarizeRuntimeTaskAnswerability(byTask map[string]AnswerabilityOutcome) callbacks.AnswerabilityTraceData {
+	if len(byTask) == 0 {
+		return callbacks.AnswerabilityTraceData{Status: "skipped", Reason: "no knowledge task"}
+	}
+	hasContext := 0
+	noContext := 0
+	unavailable := 0
+	missing := make([]string, 0, len(byTask))
+	for taskKey, outcome := range byTask {
+		switch outcome.Status {
+		case "has_context":
+			hasContext++
+		case "unavailable", "unanswerable":
+			unavailable++
+			missing = append(missing, taskKey+":"+firstNonEmpty(outcome.ReasonCode, "knowledge_unavailable"))
+		default:
+			noContext++
+			missing = append(missing, taskKey+":"+firstNonEmpty(outcome.ReasonCode, "knowledge_no_context"))
+		}
+	}
+	sort.Strings(missing)
+	switch {
+	case hasContext > 0 && noContext == 0 && unavailable == 0:
+		return callbacks.AnswerabilityTraceData{Status: "has_context", Reason: "all knowledge tasks have supporting evidence"}
+	case hasContext > 0:
+		return callbacks.AnswerabilityTraceData{Status: "partial_context", Reason: "some knowledge tasks lack supporting evidence", MissingInfo: missing}
+	case unavailable > 0 && noContext == 0:
+		return callbacks.AnswerabilityTraceData{Status: "unanswerable", Reason: "knowledge retrieval unavailable", MissingInfo: missing}
+	default:
+		return callbacks.AnswerabilityTraceData{Status: "no_context", Reason: "no supporting evidence after quality gate", MissingInfo: missing}
+	}
 }
 
 func runtimePlansHaveAuthoritativeSources(plans []callbacks.ReplyTaskPlanTraceData) bool {

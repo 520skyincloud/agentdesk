@@ -8,6 +8,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/strictjson"
 )
 
 // Schema 和 Go Wire 必须使用同一字段名。生产模型按 Schema 输出
@@ -41,6 +42,20 @@ func TestParseIntentTasksV3AcceptsSchemaNormalizedText(t *testing.T) {
 	}
 	if len(parsed.Tasks) != 1 || parsed.Tasks[0].Normalized != "有咖啡吗" {
 		t.Fatalf("normalized text not decoded: %+v", parsed.Tasks)
+	}
+}
+
+func TestIntentV3RepairUsesCodeAndPathWithoutPreviousOutput(t *testing.T) {
+	err := &strictjson.ProtocolError{Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.tasks[0].sourceSpans", Message: "invalid span"}
+	if !runtimeIntentV3RepairAllowed(err) {
+		t.Fatal("V3 business invariant must receive the single protocol repair")
+	}
+	instruction := buildIntentV3RepairInstruction(err)
+	if !strings.Contains(instruction, "errorCode=json_business_invariant") || !strings.Contains(instruction, "jsonPath=$.tasks[0].sourceSpans") {
+		t.Fatalf("repair diagnostic missing code/path: %q", instruction)
+	}
+	if strings.Contains(instruction, "第一次输出") || strings.Contains(instruction, "invalid span") {
+		t.Fatalf("repair instruction leaked prior model output or verbose error: %q", instruction)
 	}
 }
 

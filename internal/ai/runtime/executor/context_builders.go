@@ -61,6 +61,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	}
 	if collector != nil {
 		collector.SetPipeline(plan.Normalize, plan.Intent, plan.PromptSelect, plan.Context, plan.ToolKnowledge, plan.ReplyPlan, plan.Generate, plan.Validate)
+		collector.SetAnswerability(summarizeRuntimeTaskAnswerability(plan.KnowledgeByTask))
 		collector.SetActionLedger(buildInitialActionLedger(plan.Intent))
 	}
 	if len(plan.DeferredTaskKeys) > 0 && len(plan.ReplyPlan.TaskPlans) == 0 {
