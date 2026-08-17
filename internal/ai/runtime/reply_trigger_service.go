@@ -320,6 +320,11 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	}
 	merged := message
 	merged.Content = "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题；如果前面是图片、语音、文件，后面的短句通常是在追问它：\n" + strings.Join(parts, "\n")
+	// This is an in-memory semantic projection, not the original message. Mark
+	// it as text so the runtime does not parse the current voice payload again
+	// and discard the earlier burst items.
+	merged.MessageType = enums.IMMessageTypeText
+	merged.Payload = ""
 	return merged
 }
 

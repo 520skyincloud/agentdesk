@@ -162,6 +162,9 @@ func TestMergeRecentCustomerBurstMessageKeepsMediaContext(t *testing.T) {
 	if !strings.Contains(merged.Content, "按顺序合并理解") {
 		t.Fatalf("expected explicit burst instruction, got: %s", merged.Content)
 	}
+	if merged.MessageType != enums.IMMessageTypeText || merged.Payload != "" {
+		t.Fatalf("expected merged semantic projection to be text without media payload: type=%s payload=%q", merged.MessageType, merged.Payload)
+	}
 }
 
 func TestMergeRecentCustomerBurstMessageSkipsPreviousSession(t *testing.T) {

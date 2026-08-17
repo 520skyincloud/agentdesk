@@ -105,8 +105,12 @@ func TestBuildRuntimeMessageTextWithPayloadKeepsMediaUnderstandingInContext(t *t
 
 	voicePayload := `{"mediaText":"确认，麻烦帮我送两瓶水。","mediaUnderstandingStatus":"understood"}`
 	voiceGot := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "", voicePayload)
-	if voiceGot != "[语音]\n语音内容是：确认，麻烦帮我送两瓶水。" {
+	if voiceGot != "确认，麻烦帮我送两瓶水。" {
 		t.Fatalf("unexpected voice runtime context: %q", voiceGot)
+	}
+	textGot := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeText, "确认，麻烦帮我送两瓶水。", "")
+	if voiceGot != textGot {
+		t.Fatalf("voice and equivalent text must share canonical runtime text: voice=%q text=%q", voiceGot, textGot)
 	}
 
 	summaryPayload := `{"mediaSummary":"账单截图，包含房费金额。","mediaUnderstandingStatus":"understood"}`
@@ -116,11 +120,23 @@ func TestBuildRuntimeMessageTextWithPayloadKeepsMediaUnderstandingInContext(t *t
 	}
 }
 
+func TestBuildRuntimeMessageTextWithPayloadUsesVoiceSummaryOnlyWhenTranscriptMissing(t *testing.T) {
+	payload := `{"mediaSummary":"客户询问停车信息。","mediaUnderstandingStatus":"understood"}`
+	got := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "wx_protocol_1003228.mp3", payload)
+	if got != "客户询问停车信息。" {
+		t.Fatalf("expected summary as canonical fallback, got: %q", got)
+	}
+}
+
 func TestBuildRuntimeMessageTextWithPayloadDropsUntranscribedVoice(t *testing.T) {
 	payload := `{"filename":"wx_protocol_1003228.mp3","mediaUnderstandingStatus":"failed"}`
 	got := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "wx_protocol_1003228.mp3", payload)
 	if got != "" {
 		t.Fatalf("expected failed voice to be hidden from runtime context, got: %q", got)
+	}
+	withStaleText := `{"mediaText":"这条语音我没听清，请打字补充。","mediaUnderstandingStatus":"failed"}`
+	if got := BuildRuntimeMessageTextWithPayload(enums.IMMessageTypeVoice, "wx_protocol_1003228.mp3", withStaleText); got != "" {
+		t.Fatalf("failed ASR text must not enter semantic context, got: %q", got)
 	}
 }
 

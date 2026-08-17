@@ -748,8 +748,7 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 	}
 	primary := ""
 	hasHuman := false
-	hasVariable := false
-	hasCheckinKnowledge := false
+	hasAnswerableBusiness := false
 	hasKnowledge := false
 	hasResource := false
 	resourceActions := make([]string, 0)
@@ -764,7 +763,6 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 			hasHuman = true
 			task.NeedsHumanRoute = true
 		case "hotel_variable":
-			hasVariable = true
 			hasResource = true
 			task.NeedsResource = true
 			_, task.ResourceAction = normalizeHotelVariableResourceAction(task.ResourceAction, "", task.SubIntent)
@@ -772,11 +770,12 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 				resourceActions = appendIfMissing(resourceActions, task.ResourceAction)
 			}
 		case "hotel_info":
+			hasAnswerableBusiness = true
 			hasKnowledge = true
 			task.NeedsKnowledge = true
-			if isCheckinProcessSubIntent(task.SubIntent) {
-				hasCheckinKnowledge = true
-			}
+		}
+		if task.Intent == "hotel_variable" || task.Intent == "service_request" || task.NeedsKnowledge || task.NeedsResource {
+			hasAnswerableBusiness = true
 		}
 		if task.NeedsKnowledge {
 			hasKnowledge = true
@@ -785,20 +784,9 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 			hasResource = true
 		}
 	}
-	if hasHuman {
-		primary = "human_complaint_risk"
-	} else if hasCheckinKnowledge {
-		primary = "hotel_info"
-	} else if hasVariable {
-		primary = "hotel_variable"
-	} else {
-		for _, task := range intent.IntentTasks {
-			if task.Intent != "interaction" {
-				primary = task.Intent
-				break
-			}
-		}
-	}
+	// Choose the primary from the normalized task list so a human task placed
+	// first by the model cannot hide a later hotel task.
+	primary = primaryRuntimeIntentFromTasks(intent.IntentTasks)
 	if primary == "" && len(intent.IntentTasks) > 0 {
 		primary = intent.IntentTasks[0].Intent
 	}
@@ -820,7 +808,15 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 	intent.SecondaryIntentCodes = mergeStringLists(secondary, intent.SecondaryIntentCodes)
 	intent.NeedsKnowledge = hasKnowledge
 	intent.NeedsResource = hasResource
-	intent.NeedsHumanRoute = hasHuman
+	// Human routing is a task capability. It may not suppress a knowledge,
+	// resource, or ordinary service task in the same customer turn. The human
+	// task remains in IntentTasks and is handled by the task ledger; the
+	// top-level flag is reserved for human-only turns so the normal knowledge
+	// and Generate stages can still run.
+	intent.NeedsHumanRoute = hasHuman && !hasAnswerableBusiness
+	if !intent.NeedsHumanRoute {
+		intent.HumanRoutePolicy = ""
+	}
 	if len(resourceActions) > 0 {
 		intent.ResourceActions = resourceActions
 		intent.ResourceAction = resourceActions[0]
@@ -835,6 +831,40 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 		}
 	}
 	return intent
+}
+
+func primaryRuntimeIntentFromTasks(tasks []callbacks.IntentTaskTraceData) string {
+	for _, task := range tasks {
+		if task.Intent == "hotel_info" && isCheckinProcessSubIntent(task.SubIntent) {
+			return "hotel_info"
+		}
+	}
+	for _, task := range tasks {
+		if task.Intent == "hotel_variable" {
+			return "hotel_variable"
+		}
+	}
+	for _, task := range tasks {
+		if task.Intent == "hotel_info" {
+			return "hotel_info"
+		}
+	}
+	for _, task := range tasks {
+		if task.Intent != "interaction" && task.Intent != "human_complaint_risk" {
+			return task.Intent
+		}
+	}
+	for _, task := range tasks {
+		if task.Intent != "human_complaint_risk" {
+			return task.Intent
+		}
+	}
+	for _, task := range tasks {
+		if task.Intent != "" {
+			return task.Intent
+		}
+	}
+	return ""
 }
 
 func firstTaskSubIntentForPrimary(tasks []callbacks.IntentTaskTraceData, primary string) string {

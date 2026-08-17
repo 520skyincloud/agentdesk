@@ -155,11 +155,24 @@ func BuildRuntimeMessageText(messageType enums.IMMessageType, content string) st
 }
 
 func BuildRuntimeMessageTextWithPayload(messageType enums.IMMessageType, content string, payload string) string {
-	base := BuildRuntimeMessageText(messageType, content)
-	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
-	if messageType == enums.IMMessageTypeVoice && mediaText == "" && mediaSummary == "" {
+	// ASR transcript is the canonical business input. Do not prefix it with
+	// media labels or the stored audio filename: every semantic stage must see
+	// the same text as an equivalent customer text message.
+	if messageType == enums.IMMessageTypeVoice {
+		mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
+		if mediaStatus != "" && mediaStatus != "understood" && mediaStatus != "ready" {
+			return ""
+		}
+		if mediaText != "" {
+			return mediaText
+		}
+		if mediaSummary != "" {
+			return mediaSummary
+		}
 		return ""
 	}
+	base := BuildRuntimeMessageText(messageType, content)
+	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)
 	if mediaText != "" {
 		return strings.TrimSpace(base + "\n" + runtimeMediaUnderstandingLabel(messageType) + "：" + mediaText)
 	}

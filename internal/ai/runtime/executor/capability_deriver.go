@@ -176,6 +176,8 @@ func AdaptIntentV2ToLegacyTrace(v2 contracts.IntentTasksV2, derived []DerivedTas
 	}
 	trace.IntentTasks = make([]callbacks.IntentTaskTraceData, 0, len(derived))
 	allNoReply := true
+	hasHuman := false
+	hasAnswerableBusiness := false
 	for index, item := range derived {
 		task := item.Task
 		trace.IntentTasks = append(trace.IntentTasks, callbacks.IntentTaskTraceData{
@@ -201,7 +203,12 @@ func AdaptIntentV2ToLegacyTrace(v2 contracts.IntentTasksV2, derived []DerivedTas
 		trace.NeedsKnowledge = trace.NeedsKnowledge || item.NeedsKnowledge
 		trace.NeedsResource = trace.NeedsResource || item.NeedsResource
 		trace.NeedsTool = trace.NeedsTool || item.NeedsTool
-		trace.NeedsHumanRoute = trace.NeedsHumanRoute || item.NeedsHumanRoute
+		if item.NeedsHumanRoute {
+			hasHuman = true
+		}
+		if item.NeedsKnowledge || item.NeedsResource || task.Intent == "hotel_info" || task.Intent == "hotel_variable" || task.Intent == "service_request" {
+			hasAnswerableBusiness = true
+		}
 		trace.NeedsClarification = trace.NeedsClarification || item.NeedsClarification
 		if item.ResourceAction != "" {
 			trace.ResourceActions = appendIfMissing(trace.ResourceActions, item.ResourceAction)
@@ -211,6 +218,29 @@ func AdaptIntentV2ToLegacyTrace(v2 contracts.IntentTasksV2, derived []DerivedTas
 			trace.HumanRoutePolicy = item.HumanRoutePolicy
 		}
 		allNoReply = allNoReply && item.NoReply
+	}
+	if primary := primaryRuntimeIntentFromTasks(trace.IntentTasks); primary != "" {
+		trace.PrimaryIntent = primary
+		trace.MatchedIntentCode = primary
+		secondary := make([]string, 0, len(trace.IntentTasks))
+		for index, task := range trace.IntentTasks {
+			if task.Intent == primary {
+				trace.SubIntent = task.SubIntent
+				trace.IntentConfidence = task.Confidence
+				trace.MatchedConfigID = task.MatchedConfigID
+				if index < len(derived) {
+					trace.MatchedConfig = derived[index].ConfigName
+				}
+				continue
+			}
+			secondary = appendIfMissing(secondary, task.Intent)
+		}
+		trace.SecondaryIntents = secondary
+		trace.SecondaryIntentCodes = append([]string(nil), secondary...)
+	}
+	trace.NeedsHumanRoute = hasHuman && !hasAnswerableBusiness
+	if !trace.NeedsHumanRoute {
+		trace.HumanRoutePolicy = ""
 	}
 	trace.ShouldReply = !allNoReply
 	if len(trace.ResourceActions) > 0 {

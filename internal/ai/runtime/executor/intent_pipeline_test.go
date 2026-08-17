@@ -349,6 +349,22 @@ func TestDeriveModelIntentFromTasksDoesNotLetCorrectionToneHideBusinessTask(t *t
 	}
 }
 
+func TestDeriveModelIntentFromTasksDoesNotLetHumanTaskBlockKnowledgeTask(t *testing.T) {
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
+		PrimaryIntent: "human_complaint_risk",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "human_complaint_risk", SubIntent: "explicit_handoff", Text: "需要人工"},
+			{Intent: "hotel_info", SubIntent: "parking", Text: "停车场怎么走", NeedsKnowledge: true},
+		},
+	})
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || intent.NeedsHumanRoute {
+		t.Fatalf("human task must not block a knowledge task in the same turn: %#v", intent)
+	}
+	if len(intent.IntentTasks) != 2 || !intent.IntentTasks[0].NeedsHumanRoute {
+		t.Fatalf("human capability must remain attached to its task: %#v", intent.IntentTasks)
+	}
+}
+
 func TestIntentPromptPackBlocksCoworkerFakeCommitment(t *testing.T) {
 	prompt := selectIntentPromptPack(callbacks.IntentTraceData{PrimaryIntent: "hotel_info", SubIntent: "store_knowledge"})
 	joined := strings.Join(prompt.Instructions, "\n")

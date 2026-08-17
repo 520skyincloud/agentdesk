@@ -821,6 +821,8 @@ func runtimeTaskSourceSpanText(text string, start, end int) string {
 
 func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason string) callbacks.IntentTraceData {
 	intent := callbacks.IntentTraceData{ShouldReply: len(plans) > 0, MatchMode: "task_ledger", Reason: reason}
+	hasHuman := false
+	hasAnswerableBusiness := false
 	for _, plan := range plans {
 		item := callbacks.IntentTaskTraceData{
 			Sequence: plan.Sequence, Intent: plan.Intent, SubIntent: plan.SubIntent, Text: plan.Text,
@@ -846,13 +848,21 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 			}
 		case enums.AIReplyTurnTaskTypeHuman:
 			item.NeedsHumanRoute = true
-			intent.NeedsHumanRoute = true
+			hasHuman = true
+		}
+		if item.NeedsKnowledge || item.NeedsResource || item.Intent == "hotel_info" || item.Intent == "hotel_variable" || item.Intent == "service_request" {
+			hasAnswerableBusiness = true
 		}
 		intent.IntentTasks = append(intent.IntentTasks, item)
 	}
 	if len(plans) > 0 {
-		intent.PrimaryIntent = plans[0].Intent
-		intent.SubIntent = plans[0].SubIntent
+		intent.PrimaryIntent = primaryRuntimeIntentFromReplyPlans(plans)
+		for _, plan := range plans {
+			if plan.Intent == intent.PrimaryIntent {
+				intent.SubIntent = plan.SubIntent
+				break
+			}
+		}
 		intent.DetectedIntent = intent.PrimaryIntent
 		intent.MatchedIntentCode = intent.PrimaryIntent
 	}
@@ -860,7 +870,40 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 		intent.ResourceAction = intent.ResourceActions[0]
 		intent.ResourceType = hotelVariableResourceTypeFromAction(intent.ResourceAction)
 	}
+	intent.NeedsHumanRoute = hasHuman && !hasAnswerableBusiness
+	if !intent.NeedsHumanRoute {
+		intent.HumanRoutePolicy = ""
+	}
 	return intent
+}
+
+func primaryRuntimeIntentFromReplyPlans(plans []callbacks.ReplyTaskPlanTraceData) string {
+	for _, plan := range plans {
+		if plan.Intent == "hotel_info" && isCheckinProcessSubIntent(plan.SubIntent) {
+			return "hotel_info"
+		}
+	}
+	for _, plan := range plans {
+		if plan.Intent == "hotel_variable" {
+			return "hotel_variable"
+		}
+	}
+	for _, plan := range plans {
+		if plan.Intent == "hotel_info" {
+			return "hotel_info"
+		}
+	}
+	for _, plan := range plans {
+		if plan.Intent != "interaction" && plan.Intent != "human_complaint_risk" {
+			return plan.Intent
+		}
+	}
+	for _, plan := range plans {
+		if plan.Intent != "human_complaint_risk" {
+			return plan.Intent
+		}
+	}
+	return strings.TrimSpace(plans[0].Intent)
 }
 
 func filterIntentForReplyTaskPlans(original callbacks.IntentTraceData, plans []callbacks.ReplyTaskPlanTraceData) callbacks.IntentTraceData {
@@ -870,7 +913,11 @@ func filterIntentForReplyTaskPlans(original callbacks.IntentTraceData, plans []c
 	filtered.MatchedConfig = original.MatchedConfig
 	filtered.MatchMode = original.MatchMode
 	filtered.ToolCodes = append([]string(nil), original.ToolCodes...)
-	filtered.HumanRoutePolicy = original.HumanRoutePolicy
+	if filtered.NeedsHumanRoute {
+		filtered.HumanRoutePolicy = original.HumanRoutePolicy
+	} else {
+		filtered.HumanRoutePolicy = ""
+	}
 	filtered.NeedsTool = original.NeedsTool
 	filtered.NeedsClarification = original.NeedsClarification
 	filtered.DialogueAct = original.DialogueAct
