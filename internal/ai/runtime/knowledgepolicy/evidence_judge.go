@@ -316,6 +316,11 @@ func businessTopicCore(value string) string {
 	replacer := strings.NewReplacer(
 		"酒店", "", "房间", "", "客人", "", "住客", "", "请问", "", "麻烦", "",
 		"帮我", "", "给我", "", "我要", "", "想要", "", "具体", "", "一下", "",
+		// Remove interrogative scaffolding as phrases, not individual domain
+		// characters. This keeps short colloquial questions such as
+		// “入住都不会？” and “干嘛吃的？” bound to the business anchor.
+		"都不会", "", "会不会", "", "不会", "", "干什么", "", "干嘛", "",
+		"什么时候", "", "什么", "", "啥", "",
 		"可不可以", "", "可以不可以", "", "是否提供", "", "有没有", "", "是否有", "",
 		"使用方法", "", "怎么办", "", "咋开", "", "咋弄", "", "咋办", "", "怎么样", "", "怎样", "",
 		"在哪里", "", "在哪儿", "", "什么时间", "", "如何", "", "怎么", "", "能不能", "",

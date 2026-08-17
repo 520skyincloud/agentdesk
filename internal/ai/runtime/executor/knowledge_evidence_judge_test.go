@@ -117,6 +117,49 @@ func TestPromptContextResidueCannotBecomeHotelEvidence(t *testing.T) {
 	}
 }
 
+func TestShortColloquialQuestionsUseSameTopicFAQEvidence(t *testing.T) {
+	cases := []struct {
+		name, query, title, content string
+	}{
+		{
+			name:    "checkin",
+			query:   "入住都不会？",
+			title:   "在哪办入住？",
+			content: "问题：在哪办入住？ 答案：我们是非24小时前台的智能化运作模式。",
+		},
+		{
+			name:    "food",
+			query:   "干嘛吃的？",
+			title:   "边上有什么吃的？",
+			content: "问题：边上有什么吃的？ 答案：酒店周边有丰富的餐饮选择。",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hit := rag.RetrieveResult{
+				KnowledgeBaseID: 99, SourceRecordID: tc.name, Title: tc.title,
+				Content: tc.content, Score: 0.75,
+			}
+			items := []runtimeTaskKnowledgeItem{{
+				TaskKey: "t-" + tc.name, Intent: "hotel_info", SubIntent: "store_knowledge",
+				Query: tc.query, EvidenceQuery: tc.query,
+				Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+				Result: &retrievers.KnowledgeRetrieveResult{
+					KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit},
+					ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+				},
+			}}
+			artifacts := buildRuntimeEvidenceArtifacts(RunInput{}, items, nil)
+			if artifacts.ByTask["t-"+tc.name].Status != "has_context" {
+				t.Fatalf("short colloquial question lost same-topic FAQ evidence: %+v", artifacts.ByTask["t-"+tc.name])
+			}
+			if len(artifacts.Quality.Items) != 1 || artifacts.Quality.Items[0].TopicMatch != "exact" {
+				t.Fatalf("same-topic FAQ was not exact evidence: %+v", artifacts.Quality.Items)
+			}
+		})
+	}
+}
+
 func TestDirectQASharedGenericTimeWordDoesNotCrossTopics(t *testing.T) {
 	hit := rag.RetrieveResult{
 		KnowledgeBaseID: 99, SourceRecordID: "checkout", Title: "退房时间是什么时候？",

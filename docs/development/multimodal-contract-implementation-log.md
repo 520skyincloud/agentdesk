@@ -94,12 +94,13 @@
 
 根因 #1-#13 全部修复；§7 媒体就绪、§8 媒体分层、§9 等待协议（含 3.3 熔断）、§10 QuestionUnit/UtteranceCoverage/Capability、§11 AnswerGroup/DeliveryPart 规则、§12 服务端引用、§13 Validator（V3 + V2 autofix）、§14 阶段重试/Attempt 边界、§16 人工路由（HandoffDecisionV2/事务闭合）、§17 知识门禁（回填+shadow）全部落地。建议生产验证期：V2 稳定 24-48h 后开 `AI_RUNTIME_MULTIMODAL_V3` 按白名单灰度。
 
-## 2026-08-17 P0-2：连续问题关系归一化（本分支待提交）
+## 2026-08-17 P0-2：连续问题关系归一化（已提交）
 
 - `QuestionUnit` 增加可序列化的 `relation` 上下文扩展：`parentTaskKey`、`resolvedTopic`、`inheritedRequirements`；V3 仍不要求模型输出 relation，服务端使用 `dialogueAct`、`requestMode` 和未完成任务上下文归一化。
 - V3 Envelope 从当前 Turn 的未完成 `AIReplyTurnTask` 投影稳定 task key、intent/subIntent、canonical hash 和答案义务；不复制客户正文，不修改公开 Intent Profile。
 - 同主题短追问仅在唯一父任务时继承；新主题不借用旧主题；repeat 使用 canonical hash；歧义 clarification 不绑定任一父任务。
 - 关系结果在 `ReplyPlan`、ContextCompiler、V3 Plan 和 Generate Prompt 构建前统一生效；不再只在 DialogueState 追赶阶段修改。
+- 真实会话复核发现，检索命中但“入住都不会？”这类短问法被证据主题门禁误降级为 `no_context`；`businessTopicCore` 现按通用疑问短语归一化后再做 FAQ 主题匹配，不针对单个业务词放行，并增加入住/餐饮短问法及跨主题回归测试。
 - 证据审查使用当前 source-bound 问题分类，父问题只作为检索提示，不改变当前问题的 claim type/fact scope；旧 FAQ 结果不能单独授权新主题。
 - 变更范围：QuestionUnit normalizer、V3 intent 适配、Envelope/QuestionUnit/TaskNormalization schema、trace/plan 投影、Task ledger relation persistence、知识证据审查和 focused tests。无 migration、公开 DTO 或 Intent Schema 变更。
 - 验证：`go test ./internal/ai/runtime/... ./internal/services -count=1`、`go test ./... -run '^$'`、`go vet ./internal/ai/runtime/... ./internal/services` 通过；schema JSON 通过 `jq empty`。
