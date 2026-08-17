@@ -83,13 +83,15 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 				fmt.Errorf("intent model unavailable"),
 			)
 		}
-		intent, conditionalProbes, err = probeConditionalKnowledgeTasks(ctx, req, history, intent)
-		if err != nil {
-			return runtimePipelinePlan{}, err
-		}
-		if len(conditionalProbes) > 0 {
-			promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
-		}
+		// Conditional clarification tasks used to run a probe before the task
+		// ledger existed (task_id=0), then tried to promote that checkpoint into
+		// a persisted task. A query fingerprint/source mismatch could lose the
+		// result and turn a valid knowledge answer into knowledge_unavailable.
+		// Mark the candidate as a formal knowledge task now and let the normal
+		// post-persistence retriever execute it once with its real TaskID.
+		intent = markConditionalKnowledgeTasksForFormalRetrieval(intent)
+		conditionalProbes = runtimeConditionalKnowledgeProbes{}
+		promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		replyPlan = buildReplyPlan(intent, promptPack)
 		intent, replyPlan, taskState, err = persistAndSelectRuntimeTaskBatch(req, intent, replyPlan)
 		if err != nil {
@@ -530,6 +532,28 @@ func runtimeIntentTaskNeedsConditionalKnowledgeProbe(task callbacks.IntentTaskTr
 
 }
 
+func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	marked := false
+	for index := range intent.IntentTasks {
+		if !runtimeIntentTaskNeedsConditionalKnowledgeProbe(intent.IntentTasks[index]) {
+			continue
+		}
+		intent.IntentTasks[index].NeedsKnowledge = true
+		intent.IntentTasks[index].Reason = appendIntentReason(
+			intent.IntentTasks[index].Reason,
+			"clarification task will use the formal persisted knowledge query",
+		)
+		marked = true
+	}
+	if !marked {
+		return intent
+	}
+	intent = deriveModelIntentFromTasks(intent)
+	intent.ShouldReply = true
+	intent.Reason = appendIntentReason(intent.Reason, "conditional knowledge tasks routed through the formal task ledger")
+	return intent
+}
+
 func conditionalKnowledgeProbeIdentityForIntentTask(task callbacks.IntentTaskTraceData) string {
 	return conditionalKnowledgeProbeIdentity(
 		task.Sequence, task.SourceMessageID, task.SourceSpanStart, task.SourceSpanEnd,
@@ -598,7 +622,10 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "按当前门店托管模式和排班处理人工、投诉和风险。", "不要口头假装已经通知或处理完成。", "普通设施/设备问题若知识库命中，知识库优先，不要反复诱导转人工。")
 		}
 	case "interaction":
-		if intent.SubIntent == "media_context_follow_up" {
+		if intent.NeedsKnowledge {
+			instructions = append(instructions,
+				"当前任务先按正式门店知识检索处理；命中当前问题就直接用知识结果组织回答，未命中时只追问一个关键点。不要因为分类暂时是互动/澄清就跳过知识检索，也不要转人工。")
+		} else if intent.SubIntent == "media_context_follow_up" {
 			instructions = append(instructions, "当前问题是在追问最近图片/文件解析文本；直接结合上下文回答用户问法，不机械复述解析全文，不说系统识别。语音仍按既有语转文文本链路处理。")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
 			instructions = append(instructions, "当前问题是在纠正或澄清上一轮误会；只接住当前纠正，轻声道歉或确认即可，不要继续补答历史里的电视、早餐、停车、语音等旧主题。")
@@ -652,7 +679,9 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 	taskPlans := buildReplyTaskPlans(intent)
 	switch intent.PrimaryIntent {
 	case "interaction":
-		if intent.SubIntent == "media_context_follow_up" {
+		if intent.NeedsKnowledge {
+			goal = "先完成当前澄清任务的门店知识检索，再逐题组织回答或追问一个关键点"
+		} else if intent.SubIntent == "media_context_follow_up" {
 			goal = "结合最近图片/文件解析文本回答用户追问"
 			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {

@@ -60,8 +60,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if modes.IntentContract == runtimeIntentContractV1 {
 		return detectRuntimeIntentLegacy(ctx, req, history, configs)
 	}
-	// 契约 2.1 成组灰度：AI_RUNTIME_MULTIMODAL_V3=on 时 Intent 走 V3 主链
-	// （Envelope + SourceSpan + utteranceCoverage + QuestionUnit Normalize）。
+	// Strict V3 is only selected by the explicit experimental feature mode.
+	// Ordinary production traffic uses the V2 task contract, which keeps source
+	// binding server-owned without asking the model to calculate rune spans.
 	if modes.IntentContract == runtimeIntentContractV3 {
 		return detectRuntimeIntentV3(ctx, req, history, configs)
 	}

@@ -212,7 +212,11 @@ func validateV3TaskCoverage(input ReplyValidationInputV3, result *contracts.Vali
 	}
 }
 
-// resolveV3ServerOwnedReferences 实现 19.6：引用由服务端解析。
+// resolveV3ServerOwnedReferences resolves references on the server, but keeps
+// the model's customer-facing prose authoritative. The server may replace a
+// response only when the task has no usable knowledge and needs a deterministic
+// uncertainty message; it must never turn successful evidence into a pasted
+// FAQ answer. Grounding is a validation boundary, not a language generator.
 func resolveV3ServerOwnedReferences(input ReplyValidationInputV3, result *contracts.ValidationResultV3) {
 	for _, part := range input.Output.Parts {
 		resolved := ResolveReplyPart(input.Plan, part)
@@ -221,8 +225,6 @@ func resolveV3ServerOwnedReferences(input ReplyValidationInputV3, result *contra
 			result.Warnings = append(result.Warnings, contracts.ValidationIssueV1{
 				Code: reason, Path: "replyGroups." + resolved.GroupKey,
 			})
-		} else if grounded, ok := deterministicGroundedKnowledgeContent(input.Plan, input.Evidence, resolved.TaskKeys); ok {
-			resolved.Content = grounded
 		}
 		result.NormalizedParts = append(result.NormalizedParts, contracts.ResolvedPartV3{
 			GroupKey: resolved.GroupKey, TaskKeys: resolved.TaskKeys, Content: resolved.Content,
@@ -284,11 +286,9 @@ func deterministicKnowledgeFallback(plan contracts.ReplyPlanV4, taskKeys []strin
 	return "当前资料没有写明这项信息，我暂时不能确认。", "server_fallback_knowledge_no_context", true
 }
 
-// deterministicGroundedKnowledgeContent is the final content boundary for all
-// knowledge-required facts, procedures, policies and recommendations. Model
-// prose is never allowed to add a second factual source: the customer-visible
-// answer is projected only from exact, supporting, answer_text evidence already
-// bound to the selected Task by the server.
+// deterministicGroundedKnowledgeContent is retained for offline comparison and
+// migration diagnostics only. It is deliberately not used by the serving
+// validator: successful knowledge answers must keep the model's natural prose.
 func deterministicGroundedKnowledgeContent(plan contracts.ReplyPlanV4, evidence contracts.EvidenceBundleV2, taskKeys []string) (string, bool) {
 	if len(taskKeys) == 0 {
 		return "", false

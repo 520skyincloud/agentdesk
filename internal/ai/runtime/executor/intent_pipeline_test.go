@@ -872,6 +872,27 @@ func TestConditionalKnowledgeProbePromotesOnlyMatchedTask(t *testing.T) {
 	}
 }
 
+func TestConditionalKnowledgeTasksUseFormalPersistedRetrieval(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "interaction", SubIntent: "clarify",
+			RequestMode: "clarify_previous", Text: "咖啡在哪里？",
+		}},
+	}
+	marked := markConditionalKnowledgeTasksForFormalRetrieval(intent)
+	if len(marked.IntentTasks) != 1 || !marked.IntentTasks[0].NeedsKnowledge {
+		t.Fatalf("conditional task was not marked for formal retrieval: %#v", marked.IntentTasks)
+	}
+	plans := buildReplyTaskPlans(marked)
+	if len(plans) != 1 || plans[0].Output != "knowledge_text_reply" {
+		t.Fatalf("conditional task must become a knowledge task after persistence: %#v", plans)
+	}
+	if !marked.NeedsKnowledge || !marked.ShouldReply {
+		t.Fatalf("intent capability projection was not updated: %#v", marked)
+	}
+}
+
 func actionLedgerHas(items []callbacks.ActionLedgerItem, action string, resourceType string) bool {
 	for _, item := range items {
 		if item.Action == action && item.ResourceType == resourceType {

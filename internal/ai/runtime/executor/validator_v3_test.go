@@ -248,8 +248,8 @@ func TestValidatorV3RecommendationEntitiesMustComeFromEvidence(t *testing.T) {
 
 	input.Output.Parts[0].Content = "附近可以去南七天地商业中心、淮河路步行街。"
 	result = NewReplyValidatorV3().Validate(input)
-	if result.Status != "passed" || result.NormalizedParts[0].Content != "南七天地商业中心、骆岗中央公园、罍街" {
-		t.Fatalf("invented recommendation must be replaced by server-grounded evidence: %+v", result)
+	if result.Status == "passed" || result.NormalizedParts[0].Content != "附近可以去南七天地商业中心、淮河路步行街。" {
+		t.Fatalf("unsupported recommendation must be rejected without replacing model prose: %+v", result)
 	}
 }
 

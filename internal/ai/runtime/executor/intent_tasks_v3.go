@@ -30,7 +30,8 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-// 多模态契约 9/10/12：IntentTasksV3 主链接线（成组灰度 AI_RUNTIME_MULTIMODAL_V3=on）。
+// 多模态契约 9/10/12：IntentTasksV3 仅作为显式实验模式使用；生产主链保持
+// V2 的轻量任务协议，避免模型计算 span 造成整轮失败。
 // Intent 收到 TurnInputEnvelope，输出 intent_tasks.v3（来源引用 + rune span +
 // utteranceCoverage）；服务端校验 span、做集合等式覆盖校验，再经 QuestionUnit
 // Normalize 收敛（同源去重 / degraded_single_task），最后适配到既有 V2 下游。
