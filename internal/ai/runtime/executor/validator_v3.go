@@ -487,7 +487,7 @@ func boundedGroundedAnswer(content string, maxRunes int) string {
 	cut := maxRunes
 	for index := maxRunes - 1; index >= maxRunes/2; index-- {
 		switch runes[index] {
-		case '。', '！', '？', '.', '!', '?', '\n':
+		case '。', '！', '？', '.', '!', '?', '，', ',', '、', '：', ':', '\n':
 			cut = index + 1
 			index = -1
 		}
