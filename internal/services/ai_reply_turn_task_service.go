@@ -2098,3 +2098,67 @@ func resolvedCoverageIdentity(item contracts.ResolvedCoverageItemV1) string {
 	}
 	return fmt.Sprintf("message:%d", item.MessageID)
 }
+
+// AIReplyTurnTaskGroupBinding 是文档 §16.5 的绑定输入。
+type AIReplyTurnTaskGroupBinding struct {
+	TaskKey        string
+	AnswerGroupKey string
+}
+
+// BindAnswerGroupsDB 按文档 §8.1 的事务与 CAS 条件，在 Generate 前把
+// BuildReplyPlanV4 产出的真实 groupKey 持久化到已 claim 的 Task。
+// 只更新 answer_group_key，不改 status/committed/covered 等完成证据。
+func (s *aiReplyTurnTaskService) BindAnswerGroupsDB(
+	db *gorm.DB,
+	turn *models.AIReplyTurn,
+	jobID int64,
+	bindings []AIReplyTurnTaskGroupBinding,
+	now time.Time,
+) error {
+	if db == nil || turn == nil || turn.ID <= 0 || turn.TenantID <= 0 || jobID <= 0 {
+		return errorsx.InvalidParam("AI 回复分组绑定缺少范围")
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		locked, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(ctx.Tx, turn.ID, turn.TenantID)
+		if err != nil {
+			return err
+		}
+		if locked == nil || locked.ConversationID != turn.ConversationID ||
+			locked.SessionNo != turn.SessionNo || locked.Version != turn.Version {
+			return errorsx.InvalidParam("AI 回复分组绑定轮次已过期")
+		}
+		updated := 0
+		for _, binding := range bindings {
+			taskKey := strings.TrimSpace(binding.TaskKey)
+			groupKey := strings.TrimSpace(binding.AnswerGroupKey)
+			if taskKey == "" || groupKey == "" || len(groupKey) > 128 {
+				return errorsx.InvalidParam("AI 回复分组绑定 key 无效")
+			}
+			task, err := repositories.AIReplyTurnTaskRepository.GetForUpdateByKeyInTenant(ctx.Tx, turn.TenantID, turn.ID, taskKey)
+			if err != nil {
+				return err
+			}
+			if task == nil || task.ClaimedByJobID != jobID || task.ClaimedVersion != locked.Version {
+				return errorsx.InvalidParam("AI 回复分组绑定任务未由当前 Job 领取")
+			}
+			if aiReplyTurnTaskTerminal(task.Status) {
+				continue // 已完成任务不得被改写
+			}
+			if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(ctx.Tx, task.ID, task.TenantID, map[string]any{
+				"answer_group_key": groupKey,
+				"updated_at":       now,
+				"update_user_name": "ai_reply_group_bind",
+			}); err != nil {
+				return err
+			}
+			updated++
+		}
+		if updated == 0 {
+			return errorsx.InvalidParam("AI 回复分组绑定未更新任何任务")
+		}
+		return nil
+	})
+}

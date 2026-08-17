@@ -29,7 +29,7 @@ func (c *Compiler) compileGenerateV3(input CompileInput, budget Budget, estimato
 
 	policyMessage := schema.SystemMessage(buildGeneratePolicy(input))
 	repairMessage := buildRepairMessage(input.RepairInstruction)
-	current, err := generateTaskInputTextV1(input.ReplyPlanV4)
+	current, err := generateTaskInputTextV2(input.ReplyPlanV4)
 	if err != nil {
 		return compiledStageResult{}, err
 	}
@@ -85,53 +85,148 @@ type generateTaskInputTaskV1 struct {
 	CustomerRequest string `json:"customerRequest"`
 }
 
-// generateTaskInputTextV1 projects only the tasks selected into reply_plan.v4.
-// It deliberately ignores CompileInput.CurrentMessages: that slice is retained
-// for scope validation and V1/V2 compatibility, but replaying it here would let
-// completed or deferred questions leak back into this Generate call.
-func generateTaskInputTextV1(plan *contracts.ReplyPlanV4) (string, error) {
+// generateTaskInputTextV2 按交接文档 §16.4 实现：把 ReplyPlanV4 的真实
+// groupKey、groupRef（G1/G2/G3）和 task/group 映射完整下发给模型。
+// 模型必须逐字回显 groups[].groupKey（不能回显 groupRef）。
+func generateTaskInputTextV2(plan *contracts.ReplyPlanV4) (string, error) {
 	if plan == nil {
 		return "", fmt.Errorf("%w: reply_plan.v4 is missing", ErrMandatoryContextOverflow)
 	}
-	activeGroups := make(map[string]struct{}, len(plan.ReplyGroups))
+	// 步骤 1-3：选 required text 组，按 Sequence 升序，最多 3 组。
+	groups := make([]contracts.ReplyPlanGroupV4, 0, len(plan.ReplyGroups))
 	for _, group := range plan.ReplyGroups {
 		if group.Required && group.OutputMode == "text" {
-			activeGroups[group.GroupKey] = struct{}{}
+			groups = append(groups, group)
 		}
 	}
-	tasks := make([]generateTaskInputTaskV1, 0, len(plan.Tasks))
+	if len(groups) == 0 {
+		return "", fmt.Errorf("%w: generate_task_input.v2 no required text group", ErrMandatoryContextOverflow)
+	}
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Sequence < groups[j].Sequence })
+	if len(groups) > 3 {
+		groups = groups[:3]
+	}
+
+	// 步骤 4-5：校验 groupKey 唯一非空；生成本批次 G1..Gn 引用。
+	groupRefByKey := make(map[string]string, len(groups))
+	groupByRef := make(map[string]contracts.ReplyPlanGroupV4, len(groups))
+	taskKeyToGroupKey := make(map[string]string, len(plan.Tasks))
+	groupItems := make([]contracts.GenerateTaskGroupV2, 0, len(groups))
+	for index, group := range groups {
+		ref := fmt.Sprintf("G%d", index+1)
+		if _, exists := groupRefByKey[group.GroupKey]; exists {
+			return "", fmt.Errorf("%w: duplicate reply group key", ErrMandatoryContextOverflow)
+		}
+		if len(group.GroupKey) > 128 || group.GroupKey == "" {
+			return "", fmt.Errorf("%w: reply group key length invalid", ErrMandatoryContextOverflow)
+		}
+		groupRefByKey[group.GroupKey] = ref
+		groupByRef[ref] = group
+		for _, taskKey := range group.TaskKeys {
+			if _, dup := taskKeyToGroupKey[taskKey]; dup {
+				return "", fmt.Errorf("%w: task in multiple groups", ErrMandatoryContextOverflow)
+			}
+			taskKeyToGroupKey[taskKey] = group.GroupKey
+		}
+		groupItems = append(groupItems, contracts.GenerateTaskGroupV2{
+			GroupRef: ref, GroupKey: group.GroupKey, Sequence: group.Sequence,
+			TaskKeys:   append([]string(nil), group.TaskKeys...),
+			OutputMode: group.OutputMode, Required: group.Required,
+		})
+	}
+
+	// 步骤 7-10：遍历 Plan.Tasks，只选 active text task，校验组映射一致。
+	tasks := make([]contracts.GenerateTaskInputTaskV2, 0, len(plan.Tasks))
 	for _, task := range plan.Tasks {
-		if _, active := activeGroups[task.AnswerGroupKey]; !active || task.OutputMode != "text" {
+		expectedGroupKey, active := taskKeyToGroupKey[task.TaskKey]
+		if !active || task.OutputMode != "text" {
 			continue
 		}
+		if task.TaskKey == "" || task.Sequence <= 0 {
+			return "", fmt.Errorf("%w: V3 selected task lacks identity", ErrMandatoryContextOverflow)
+		}
 		request := strings.TrimSpace(task.Objective)
-		if task.TaskKey == "" || task.Sequence <= 0 || request == "" {
+		if request == "" {
 			return "", fmt.Errorf("%w: V3 selected task lacks verified customer request", ErrMandatoryContextOverflow)
 		}
-		tasks = append(tasks, generateTaskInputTaskV1{
-			TaskKey: task.TaskKey, Sequence: task.Sequence, AnswerGroupKey: task.AnswerGroupKey, CustomerRequest: request,
+		if task.AnswerGroupKey != expectedGroupKey {
+			return "", fmt.Errorf("%w: task/group key mismatch for %s", ErrMandatoryContextOverflow, task.TaskKey)
+		}
+		tasks = append(tasks, contracts.GenerateTaskInputTaskV2{
+			TaskKey: task.TaskKey, GroupRef: groupRefByKey[expectedGroupKey],
+			GroupKey: expectedGroupKey, Sequence: task.Sequence,
+			CustomerRequest: boundedText(request, 500),
 		})
 	}
 	if len(tasks) == 0 {
 		return "", fmt.Errorf("%w: V3 selected task input is empty", ErrMandatoryContextOverflow)
 	}
-	sort.SliceStable(tasks, func(i, j int) bool {
-		if tasks[i].Sequence == tasks[j].Sequence {
-			return tasks[i].TaskKey < tasks[j].TaskKey
-		}
-		return tasks[i].Sequence < tasks[j].Sequence
-	})
-	raw, err := json.Marshal(generateTaskInputV1{SchemaVersion: generateTaskInputV1SchemaVersion, Tasks: tasks})
-	if err != nil {
-		return "", fmt.Errorf("marshal generate task input v1: %w", err)
+	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].Sequence < tasks[j].Sequence })
+
+	// 步骤 12-13：strict schema 校验 + 跨对象关系校验。
+	input := contracts.GenerateTaskInputV2{
+		SchemaVersion: contracts.SchemaGenerateTaskInputV2,
+		Groups:        groupItems,
+		Tasks:         tasks,
 	}
-	if _, err := strictjson.DecodeObject[generateTaskInputV1](raw, strictjson.DecodeOptions{
-		MaxBytes: 16 * 1024,
-		Schema:   contracts.MustSchema(contracts.SchemaGenerateTaskInputV1),
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("marshal generate_task_input.v2: %w", err)
+	}
+	if _, err := strictjson.DecodeObject[contracts.GenerateTaskInputV2](raw, strictjson.DecodeOptions{
+		MaxBytes: 32 * 1024,
+		Schema:   contracts.MustSchema(contracts.SchemaGenerateTaskInputV2),
 	}); err != nil {
-		return "", fmt.Errorf("validate generate task input v1: %w", err)
+		return "", fmt.Errorf("validate generate_task_input.v2: %w", err)
+	}
+	if err := validateGenerateTaskInputV2Relations(input); err != nil {
+		return "", err
 	}
 	return string(raw), nil
+}
+
+// validateGenerateTaskInputV2Relations 按文档 §5.3 的 10 条不变量校验。
+func validateGenerateTaskInputV2Relations(input contracts.GenerateTaskInputV2) error {
+	groupsByRef := make(map[string]contracts.GenerateTaskGroupV2, len(input.Groups))
+	groupsByKey := make(map[string]contracts.GenerateTaskGroupV2, len(input.Groups))
+	expectedTaskGroup := make(map[string]string, len(input.Tasks))
+	for index, group := range input.Groups {
+		if group.GroupRef != fmt.Sprintf("G%d", index+1) {
+			return fmt.Errorf("generate_task_input.v2 group_ref_sequence_mismatch at groups[%d]", index)
+		}
+		if _, dup := groupsByRef[group.GroupRef]; dup {
+			return fmt.Errorf("generate_task_input.v2 duplicate_group_ref")
+		}
+		if _, dup := groupsByKey[group.GroupKey]; dup {
+			return fmt.Errorf("generate_task_input.v2 duplicate_group_key")
+		}
+		groupsByRef[group.GroupRef] = group
+		groupsByKey[group.GroupKey] = group
+		for _, taskKey := range group.TaskKeys {
+			if _, dup := expectedTaskGroup[taskKey]; dup {
+				return fmt.Errorf("generate_task_input.v2 task_in_multiple_groups")
+			}
+			expectedTaskGroup[taskKey] = group.GroupKey
+		}
+	}
+	seenTasks := make(map[string]struct{}, len(input.Tasks))
+	for index, task := range input.Tasks {
+		group, ok := groupsByRef[task.GroupRef]
+		if !ok || group.GroupKey != task.GroupKey {
+			return fmt.Errorf("generate_task_input.v2 task_group_reference_mismatch at tasks[%d]", index)
+		}
+		if expectedTaskGroup[task.TaskKey] != task.GroupKey {
+			return fmt.Errorf("generate_task_input.v2 task_group_membership_mismatch at tasks[%d]", index)
+		}
+		if _, dup := seenTasks[task.TaskKey]; dup {
+			return fmt.Errorf("generate_task_input.v2 duplicate_task_key at tasks[%d]", index)
+		}
+		seenTasks[task.TaskKey] = struct{}{}
+	}
+	if len(seenTasks) != len(expectedTaskGroup) {
+		return fmt.Errorf("generate_task_input.v2 task_not_projected")
+	}
+	return nil
 }
 
 func buildRuntimeContextSnapshotV2(input CompileInput) contracts.RuntimeContextSnapshotV2 {

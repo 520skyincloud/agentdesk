@@ -140,11 +140,11 @@ func TestCompilerGenerateV3OnlyIncludesSelectedTaskRequests(t *testing.T) {
 	if string(last.Role) != "user" {
 		t.Fatalf("last message role=%s want user", last.Role)
 	}
-	var taskInput generateTaskInputV1
+	var taskInput contracts.GenerateTaskInputV2
 	if err := json.Unmarshal([]byte(last.Content), &taskInput); err != nil {
 		t.Fatalf("generate task input is not JSON: %v\n%s", err, last.Content)
 	}
-	if taskInput.SchemaVersion != generateTaskInputV1SchemaVersion || len(taskInput.Tasks) != 1 {
+	if taskInput.SchemaVersion != contracts.SchemaGenerateTaskInputV2 || len(taskInput.Tasks) != 1 {
 		t.Fatalf("unexpected task input: %+v", taskInput)
 	}
 	if got := taskInput.Tasks[0].CustomerRequest; got != "本批问题：怎么办理入住" {

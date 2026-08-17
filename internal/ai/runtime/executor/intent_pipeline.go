@@ -187,6 +187,24 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		}
 		replyPlanV4 = artifacts.Plan
 		authoritativeFacts = artifacts.AuthoritativeFacts
+		// 交接文档 §16.5：BuildReplyPlanV4 成功后、Generate 前持久化分组。
+		if taskState.Enabled && taskState.TurnID > 0 && req.JobID > 0 {
+			bindings := make([]services.AIReplyTurnTaskGroupBinding, 0, len(artifacts.Plan.Tasks))
+			for _, task := range artifacts.Plan.Tasks {
+				if task.AnswerGroupKey != "" && task.OutputMode == "text" {
+					bindings = append(bindings, services.AIReplyTurnTaskGroupBinding{
+						TaskKey: task.TaskKey, AnswerGroupKey: task.AnswerGroupKey,
+					})
+				}
+			}
+			if len(bindings) > 0 {
+				turnRef := &models.AIReplyTurn{ID: taskState.TurnID, TenantID: req.Conversation.TenantID,
+					ConversationID: req.Conversation.ID, SessionNo: req.UserMessage.SessionNo, Version: taskState.TurnVersion}
+				if bindErr := services.AIReplyTurnTaskService.BindAnswerGroupsDB(sqls.DB(), turnRef, req.JobID, bindings, time.Now()); bindErr != nil {
+					return runtimePipelinePlan{}, fmt.Errorf("bind answer groups: %w", bindErr)
+				}
+			}
+		}
 		if len(artifacts.DeferredTaskKeys) > 0 && taskState.Enabled {
 			releaseErr := sqls.WithTransaction(func(tx *sqls.TxContext) error {
 				return services.AIReplyTurnTaskService.ReleaseTaskKeysDB(

@@ -58,8 +58,9 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 			// Open tasks belong to one turn. Rebuild them from the authoritative
 			// task ledger carried by the new turn event instead of leaking stale
 			// tasks into the next customer question.
-			current.OpenTasks = nil
-			current.Focus.ActiveTaskKeys = nil
+			// 文档 §6.8：集合字段必须输出空数组，不输出 null。
+			current.OpenTasks = []contracts.DialogueStateOpenTask{}
+			current.Focus.ActiveTaskKeys = []string{}
 		}
 		advanceDialogueTurnEvidence(&current, event)
 	}
@@ -67,6 +68,7 @@ func ReduceDialogueState(current contracts.DialogueStateSnapshotV1, event Dialog
 		boundDialogueState(&current, event.Now)
 		current.SchemaVersion = contracts.DialogueStateSnapshotV1SchemaVersion
 		current.UpdatedAt = event.Now.UTC()
+		normalizeDialogueStateArrays(&current)
 		return current
 	}
 	if !lateForFocus {
@@ -378,4 +380,20 @@ func assistantMessageID(message *models.Message) int64 {
 		return 0
 	}
 	return message.ID
+}
+
+// normalizeDialogueStateArrays 文档 §6.8：序列化前归一化所有集合为空数组。
+func normalizeDialogueStateArrays(state *contracts.DialogueStateSnapshotV1) {
+	if state.OpenTasks == nil {
+		state.OpenTasks = []contracts.DialogueStateOpenTask{}
+	}
+	if state.ResolvedTasks == nil {
+		state.ResolvedTasks = []contracts.DialogueStateResolvedTask{}
+	}
+	if state.SessionFacts == nil {
+		state.SessionFacts = []contracts.DialogueStateSessionFact{}
+	}
+	if state.Focus.ActiveTaskKeys == nil {
+		state.Focus.ActiveTaskKeys = []string{}
+	}
 }

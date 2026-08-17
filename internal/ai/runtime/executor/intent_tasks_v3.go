@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -615,6 +616,14 @@ func detectRuntimeIntentV3Batch(
 	channelbreaker.RecordSuccess("intent_detect_v3", resolved.ModelName)
 	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, receiptOffset), callOffset+1, time.Since(startedAt).Milliseconds(), nil)
 	parsed, protocolErr := parseIntentTasksV3Wire(result.Content)
+	if protocolErr != nil {
+		// 文档 §6.7：HTTP 200 不等于 Intent 合法；脱敏记录确定性错误码。
+		slog.Warn("intent v3 protocol diagnostic",
+			"stage", "intent", "contract", contracts.SchemaIntentTasksV3,
+			"error_code", intentV3ProtocolErrorCode(protocolErr),
+			"raw_bytes", len(result.Content), "attempt", callOffset+1,
+			"provider_status", 200)
+	}
 	if protocolErr == nil {
 		if _, adaptErr := adaptDone(envelope, parsed, configs); adaptErr == nil {
 			return parsed, 1, nil
@@ -1044,4 +1053,12 @@ func buildIntentV3RepairInstruction(err error) string {
 		"\n请重新输出严格 JSON：每个非空 URef 恰好一条 utteranceCoverage；" +
 		"sourceSpan.quote 必须是对应 utterance.text 的连续原文片段（0-based rune offset，end exclusive）；" +
 		"ignored 只允许 duplicate_equivalent，且必须存在归一化后完全相同的 covered 输入。"
+}
+
+// intentV3ProtocolErrorCode 从 strictjson/协议错误中提取确定性错误码。
+func intentV3ProtocolErrorCode(err error) string {
+	if code, ok := strictjson.CodeOf(err); ok {
+		return code
+	}
+	return "unknown"
 }

@@ -45,6 +45,7 @@ const (
 	SchemaRequirementStateSetV1     = "requirement_state_set.v1"
 	SchemaResolvedTurnCoverageV1    = "resolved_turn_coverage.v1"
 	SchemaGenerateTaskInputV1       = "generate_task_input.v1"
+	SchemaGenerateTaskInputV2       = "generate_task_input.v2"
 	SchemaValidationResultV3        = "validation_result.v3"
 )
 
@@ -86,6 +87,7 @@ var schemaFilenameByName = map[string]string{
 	SchemaRequirementStateSetV1:     "requirement_state_set_v1.schema.json",
 	SchemaResolvedTurnCoverageV1:    "resolved_turn_coverage_v1.schema.json",
 	SchemaGenerateTaskInputV1:       "generate_task_input_v1.schema.json",
+	SchemaGenerateTaskInputV2:       "generate_task_input_v2.schema.json",
 	SchemaValidationResultV3:        "validation_result_v3.schema.json",
 }
 

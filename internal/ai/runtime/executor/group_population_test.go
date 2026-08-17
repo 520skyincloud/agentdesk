@@ -98,12 +98,9 @@ func TestValidatorV3WrongGroupKeyOnlyWarns(t *testing.T) {
 		t.Fatalf("wrong groupKey must not reject, got %s errors=%+v warnings=%+v", result.Status, result.Errors, result.Warnings)
 	}
 	t.Logf("status=%s errors=%+v warnings=%+v", result.Status, result.Errors, result.Warnings)
-	// 错误 groupKey + 正确 taskKeys → 通过（taskKeys 反查到正确组，不拒绝）。
-	if result.Status != "passed" && result.Status != "warning" {
-		t.Fatalf("wrong groupKey with correct taskKeys must pass/warn, got %s", result.Status)
-	}
-	if len(result.NormalizedParts) == 0 {
-		t.Fatalf("normalized parts should be produced: %+v", result.NormalizedParts)
+	// 文档 §5.4：错误 groupKey 必须被拒绝（模型拿到真实 groupKey 后不应猜错）。
+	if result.Status == "passed" || result.Status == "warning" {
+		t.Fatalf("wrong groupKey must be rejected, got %s", result.Status)
 	}
 }
 
