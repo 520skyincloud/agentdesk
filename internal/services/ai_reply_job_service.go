@@ -561,10 +561,32 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 		if decision := s.inspectFreshness(state); decision != nil {
 			return executionResultForDecision(*decision), nil
 		}
-		if err := s.dispatchHuman(state, job, "AI 回复任务超过等待时限"); err != nil {
-			return AIReplyExecutionResult{}, err
+		// Expiry is an operational/technical terminal condition, not proof that
+		// the customer requested a person. Preserve the business handoff path only
+		// when a durable human task already exists; otherwise close unfinished AI
+		// work and send one deterministic technical notice.
+		if s.expiredJobHasBusinessHandoff(job) {
+			if err := s.dispatchHuman(state, job, "客户业务请求需要人工跟进"); err != nil {
+				return AIReplyExecutionResult{}, &aiReplyJobDispatchOnlyError{cause: err}
+			}
+			return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "expired_business_handoff"}, errAIReplyJobExpired
 		}
-		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "expired_human_dispatch"}, errAIReplyJobExpired
+		now := time.Now()
+		if err := s.markExpiredTasksTechnicalFailure(job, now); err != nil {
+			return AIReplyExecutionResult{}, NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, err)
+		}
+		s.sendTechnicalFailureNotice(state, job)
+		if job.TurnID > 0 {
+			if err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+				_, finalizeErr := AIReplyTurnService.FinalizeNoActionDB(
+					tx.Tx, job, "expired_technical_failure", now,
+				)
+				return finalizeErr
+			}); err != nil {
+				return AIReplyExecutionResult{}, NewAIReplyExecutionError(AIReplyExecutionErrorCommitFailed, err)
+			}
+		}
+		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "expired_technical_failure"}, errAIReplyJobExpired
 	}
 	if job.TriggerKind == enums.AIReplyJobTriggerKindMedia {
 		if err := s.prepareMedia(ctx, state); err != nil {
@@ -585,7 +607,33 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 			return executionResultForDecision(*decision), nil
 		}
 		if !MediaUnderstandingService.mediaUnderstandingShouldTriggerAI(*state.Message) {
-			return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: "media_without_actionable_request"}, nil
+			hasPendingTurnWork := job.TurnID > 0 && AIReplyTurnTaskService.Enabled() &&
+				(AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID) ||
+					AIReplyTurnTaskService.HasWorkPending(job.TenantID, job.TurnID))
+			hasEarlierReplyableInput := AIReplyTurnService.HasOtherReplyableCustomerInputDB(sqls.DB(), job, state.Message.ID)
+			if !hasPendingTurnWork && !hasEarlierReplyableInput && job.TurnID > 0 {
+				var finalized bool
+				err := sqls.WithTransaction(func(tx *sqls.TxContext) error {
+					var finalizeErr error
+					finalized, finalizeErr = AIReplyTurnService.FinalizeNoActionDB(
+						tx.Tx, job, "media_without_actionable_request", time.Now(),
+					)
+					return finalizeErr
+				})
+				if err != nil {
+					return AIReplyExecutionResult{}, err
+				}
+				if !finalized {
+					if decision := s.inspectFreshness(state); decision != nil {
+						return executionResultForDecision(*decision), nil
+					}
+					return AIReplyExecutionResult{}, fmt.Errorf("no-action media turn could not be finalized")
+				}
+				return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: "media_without_actionable_request"}, nil
+			}
+			if !hasPendingTurnWork && !hasEarlierReplyableInput {
+				return AIReplyExecutionResult{Status: AIReplyExecutionStatusSkipped, ReasonCode: "media_without_actionable_request"}, nil
+			}
 		}
 	} else if decision := s.inspectFreshness(state); decision != nil {
 		return executionResultForDecision(*decision), nil
@@ -596,7 +644,7 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 	return TriggerAIReplySyncHook(ctx, *state.Conversation, *state.Message)
 }
 
-var errAIReplyJobExpired = errors.New("AI reply job expired after human dispatch")
+var errAIReplyJobExpired = errors.New("AI reply job expired")
 
 func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobExecutionState) error {
 	if state == nil || state.Message == nil {
@@ -637,7 +685,8 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		return
 	}
 	if errors.Is(runErr, errAIReplyJobExpired) {
-		s.markTerminal(job, owner, enums.AIReplyJobStatusExpired, "expired_human_dispatch", "", now)
+		resultCode := controlledResultCode(result.ReasonCode, "expired_technical_failure")
+		s.markTerminal(job, owner, enums.AIReplyJobStatusExpired, resultCode, "job_expired", now)
 		return
 	}
 	if runErr != nil {
@@ -710,10 +759,42 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 			return false
 		}
 	}
-	hasRunnable := result.HasRemainingTasks || AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
-	hasActiveTasks := AIReplyTurnTaskService.HasUnfinished(job.TenantID, job.TurnID) &&
+	if runErr == nil && result.Status == AIReplyExecutionStatusSkipped {
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			turn := &models.AIReplyTurn{
+				ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID,
+				SessionNo: job.SessionNo, StoreID: job.StoreID, StoreStaffBindingID: job.StoreStaffBindingID,
+			}
+			if err := AIReplyTurnTaskService.MarkClaimedPolicySkippedDB(
+				ctx.Tx, turn, job.ID, result.TaskKeys, result.ReasonCode, now,
+			); err != nil {
+				return err
+			}
+			_, err := AIReplyTurnService.FinalizeNoActionDB(ctx.Tx, job, result.ReasonCode, now)
+			return err
+		}); err != nil {
+			runErr = NewAIReplyExecutionError(AIReplyExecutionErrorResourceInvariantBroken, err)
+		}
+	}
+	// Completion and continuation decisions are made from the current database
+	// state. HasRemainingTasks is an execution-time snapshot and may be stale
+	// after Commit/Delivery transitions complete in the same run.
+	hasRunnable := AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
+	hasActiveTasks := AIReplyTurnTaskService.HasWorkPending(job.TenantID, job.TurnID) &&
 		!AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 	hasFailureHandoff := AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	hasTerminalFailure := AIReplyTurnTaskService.HasTerminalFailures(job.TenantID, job.TurnID)
+	nextTaskRetryAt := AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID)
+	if runErr == nil && hasActiveTasks && !hasRunnable && nextTaskRetryAt == nil {
+		// The only AI-work state left here is an unclosed running claim. Replaying
+		// the whole pipeline once per cron tick cannot make progress and caused the
+		// production policy_skipped loop. Close the claimed batch as a technical
+		// invariant failure instead.
+		runErr = NewAIReplyExecutionError(
+			AIReplyExecutionErrorResourceInvariantBroken,
+			fmt.Errorf("AI reply turn %d retained running tasks without runnable work", job.TurnID),
+		)
+	}
 	if hasActiveTasks && !hasFailureHandoff {
 		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr)
 		if runErr != nil && (!retryable || job.AttemptCount >= aiReplyJobMaxAttempts) {
@@ -729,9 +810,13 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 			} else {
 				// 契约 22.16：技术失败走 Task 技术终态，不进入 handoff_pending。
-				if err := s.markUnfinishedTasksTechnicalFailure(job, failureClass, now); err != nil {
+				if err := s.markClaimedTasksTechnicalFailure(job, result.TaskKeys, failureClass, now); err != nil {
 					return false
 				}
+				hasRunnable = AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
+				hasActiveTasks = AIReplyTurnTaskService.HasWorkPending(job.TenantID, job.TurnID)
+				hasTerminalFailure = AIReplyTurnTaskService.HasTerminalFailures(job.TenantID, job.TurnID)
+				nextTaskRetryAt = AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID)
 			}
 		} else {
 			nextRetryAt := now.Add(aiReplyJobContinuationDelay)
@@ -753,7 +838,7 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		}
 	}
 
-	if hasRunnable && !hasFailureHandoff {
+	if (hasRunnable || (hasActiveTasks && nextTaskRetryAt != nil)) && !hasFailureHandoff {
 		if result.Status == AIReplyExecutionStatusCompleted {
 			if err := s.validateCompletionEvidence(job, result); err != nil {
 				return false
@@ -762,13 +847,35 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		// 续批延迟由任务层状态驱动：任务都在退避等待时，等最早可执行时间，
 		// 不做 25ms 无进展空转（文档第 15 节：不允许无进展空转，续批由状态变化触发）。
 		nextRetryAt := now.Add(aiReplyJobContinuationDelay)
-		if taskRetryAt := AIReplyTurnTaskService.NextRetryAt(job.TenantID, job.TurnID); taskRetryAt != nil && taskRetryAt.After(nextRetryAt) {
-			nextRetryAt = *taskRetryAt
+		if nextTaskRetryAt != nil && nextTaskRetryAt.After(nextRetryAt) {
+			nextRetryAt = *nextTaskRetryAt
 		}
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(
 			sqls.DB(), job.ID, job.TenantID, owner,
 			"turn_tasks_remaining", classifyTaskFailure(runErr), nextRetryAt, now, false,
 		)
+		return true
+	}
+
+	if hasTerminalFailure && !hasActiveTasks && !hasRunnable && !hasFailureHandoff {
+		current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID)
+		if current == nil || current.Status != enums.AIReplyJobStatusProcessing || current.LeaseOwner != owner {
+			return true
+		}
+		state, decision := s.inspectExecutionState(current, false)
+		if decision != nil && decision.Status != enums.AIReplyJobStatusCompleted {
+			s.markTerminalWithCoverage(current, owner, decision.Status, decision.Code, classifyTaskFailure(runErr), decision.CoveredByMessageID, decision.CoveredByTaskID, now)
+			return true
+		}
+		failureClass := classifyTaskFailure(runErr)
+		if state != nil {
+			s.sendTechnicalFailureNotice(state, current)
+		}
+		if result.Status == AIReplyExecutionStatusCompleted && len(result.CommittedMessageIDs) > 0 && s.validateCompletionEvidence(current, result) == nil {
+			s.markTerminal(current, owner, enums.AIReplyJobStatusCompleted, "partial_success_with_task_failures", failureClass, now)
+			return true
+		}
+		s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "technical_failure_no_handoff", failureClass, now)
 		return true
 	}
 
@@ -825,23 +932,28 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 }
 
 func controlledExecutionErrorShouldRetry(err error) bool {
-	details, ok := AIReplyExecutionErrorDetailsOf(err)
-	if ok && details.RetryabilityKnown {
-		return details.Retryable
-	}
 	code, ok := AIReplyExecutionErrorCodeOf(err)
 	if !ok {
 		return false
 	}
-	// Runtime stages are technical failures by default. They must consume the
-	// existing Job retry budget before the conversation is offered to a human.
+	// Intent/Generate clients and FastGPT Gateway are the sole owners of their
+	// network/protocol retry budgets. Replaying those stages from the Job layer
+	// multiplies calls and can duplicate replies. Only commit/database recovery
+	// is eligible for a Job-level retry.
 	switch code {
 	case AIReplyExecutionErrorIntentDetectFailed,
 		AIReplyExecutionErrorGenerationFailed,
 		AIReplyExecutionErrorKnowledgeUnavailable,
 		AIReplyExecutionErrorEmptyOutput,
-		AIReplyExecutionErrorResourceInvariantBroken,
-		AIReplyExecutionErrorCommitFailed:
+		AIReplyExecutionErrorResourceInvariantBroken:
+		return false
+	}
+	details, ok := AIReplyExecutionErrorDetailsOf(err)
+	if ok && details.RetryabilityKnown {
+		return details.Retryable
+	}
+	switch code {
+	case AIReplyExecutionErrorCommitFailed:
 		return true
 	default:
 		return false
@@ -868,6 +980,49 @@ func classifyTaskFailure(err error) string {
 		return controlledErrorClass(classifyAIReplyJobError(err))
 	}
 	return "knowledge_unavailable"
+}
+
+func (s *aiReplyJobService) expiredJobHasBusinessHandoff(job *models.AIReplyJob) bool {
+	if job == nil || job.TurnID <= 0 || !AIReplyTurnTaskService.Enabled() {
+		return false
+	}
+	for _, task := range repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID) {
+		if aiReplyTurnTaskTerminal(task.Status) {
+			continue
+		}
+		if task.TaskType == enums.AIReplyTurnTaskTypeHuman {
+			return true
+		}
+		if task.Status == enums.AIReplyTurnTaskStatusHandoffPending && failureClassAllowsHumanHandoff(task.FailureClass) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *aiReplyJobService) markExpiredTasksTechnicalFailure(job *models.AIReplyJob, now time.Time) error {
+	if job == nil || job.TurnID <= 0 || !AIReplyTurnTaskService.Enabled() {
+		return nil
+	}
+	return sqls.WithTransaction(func(tx *sqls.TxContext) error {
+		tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(tx.Tx, job.TenantID, job.TurnID)
+		turn := &models.AIReplyTurn{
+			ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID, SessionNo: job.SessionNo,
+		}
+		for index := range tasks {
+			task := &tasks[index]
+			if aiReplyTurnTaskTerminal(task.Status) || task.TaskType == enums.AIReplyTurnTaskTypeHuman ||
+				task.Status == enums.AIReplyTurnTaskStatusHandoffPending {
+				continue
+			}
+			if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(
+				tx.Tx, turn, task.TaskKey, "job_expired", 1, now,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *aiReplyJobService) dispatchControlledFailure(job *models.AIReplyJob, owner, errorClass string, now time.Time) {
@@ -947,18 +1102,38 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 	s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "retry_exhausted_human_dispatch", errorClass, now)
 }
 
-// markUnfinishedTasksTechnicalFailure 把未完成 Task 逐个标记为技术终态
-// failed（FailureClass=technical），不创建 handoff_pending。
-func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIReplyJob, failureClass string, now time.Time) error {
+// markClaimedTasksTechnicalFailure closes only the batch owned by this Job.
+// Pending tasks outside the current batch remain eligible for a continuation
+// Job, so one failed Generate cannot erase unrelated customer questions.
+func (s *aiReplyJobService) markClaimedTasksTechnicalFailure(
+	job *models.AIReplyJob,
+	taskKeys []string,
+	failureClass string,
+	now time.Time,
+) error {
+	targets := make(map[string]struct{}, len(taskKeys))
+	for _, taskKey := range taskKeys {
+		if taskKey = strings.TrimSpace(taskKey); taskKey != "" {
+			targets[taskKey] = struct{}{}
+		}
+	}
 	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID)
 	for index := range tasks {
 		task := &tasks[index]
+		if task.Status != enums.AIReplyTurnTaskStatusRunning || task.ClaimedByJobID != job.ID {
+			continue
+		}
+		if len(targets) > 0 {
+			if _, selected := targets[task.TaskKey]; !selected {
+				continue
+			}
+		}
 		if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || aiReplyTurnTaskTerminal(task.Status) {
 			continue
 		}
 		if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(sqls.DB(), &models.AIReplyTurn{
 			ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID, SessionNo: job.SessionNo,
-		}, task.TaskKey, failureClass, 0, now); err != nil {
+		}, task.TaskKey, failureClass, 1, now); err != nil {
 			return err
 		}
 	}
@@ -966,37 +1141,42 @@ func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIRe
 }
 
 // sendTechnicalFailureNotice 契约 14.5：技术终态至少向客户提交一条短提示
-// （不宣称需要人工），提示 MessageID 写入 ProgressNoticeMessageID；本轮已有
-// 提交消息（部分成功）或已发过提示时只告警不重发。
+// （不宣称需要人工），提示 MessageID 写入 ProgressNoticeMessageID；已发过提示时
+// 不重发。即使本轮部分成功，失败的问题也必须有明确结果，不能静默消失。
 func (s *aiReplyJobService) sendTechnicalFailureNotice(state *aiReplyJobExecutionState, job *models.AIReplyJob) {
-	if state == nil || state.Conversation == nil || job == nil {
+	if state == nil || state.Conversation == nil || state.Instance == nil || job == nil {
 		return
 	}
 	if job.ProgressNoticeMessageID > 0 {
 		return
 	}
-	if tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID); len(tasks) > 0 {
-		for _, task := range tasks {
-			if task.CommittedMessageID > 0 || task.Status == enums.AIReplyTurnTaskStatusDelivered {
-				return // 部分成功：成功项已可见，不追加技术噪音
-			}
-		}
-	}
-	aiAgent, ok := WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(state.Conversation.ID)
-	if !ok || aiAgent.TenantID != state.Conversation.TenantID {
+	// A technical failure notice must not depend on resolving the intent profile
+	// again: a broken or temporarily unavailable runtime configuration is one of
+	// the reasons this path exists. The already validated execution state owns the
+	// immutable conversation route and protocol instance for this job.
+	if state.Instance.TenantID != state.Conversation.TenantID || !state.Instance.AIReplyEnabled {
 		return
 	}
-	message, err := MessageService.SendAIMessageWithRequestID(
-		state.Conversation.ID, aiAgent.ID,
-		"ai_tech_notice_"+fmt.Sprintf("%d_%d", job.TurnID, job.ID),
-		enums.IMMessageTypeText,
-		"这条消息暂时没有处理成功，请稍后重发或换一种说法。",
-		"", systemOperator(), job.RequestID,
+	aiAgent := WxWorkProtocolInstanceService.BuildRuntimeAIAgent(state.Instance)
+	messages, err := MessageService.SendAIMessageBatchForTurnWithRequestID(
+		state.Conversation.ID,
+		aiAgent.ID,
+		[]AIOutboundMessageDraft{{
+			ClientMsgID: "ai_tech_notice_" + fmt.Sprintf("%d_%d", job.TurnID, job.ID),
+			MessageType: enums.IMMessageTypeText,
+			Content:     "这条消息暂时没有处理成功，请稍后重发或换一种说法。",
+		}},
+		systemOperator(), job.RequestID, job.TurnID, job.TurnVersion, job.ID,
 	)
 	if err != nil {
 		slog.Warn("send technical failure notice failed", "job_id", job.ID, "error", err)
 		return
 	}
+	if len(messages) != 1 {
+		slog.Warn("send technical failure notice returned unexpected message count", "job_id", job.ID, "count", len(messages))
+		return
+	}
+	message := &messages[0]
 	_ = repositories.AIReplyJobRepository.UpdateColumnsInTenant(sqls.DB(), job.ID, job.TenantID, map[string]any{
 		"progress_notice_message_id": message.ID,
 		"result_code":                "technical_failure_notified",
@@ -1035,8 +1215,8 @@ func (s *aiReplyJobService) dispatchToExistingHumanPool(state *aiReplyJobExecuti
 		return fmt.Errorf("human dispatch AI agent unavailable")
 	}
 	requestID := s.stableHandoffRequestID(job)
-	// 技术失败兜底也必须先向客户二次确认，而不是直接转人工；
-	// 确认后才真正进入人工池，避免“模型一抖就直接转人工”。
+	// 只有已经通过业务/安全门禁的人工动作才会到这里；仍先向客户
+	// 二次确认，再进入人工池，避免把技术失败伪装成人工诉求。
 	_, err := ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
 		state.Conversation.ID, aiAgent, reason, requestID, state.Message.ID,
 	)
@@ -1371,4 +1551,59 @@ func isTerminalAIReplyJobStatus(status enums.AIReplyJobStatus) bool {
 	default:
 		return false
 	}
+}
+
+// WakeAfterMediaAnalysis 契约 7（任务 B）：媒体分析 ready/failed/empty 后
+// 唤醒当前 Turn 等待中的 Job——只提前 pending/retry 的 next_retry_at，
+// 不打断 processing、不跨 Turn、不调用模型。Turn 无可运行 Job 但有未完成
+// Task 时补建恢复 Job。
+func (s *aiReplyJobService) WakeAfterMediaAnalysis(messageID int64) error {
+	if messageID <= 0 || sqls.DB() == nil {
+		return nil
+	}
+	message := repositories.MessageRepository.Get(sqls.DB(), messageID)
+	if message == nil || message.SenderType != enums.IMSenderTypeCustomer || message.AIReplyTurnID <= 0 {
+		return nil
+	}
+	turn := repositories.AIReplyTurnRepository.GetInTenant(sqls.DB(), message.AIReplyTurnID, message.TenantID)
+	if turn == nil || turn.ConversationID != message.ConversationID || turn.SessionNo != message.SessionNo {
+		return nil
+	}
+	now := time.Now()
+	woken := false
+	job := repositories.AIReplyJobRepository.GetByMessageInTenant(sqls.DB(), message.TenantID, message.ConversationID, messageID)
+	if job != nil {
+		switch job.Status {
+		case enums.AIReplyJobStatusPending, enums.AIReplyJobStatusRetry:
+			if job.NextRetryAt != nil && job.NextRetryAt.After(now) {
+				if err := repositories.AIReplyJobRepository.UpdateColumnsInTenant(sqls.DB(), job.ID, job.TenantID, map[string]any{
+					"next_retry_at": now, "updated_at": now, "update_user_name": "media_analysis_wake",
+				}); err != nil {
+					return err
+				}
+			}
+			woken = true
+		case enums.AIReplyJobStatusProcessing:
+			return nil // 不打断正在执行的 Job
+		}
+	}
+	if woken {
+		return nil
+	}
+	// Turn 有未完成 Task 但无有效 Job：补建恢复 Job（不新建 Turn）。
+	if !AIReplyTurnTaskService.HasUnfinished(message.TenantID, turn.ID) {
+		return nil
+	}
+	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
+	if conversation == nil {
+		return nil
+	}
+	restored, created, err := s.EnqueueForMessageDB(sqls.DB(), conversation, message)
+	if err != nil {
+		return err
+	}
+	if created {
+		slog.Info("media analysis wake restored job", "message_id", messageID, "job_id", restored.ID, "turn_id", turn.ID)
+	}
+	return nil
 }

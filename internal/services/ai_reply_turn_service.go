@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -281,6 +283,80 @@ func (s *aiReplyTurnService) ReleaseJobLeaseDB(db *gorm.DB, job *models.AIReplyJ
 		"updated_at":       now,
 		"update_user_name": "ai_reply_turn_lease",
 	})
+}
+
+// FinalizeNoActionDB closes a current, taskless turn without creating an AI
+// message. This is deliberately a CAS on TurnID + Version + ActiveJobID: a
+// worker may only close the exact customer-input version it claimed.
+func (s *aiReplyTurnService) FinalizeNoActionDB(db *gorm.DB, job *models.AIReplyJob, reason string, now time.Time) (bool, error) {
+	if db == nil || job == nil || job.TurnID <= 0 || job.TurnVersion <= 0 || job.TenantID <= 0 {
+		return false, nil
+	}
+	turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(db, job.TurnID, job.TenantID)
+	if err != nil || turn == nil {
+		return false, err
+	}
+	if turn.ConversationID != job.ConversationID || turn.SessionNo != job.SessionNo ||
+		turn.StoreID != job.StoreID || turn.StoreStaffBindingID != job.StoreStaffBindingID ||
+		turn.Version != job.TurnVersion || turn.ActiveJobID != job.ID ||
+		turn.Status != enums.AIReplyTurnStatusRunning {
+		return false, nil
+	}
+	if AIReplyTurnTaskService.HasUnfinishedDB(db, turn.TenantID, turn.ID) {
+		return false, nil
+	}
+	// A previous version may already have durable output. ReleaseJobLeaseDB will
+	// restore committed/delivered in that case; closing is only necessary when
+	// this turn has never produced reply evidence.
+	if turn.LastCommittedVersion > 0 || turn.LastDeliveredVersion > 0 {
+		return true, nil
+	}
+	reason = limitText(strings.TrimSpace(reason), 80)
+	if reason == "" {
+		reason = "no_actionable_request"
+	}
+	return repositories.AIReplyTurnRepository.CloseCurrentNoActionVersion(
+		db, turn.TenantID, turn.ID, job.ID, job.TurnVersion, reason, now,
+	)
+}
+
+// HasOtherReplyableCustomerInputDB prevents a trailing non-actionable image
+// from swallowing earlier text/voice requests in the same turn. It only reads
+// customer messages from the exact tenant/conversation/session/turn scope.
+func (s *aiReplyTurnService) HasOtherReplyableCustomerInputDB(db *gorm.DB, job *models.AIReplyJob, currentMessageID int64) bool {
+	if db == nil || job == nil || job.TenantID <= 0 || job.ConversationID <= 0 || job.TurnID <= 0 {
+		return false
+	}
+	messages := repositories.MessageRepository.Find(db, sqls.NewCnd().
+		Eq("tenant_id", job.TenantID).
+		Eq("conversation_id", job.ConversationID).
+		Eq("session_no", job.SessionNo).
+		Eq("ai_reply_turn_id", job.TurnID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		NotEq("id", currentMessageID).
+		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+		Asc("id"))
+	for _, message := range messages {
+		text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+		if text == "" {
+			continue
+		}
+		switch message.MessageType {
+		case enums.IMMessageTypeText, enums.IMMessageTypeHTML, enums.IMMessageTypeVoice:
+			return true
+		case enums.IMMessageTypeImage, enums.IMMessageTypeAttachment:
+			if mode, _, _, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+				if replyengine.MediaResponseExpectationTriggersAI(mode) {
+					return true
+				}
+				continue
+			}
+			if replyengine.MediaUnderstandingHasActionableIntent(text) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *aiReplyTurnService) InterruptCurrentDB(db *gorm.DB, conversation *models.Conversation, sessionNo int, reason string) error {
@@ -679,6 +755,17 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 		return false, "cancelled_turn_scope_invalid", nil
 	}
 	if message.AIReplyTurnVersion != turn.Version {
+		// 任务 C（契约 8）：旧版本不直接取消——先查持久 Commit 证据。
+		// 已在事务中提交（Task.CommittedMessageID=本消息且状态 committed/
+		// delivered）的旧版本回复允许投递/重试；无证据才取消。
+		if db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+			tasks := repositories.AIReplyTurnTaskRepository.FindByCommittedMessageInTenant(db, message.TenantID, message.ID)
+			for _, task := range tasks {
+				if task.TurnID == turn.ID && (task.Status == enums.AIReplyTurnTaskStatusCommitted || task.Status == enums.AIReplyTurnTaskStatusDelivered) {
+					return true, "committed_stale_turn_dispatchable", nil
+				}
+			}
+		}
 		return false, "cancelled_stale_turn", nil
 	}
 	conversation := repositories.ConversationRepository.GetInTenant(db, message.ConversationID, message.TenantID)
@@ -827,4 +914,95 @@ func canonicalAIReplyPayload(payload string) string {
 		return norm.NFKC.String(payload)
 	}
 	return string(canonical)
+}
+
+// ReconcileStaleTurns 契约 9（任务 D）：历史卡住的 Turn 自动恢复或收敛。
+// 只扫描超时 open/running/committed；有有效 Job lease 跳过；无未完成 Task
+// 按证据收敛；有未完成 Task 且 AI 路由有效时补建恢复 Job。扫描器不调用模型。
+func (s *aiReplyTurnService) ReconcileStaleTurns(limit int) (int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	db := sqls.DB()
+	if db == nil || !db.Migrator().HasTable(&models.AIReplyTurn{}) {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-3 * time.Minute)
+	stale := repositories.AIReplyTurnRepository.FindStaleInTenant(db, cutoff, limit)
+	reconciled := 0
+	for index := range stale {
+		turn := &stale[index]
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			locked, lockErr := repositories.AIReplyTurnRepository.GetForUpdateInTenant(ctx.Tx, turn.ID, turn.TenantID)
+			if lockErr != nil || locked == nil {
+				return lockErr
+			}
+			if locked.Status != turn.Status || locked.UpdatedAt.After(cutoff) {
+				return nil // 已被其他流程处理
+			}
+			// 有有效 Job lease 时跳过。
+			job := repositories.AIReplyJobRepository.GetByMessageInTenant(ctx.Tx, locked.TenantID, locked.ConversationID, locked.LastCustomerMessageID)
+			if job != nil && job.Status == enums.AIReplyJobStatusProcessing &&
+				job.LeaseExpiresAt != nil && job.LeaseExpiresAt.After(time.Now()) {
+				return nil
+			}
+			hasUnfinished := AIReplyTurnTaskService.HasUnfinishedDB(ctx.Tx, locked.TenantID, locked.ID)
+			if !hasUnfinished {
+				return s.convergeTurnFinalState(ctx.Tx, locked)
+			}
+			// 有未完成 Task：AI 路由仍有效时补建恢复 Job。
+			return s.restoreJobForTurn(ctx.Tx, locked)
+		}); err != nil {
+			slog.Warn("reconcile stale turn failed", "turn_id", turn.ID, "error", err)
+			continue
+		}
+		reconciled++
+	}
+	return reconciled, nil
+}
+
+// convergeTurnFinalState 无未完成 Task 的 Turn 按证据收敛。
+func (s *aiReplyTurnService) convergeTurnFinalState(db *gorm.DB, turn *models.AIReplyTurn) error {
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	status := enums.AIReplyTurnStatusClosed
+	reason := "reconciled_no_work"
+	for _, task := range tasks {
+		if task.CommittedMessageID > 0 {
+			if task.Status == enums.AIReplyTurnTaskStatusDelivered {
+				status, reason = enums.AIReplyTurnStatusDelivered, "reconciled_delivered"
+				break
+			}
+			status, reason = enums.AIReplyTurnStatusCommitted, "reconciled_committed"
+		}
+	}
+	now := time.Now()
+	return repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, map[string]any{
+		"status": status, "terminal_reason": reason, "lease_owner": "", "lease_expires_at": nil,
+		"updated_at": now, "update_user_name": "turn_reconciler",
+	})
+}
+
+// restoreJobForTurn 有未完成 Task 的 Turn 补建恢复 Job（不调模型、不改路由）。
+func (s *aiReplyTurnService) restoreJobForTurn(db *gorm.DB, turn *models.AIReplyTurn) error {
+	conversation := repositories.ConversationRepository.GetInTenant(db, turn.ConversationID, turn.TenantID)
+	if conversation == nil || conversation.CurrentAIReplyTurnID != turn.ID ||
+		!aiReplyTurnConversationAllowsAI(conversation) {
+		return nil // 人工/关闭路由不恢复
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversation.ID, conversation.TenantID)
+	if route == nil || route.SessionNo != turn.SessionNo || !aiReplyTurnRouteAllowsAI(route.RouteStatus) {
+		return nil
+	}
+	message := repositories.MessageRepository.GetInTenant(db, turn.LastCustomerMessageID, turn.TenantID)
+	if message == nil || message.SenderType != enums.IMSenderTypeCustomer {
+		return nil
+	}
+	job, created, err := AIReplyJobService.EnqueueForMessageDB(db, conversation, message)
+	if err != nil {
+		return err
+	}
+	if created {
+		slog.Info("stale turn restored job", "turn_id", turn.ID, "job_id", job.ID)
+	}
+	return nil
 }

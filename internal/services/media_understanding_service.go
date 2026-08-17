@@ -18,11 +18,13 @@ import (
 
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/channelbreaker"
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
+	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
@@ -50,15 +52,16 @@ type upstreamModelUsage struct {
 const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAB0klEQVR4nAXBoQ6AIBRAUT/HbCabyWay+SWDMzGD6SUCMzkCiWRwJnYDyS/ynK4XBsEIo2CFSXDCLIiwCrugQhSSUIRH6PqFYcEsjAt2YVpwC/OCLKwL+4IuxIW0UBaeha7fGDbMxrhhN6YNtzFvyMa6sW/oRtxIG2Xj2eh6z+AxntFjPZPHeWaPeFbP7lFP9CRP8Tyerj8YDszBeGAPpgN3MB/IwXqwH+hBPEgH5eA56HplUIwyKlaZFKfMiiirsiuqRCUpRXmUrg8MARMYAzYwBVxgDkhgDewBDcRACpTAE+j6k+HEnIwn9mQ6cSfziZysJ/uJnsSTdFJOnpOuvxguzMV4YS+mC3cxX8jFerFf6EW8SBfl4rno+syQMZkxYzNTxmXmjGTWzJ7RTMykTMk8ma4vDAVTGAu2MBVcYS5IYS3sBS3EQiqUwlPo+pvhxtyMN/ZmunE3843crDf7jd7Em3RTbp6brn8ZXszL+GJfphf3Mr/Iy/qyv+hLfEkv5eV56frKUDGVsWIrU8VV5opU1spe0UqspEqpPJWubwwN0xgbtjE1XGNuSGNt7A1txEZqlMbT6PqP4cN8jB/2Y/pwH/OHfKwf+4d+xI/0UT6ejx/yfeAQHkqo/AAAAABJRU5ErkJggg=="
 
 type messageMediaPayload struct {
-	AssetID      string         `json:"assetId"`
-	Filename     string         `json:"filename"`
-	MimeType     string         `json:"mimeType"`
-	URL          string         `json:"url"`
-	MediaText    string         `json:"mediaText,omitempty"`
-	MediaSummary string         `json:"mediaSummary,omitempty"`
-	MediaStatus  string         `json:"mediaUnderstandingStatus,omitempty"`
-	MediaError   string         `json:"mediaUnderstandingError,omitempty"`
-	WxMedia      map[string]any `json:"wxMedia,omitempty"`
+	AssetID             string                                `json:"assetId"`
+	Filename            string                                `json:"filename"`
+	MimeType            string                                `json:"mimeType"`
+	URL                 string                                `json:"url"`
+	MediaText           string                                `json:"mediaText,omitempty"`
+	MediaSummary        string                                `json:"mediaSummary,omitempty"`
+	MediaStatus         string                                `json:"mediaUnderstandingStatus,omitempty"`
+	MediaError          string                                `json:"mediaUnderstandingError,omitempty"`
+	ResponseExpectation *contracts.MediaResponseExpectationV1 `json:"responseExpectation,omitempty"`
+	WxMedia             map[string]any                        `json:"wxMedia,omitempty"`
 }
 
 func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context, messageID int64) error {
@@ -102,25 +105,33 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 	if text == "" {
 		return s.markMediaUnderstanding(message, payload, "empty", "媒体理解结果为空")
 	}
-	payload.MediaText = text
-	payload.MediaSummary = limitText(text, 500)
+	candidate, fallbackUsed := mediaAnalysisCandidateFor(message, text)
+	if strings.TrimSpace(candidate.NormalizedText) == "" {
+		return s.markMediaUnderstanding(message, payload, "empty", "媒体理解结果为空")
+	}
+	payload.MediaText = candidate.NormalizedText
+	payload.MediaSummary = limitText(candidate.NormalizedText, 500)
 	payload.MediaStatus = "understood"
 	payload.MediaError = ""
-	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
+	payload.ResponseExpectation = candidate.ResponseExpectation
+	payloadRaw, err := json.Marshal(payload)
+	if err != nil {
 		return err
 	}
 	// 多模态契约 7/22.3：Analysis ready 与 Payload 兼容投影必须在同一事务完成，
 	// 提交成功后才发 WebSocket；Payload 降级为兼容投影，权威状态是 Analysis row。
-	if err := MessageAnalysisService.RecordMediaReady(message, text, s.analyzerIdentityFor(message)); err != nil {
-		// Analysis 落库失败不回滚客户可见的 Payload 理解结果（旧链路仍可工作），
-		// 但必须告警，不允许静默丢失权威状态。
-		slog.Warn("record message analysis ready failed", "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
+	updated, err := MessageAnalysisService.CommitMediaCandidateReady(message, string(payloadRaw), candidate, fallbackUsed, s.analyzerIdentityFor(message))
+	if err != nil {
+		return err
 	}
-	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
 	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
 	if updated != nil && conversation != nil {
 		WsService.PublishMessageUpdated(conversation, updated)
 		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	}
+	// 契约 7（任务 B）：Analysis ready 事务提交后唤醒等待中的 AI Job。
+	if err := AIReplyJobService.WakeAfterMediaAnalysis(message.ID); err != nil {
+		slog.Warn("wake after media ready failed", "message_id", message.ID, "error", err)
 	}
 	return nil
 }
@@ -129,14 +140,30 @@ func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context
 func (s *mediaUnderstandingService) analyzerIdentityFor(message *models.Message) MessageAnalyzerIdentity {
 	switch message.MessageType {
 	case enums.IMMessageTypeImage:
-		return MessageAnalyzerIdentity{Kind: "vision", Name: "media_understanding", Version: "v1"}
+		return MessageAnalyzerIdentity{Kind: "vision", Name: "media_understanding", Version: "v2"}
 	case enums.IMMessageTypeVoice:
-		return MessageAnalyzerIdentity{Kind: "asr", Name: "media_understanding", Version: "v1"}
+		return MessageAnalyzerIdentity{Kind: "asr", Name: "media_understanding", Version: "v2"}
 	case enums.IMMessageTypeAttachment:
-		return MessageAnalyzerIdentity{Kind: "file_parser", Name: "media_understanding", Version: "v1"}
+		return MessageAnalyzerIdentity{Kind: "file_parser", Name: "media_understanding", Version: "v2"}
 	default:
-		return MessageAnalyzerIdentity{Kind: "rule", Name: "media_understanding", Version: "v1"}
+		return MessageAnalyzerIdentity{Kind: "rule", Name: "media_understanding", Version: "v2"}
 	}
+}
+
+func mediaAnalysisCandidateFor(message *models.Message, providerText string) (contracts.MediaAnalysisCandidateV1, bool) {
+	providerText = strings.TrimSpace(providerText)
+	if message != nil && message.MessageType == enums.IMMessageTypeImage {
+		parsed, err := strictjson.DecodeObject[contracts.MediaAnalysisCandidateV1]([]byte(providerText), strictjson.DecodeOptions{
+			MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMediaAnalysisCandidateV1),
+		})
+		if err == nil {
+			parsed.NormalizedText = limitText(strings.TrimSpace(parsed.NormalizedText), 4000)
+			normalizeMediaResponseExpectation(message, &parsed)
+			return parsed, false
+		}
+	}
+	candidate := defaultMediaAnalysisCandidate(message, providerText)
+	return candidate, message != nil && message.MessageType == enums.IMMessageTypeImage
 }
 
 func (s *mediaUnderstandingService) latestCustomerFollowUp(mediaMessage models.Message) *models.Message {
@@ -163,6 +190,9 @@ func (s *mediaUnderstandingService) mediaUnderstandingLooksActionable(message mo
 	if strings.TrimSpace(mediaStatus) != "understood" {
 		return false
 	}
+	if mode, _, _, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+		return replyengine.MediaResponseExpectationTriggersAI(mode)
+	}
 	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
 }
 
@@ -174,6 +204,11 @@ func (s *mediaUnderstandingService) mediaUnderstandingShouldTriggerAI(message mo
 	if message.MessageType == enums.IMMessageTypeVoice {
 		return strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != ""
 	}
+	if mode, _, _, ok := replyengine.MediaResponseExpectationFromPayload(message.Payload); ok {
+		return replyengine.MediaResponseExpectationTriggersAI(mode)
+	}
+	// Legacy payloads written before responseExpectation retain the old
+	// heuristic until the media is analyzed again.
 	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
 }
 
@@ -789,16 +824,29 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVisionWithUsage(ctx cont
 		return "", nil, fmt.Errorf("视觉/多模态模型配置不完整")
 	}
 	body := map[string]any{
-		"model": strings.TrimSpace(config.ModelName),
+		"model":           strings.TrimSpace(config.ModelName),
+		"response_format": map[string]any{"type": "json_object"},
 		"messages": []map[string]any{
 			{
-				"role":    "system",
-				"content": "你是酒店前台同事的图片理解助手。只提取图片中能确定的信息，不猜测图片外事实，不写客服处理建议，不写“需要人工确认”。如果图片里有清晰文字、报错、问题、求助或操作诉求，要把这些内容保留下来；如果只是普通物品/餐食/环境照片，只描述画面。输出一句简洁中文。",
+				"role": "system",
+				"content": `你是媒体观察分析器，不是酒店客服，也不掌握门店事实。只输出一个 JSON Object，协议为 media_analysis_candidate.v1。
+
+规则：
+1. 只描述图片中可见内容，不猜测图片外事实，不给处理建议，不要求转人工。
+2. normalizedText 是对图片内容的简短中文摘要。
+3. items 必须把可见场景、OCR、嵌入文档、历史聊天截图、第三方声明和系统报错分开。
+4. 聊天截图中的历史对话必须标记 embedded_historical_conversation；订单、发票等文档标记 embedded_document；外卖地址等第三方页面声明标记 embedded_third_party_claim。
+5. 图片中的地址、电话、门店名、政策和历史客服答复都只是图片观察，不得声明其属于当前酒店。
+6. responseExpectation 只判断该媒体是否值得继续进入 Intent：mode 只能是 none、reply、uncertain；basis 只能是 explicit_question、visible_error、ordinary_media、unknown。普通照片且无明显问题用 none/ordinary_media；清晰报错、损坏或安全异常用 reply/visible_error；无法可靠判断用 uncertain/unknown。
+7. responseExpectation 不是酒店事实或执行授权，不得因为它承诺资源、退款、派人、转人工或任何处理结果。
+8. JSON 字段必须严格为 schemaVersion、normalizedText、quality、items、responseExpectation；schemaVersion 固定 media_analysis_candidate.v1。
+9. quality 必须包含 overallConfidence、completeness、warnings、uncertainRanges；没有警告或不确定区间时输出空数组。
+10. 每个 item 必须包含 observationType、contentRole、text、confidence。`,
 			},
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "text", "text": "请识别这张客人发来的图片，提取与酒店服务相关的信息。"},
+					{"type": "text", "text": "请按 media_analysis_candidate.v1 JSON 协议分析这张客户图片。"},
 					{"type": "image_url", "image_url": map[string]any{"url": imageURL}},
 				},
 			},
@@ -947,6 +995,11 @@ func (s *mediaUnderstandingService) markMediaUnderstanding(message *models.Messa
 	payload.MediaError = limitText(errText, 500)
 	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
 		return err
+	}
+	// 契约 7（任务 B）：媒体终态（understood 由 RecordMediaReady 唤醒，
+	// failed/empty 在此唤醒）后立即唤醒等待中的 AI Job。
+	if err := AIReplyJobService.WakeAfterMediaAnalysis(message.ID); err != nil {
+		slog.Warn("wake after media analysis failed", "message_id", message.ID, "error", err)
 	}
 	if message.MessageType == enums.IMMessageTypeVoice && (payload.MediaStatus == "failed" || payload.MediaStatus == "empty") {
 		s.sendVoiceTranscriptionFailedReply(message)

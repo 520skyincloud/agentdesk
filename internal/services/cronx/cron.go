@@ -2,6 +2,7 @@ package cronx
 
 import (
 	"agent-desk/internal/services"
+	"context"
 	"fmt"
 	"log/slog"
 
@@ -10,6 +11,7 @@ import (
 
 func Init() {
 	services.ConversationDispatchService.EnableRealtimeScheduling()
+	services.WxWorkProtocolService.StartOutboxWorker(context.Background())
 	c := cron.New()
 
 	addFunc(c, "0 4 ? * *", func() {
@@ -26,6 +28,15 @@ func Init() {
 	})
 
 	// 好友申请和联系人变更由企微回调即时触发；低频扫描只补偿漏回调。
+	addFunc(c, "@every 30s", func() {
+		// 契约 9（任务 D）：低频收敛卡住的 Turn。
+		if count, err := services.AIReplyTurnService.ReconcileStaleTurns(50); err != nil {
+			slog.Warn("stale turn reconcile failed", slog.Any("err", err))
+		} else if count > 0 {
+			slog.Info("stale turns reconciled", "count", count)
+		}
+	})
+
 	addFunc(c, "@every 5m", func() {
 		count := services.WxWorkProtocolContactAutomationService.Scan(20)
 		if count > 0 {
@@ -50,10 +61,7 @@ func Init() {
 	})
 
 	addFunc(c, "@every 1s", func() {
-		count := services.WxWorkProtocolService.DispatchPendingOutbox(50)
-		if count > 0 {
-			slog.Info("wxwork protocol outbox dispatched", "count", count)
-		}
+		services.WxWorkProtocolService.WakePendingOutbox()
 	})
 
 	addFunc(c, "@every 10s", func() {
@@ -64,6 +72,7 @@ func Init() {
 		}
 		if count > 0 {
 			slog.Info("missing channel message outbox repaired", "count", count)
+			services.WxWorkProtocolService.WakePendingOutbox()
 		}
 	})
 
@@ -116,7 +125,7 @@ func Init() {
 	addFunc(c, "@every 5m", func() {
 		// 契约 17.3.1：从历史检索命中离线回填知识质量元数据（幂等，
 		// 不覆盖人工审核）。回填后 17.2 门禁按 claimType/trustLevel 生效。
-		if count, err := services.KnowledgeEvidenceMetadataService.BackfillFromRetrieveHits(200); err != nil {
+		if count, err := services.KnowledgeEvidenceMetadataService.BackfillFromRetrieveHits(2000); err != nil {
 			slog.Warn("knowledge evidence metadata backfill failed", slog.Any("err", err))
 		} else if count > 0 {
 			slog.Info("knowledge evidence metadata backfilled", "count", count)
