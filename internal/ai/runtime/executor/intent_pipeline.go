@@ -146,13 +146,10 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 			evidenceV2 = *knowledgeOutcome.EvidenceV2
 		}
 		resourceEligibility = knowledgeOutcome.ResourceEligibility
-		// 知识命中绑定动作：把“转人工”类知识答案从口头文本提升为结构化人工路由，
-		// 让既有二次确认链真正触发，而不是模型复述“我要转人工”。
-		activePlans, knowledgeHandoff := applyKnowledgeActionBindings(activePlans, knowledgeOutcome.TaskActionCodes)
+		// 知识命中绑定动作：把显式绑定的“转人工”任务提升为结构化动作；
+		// 只影响该 Task，后续 TaskLedger/Commit 再按任务状态处理，不改写整轮 Intent。
+		activePlans = applyKnowledgeActionBindings(activePlans, knowledgeOutcome.TaskActionCodes)
 		replyPlan.TaskPlans = activePlans
-		if knowledgeHandoff {
-			intent = markIntentAsKnowledgeHandoff(intent)
-		}
 	}
 	// Relation normalization is authoritative for every downstream artifact.
 	// Apply it before ReplyPlan, ContextCompiler, V3 plan, and Generate prompt
@@ -878,14 +875,12 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 }
 
 // applyKnowledgeActionBindings 把命中知识的任务按绑定动作改写为结构化执行计划。
-// 目前只把 human_handoff 提升为人工路由计划；资源/工具动作继续走各自链路。
-// 返回 (plans, hasHumanHandoff)。
-func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, taskActionCodes map[string]string) ([]callbacks.ReplyTaskPlanTraceData, bool) {
+// 动作只作用于绑定的 Task，不能把一个 Task 的人工动作提升成整轮 Intent。
+func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, taskActionCodes map[string]string) []callbacks.ReplyTaskPlanTraceData {
 	if len(taskActionCodes) == 0 {
-		return plans, false
+		return plans
 	}
 	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
-	hasHandoff := false
 	for _, plan := range plans {
 		actionCode, ok := taskActionCodes[plan.TaskKey]
 		if !ok || actionCode != "human_handoff" {
@@ -897,24 +892,8 @@ func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, task
 		plan.Output = "human_route_confirmation_or_dispatch"
 		plan.ResourceAction = ""
 		ret = append(ret, plan)
-		hasHandoff = true
 	}
-	return ret, hasHandoff
-}
-
-// markIntentAsKnowledgeHandoff 把意图收敛为人工路由，驱动 executeIntentHumanRoute 发起二次确认。
-func markIntentAsKnowledgeHandoff(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
-	intent.PrimaryIntent = "human_complaint_risk"
-	intent.MatchedIntentCode = "human_complaint_risk"
-	intent.DetectedIntent = "human_complaint_risk"
-	intent.SubIntent = "explicit_handoff"
-	intent.NeedsHumanRoute = true
-	intent.HumanRoutePolicy = "managed_mode"
-	intent.NeedsKnowledge = false
-	intent.NeedsResource = false
-	intent.NeedsTool = false
-	intent.Reason = appendIntentReason(intent.Reason, "knowledge action binding promoted to human handoff")
-	return intent
+	return ret
 }
 
 func expectedIntentResources(intent callbacks.IntentTraceData) []string {

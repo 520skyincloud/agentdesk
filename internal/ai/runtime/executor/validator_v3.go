@@ -342,7 +342,7 @@ func deterministicGroundedKnowledgeContent(plan contracts.ReplyPlanV4, evidence 
 	if len(answers) == 0 {
 		return "", false
 	}
-	return boundedGroundedAnswer(strings.Join(answers, "\n"), 1600), true
+	return boundedGroundedAnswer(strings.Join(answers, "\n"), 640), true
 }
 
 func groundedEvidenceAnswerForTask(task contracts.ReplyPlanTaskV4, refs []string, evidenceByRef map[string]contracts.EvidenceItemV2) string {
@@ -363,7 +363,13 @@ func groundedEvidenceAnswerForTask(task contracts.ReplyPlanTaskV4, refs []string
 			continue
 		}
 		seen[normalized] = struct{}{}
-		parts = append(parts, boundedGroundedAnswer(content, 800))
+		// Evidence 是检索原文，不是客户消息。只投影少量完整句子，避免把
+		// FAQ 标题、操作手册和整篇攻略原样发送出去。
+		content = conciseGroundedEvidenceContent(content, 240)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, content)
 		if len(parts) >= 2 {
 			break
 		}
@@ -387,6 +393,90 @@ func sanitizeGroundedEvidenceContent(content string) string {
 		content = strings.TrimSpace(content[index+len("答案："):])
 	}
 	return strings.TrimSpace(content)
+}
+
+// conciseGroundedEvidenceContent 把检索正文压缩成客户可读的短答。
+// Evidence 可能是 FAQ/手册原文，不能直接作为消息发送；这里仅保留前几条
+// 完整事实句，并保留句末标点，避免在任意 rune 位置截断造成半句话。
+func conciseGroundedEvidenceContent(content string, maxRunes int) string {
+	content = sanitizeGroundedEvidenceContent(content)
+	if content == "" || maxRunes <= 0 {
+		return ""
+	}
+	sentences := splitGroundedEvidenceSentences(content)
+	if len(sentences) == 0 {
+		return boundedGroundedAnswer(content, maxRunes)
+	}
+	selected := make([]string, 0, 3)
+	used := 0
+	for _, sentence := range sentences {
+		sentence = cleanGroundedEvidenceSentence(sentence)
+		if sentence == "" || groundedEvidenceHeading(sentence) {
+			continue
+		}
+		if len(selected) >= 3 {
+			break
+		}
+		length := len([]rune(sentence))
+		separator := 0
+		if len(selected) > 0 {
+			separator = 1
+		}
+		if used+separator+length > maxRunes {
+			break
+		}
+		selected = append(selected, sentence)
+		used += separator + length
+	}
+	if len(selected) == 0 {
+		return boundedGroundedAnswer(content, maxRunes)
+	}
+	return strings.Join(selected, "\n")
+}
+
+func splitGroundedEvidenceSentences(content string) []string {
+	ret := make([]string, 0, 4)
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(content) {
+		builder.WriteRune(r)
+		if isGroundedEvidenceSentenceDelimiter(r) {
+			sentence := strings.TrimSpace(builder.String())
+			if sentence != "" {
+				ret = append(ret, sentence)
+			}
+			builder.Reset()
+		}
+	}
+	if sentence := strings.TrimSpace(builder.String()); sentence != "" {
+		ret = append(ret, sentence)
+	}
+	return ret
+}
+
+func isGroundedEvidenceSentenceDelimiter(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '；', ';', '\n', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanGroundedEvidenceSentence(sentence string) string {
+	sentence = strings.TrimSpace(sentence)
+	sentence = strings.TrimLeft(sentence, "-*#> \t")
+	for _, prefix := range []string{"问题：", "问题:", "标题：", "标题:", "参考答案：", "参考答案:", "知识库原文：", "知识库原文:"} {
+		sentence = strings.TrimSpace(strings.TrimPrefix(sentence, prefix))
+	}
+	return strings.TrimSpace(sentence)
+}
+
+func groundedEvidenceHeading(sentence string) bool {
+	trimmed := strings.TrimSpace(sentence)
+	if trimmed == "" || strings.ContainsAny(trimmed, "。！？!?；;：:") {
+		return false
+	}
+	return len([]rune(trimmed)) <= 18
 }
 
 func boundedGroundedAnswer(content string, maxRunes int) string {

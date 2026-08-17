@@ -470,16 +470,15 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 				outcome.ReasonCode = "knowledge_no_context"
 			}
 		}
-		// 只有「排名第一」的检索结果（实际采用的答案）才允许触发"转接"判定；
-		// 后续候选只是噪声，不能因为它们正文里出现"转接"就误判转人工。
+		// 只有显式、已绑定到当前租户/门店/知识记录的动作才可以触发人工路由。
+		// 知识正文只是事实证据，正文里出现“转接”“人工”等词不代表系统获得
+		// 人工路由授权，否则普通业务说明会把整轮误切到人工。
 		if outcome.Status == "has_context" && strings.TrimSpace(taskActionCodes[item.TaskKey]) == "" && len(supportingResults) > 0 {
 			top := supportingResults[0]
 			if actionCode := services.KnowledgeActionBindingService.ActionCodeForHit(
 				req.Conversation.TenantID, req.Conversation.StoreID, top.KnowledgeBaseID, top.SourceRecordID,
 			); actionCode != "" {
 				taskActionCodes[item.TaskKey] = actionCode
-			} else if knowledgeContentRequiresHandoff(top.Content) {
-				taskActionCodes[item.TaskKey] = "human_handoff"
 			}
 		}
 		byTask[item.TaskKey] = outcome
@@ -1061,13 +1060,6 @@ func mergeRuntimeTaskKnowledge(items []runtimeTaskKnowledgeItem, knowledgeBaseID
 		return nil
 	}
 	return merged
-}
-
-// knowledgeContentRequiresHandoff 判断知识正文是否明确要求转接。
-// 只认"转接"两个字精确出现；"转人工/需要人工/人工客服/联系人工"等一律不算，
-// 避免把"让客户打客服电话"这类知识误判成要转接。
-func knowledgeContentRequiresHandoff(content string) bool {
-	return strings.Contains(strings.TrimSpace(content), "转接")
 }
 
 // filterKnowledgeMetaEvidence 是 Evidence Judge 的元问题过滤（文档 7.5 判定矩阵）。
