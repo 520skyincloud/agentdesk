@@ -638,7 +638,10 @@ func runtimeKnowledgeStatus(result *retrievers.KnowledgeRetrieveResult, err erro
 	if err != nil {
 		return enums.AIReplyTurnTaskKnowledgeStatusFailed
 	}
-	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
+	// Hits 是证据本体；ContextText 只是展示缓存，高并发下可能未及时拼装。
+	// 生产回归 2026-08-18：命中 5 条正确答案（含行李寄存 top1）却因 ContextText
+	// 为空被判 no_hit，客户收到"资料没写明"。
+	if result == nil || len(result.Hits) == 0 {
 		return enums.AIReplyTurnTaskKnowledgeStatusNoHit
 	}
 	return enums.AIReplyTurnTaskKnowledgeStatusHit
