@@ -184,6 +184,17 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 		parsed, err = parseRuntimeReplyOutputV2(raw)
 	}
 	if err != nil {
+		// 生产回归 2026-08-18：模型偶发在 JSON 前后夹带说明文字或思考前缀
+		// （行李类问题连续触发 json_root_not_object → 技术失败提示）。先做
+		// 宽松提取（首个 { 到最后一个 }）再解码一次；仍失败才走协议修复。
+		if extracted := extractLooseJSONObject(raw); extracted != "" && extracted != strings.TrimSpace(raw) {
+			retryParsed, retryErr := parseRuntimeReplyOutputV2(extracted)
+			if retryErr == nil {
+				parsed, err = retryParsed, nil
+			}
+		}
+	}
+	if err != nil {
 		if collector != nil {
 			collector.Data.Pipeline.Validate.Status = "failed"
 			collector.Data.Pipeline.Validate.Reason = replyProtocolErrorReason(err)
@@ -354,4 +365,15 @@ func completeRuntimeGeneration(summary *RunResult, collector *callbacks.RuntimeT
 		collector.Data.Pipeline.Validate.Reason = "reply_output.v2 passed deterministic validation"
 	}
 	return nil
+}
+
+// extractLooseJSONObject 从夹杂说明文字/思考前缀的输出中提取 JSON 对象主体。
+func extractLooseJSONObject(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start < 0 || end <= start {
+		return ""
+	}
+	return trimmed[start : end+1]
 }

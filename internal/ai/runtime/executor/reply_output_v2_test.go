@@ -136,3 +136,14 @@ func validationHasCode(result contracts.ValidationResultV1, code string) bool {
 	}
 	return false
 }
+
+func TestParseRuntimeReplyOutputV2LooseExtraction(t *testing.T) {
+	raw := "好的，这是给客人的回复：\n{\"schemaVersion\":\"reply_output.v2\",\"parts\":[{\"taskKeys\":[\"t1\"],\"content\":\"行李可以免费寄存在一楼前台寄存柜。\",\"evidenceRefs\":[\"K1\"],\"actionRefs\":[]}]}\n以上。"
+	parsed, err := parseRuntimeReplyOutputV2(extractLooseJSONObject(raw))
+	if err != nil {
+		t.Fatalf("loose extraction must recover JSON object: %v", err)
+	}
+	if len(parsed.Parts) != 1 || parsed.Parts[0].Content != "行李可以免费寄存在一楼前台寄存柜。" {
+		t.Fatalf("unexpected parsed parts: %#v", parsed.Parts)
+	}
+}
