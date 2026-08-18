@@ -127,7 +127,24 @@ func findSucceededCheckpoint(db *gorm.DB, plan KnowledgeQueryPlanV2) *retrievers
 		return nil
 	}
 	// 复用命中详情（hit 快照足够支撑后续证据选择；正文命中在 t_knowledge_retrieve_hit）。
+	// 生产回归 2026-08-18：执行器 checkpoint 行不携带命中（检索器另行记日志），
+	// 同一 query 的真实命中挂在检索器行上。按 query_key 找到带命中的行取快照；
+	// 找不到命中时返回 nil 触发重查，禁止把空结果当 succeeded 复用（会让同一
+	// 问法永久 no_hit，如"行李放哪"）。
 	hits := repositoriesHitsForLog(db, row.ID)
+	if len(hits) == 0 && strings.TrimSpace(row.QueryKey) != "" {
+		var alt models.KnowledgeRetrieveLog
+		if err := db.Where("tenant_id = ? AND query_key = ? AND hit_count > 0",
+			plan.TenantID, row.QueryKey).Order("id DESC").First(&alt).Error; err == nil && alt.ID > 0 {
+			hits = repositoriesHitsForLog(db, alt.ID)
+			if len(hits) > 0 {
+				row = &alt
+			}
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
 	return &retrievers.KnowledgeRetrieveResult{
 		KnowledgeBaseIDs: hitKnowledgeBaseIDs(hits),
 		Query:            row.Question,
