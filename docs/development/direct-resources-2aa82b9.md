@@ -30,3 +30,8 @@
 ## 追加修复 9c68789（2026-08-18 13:3x）
 
 行李根因完整链：首跑命中 5 条（run 7444，retriever items=5）→ 生成调用瞬时失败 → 重试进入"恢复空批次"分支 → 跳过意图与知识、丢弃已命中结果 → 模型自由发挥"资料没写明"。修复：恢复时若当前消息没有任何已提交回复，回到完整管线重跑（账本幂等、checkpoint 防重复检索）。部署 `20260818-ledgerfix-9c68789`（SHA256 `b79e0053…`），并清理 6 条新 pending checkpoint。
+
+
+## 追加 18b7fab（2026-08-18 14:0x）：并入 7 月金标意图纪律
+
+从 `codex/ai-billing` 7/11-12 链路（`f2d2da4` 的 `internal/pkg/replyintent/defaults.go`）提取五条纪律合入 V2 意图指令：办入住双任务（知识+小程序）、primaryIntent 聚合优先级、资源动作禁默认补齐、interaction 否定项（不查知识/不取变量/不转人工）、办入住禁归 service_request/human。部署 `20260818-golddisc-18b7fab`（SHA256 `10680273…`）。回复口吻基础指令经比对与金标逐字一致，无需改动。
