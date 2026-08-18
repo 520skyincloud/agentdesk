@@ -416,3 +416,27 @@ Credential/API Key 无需改变。
 
 回滚时将 `/opt/agentdesk/current` 原子切回旧 release 并重启 `agentdesk.service`；数据库无需回滚，若需要恢复数据可使用上述
 发布前 MySQL 快照。
+
+### 8.10 2026-08-18 连续语音漏答与入住流程修复
+
+生产会话 `t_conversation.id=3` 的真实记录确认，本轮问题不是 FastGPT 并发崩溃：长语音的三个知识查询均正常并发完成，
+无 5xx 或超时。故障来自四个串联断点：改写后的入住 Task 按 `sequence` 错绑到上一条“？”消息；口语“可以玩的”没有归一到
+“附近游玩”；“咖啡+草稿纸”被合成一个 Task 后只要咖啡命中就把整项视为已回答；知识无命中时 Generate 又追问会话中
+已经确定的门店。
+
+本次只修改 V2 真实运行链路：
+
+- Task 来源无文本证据时固定绑定当前触发消息，`sequence` 只表示任务顺序，不再猜测 Turn 内消息序号；同一消息拆出的多个 Task
+  继续允许共享同一来源消息。
+- 知识任务在持久化入账前按可靠问句边界拆成原子 Task，每题分别拥有检索结果、终态和回复覆盖；无标点的并列对象仅在两侧属于
+  不同业务主题时拆分，避免把“早餐时间以及地点”误拆。
+- `surrounding_facilities` 根据当前题目追加“附近游玩 / 附近餐饮 / 周边设施”中文主题锚点，保留客户原句且仍只执行一次检索，
+  不增加模型调用。
+- no-hit 计划增加 `do_not_ask_known_store_scope` 约束；Validator 对已知 `Conversation.StoreID` 的会话拒绝“哪家店/哪个门店”类
+  重复追问，协议修复仍只使用既有的一次预算。
+- Intent Prompt 只补充“并列对象逐项拆分”的语义规则，正确性仍由服务端原子 Task 和 Validator 保证，不依赖提示词单独兜底。
+
+影响边界：无 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、Token/Usage 或计费口径变化；与当前客服接管并行提交
+无同文件修改。定向回放与 `internal/ai/runtime/executor` 全包测试均通过。生产 FastGPT Dataset
+`6a5b172f8a2e8f826f7507e6` 已提交一条只含历史验证事实的完整自助入住流程文件，必须等集合 `dataAmount > 0` 且
+`trainingAmount == 0`，并用“给我办入住 / 怎么入住 / 办理入住流程”真实检索通过后才可视为知识数据生效。

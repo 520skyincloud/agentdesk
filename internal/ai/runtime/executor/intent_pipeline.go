@@ -600,7 +600,7 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 			ResourceAction: intent.ResourceAction,
 		})
 	}
-	return tasks
+	return expandRuntimeAtomicReplyTaskPlans(tasks)
 }
 
 func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.ReplyTaskPlanTraceData {

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -83,6 +84,13 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 			result.Status = "repairable_protocol_error"
 		}
 	}
+	if issues := validateNoHitKnownScopeClarification(input); len(issues) > 0 {
+		result.Checks.FactGrounding = "failed"
+		result.Errors = append(result.Errors, issues...)
+		if result.Status != "rejected" {
+			result.Status = "repairable_protocol_error"
+		}
+	}
 	// 领域硬约束（房态/会员）：系统无数据源，任何断言都是编造，一票否决，不修复。
 	if gates.UnsupportedDomain {
 		if issues := validateReplyUnsupportedDomain(input); len(issues) > 0 {
@@ -127,6 +135,36 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		}
 	}
 	return result
+}
+
+func validateNoHitKnownScopeClarification(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	if input.Req.Conversation.StoreID <= 0 {
+		return nil
+	}
+	planByTask := make(map[string]contracts.ReplyPlanTaskV2, len(input.Plan.Tasks))
+	for _, task := range input.Plan.Tasks {
+		planByTask[task.TaskKey] = task
+	}
+	issues := make([]contracts.ValidationIssueV1, 0)
+	for partIndex, part := range input.Output.Parts {
+		compact := compactReplyText(part.Content)
+		if !containsAny(compact, []string{"哪家店", "哪个店", "哪家酒店", "哪个酒店", "哪个门店", "哪一个门店", "订的是哪家", "预订的是哪家"}) {
+			continue
+		}
+		for _, taskKey := range part.TaskKeys {
+			task, ok := planByTask[taskKey]
+			if !ok || (task.Knowledge.Status != "no_context" && task.Knowledge.Status != "unanswerable" && task.Knowledge.Status != "unavailable") {
+				continue
+			}
+			issues = append(issues, validationIssue(
+				"known_scope_reasked",
+				fmt.Sprintf("$.parts[%d].content", partIndex),
+				"reply asks for store scope that is already fixed by the conversation",
+			))
+			break
+		}
+	}
+	return issues
 }
 
 func replyEvidenceHasAuthoritativeStoreFact(evidence contracts.EvidenceBundleV1) bool {

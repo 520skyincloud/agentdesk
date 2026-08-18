@@ -357,10 +357,8 @@ func matchRuntimeTaskSourceMessageWithSpan(plan callbacks.ReplyTaskPlanTraceData
 }
 
 func matchRuntimeTaskSourceMessage(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) int64 {
-	// 按文档绑定顺序，禁止字符串包含作为主匹配：
-	// 1. 严格文本哈希（归一化后完全相等，不是 contains）优先。
-	// 2. sequence 兜底：合法时对应当前 Turn 客户消息顺序。
-	// 3. 仍无法唯一匹配时不猜测，回退到 fallbackMessageID / 最后一条消息。
+	// 严格文本哈希优先。模型改写后的 task.text 没有原文证据时，必须绑定
+	// 当前触发消息；sequence 是任务顺序，不是 Turn 内消息序号，不能拿它猜来源。
 	needle := normalizeRuntimeTaskText(plan.Text)
 	if needle != "" {
 		for _, message := range messages {
@@ -375,9 +373,6 @@ func matchRuntimeTaskSourceMessage(plan callbacks.ReplyTaskPlanTraceData, fallba
 				return message.ID
 			}
 		}
-	}
-	if plan.Sequence >= 1 && plan.Sequence <= len(messages) {
-		return messages[plan.Sequence-1].ID
 	}
 	for _, message := range messages {
 		if message.ID == fallbackMessageID {

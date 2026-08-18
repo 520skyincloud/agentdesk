@@ -94,6 +94,9 @@ func buildRuntimeReplyPlanV2(
 		if outputMode == "clarification" {
 			constraints = appendUniqueStrings(constraints, "ask_one_missing_field", "acknowledge_uncertainty")
 		}
+		if knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable" || knowledgeStatus == "unavailable" {
+			constraints = appendUniqueStrings(constraints, "state_knowledge_boundary_only", "do_not_ask_known_store_scope")
+		}
 		objective := strings.TrimSpace(plan.Text)
 		if objective == "" {
 			objective = runtimeTaskDisplayLabel(plan.SubIntent)

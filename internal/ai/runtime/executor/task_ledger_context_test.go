@@ -140,3 +140,15 @@ func TestMatchRuntimeTaskSourceMessagePrefersExactHash(t *testing.T) {
 		t.Fatalf("expected exact-hash match to 31, got %d", got)
 	}
 }
+
+func TestMatchRuntimeTaskSourceMessageUsesTriggerForRewrittenTask(t *testing.T) {
+	messages := []models.Message{
+		{ID: 2066, MessageType: enums.IMMessageTypeText, Content: "？"},
+		{ID: 2067, MessageType: enums.IMMessageTypeText, Content: "给我办入住"},
+	}
+	plan := callbacks.ReplyTaskPlanTraceData{Sequence: 1, Text: "怎么办理入住"}
+	got := matchRuntimeTaskSourceMessage(plan, 2067, messages, map[int64]struct{}{})
+	if got != 2067 {
+		t.Fatalf("rewritten task must bind trigger message 2067, got %d", got)
+	}
+}

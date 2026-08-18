@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/models"
 )
 
 func TestValidateReplyFactGroundingBlocksUngroundedAssertion(t *testing.T) {
@@ -25,6 +26,23 @@ func TestValidateReplyFactGroundingBlocksUngroundedAssertion(t *testing.T) {
 	}
 	if issues[0].Code != "fact_ungrounded" {
 		t.Fatalf("issue code = %q, want fact_ungrounded", issues[0].Code)
+	}
+}
+
+func TestValidatorRejectsReaskingKnownStoreOnNoHit(t *testing.T) {
+	input := ReplyValidationInput{
+		Req: RunInput{Conversation: models.Conversation{StoreID: 7}},
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "checkin", OutputMode: "clarification",
+			Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "no_context"},
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"checkin"}, Content: "请问您订的是哪家店？",
+		}}},
+	}
+	issues := validateNoHitKnownScopeClarification(input)
+	if len(issues) != 1 || issues[0].Code != "known_scope_reasked" {
+		t.Fatalf("known store scope must not be re-asked: %+v", issues)
 	}
 }
 

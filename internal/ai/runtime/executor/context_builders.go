@@ -351,7 +351,7 @@ func buildNoHitTaskInstruction(plan callbacks.ReplyPlanTraceData, taskKeys []str
 	if len(items) == 0 {
 		return ""
 	}
-	return "【逐题知识边界】以下任务已完成当前门店知识检索，但没有命中可用资料：" + strings.Join(items, "；") + "。只能说明当前资料未写明；需要补充条件时，每题最多追问一个关键点。禁止凭常识、历史酒店答案或模型猜测补写事实。"
+	return "【逐题知识边界】以下任务已完成当前门店知识检索，但没有命中可用资料：" + strings.Join(items, "；") + "。只能说明当前资料未写明。当前会话的门店、员工号和知识库范围已经确定，禁止再问客户是哪家店、哪个门店或哪家酒店；只有客户问题本身存在未解析指代时，才可追问一个真正缺失的对象。禁止凭常识、历史酒店答案或模型猜测补写事实。"
 }
 
 func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {

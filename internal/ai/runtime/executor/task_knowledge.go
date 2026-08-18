@@ -528,7 +528,7 @@ func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 	// Query 仍以客户当前问题为主体；若已有稳定的中文业务主题，只追加一个短主题锚点，
 	// 帮助向量检索区分“普通流程”与“同词异常 FAQ”。不追加英文内部枚举，也不发起第二次检索。
 	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
-		if label := runtimeKnowledgeTopicLabel(plan.SubIntent); label != "" && !strings.Contains(text, label) {
+		if label := runtimeKnowledgeTopicLabelForPlan(plan); label != "" && !strings.Contains(text, label) {
 			return text + " " + label
 		}
 		return text
@@ -537,6 +537,144 @@ func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 		return subIntent
 	}
 	return strings.TrimSpace(plan.Intent)
+}
+
+func runtimeKnowledgeTopicLabelForPlan(plan callbacks.ReplyTaskPlanTraceData) string {
+	if label := runtimeKnowledgeTopicLabel(plan.SubIntent); label != "" {
+		return label
+	}
+	if strings.TrimSpace(plan.SubIntent) != "surrounding_facilities" {
+		return ""
+	}
+	compact := compactRuntimeProtocolText(plan.Text)
+	switch {
+	case containsAny(compact, []string{"好玩", "玩的", "游玩", "景点", "景区", "逛逛", "逛街"}):
+		return "附近游玩"
+	case containsAny(compact, []string{"好吃", "吃的", "餐饮", "美食", "饭店", "餐厅", "小吃", "宵夜"}):
+		return "附近餐饮"
+	default:
+		return "周边设施"
+	}
+}
+
+// expandRuntimeAtomicReplyTaskPlans 把模型仍合并在一个知识任务里的独立问句
+// 在入账前拆成独立 Task。这样每个问句都有自己的检索结果、终态和回复覆盖，
+// 不会再出现“咖啡命中后顺带把草稿纸也当成已回答”。
+func expandRuntimeAtomicReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData) []callbacks.ReplyTaskPlanTraceData {
+	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
+	seen := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		clauses := []string{strings.TrimSpace(plan.Text)}
+		taskType := runtimeTaskTypeForPlan(plan)
+		if taskType == enums.AIReplyTurnTaskTypeKnowledge {
+			if split := runtimeAtomicKnowledgeClauses(plan.Text); len(split) > 1 {
+				clauses = split
+			}
+		}
+		if strings.TrimSpace(plan.Text) == "" && taskType != enums.AIReplyTurnTaskTypeKnowledge {
+			item := plan
+			item.Sequence = len(ret) + 1
+			ret = append(ret, item)
+			continue
+		}
+		for _, clause := range clauses {
+			clause = trimRuntimeAtomicClause(clause)
+			if normalizeRuntimeTaskText(clause) == "" {
+				continue
+			}
+			item := plan
+			item.TaskKey = ""
+			item.AnswerGroup = ""
+			item.Text = clause
+			key := strings.Join([]string{item.Intent, item.SubIntent, item.Output, item.ResourceAction, normalizeRuntimeTaskText(item.Text)}, "|")
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			item.Sequence = len(ret) + 1
+			ret = append(ret, item)
+		}
+	}
+	return ret
+}
+
+func runtimeAtomicKnowledgeClauses(text string) []string {
+	text = strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(text)))
+	if text == "" {
+		return nil
+	}
+	// 句号、问号、分号、换行和明显追加连接词是可靠的独立问题边界。
+	strongParts := splitBySeparators([]string{text}, []string{"还有啊", "另外", "再加上", "顺便"})
+	strongParts = splitBySeparators(strongParts, []string{"？", "?", "。", "！", "!", "；", ";", "\n", "……"})
+	strongParts = normalizeRuntimeAtomicClauses(strongParts)
+
+	// 每个强边界子句内再尝试按并列词拆分；只有两侧能识别为不同业务主题
+	// 才拆，避免把“早餐时间以及地点”错误拆成两个问题。
+	parts := make([]string, 0, len(strongParts))
+	for _, strongPart := range strongParts {
+		split := []string{strongPart}
+		for _, separator := range []string{"或者", "或是", "以及", "还有", "、"} {
+			candidate := normalizeRuntimeAtomicClauses(splitBySeparators([]string{strongPart}, []string{separator}))
+			if len(candidate) > 1 && runtimeClausesHaveDistinctTopics(candidate) {
+				split = candidate
+				break
+			}
+		}
+		parts = append(parts, split...)
+	}
+	if len(parts) == 0 {
+		return []string{text}
+	}
+	return parts
+}
+
+func normalizeRuntimeAtomicClauses(parts []string) []string {
+	ret := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		part = trimRuntimeAtomicClause(part)
+		fingerprint := normalizeRuntimeTaskText(part)
+		if fingerprint == "" {
+			continue
+		}
+		if _, exists := seen[fingerprint]; exists {
+			continue
+		}
+		seen[fingerprint] = struct{}{}
+		ret = append(ret, part)
+	}
+	return ret
+}
+
+func trimRuntimeAtomicClause(value string) string {
+	value = strings.TrimSpace(strings.Trim(value, "，,。.!！?？；;、… "))
+	for {
+		trimmed := value
+		for _, prefix := range []string{"或者", "或是", "以及", "还有啊", "还有", "另外", "再加上", "顺便", "然后"} {
+			if strings.HasPrefix(trimmed, prefix) {
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+				break
+			}
+		}
+		if trimmed == value {
+			return value
+		}
+		value = trimmed
+	}
+}
+
+func runtimeClausesHaveDistinctTopics(clauses []string) bool {
+	seen := make(map[string]struct{})
+	for _, clause := range clauses {
+		topics := detectKnowledgeTopicClasses(clause)
+		if len(topics) == 0 {
+			return false
+		}
+		for topic := range topics {
+			seen[topic] = struct{}{}
+		}
+	}
+	return len(seen) >= len(clauses)
 }
 
 // redistributeMultiTopicClauses 是意图模型没拆好 task.text 时的确定性兜底：
@@ -576,9 +714,7 @@ func redistributeMultiTopicClauses(plans []callbacks.ReplyTaskPlanTraceData) []c
 // 确定性、通用，不依赖 subIntent。契约 3.9.4：问号、句号和感叹号是语音多题的
 // 真实边界；逗号仅在子句数不足时作为二级拆分尝试。
 func splitMultiTopicClauses(text string) []string {
-	parts := splitBySeparators([]string{text}, []string{"还有啊", "还有", "以及", "另外", "再加上", "顺便"})
-	parts = splitBySeparators(parts, []string{"？", "?", "。", "！", "!", "；", ";"})
-	return parts
+	return runtimeAtomicKnowledgeClauses(text)
 }
 
 // dedupeAdjacentClauses 去掉 ASR 口语连续重复（“都可以，都可以”）。

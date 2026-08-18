@@ -46,6 +46,43 @@ func TestKnowledgeQueryStripsVoiceTransportWrapper(t *testing.T) {
 	}
 }
 
+func TestKnowledgeQueryNormalizesSpokenNearbyPlayTopic(t *testing.T) {
+	query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "surrounding_facilities", Text: "这个附近有什么可以玩的呀",
+	})
+	if query != "这个附近有什么可以玩的呀 附近游玩" {
+		t.Fatalf("spoken nearby-play query was not normalized: %q", query)
+	}
+}
+
+func TestExpandRuntimeAtomicReplyTaskPlansSplitsVoiceQuestions(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "service_facility", Output: "knowledge_text_reply",
+		Text: "可以给我拿点咖啡吗？或者草稿纸什么的？",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 2 {
+		t.Fatalf("expected coffee and paper as two tasks, got %#v", got)
+	}
+	if !strings.Contains(got[0].Text, "咖啡") || !strings.Contains(got[1].Text, "草稿纸") {
+		t.Fatalf("atomic task text mismatch: %#v", got)
+	}
+	if got[0].Sequence != 1 || got[1].Sequence != 2 {
+		t.Fatalf("atomic task sequence mismatch: %#v", got)
+	}
+}
+
+func TestExpandRuntimeAtomicReplyTaskPlansKeepsCompoundDimensionsTogether(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "breakfast", Output: "knowledge_text_reply",
+		Text: "早餐时间以及地点",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 1 || got[0].Text != "早餐时间以及地点" {
+		t.Fatalf("same-topic dimensions must stay one task: %#v", got)
+	}
+}
+
 // 契约 3.9.2 回放（语音 1362）：口语重复“都可以”不得拆出重复子句。
 func TestSplitMultiTopicClausesDedupesRepeatedPhrases(t *testing.T) {
 	voice := "我要吃本地菜。都可以，都可以介绍一下呀。还有什么推荐？还有什么推荐？"
