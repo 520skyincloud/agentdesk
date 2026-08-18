@@ -81,9 +81,19 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	items := make([]runtimeTaskKnowledgeItem, len(knowledgePlans))
 	semaphore := make(chan struct{}, runtimeKnowledgeTaskConcurrency)
 	var wg sync.WaitGroup
+	// 生产回归 2026-08-18：模型把多主题整句压成单个任务时（吃的+玩的+开门），
+	// 单条整句检索只命中其中一两个主题，其余主题零证据被模型自由发挥
+	// （编造“刷卡还是密码锁”）。对单任务多主题按连接词确定性拆成多路检索，
+	// 命中合并回同一任务，与多任务拆题行为对齐。
+	singleTaskClauses := make([]string, 0)
+	if len(knowledgePlans) == 1 {
+		if clauses := dedupeAdjacentClauses(splitMultiTopicClauses(runtimeTaskKnowledgeQuery(knowledgePlans[0]))); len(clauses) > 1 {
+			singleTaskClauses = clauses
+		}
+	}
 	for index, plan := range knowledgePlans {
 		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent}
-		if index == 0 && len(knowledgePlans) == 1 && probe != nil {
+		if index == 0 && len(knowledgePlans) == 1 && probe != nil && len(singleTaskClauses) == 0 {
 			items[index].Result = probe
 			items[index].Status = runtimeKnowledgeStatus(probe, nil)
 			continue
@@ -103,6 +113,10 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 				items[itemIndex].Status = enums.AIReplyTurnTaskKnowledgeStatusFailed
 				return
 			}
+			queries := []string{items[itemIndex].Query}
+			if itemIndex == 0 && len(singleTaskClauses) > 0 {
+				queries = singleTaskClauses
+			}
 			options := retrievers.DefaultKnowledgeRetrieveOptions()
 			options.QueryPreview = preview(items[itemIndex].Query, 120)
 			options.TurnID = taskState.TurnID
@@ -117,13 +131,31 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 				options.TopK = knowledgeTopKBudget
 			}
 			// 契约 4.18/22.12：统一执行器——checkpoint 复用 + 租约 + 有界并发。
-			plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
-				items[itemIndex].Query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
-			result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
-			items[itemIndex].Result = result
-			items[itemIndex].Err = err
-			items[itemIndex].Status = runtimeKnowledgeStatus(result, err)
-			items[itemIndex].AnswerGroup = runtimeKnowledgeAnswerGroup(result)
+			if len(queries) == 1 {
+				plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
+					queries[0], "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
+				result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
+				items[itemIndex].Result = result
+				items[itemIndex].Err = err
+				items[itemIndex].Status = runtimeKnowledgeStatus(result, err)
+				items[itemIndex].AnswerGroup = runtimeKnowledgeAnswerGroup(result)
+				return
+			}
+			subItems := make([]runtimeTaskKnowledgeItem, 0, len(queries))
+			for _, query := range queries {
+				plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
+					query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
+				result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
+				sub := runtimeTaskKnowledgeItem{TaskKey: items[itemIndex].TaskKey, Query: query,
+					Intent: items[itemIndex].Intent, SubIntent: items[itemIndex].SubIntent,
+					Result: result, Err: err, Status: runtimeKnowledgeStatus(result, err)}
+				subItems = append(subItems, sub)
+			}
+			merged := mergeRuntimeTaskKnowledge(subItems, retriever.KnowledgeBaseIDs())
+			items[itemIndex].Result = merged
+			items[itemIndex].Err = nil
+			items[itemIndex].Status = runtimeKnowledgeStatus(merged, nil)
+			items[itemIndex].AnswerGroup = runtimeKnowledgeAnswerGroup(merged)
 		}(index)
 	}
 	wg.Wait()
