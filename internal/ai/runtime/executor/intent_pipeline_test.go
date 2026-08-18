@@ -266,6 +266,56 @@ func TestNormalizeModelIntentTraceDoesNotOverrideIntentByCheckinKeyword(t *testi
 	}
 }
 
+func TestNormalizeModelIntentTraceCheckinExecutionWordingStaysKnowledge(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{Code: "hotel_info", Status: enums.StatusOk},
+		{Code: "service_request", Status: enums.StatusOk},
+	}
+	for _, tc := range []struct {
+		text     string
+		subFocus string
+	}{
+		{"给我办入住", "checkin_process"},
+		{"帮我办个入住", "checkin_process"},
+		{"给我办入组", "checkin_assist"},
+		{"帮我办理退房", "checkout_process"},
+	} {
+		intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+			PrimaryIntent: "service_request", SubIntent: tc.subFocus,
+			IntentConfidence: 0.9, ShouldReply: true,
+			IntentTasks: []callbacks.IntentTaskTraceData{{
+				Sequence: 1, Intent: "service_request", SubIntent: tc.subFocus,
+				Text: tc.text, RequestMode: "request_action", Confidence: 0.9,
+			}},
+		}, RunInput{UserMessage: models.Message{Content: tc.text}}, adapter.HistoryBuildResult{}, configs)
+		if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || intent.NeedsHumanRoute {
+			t.Fatalf("%s must normalize to hotel_info knowledge instead of staff execution: %#v", tc.text, intent)
+		}
+		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "hotel_info" || intent.IntentTasks[0].NeedsHumanRoute {
+			t.Fatalf("%s task must be knowledge consultation: %#v", tc.text, intent.IntentTasks)
+		}
+	}
+}
+
+func TestNormalizeModelIntentTraceKeepsRealExecutionRequests(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{Code: "service_request", Status: enums.StatusOk},
+	}
+	for _, text := range []string{"帮我换个大床房", "安排人来修一下空调", "送两瓶水到房间"} {
+		intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+			PrimaryIntent: "service_request", SubIntent: "room_change",
+			IntentConfidence: 0.9, ShouldReply: true,
+			IntentTasks: []callbacks.IntentTaskTraceData{{
+				Sequence: 1, Intent: "service_request", SubIntent: "room_change",
+				Text: text, RequestMode: "request_action", Confidence: 0.9,
+			}},
+		}, RunInput{UserMessage: models.Message{Content: text}}, adapter.HistoryBuildResult{}, configs)
+		if intent.PrimaryIntent != "service_request" {
+			t.Fatalf("%s must stay a staff execution request: %#v", text, intent)
+		}
+	}
+}
+
 func TestRuntimeIntentProtocolFallbackUsesSafeClarification(t *testing.T) {
 	configs := []models.ReplyIntentConfig{
 		{Code: "hotel_info", Status: enums.StatusOk},
@@ -1698,16 +1748,19 @@ func TestRuntimePipelineNormalizesTopLevelCheckinProcedureToHotelInfo(t *testing
 	}
 }
 
-func TestRuntimePipelineKeepsExplicitCheckinExecutionAsServiceRequest(t *testing.T) {
+func TestRuntimePipelineCheckinExecutionWordingNormalizesToKnowledge(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "service_request", Name: "服务请求", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 90, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "帮我办理入住"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
 		PrimaryIntent: "service_request", SubIntent: "checkin_process", IntentConfidence: 0.86, ShouldReply: true,
 		Reason: "客户明确要求代办入住",
 	}})
-	if plan.Intent.PrimaryIntent != "service_request" || plan.Intent.SubIntent != "checkin_process" {
-		t.Fatalf("explicit check-in execution must remain a service request, got %#v", plan.Intent)
+	// 办入住/退房是自助流程，AI 与客服都无法在会话里代客执行；即使带“帮我办理”
+	// 也必须回到流程知识回答（生产回归：2026-08-18 其风“给我办入住”被答成转人工）。
+	if plan.Intent.PrimaryIntent != "hotel_info" || !plan.Intent.NeedsKnowledge || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("explicit check-in wording must normalize to hotel knowledge without handoff, got %#v", plan.Intent)
 	}
 }
 

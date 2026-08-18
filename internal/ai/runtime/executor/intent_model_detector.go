@@ -995,6 +995,11 @@ func isInformationalProcedureTask(task callbacks.IntentTaskTraceData) bool {
 		}
 	}
 	text := compactRuntimeProtocolText(task.Text)
+	// 办入住/办退房是门店自助流程，AI 无法代客执行；即使客户说“给我办/帮我办”，
+	// 正确回复也是流程说明（V2 的正确行为），不能升级为人工执行请求。
+	if isCheckinCheckoutProcessText(text) {
+		return true
+	}
 	mode := strings.TrimSpace(task.RequestMode)
 	if mode == "answer" || mode == "clarify_previous" || mode == "correct_previous" || mode == "confirm_previous" {
 		return !looksLikeExplicitProcedureExecution(text)
@@ -1003,6 +1008,18 @@ func isInformationalProcedureTask(task callbacks.IntentTaskTraceData) bool {
 		return false
 	}
 	return isProcedureConsultationText(text)
+}
+
+// isCheckinCheckoutProcessText 识别入住/退房流程表述；“入组”是“入住”的常见
+// 误写，按同一流程处理。
+func isCheckinCheckoutProcessText(text string) bool {
+	text = compactRuntimeProtocolText(text)
+	if text == "" {
+		return false
+	}
+	stayWord := containsAny(text, []string{"入住", "入组", "checkin", "check-in", "退房", "checkout", "check-out"})
+	actionWord := containsAny(text, []string{"办", "办理", "手续", "登记"})
+	return stayWord && actionWord
 }
 
 func isInformationalProcedureSubIntent(subIntent string) bool {
