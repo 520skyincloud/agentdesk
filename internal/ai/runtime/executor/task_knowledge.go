@@ -284,7 +284,11 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				req.Conversation.TenantID, req.Conversation.StoreID, top.KnowledgeBaseID, top.SourceRecordID,
 			); actionCode != "" {
 				taskActionCodes[item.TaskKey] = actionCode
-			} else if knowledgeContentRequiresHandoff(top.Content) {
+			} else if knowledgeContentRequiresHandoff(top.Content) && handoffPromotionAllowedForTask(item, top) {
+				// 生产回归 2026-08-18："我要办理入住"被"把跟我一起入住的人信息删掉→转接"
+				// 这类异常 FAQ 语义误配抢走第一名，正常流程被提升人工、知识回答+小程序
+				// 双任务全部作废。异常 FAQ（删除同住人/退订/办不了类）只对客户本身在
+				// 描述异常的任务有转接授权；正常咨询任务命中它时不得提升。
 				taskActionCodes[item.TaskKey] = "human_handoff"
 			}
 		}
@@ -772,4 +776,44 @@ func filterKnowledgeMetaEvidence(req RunInput, results []rag.RetrieveResult) (ke
 		kept = append(kept, r)
 	}
 	return kept, droppedMeta
+}
+
+// handoffPromotionAllowedForTask 判定"转接"内容提升对当前任务是否合法：
+// 异常类 FAQ（删除/退订/办不了/两间房等）只有在客户本身描述同类异常时才可
+// 授权转接；正常咨询（办理入住/问流程）被语义误配命中时不得触发人工提升。
+func handoffPromotionAllowedForTask(item runtimeTaskKnowledgeItem, top rag.RetrieveResult) bool {
+	if !looksLikeExceptionFAQ(top.Title, top.Content) {
+		return true
+	}
+	return taskTextRequestsException(item.Query)
+}
+
+// looksLikeExceptionFAQ 识别异常/变更类 FAQ（标题或正文含退订、删除、办不了等）。
+func looksLikeExceptionFAQ(title, content string) bool {
+	text := strings.TrimSpace(title + " " + content)
+	markers := []string{
+		"删掉", "删除", "退订", "退掉", "退房退", "剩下的天数", "住不了", "办不了",
+		"无法办理", "不能办理", "办理失败", "入住失败", "另一间", "两间", "手机不能用",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// taskTextRequestsException 判定客户当前问句本身是否在描述同类异常。
+func taskTextRequestsException(query string) bool {
+	text := strings.TrimSpace(query)
+	markers := []string{
+		"删掉", "删除", "退订", "退掉", "退了", "退款", "住不了", "办不了",
+		"无法办理", "不能办理", "失败", "另一间", "两间", "手机不能用", "换掉", "取消",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
