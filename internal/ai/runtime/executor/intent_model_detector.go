@@ -787,10 +787,12 @@ func applyDeterministicHotelDirectResources(intent callbacks.IntentTraceData, re
 	if intent.PrimaryIntent == "human_complaint_risk" || !runtimeIntentConfigEnabled(configs, "hotel_variable") {
 		return intent
 	}
-	text := req.UserMessage.Content
-	if isCheckinExecutionMiniProgramRequest(text) {
-		return convertHotelDirectResourceIntent(intent, text, "mini_program", "provide_mini_program", "checkin execution routed to mini program direct")
+	// 模型已明确选择资源类型时尊重模型（既有契约：关键词不得覆盖模型资源选择），
+	// 只在模型把明确卡片请求归成纯知识/互动时兜底。
+	if intent.PrimaryIntent == "hotel_variable" && strings.TrimSpace(intent.ResourceAction) != "" {
+		return intent
 	}
+	text := req.UserMessage.Content
 	if explicitHotelLocationCardRequest(text) {
 		return convertHotelDirectResourceIntent(intent, text, "location", "provide_location", "hotel location request routed to location card direct")
 	}
@@ -816,32 +818,6 @@ func convertHotelDirectResourceIntent(intent callbacks.IntentTraceData, text, re
 	applyRuntimeProtocolFallbackResource(&intent, action)
 	intent.Reason = appendIntentReason(intent.Reason, reason)
 	return intent
-}
-
-// isCheckinExecutionMiniProgramRequest 识别"客户本人要办入住"的执行意愿。
-// 例外（两间房/办不了/手机不能用等）与咨询（怎么/流程/在哪）仍走知识链路，
-// 由知识库内容自行决定"转接"类答案。
-func isCheckinExecutionMiniProgramRequest(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" || strings.Contains(compact, "小程序") || strings.Contains(compact, "入口") {
-		return false
-	}
-	if hasMixedCustomerRequests(text) {
-		return false
-	}
-	if containsAny(compact, []string{
-		"另一间", "两间", "第二间", "多间", "办不了", "无法办理", "不能办理", "办理失败", "入住失败",
-		"手机不能", "手机无法", "入住人", "同住", "删除", "删掉", "修改", "退房", "退订", "取消入住", "投诉",
-	}) {
-		return false
-	}
-	if containsAny(compact, []string{
-		"怎么", "如何", "咋", "流程", "步骤", "在哪", "哪里", "哪儿", "几点", "需要什么", "要什么",
-		"能不能", "可以吗", "吗", "?", "？", "什么", "哪些", "条件", "要求", "政策",
-	}) {
-		return false
-	}
-	return containsAny(compact, []string{"入住", "入组", "checkin", "check-in", "check in"})
 }
 
 // explicitHotelLocationCardRequest 识别对"当前酒店"的位置/地址/定位请求。
