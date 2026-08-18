@@ -758,6 +758,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 	}
 	intent = enforceHumanRouteFlagByIntentCategory(intent)
 	intent = suppressNonHotelLocationResource(intent, req.UserMessage.Content)
+	intent = applyDeterministicHotelDirectResources(intent, req, configs)
 	if intent.DetectedIntent == "" {
 		intent.DetectedIntent = intent.PrimaryIntent
 	}
@@ -767,6 +768,103 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.MatchMode = "model"
 	}
 	return intent
+}
+
+// hasMixedCustomerRequests 判别一句话里是否叠加了多个诉求（定位+小程序+问答等）。
+// 直发规则只接管“单一聚焦请求”，混合轮次必须保留完整任务分解。
+func hasMixedCustomerRequests(rawText string) bool {
+	return strings.ContainsAny(rawText, "，,；;") || containsAny(compactRuntimeProtocolText(rawText), []string{"还要", "再发", "再帮", "顺便", "还有", "也发", "也帮"})
+}
+
+// applyDeterministicHotelDirectResources 在所有既有归一化规则之后兜底两条
+// 直发链路（生产回归 2026-08-18：模型把这些请求归成 hotel_info 后无规则纠正）：
+//  1. 办入住执行意愿 → e秒安心住小程序直发（前台入住是自助流程，AI/客服都无法
+//     在会话里代客执行，正确回复是自助流程入口）。
+//  2. 当前酒店定位/地址请求 → 位置卡片直发。
+//
+// 两类请求都不进知识检索，避免被"转接"类 FAQ 内容提升为人工确认。
+func applyDeterministicHotelDirectResources(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
+	if intent.PrimaryIntent == "human_complaint_risk" || !runtimeIntentConfigEnabled(configs, "hotel_variable") {
+		return intent
+	}
+	text := req.UserMessage.Content
+	if isCheckinExecutionMiniProgramRequest(text) {
+		return convertHotelDirectResourceIntent(intent, text, "mini_program", "provide_mini_program", "checkin execution routed to mini program direct")
+	}
+	if explicitHotelLocationCardRequest(text) {
+		return convertHotelDirectResourceIntent(intent, text, "location", "provide_location", "hotel location request routed to location card direct")
+	}
+	return intent
+}
+
+func convertHotelDirectResourceIntent(intent callbacks.IntentTraceData, text, resourceType, action, reason string) callbacks.IntentTraceData {
+	intent.PrimaryIntent = "hotel_variable"
+	intent.MatchedIntentCode = "hotel_variable"
+	intent.DetectedIntent = "hotel_variable"
+	intent.SubIntent = resourceType
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+		Sequence: 1, Intent: "hotel_variable", SubIntent: resourceType, Text: strings.TrimSpace(text),
+		RequestMode: "request_action", Confidence: intent.IntentConfidence, NeedsResource: true,
+		ResourceAction: action, Reason: reason,
+	}}
+	intent.NeedsKnowledge = false
+	intent.NeedsTool = false
+	intent.NeedsHumanRoute = false
+	intent.HumanRoutePolicy = ""
+	intent.NeedsClarification = false
+	intent.ShouldReply = true
+	applyRuntimeProtocolFallbackResource(&intent, action)
+	intent.Reason = appendIntentReason(intent.Reason, reason)
+	return intent
+}
+
+// isCheckinExecutionMiniProgramRequest 识别"客户本人要办入住"的执行意愿。
+// 例外（两间房/办不了/手机不能用等）与咨询（怎么/流程/在哪）仍走知识链路，
+// 由知识库内容自行决定"转接"类答案。
+func isCheckinExecutionMiniProgramRequest(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" || strings.Contains(compact, "小程序") || strings.Contains(compact, "入口") {
+		return false
+	}
+	if hasMixedCustomerRequests(text) {
+		return false
+	}
+	if containsAny(compact, []string{
+		"另一间", "两间", "第二间", "多间", "办不了", "无法办理", "不能办理", "办理失败", "入住失败",
+		"手机不能", "手机无法", "入住人", "同住", "删除", "删掉", "修改", "退房", "退订", "取消入住", "投诉",
+	}) {
+		return false
+	}
+	if containsAny(compact, []string{
+		"怎么", "如何", "咋", "流程", "步骤", "在哪", "哪里", "哪儿", "几点", "需要什么", "要什么",
+		"能不能", "可以吗", "吗", "?", "？", "什么", "哪些", "条件", "要求", "政策",
+	}) {
+		return false
+	}
+	return containsAny(compact, []string{"入住", "入组", "checkin", "check-in", "check in"})
+}
+
+// explicitHotelLocationCardRequest 识别对"当前酒店"的位置/地址/定位请求。
+// 外部地点（商场/车站等）与"附近"类探索性请求继续走知识或澄清，不发本店卡片。
+func explicitHotelLocationCardRequest(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" {
+		return false
+	}
+	if hasMixedCustomerRequests(text) {
+		return false
+	}
+	if containsAny(compact, []string{
+		"小区", "商场", "车站", "机场", "餐厅", "饭店", "景点", "医院", "学校", "公司", "写字楼", "地铁", "高铁站", "火车站", "超市", "附近",
+	}) {
+		return false
+	}
+	// 只接“明确索要卡片”的措辞；“酒店在哪/在哪里”等描述性提问仍按既有契约
+	// 由模型决定知识回答（知识库含地理位置答案行），不用关键词强行覆盖。
+	return containsAny(compact, []string{
+		"发定位", "发个定位", "发一下定位", "定位发我", "位置发我", "地址发我",
+		"发我定位", "发我地址", "发下定位", "定位发一下", "发个地址", "酒店定位", "门店定位",
+	})
 }
 
 func ensureCheckinProcessMiniProgramTaskIfConfigured(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {

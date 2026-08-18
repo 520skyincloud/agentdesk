@@ -253,23 +253,21 @@ func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *te
 		IntentConfidence: 0.8,
 		ShouldReply:      true,
 	}, RunInput{UserMessage: models.Message{Content: "我想办理入住"}}, adapter.HistoryBuildResult{}, configs)
-	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || !intent.NeedsResource {
-		t.Fatalf("expected deterministic checkin normalization, got %#v", intent)
+	// 2026-08-18 新契约：办入住执行意愿直接走小程序直发（用户指令），不再先走知识问答。
+	if intent.PrimaryIntent != "hotel_variable" || intent.SubIntent != "mini_program" || !intent.NeedsResource || intent.NeedsKnowledge {
+		t.Fatalf("expected checkin execution to route mini program direct, got %#v", intent)
 	}
 	if !containsString(intent.ResourceActions, "provide_mini_program") {
 		t.Fatalf("expected checkin mini program action, got %#v", intent.ResourceActions)
 	}
-	var knowledgeTask, resourceTask bool
+	var resourceTask bool
 	for _, task := range intent.IntentTasks {
-		if task.Intent == "hotel_info" && task.SubIntent == "checkin_process" && task.NeedsKnowledge {
-			knowledgeTask = true
-		}
 		if task.Intent == "hotel_variable" && task.ResourceAction == "provide_mini_program" && task.NeedsResource {
 			resourceTask = true
 		}
 	}
-	if !knowledgeTask || !resourceTask {
-		t.Fatalf("expected both checkin knowledge and resource tasks, got %#v", intent.IntentTasks)
+	if !resourceTask {
+		t.Fatalf("expected mini program direct task, got %#v", intent.IntentTasks)
 	}
 }
 
@@ -644,7 +642,7 @@ func TestRuntimePipelineBurstMediaFollowUpUsesModelIntent(t *testing.T) {
 func TestRuntimePipelineHotelVariableKeepsModelResourceSubIntent(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 100, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
-	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "发一下酒店定位"}}
+	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "酒店电话发我一下"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "hotel_variable", SubIntent: "phone", IntentConfidence: 0.91, ShouldReply: true, NeedsResource: true, ResourceAction: "provide_phone", Reason: "模型沿用了电话变量"}})
 	if plan.Intent.PrimaryIntent != "hotel_variable" || plan.Intent.SubIntent != "phone" {
 		t.Fatalf("expected model resource subIntent to remain unchanged by keyword override, got %#v", plan.Intent)
@@ -843,25 +841,23 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 		NeedsKnowledge:   true,
 		Reason:           "模型识别为办理入住流程",
 	}})
-	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" {
-		t.Fatalf("expected checkin to remain hotel_info/checkin_process, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "hotel_variable" || plan.Intent.SubIntent != "mini_program" {
+		t.Fatalf("expected checkin execution to route mini program direct, got %#v", plan.Intent)
 	}
-	if !plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || plan.Intent.NeedsHumanRoute {
-		t.Fatalf("expected checkin to need knowledge and mini program resource only, got %#v", plan.Intent)
+	// 2026-08-18 新契约：办入住执行意愿 → 小程序直发（资源唯一，无知识任务）。
+	if plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("expected checkin execution to be resource-only direct commit, got %#v", plan.Intent)
 	}
 	if len(plan.Intent.ResourceActions) != 1 || plan.Intent.ResourceActions[0] != "provide_mini_program" {
 		t.Fatalf("expected checkin to attach mini program resource action, got %#v", plan.Intent.ResourceActions)
 	}
-	if len(plan.ReplyPlan.TaskPlans) != 2 {
-		t.Fatalf("expected checkin knowledge task and mini program commit task, got %#v", plan.ReplyPlan.TaskPlans)
+	if len(plan.ReplyPlan.TaskPlans) != 1 {
+		t.Fatalf("expected single mini program commit task, got %#v", plan.ReplyPlan.TaskPlans)
 	}
-	if plan.ReplyPlan.TaskPlans[0].Output != "knowledge_text_reply" || plan.ReplyPlan.TaskPlans[0].SubIntent != "checkin_process" {
-		t.Fatalf("expected first task to answer checkin steps with knowledge, got %#v", plan.ReplyPlan.TaskPlans)
+	if plan.ReplyPlan.TaskPlans[0].Output != "structured_resource_commit" || plan.ReplyPlan.TaskPlans[0].ResourceAction != "provide_mini_program" {
+		t.Fatalf("expected mini program commit task, got %#v", plan.ReplyPlan.TaskPlans)
 	}
-	if plan.ReplyPlan.TaskPlans[1].Output != "structured_resource_commit" || plan.ReplyPlan.TaskPlans[1].ResourceAction != "provide_mini_program" {
-		t.Fatalf("expected second task to commit mini program, got %#v", plan.ReplyPlan.TaskPlans)
-	}
-	if !strings.Contains(plan.Prompt, "结构化变量任务只由 Commit 阶段发送") {
+	if !strings.Contains(plan.Prompt, "只由 Commit 阶段发送") {
 		t.Fatalf("expected checkin plan to preserve the commit boundary, got %q", plan.Prompt)
 	}
 }
