@@ -51,6 +51,7 @@ func (v *validatorV3) Validate(input ReplyValidationInputV3) contracts.Validatio
 	validateV3FactSource(input, &result)
 	validateV3KnowledgeQuality(input, &result)
 	validateV3ActionClaims(input, &result)
+	validateV3UnauthorizedHandoffClaims(input, &result)
 	validateV3Safety(input, &result)
 	validateV3CommitInvariants(input, &result)
 	classifyV3Recovery(&result)
@@ -1014,6 +1015,11 @@ func classifyV3Recovery(result *contracts.ValidationResultV3) {
 	}
 	for _, issue := range result.Errors {
 		if issue.Code == "retryable_content_error" {
+			result.Status = "retryable_content_error"
+			result.RecoveryStage = "generate"
+			return
+		}
+		if issue.Code == "unauthorized_handoff_claim" {
 			result.Status = "retryable_content_error"
 			result.RecoveryStage = "generate"
 			return

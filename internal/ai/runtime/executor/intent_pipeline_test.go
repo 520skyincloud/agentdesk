@@ -1685,6 +1685,32 @@ func TestRuntimePipelineModelServiceRequestPrechecksKnowledge(t *testing.T) {
 	}
 }
 
+func TestRuntimePipelineNormalizesTopLevelCheckinProcedureToHotelInfo(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
+	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "办理入住"}}
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", SubIntent: "checkin_process", IntentConfidence: 0.86, ShouldReply: true,
+		NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", Reason: "模型把入住流程识别为执行请求",
+	}})
+	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" || !plan.Intent.NeedsKnowledge || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("check-in consultation must use hotel knowledge without handoff, got %#v", plan.Intent)
+	}
+}
+
+func TestRuntimePipelineKeepsExplicitCheckinExecutionAsServiceRequest(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "service_request", Name: "服务请求", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
+	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "帮我办理入住"}}
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", SubIntent: "checkin_process", IntentConfidence: 0.86, ShouldReply: true,
+		Reason: "客户明确要求代办入住",
+	}})
+	if plan.Intent.PrimaryIntent != "service_request" || plan.Intent.SubIntent != "checkin_process" {
+		t.Fatalf("explicit check-in execution must remain a service request, got %#v", plan.Intent)
+	}
+}
+
 func TestRuntimePipelineServiceRequestCannotRequestHandoffConfirmation(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "service_request", Name: "服务请求", Priority: 100, MatchMode: "hybrid", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", PromptPack: "服务请求先看当前门店知识库。", Status: enums.StatusOk})

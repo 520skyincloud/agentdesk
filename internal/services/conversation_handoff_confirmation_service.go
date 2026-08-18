@@ -248,6 +248,12 @@ func (s *conversationHandoffConfirmationService) HandleWaitingCustomerResolution
 		return false, nil
 	}
 	now := time.Now()
+	// The cancellation message is deterministically consumed by the handoff
+	// state machine. Cancel any job that may have been enqueued concurrently so
+	// the same "不要/不用了" message cannot enter IntentDetect/Generate again.
+	if skipErr := AIReplyJobService.SkipPendingForMessage(conversation.TenantID, conversation.ID, message.ID, "consumed_by_handoff_wait_cancel"); skipErr != nil {
+		slog.Warn("skip waiting-handoff cancellation reply job failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", skipErr)
+	}
 	if err := ConversationAIRecoveryService.Restore(conversation.ID, "客户取消本次人工接待", now); err != nil {
 		return true, err
 	}

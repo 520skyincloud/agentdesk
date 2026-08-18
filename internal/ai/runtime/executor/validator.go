@@ -105,6 +105,13 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		result.Errors = append(result.Errors, issues...)
 		result.Status = "rejected"
 	}
+	if issues := validateReplyUnauthorizedHandoffClaims(input); len(issues) > 0 {
+		result.Checks.Safety = "failed"
+		result.Errors = append(result.Errors, issues...)
+		if result.Status != "rejected" {
+			result.Status = "repairable_protocol_error"
+		}
+	}
 	if v.full {
 		if issues := validateReplyFutureCommitClaims(input); len(issues) > 0 {
 			result.Checks.Safety = "failed"

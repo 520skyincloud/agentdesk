@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -491,10 +490,10 @@ func TestAIReplyJobRetryScheduleEndsWithTechnicalNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.AttemptCount != aiReplyJobMaxAttempts ||
-		current.ResultCode != "technical_failure_notified" || dispatchCalls.Load() != 0 {
+		current.ResultCode != "technical_failure_no_handoff" || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
-	assertAIReplyTechnicalFailureNotice(t, fixture, current)
+	assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobControlledModelFailureTerminatesWithoutJobRetryOrHandoff(t *testing.T) {
@@ -517,11 +516,11 @@ func TestAIReplyJobControlledModelFailureTerminatesWithoutJobRetryOrHandoff(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_notified" ||
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
 		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
-	assertAIReplyTechnicalFailureNotice(t, fixture, current)
+	assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobTechnicalFailureNeverEntersDispatchRetry(t *testing.T) {
@@ -546,11 +545,11 @@ func TestAIReplyJobTechnicalFailureNeverEntersDispatchRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_notified" ||
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
 		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
-	assertAIReplyTechnicalFailureNotice(t, fixture, current)
+	assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) {
@@ -570,10 +569,10 @@ func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) 
 	}
 	// 契约 22.16：commit_failed 属技术失败，不触发人工派单。
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "technical_failure_notified" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
+		current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
-	assertAIReplyTechnicalFailureNotice(t, fixture, current)
+	assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobAcceptsTurnHashCompletionEvidence(t *testing.T) {
@@ -663,25 +662,29 @@ func TestAIReplyJobRejectsInvalidTurnHashCompletionEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-				current.ResultCode != "technical_failure_notified" || current.LastErrorClass != "commit_failed" ||
+				current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" ||
 				dispatchCalls.Load() != 0 {
 				t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 			}
-			assertAIReplyTechnicalFailureNotice(t, fixture, current)
+			assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 		})
 	}
 }
 
-func assertAIReplyTechnicalFailureNotice(t *testing.T, fixture *aiReplyJobTestFixture, job *models.AIReplyJob) {
+func assertNoAIReplyTechnicalFailureNotice(t *testing.T, fixture *aiReplyJobTestFixture, job *models.AIReplyJob) {
 	t.Helper()
-	if fixture == nil || job == nil || job.ProgressNoticeMessageID <= 0 {
-		t.Fatalf("technical failure notice evidence missing: fixture=%#v job=%#v", fixture, job)
+	if fixture == nil || job == nil || job.ProgressNoticeMessageID != 0 {
+		t.Fatalf("technical failure must not create a customer notice: fixture=%#v job=%#v", fixture, job)
 	}
-	notice := repositories.MessageRepository.GetInTenant(fixture.db, job.ProgressNoticeMessageID, job.TenantID)
-	if notice == nil || notice.SenderType != enums.IMSenderTypeAI || notice.MessageType != enums.IMMessageTypeText ||
-		notice.RequestID != job.RequestID || notice.AIReplyTurnID != job.TurnID || notice.AIReplyTurnVersion != job.TurnVersion ||
-		strings.Contains(notice.Content, "转人工") || strings.TrimSpace(notice.Content) == "" {
-		t.Fatalf("invalid technical failure notice: %#v", notice)
+	var noticeCount int64
+	if err := fixture.db.Model(&models.Message{}).
+		Where("tenant_id = ? AND conversation_id = ? AND sender_type = ? AND request_id = ? AND client_msg_id LIKE ?",
+			job.TenantID, job.ConversationID, enums.IMSenderTypeAI, job.RequestID, "ai_tech_notice_%").
+		Count(&noticeCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if noticeCount != 0 {
+		t.Fatalf("found %d customer-visible technical notices", noticeCount)
 	}
 }
 
@@ -766,13 +769,7 @@ func TestAIReplyJobExpiryIsTechnicalAndDoesNotCreateHumanHandoff(t *testing.T) {
 	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_technical_failure" || dispatchCalls.Load() != 0 {
 		t.Fatalf("expired job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
-	if current.ProgressNoticeMessageID <= 0 {
-		t.Fatalf("expired technical job must leave a customer-visible terminal notice: %#v", current)
-	}
-	notice := repositories.MessageRepository.GetInTenant(fixture.db, current.ProgressNoticeMessageID, current.TenantID)
-	if notice == nil || notice.SenderType != enums.IMSenderTypeAI || !strings.Contains(notice.Content, "暂时没有处理成功") {
-		t.Fatalf("expired technical notice=%#v", notice)
-	}
+	assertNoAIReplyTechnicalFailureNotice(t, fixture, current)
 }
 
 func TestAIReplyJobMediaUsesSingleDurableRuntimePath(t *testing.T) {

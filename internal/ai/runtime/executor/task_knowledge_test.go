@@ -246,8 +246,8 @@ func TestBuildRuntimeEvidenceArtifactsReservesAddressFactSlot(t *testing.T) {
 	if artifacts.Quality == nil {
 		t.Fatal("expected evidence_bundle.v2")
 	}
-	if got := len(artifacts.Quality.Items); got != runtimeEvidenceMaxItems {
-		t.Fatalf("knowledge evidence plus store fact must stay within schema max: got %d", got)
+	if got := len(artifacts.Quality.Items); got != runtimeEvidenceMaxItemsPerTask+1 {
+		t.Fatalf("single task evidence must be bounded to four knowledge items plus one store fact: got %d", got)
 	}
 	knowledgeCount := 0
 	storeFactCount := 0
@@ -262,8 +262,8 @@ func TestBuildRuntimeEvidenceArtifactsReservesAddressFactSlot(t *testing.T) {
 			}
 		}
 	}
-	if knowledgeCount != runtimeEvidenceMaxItems-1 || storeFactCount != 1 {
-		t.Fatalf("expected 23 FastGPT items plus one store fact, got knowledge=%d storeFacts=%d", knowledgeCount, storeFactCount)
+	if knowledgeCount != runtimeEvidenceMaxItemsPerTask || storeFactCount != 1 {
+		t.Fatalf("expected four FastGPT items plus one store fact, got knowledge=%d storeFacts=%d", knowledgeCount, storeFactCount)
 	}
 
 	plan := contracts.ReplyPlanV4{
@@ -279,8 +279,12 @@ func TestBuildRuntimeEvidenceArtifactsReservesAddressFactSlot(t *testing.T) {
 	}
 
 	overflow := *artifacts.Quality
-	overflow.Items = append(append([]contracts.EvidenceItemV2(nil), artifacts.Quality.Items...), artifacts.Quality.Items[0])
-	overflow.Items[len(overflow.Items)-1].Ref = "K24"
+	overflow.Items = append([]contracts.EvidenceItemV2(nil), artifacts.Quality.Items...)
+	for len(overflow.Items) <= runtimeEvidenceMaxItems {
+		item := artifacts.Quality.Items[0]
+		item.Ref = fmt.Sprintf("K%d", len(overflow.Items)+1)
+		overflow.Items = append(overflow.Items, item)
+	}
 	if err := validateRuntimeReplyPlanV4Contract(plan, overflow, contracts.ActionLedgerV1{}, nil); err == nil {
 		t.Fatal("oversized evidence bundle must be rejected before Generate")
 	}

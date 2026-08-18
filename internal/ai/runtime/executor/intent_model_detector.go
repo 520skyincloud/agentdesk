@@ -365,7 +365,8 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
 		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
 		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",
-		"【问信息 vs 要动作边界】判断标准是客户想不想要现状发生改变、或想不想要真人来做一件事：只是问“是什么/能不能/怎么弄/在哪/多久/几点/多少钱/流程是什么”，现状不变，都是要信息，归 hotel_info；“换/改/调/取消/退/升/降/送/修/加/订/办/打扫/叫醒/搬/拿/联系人来”等想改变现状或要真人介入的诉求，才是要动作，归 service_request。例：“空调不制冷怎么办”是 hotel_info，“叫人来看看空调”是 service_request。",
+		"【问信息 vs 要动作边界】判断标准是客户想不想要现状发生改变、或想不想要真人来做一件事：只是问“是什么/能不能/怎么弄/在哪/多久/几点/多少钱/流程是什么”，现状不变，都是要信息，归 hotel_info；“换/改/调/取消/退/升/降/送/修/加/订/打扫/叫醒/搬/拿/联系人来”等明确要求改变现状或让员工执行的诉求，才是要动作，归 service_request。例：“空调不制冷怎么办”是 hotel_info，“叫人来看看空调”是 service_request。",
+		"【流程词不是执行授权】“办/办理/入住/退房/开票/停车/早餐/洗衣/使用/怎么操作”单独出现时，优先理解为客户在问办理方法、条件或位置，归 hotel_info；只有明确要求系统或员工替客户执行（如“替我提交/现在安排人来/送到房间/帮我换房”）才归 service_request。模型不得因为看见“办”一个字就把流程咨询升级为人工动作。",
 		"【定位对象判断·关键】客户明确要其他地点（菜市场/超市/厕所/游乐场/银行/机场/景点/商场等）的定位或导航时，绝不能归 hotel_variable：在问酒店周边/前文推荐地点归 hotel_info（subIntent=surrounding_facilities），其他外部地点归 interaction（subIntent=clarify）。只有明确索要当前酒店位置（“酒店在哪/你们店定位发我/门店地址发我/导航到酒店”）才是 hotel_variable + subIntent=location。",
 		"【多地点歧义】定位/地址/导航先判断对象。当前消息点名的外部地点，或最近一轮仍在讨论的外部地点所指代的“那里/那个地方/它”，都以该外部地点为准，不能输出 provide_location。若同时有多个地点且无法唯一判断，归 interaction + clarify，只追问要哪个地点，不取变量、不发定位。",
 		"【纠错 vs 业务边界】纠错语气本身不是独立业务任务。客户只是指出系统看错、听错、理解错，且没有要求继续回答业务问题时，归 interaction + correction。客户一边纠正一边明确要回答酒店问题时，必须按被纠正后的业务目标分类，不能因为“不是、别串了、我问的是”这类纠错语气归 interaction。例：“我没给你发语音大哥”是 interaction/correction；“我问的是停车，不是早餐，停车入口在哪”是 hotel_info/parking。",
@@ -650,6 +651,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 	}
 	intent.IntentTasks = normalizeRuntimeIntentTasks(intent.IntentTasks)
 	intent = deriveModelIntentFromTasks(intent)
+	intent = normalizeInformationalProcedureIntent(intent, req.UserMessage.Content)
 	if intentHasHotelVariableTask(intent) {
 		intent.ResourceActions = normalizeHotelVariableResourceActions(intent.ResourceActions, intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
 	}
@@ -934,6 +936,188 @@ func isCheckinProcessSubIntent(subIntent string) bool {
 	}
 }
 
+// normalizeInformationalProcedureIntent keeps the model's semantic split
+// between asking how a hotel process works and asking staff to perform an
+// operation. The same normalization is applied after V2/V3 adaptation, so a
+// legacy model label cannot bypass the domain boundary.
+func normalizeInformationalProcedureIntent(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
+	for index := range intent.IntentTasks {
+		normalizeInformationalProcedureTask(&intent.IntentTasks[index])
+	}
+	// V2 models sometimes emit only a top-level service_request and omit the
+	// task array. Use the current message for this narrow semantic correction;
+	// never use the first task of a mixed turn to rewrite another task.
+	topLevelText := strings.TrimSpace(currentText)
+	if len(intent.IntentTasks) == 1 && strings.TrimSpace(intent.IntentTasks[0].Text) != "" {
+		topLevelText = intent.IntentTasks[0].Text
+	}
+	if intent.PrimaryIntent == "service_request" && isInformationalProcedureTask(
+		callbacks.IntentTaskTraceData{
+			Intent: intent.PrimaryIntent, SubIntent: intent.SubIntent,
+			Text: topLevelText, RequestMode: intentRequestMode(intent),
+		},
+	) {
+		intent.PrimaryIntent = "hotel_info"
+		intent.MatchedIntentCode = "hotel_info"
+		intent.DetectedIntent = "hotel_info"
+		if strings.TrimSpace(intent.SubIntent) == "" {
+			intent.SubIntent = inferInformationalProcedureSubIntent(topLevelText)
+		}
+		intent.NeedsKnowledge = true
+		intent.NeedsHumanRoute = false
+		intent.HumanRoutePolicy = ""
+		intent.Reason = appendIntentReason(intent.Reason, "procedure consultation normalized to hotel_info")
+	}
+	if len(intent.IntentTasks) > 0 {
+		intent = deriveModelIntentFromTasks(intent)
+	}
+	return intent
+}
+
+func normalizeInformationalProcedureTask(task *callbacks.IntentTaskTraceData) bool {
+	if task == nil || task.Intent != "service_request" || !isInformationalProcedureTask(*task) {
+		return false
+	}
+	task.Intent = "hotel_info"
+	if strings.TrimSpace(task.SubIntent) == "" {
+		task.SubIntent = inferInformationalProcedureSubIntent(task.Text)
+	}
+	task.NeedsKnowledge = true
+	task.NeedsHumanRoute = false
+	task.Reason = appendIntentReason(task.Reason, "procedure consultation normalized to hotel_info")
+	return true
+}
+
+func isInformationalProcedureTask(task callbacks.IntentTaskTraceData) bool {
+	if task.Intent != "service_request" || !isInformationalProcedureSubIntent(task.SubIntent) {
+		if task.Intent != "service_request" || strings.TrimSpace(task.SubIntent) != "" {
+			return false
+		}
+	}
+	text := compactRuntimeProtocolText(task.Text)
+	mode := strings.TrimSpace(task.RequestMode)
+	if mode == "answer" || mode == "clarify_previous" || mode == "correct_previous" || mode == "confirm_previous" {
+		return !looksLikeExplicitProcedureExecution(text)
+	}
+	if looksLikeExplicitProcedureExecution(text) {
+		return false
+	}
+	return isProcedureConsultationText(text)
+}
+
+func isInformationalProcedureSubIntent(subIntent string) bool {
+	value := strings.ToLower(strings.TrimSpace(subIntent))
+	if value == "" {
+		return false
+	}
+	for _, actionMarker := range []string{
+		"maintenance", "repair", "delivery", "cleaning", "room_change", "change_room",
+		"coffee_order", "food_order", "amenity_delivery", "staff_service", "wake_up",
+		"luggage", "human", "complaint", "emergency", "refund", "compensation",
+	} {
+		if strings.Contains(value, actionMarker) {
+			return false
+		}
+	}
+	for _, procedureMarker := range []string{
+		"process", "procedure", "guide", "steps", "policy", "parking", "breakfast",
+		"invoice", "checkin", "checkout", "wifi", "network", "laundry", "facility",
+		"surrounding", "discount", "address", "delivery_order", "store_knowledge",
+		"tv_cast", "air_conditioner", "supplies", "information", "usage",
+		"入住", "退房", "停车", "早餐", "发票", "开票", "洗衣", "无线", "网络",
+		"外卖", "地址", "房型", "设施", "周边", "优惠", "折扣", "押金", "规则",
+	} {
+		if strings.Contains(value, procedureMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeExplicitProcedureExecution(text string) bool {
+	text = compactRuntimeProtocolText(text)
+	if text == "" {
+		return false
+	}
+	return containsAny(text, []string{
+		"帮我办理", "帮我办", "请帮我办理", "请帮我办", "现在给我办理", "现在给我办",
+		"给我办理", "给我办", "替我提交", "替我办理", "替我办", "替我申请", "直接帮我", "现在帮我", "马上帮我",
+		"我要你办理", "你帮我办理",
+		"安排人来", "派人来", "叫人来", "送到房间", "拿到房间", "工作人员来",
+		"帮我换房", "帮我改订单", "帮我退房", "帮我开票并发送", "帮我提交订单",
+	})
+}
+
+func isProcedureConsultationText(text string) bool {
+	text = compactRuntimeProtocolText(text)
+	if text == "" || looksLikeExplicitProcedureExecution(text) {
+		return false
+	}
+	// A service symptom followed by an execution-oriented phrase is still a
+	// service request, even when it contains the word “怎么”. For example,
+	// “门锁不上，帮我看看怎么处理” must not become a generic FAQ question.
+	if containsAny(text, []string{
+		"帮我看看", "帮我处理", "帮我解决", "帮忙处理", "请处理", "请解决",
+		"帮我修", "请维修", "维修一下", "安排人", "派人", "叫人", "送来", "换一个",
+	}) {
+		return false
+	}
+	if containsAny(text, []string{
+		"怎么", "如何", "怎么办", "咋办", "流程", "步骤", "操作", "在哪", "哪里", "哪儿",
+		"需要什么", "要什么", "能不能", "可以吗", "可不可以", "有没有", "是什么", "几点",
+		"多少钱", "收费吗", "使用方法", "办理流程", "规则", "标准", "地址", "位置",
+	}) {
+		return true
+	}
+	// A bare "办理入住/退房" is the common V2 shorthand for asking how the
+	// process works. It is informational unless the customer explicitly asks
+	// the system or staff to perform the operation.
+	if containsAny(text, []string{"办理入住", "办入住", "办理退房", "办退房", "入住流程", "退房流程"}) {
+		return true
+	}
+	return false
+}
+
+func inferInformationalProcedureSubIntent(text string) string {
+	text = compactRuntimeProtocolText(text)
+	switch {
+	case containsAny(text, []string{"入住", "checkin"}):
+		return "checkin_process"
+	case containsAny(text, []string{"退房", "checkout"}):
+		return "checkout_process"
+	case containsAny(text, []string{"停车", "车位"}):
+		return "parking"
+	case containsAny(text, []string{"早餐"}):
+		return "breakfast"
+	case containsAny(text, []string{"发票", "开票"}):
+		return "invoice"
+	case containsAny(text, []string{"洗衣", "洗衣房"}):
+		return "laundry"
+	case containsAny(text, []string{"wifi", "无线", "网络"}):
+		return "network_wifi"
+	case containsAny(text, []string{"外卖", "收货地址", "送餐地址"}):
+		return "delivery_order"
+	case containsAny(text, []string{"优惠", "折扣", "便宜", "会员"}):
+		return "discount"
+	default:
+		return "store_knowledge"
+	}
+}
+
+func currentIntentTaskText(intent callbacks.IntentTraceData) string {
+	if len(intent.IntentTasks) > 0 {
+		return strings.TrimSpace(intent.IntentTasks[0].Text)
+	}
+	return ""
+}
+
+func intentRequestMode(intent callbacks.IntentTraceData) string {
+	if len(intent.IntentTasks) > 0 {
+		return strings.TrimSpace(intent.IntentTasks[0].RequestMode)
+	}
+	return ""
+}
+
 func promptForModelDetectedIntent(intent callbacks.IntentTraceData, configs []models.ReplyIntentConfig) callbacks.IntentPromptTraceData {
 	if config, ok := findIntentConfigByCode(configs, intent.PrimaryIntent); ok {
 		return promptTraceFromConfig(config, intent)
@@ -1036,6 +1220,7 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		if task.Intent == "human_complaint_risk" {
 			task.NeedsHumanRoute = true
 		}
+		normalizeInformationalProcedureTask(&task)
 		ret = append(ret, task)
 	}
 	return ret

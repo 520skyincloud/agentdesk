@@ -407,23 +407,8 @@ func TestAIReplyTaskLedgerGenerationFailureTerminatesAllUncommittedTasks(t *test
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%+v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
-	if current.ProgressNoticeMessageID <= 0 {
-		t.Fatalf("technical failure did not persist a progress notice: %+v", current)
-	}
-	notice := repositories.MessageRepository.GetInTenant(fixture.db, current.ProgressNoticeMessageID, fixture.turn.TenantID)
-	if notice == nil || notice.SenderType != enums.IMSenderTypeAI || notice.MessageType != enums.IMMessageTypeText ||
-		notice.ConversationID != fixture.turn.ConversationID || notice.SessionNo != fixture.turn.SessionNo ||
-		notice.AIReplyTurnID != fixture.turn.ID || notice.AIReplyTurnVersion != fixture.turn.Version ||
-		notice.RequestID != fixture.job.RequestID {
-		t.Fatalf("technical failure notice lost turn-scoped commit evidence: %+v", notice)
-	}
-	var outboxes []models.ChannelMessageOutbox
-	if err := fixture.db.Where("tenant_id = ? AND message_id = ?", fixture.turn.TenantID, notice.ID).Find(&outboxes).Error; err != nil {
-		t.Fatal(err)
-	}
-	if len(outboxes) != 1 || outboxes[0].ConversationID != fixture.turn.ConversationID ||
-		outboxes[0].SendStatus != string(enums.ChannelMessageOutboxStatusPending) {
-		t.Fatalf("technical failure notice outbox evidence=%+v", outboxes)
+	if current.ProgressNoticeMessageID != 0 {
+		t.Fatalf("technical failure must not persist a customer-visible progress notice: %+v", current)
 	}
 	var detachedNoticeCount int64
 	if err := fixture.db.Model(&models.Message{}).

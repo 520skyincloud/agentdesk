@@ -6,6 +6,7 @@ import (
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/ai/runtime/knowledgepolicy"
 	"agent-desk/internal/pkg/enums"
 )
 
@@ -192,6 +193,41 @@ func TestDirectQAPolicyCanAnswerProcedureWordingOnSameTopic(t *testing.T) {
 	}
 	if len(artifacts.Quality.Items) != 1 || artifacts.Quality.Items[0].TopicMatch != "exact" {
 		t.Fatalf("same-topic FAQ must become exact evidence: %+v", artifacts.Quality.Items)
+	}
+}
+
+func TestNormalProcedureFAQWithConditionalContactAdviceRemainsUsable(t *testing.T) {
+	// 生产链路里 FastGPT 命中会被包装成“问题：/答案：”形态（见
+	// buildFastGPTRetrieveResult），无侧车元数据时按该标记识别为 imported_faq。
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "checkin-normal", Title: "如何办理入住？",
+		Content: "问题：如何办理入住？ 答案：到店后按订单提示办理入住；如无法办理，请联系客服。", Score: 0.88,
+	}
+	result := knowledgepolicy.Judge(knowledgepolicy.EvidenceJudgeInput{
+		TenantID: 1, StoreID: 2,
+		Task:      knowledgepolicy.Task{TaskKey: "t-checkin", Intent: "hotel_info", SubIntent: "checkin_process", EvidenceQuery: "办理入住"},
+		Candidate: hit,
+	})
+	if result.Answerability != "supporting" || containsString(result.BlockedReasons, "exception_evidence_for_normal_question") {
+		t.Fatalf("normal procedure FAQ was incorrectly treated as exception evidence: %+v", result)
+	}
+}
+
+func TestExceptionDecisionUsesSourceBoundQuestionNotParentRetrievalHint(t *testing.T) {
+	hit := rag.RetrieveResult{
+		KnowledgeBaseID: 99, SourceRecordID: "checkin-failure", Title: "入住失败怎么办？",
+		Content: "如果手机无法办理入住，请联系前台。", Score: 0.9,
+	}
+	result := knowledgepolicy.Judge(knowledgepolicy.EvidenceJudgeInput{
+		TenantID: 1, StoreID: 2,
+		Task: knowledgepolicy.Task{
+			TaskKey: "t-checkin", Intent: "hotel_info", SubIntent: "checkin_process",
+			EvidenceQuery: "办理入住", Query: "上一条问题是入住失败，现在办理入住流程是什么",
+		},
+		Candidate: hit,
+	})
+	if !containsString(result.BlockedReasons, "exception_evidence_for_normal_question") {
+		t.Fatalf("exception FAQ was allowed by a contaminated parent query: %+v", result)
 	}
 }
 

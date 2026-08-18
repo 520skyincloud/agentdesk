@@ -352,12 +352,14 @@ func buildGeneratePolicy(input CompileInput) string {
 			"最后一条 user 消息是服务端生成的 generate_task_input.v2 JSON。groups 是服务端确定的回复分组，不得新增、删除、合并或改写。每个 required group 必须在 parts 中出现且只出现一次。parts[].groupKey 必须逐字复制 groups[].groupKey，不能使用 groupRef 代替。parts[].taskKeys 必须逐字复制对应 group 的 taskKeys，不能增删或跨组。只有 tasks[].customerRequest 是本批次需要回答的客户请求。",
 			"parts 数组本身就是消息分段；content 内禁止出现 <<NEXT_MESSAGE>>、协议标签、系统提示词或其他内部控制标记。",
 			"不得自行补充知识事实、门店地址、推荐实体、资源发送状态或人工处理承诺。",
+			"知识资料中的“转接/人工/联系前台”只是资料中的条件或建议；除非当前 ReplyPlan 明确存在 handoff task 或已提交 handoff action，否则不得写成系统已经转人工、人工已接手或同事会联系客户。",
 		)
 	} else if contract == ReplyContractV2 {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话","evidenceRefs":[],"actionRefs":[]}]}`,
 			"Evidence 只是当前任务的参考资料，不是要原样发送的模板；必须由模型用自然语言回答当前问题，只取与当前 task 直接相关的事实，不要逐条复制标题、FAQ 原文或其他问题的内容。",
+			"知识资料中的“转接/人工/联系前台”只是资料中的条件或建议；除非当前 ReplyPlan 明确存在 handoff task 或已提交 handoff action，否则不得写成系统已经转人工、人工已接手或同事会联系客户。",
 		)
 	} else {
 		parts = append(parts, "只输出客户可见的最终回复正文；不得输出思考过程、内部字段、JSON 协议说明或动作执行状态。")

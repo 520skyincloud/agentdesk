@@ -26,7 +26,31 @@ import (
 const (
 	runtimeKnowledgeTaskConcurrency = 4
 	runtimeEvidenceMaxItems         = 24
+	// Keep Generate focused on the strongest facts for each customer task. The
+	// retriever may return many related chunks; sending all of them makes the
+	// model copy FAQ bodies instead of composing an answer.
+	runtimeEvidenceMaxItemsPerTask = 4
 )
+
+// runtimeEvidenceTaskBudget gives each remaining task a chance to retain at
+// least one supporting item while keeping the bundle within its schema cap.
+// The task ledger batch is bounded, so this is a small in-memory allocation,
+// not another retrieval or validation stage.
+func runtimeEvidenceTaskBudget(limit, used, taskIndex, taskCount int) int {
+	remaining := limit - used
+	remainingTasks := taskCount - taskIndex
+	if remaining <= 0 || remainingTasks <= 0 {
+		return 0
+	}
+	budget := remaining - (remainingTasks - 1)
+	if budget < 1 {
+		budget = 1
+	}
+	if budget > runtimeEvidenceMaxItemsPerTask {
+		budget = runtimeEvidenceMaxItemsPerTask
+	}
+	return budget
+}
 
 type runtimeTaskKnowledgeOutcome struct {
 	Prefetched          *retrievers.KnowledgeRetrieveResult
@@ -354,6 +378,7 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 	indexes := make(map[string]runtimeEvidenceIndex)
 	sourceEntries := make(map[string][]runtimeEvidenceIndex)
 	itemByTask := make(map[string]runtimeTaskKnowledgeItem, len(items))
+	supportingCountByTask := make(map[string]int, len(items))
 	storeFactSeq := 0
 	addressTaskKeys := make([]string, 0, len(items))
 	for _, item := range items {
@@ -375,7 +400,7 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 			knowledgeEvidenceLimit--
 		}
 	}
-	for _, item := range items {
+	for itemIndex, item := range items {
 		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
 		switch item.Status {
 		case enums.AIReplyTurnTaskKnowledgeStatusFailed:
@@ -395,9 +420,10 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 		supportingResults := make([]rag.RetrieveResult, 0, len(results))
 		droppedMeta := 0
 		droppedQuality := 0
+		taskEvidenceBudget := runtimeEvidenceTaskBudget(knowledgeEvidenceLimit, len(quality.Items), itemIndex, len(items))
 		for _, result := range results {
-			if len(quality.Items) >= knowledgeEvidenceLimit || strings.TrimSpace(result.Content) == "" {
-				break
+			if strings.TrimSpace(result.Content) == "" {
+				continue
 			}
 			sourceKey := runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)
 			metadata := metadataBySource[sourceKey]
@@ -414,10 +440,23 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 				},
 				Candidate: result, Metadata: metadataPtr,
 			})
-			if !gateEnabled(gateEvidenceQuality, req) {
+			if !gateEnabled(gateEvidenceQuality, req) && !knowledgepolicy.IsNonBypassableBoundary(judgement) {
 				judgement.Answerability = "supporting"
 				judgement.AllowedUses = []string{"answer_text", "prepare_resource"}
 				judgement.BlockedReasons = []string{}
+			}
+			if judgement.Answerability == "supporting" && supportingCountByTask[item.TaskKey] >= taskEvidenceBudget {
+				continue
+			}
+			// A blocked/related hit is useful for diagnostics, but it must not
+			// consume the answer-evidence budget or crowd out a later task's
+			// exact hit. Generate only receives supporting entries below.
+			if judgement.Answerability != "supporting" {
+				droppedQuality++
+				if judgement.ClaimType == "meta" || stringInSlice("meta_content", judgement.BlockedReasons) {
+					droppedMeta++
+				}
+				continue
 			}
 			key := runtimeEvidenceResultKey(result) + "|" + runtimeEvidenceJudgementKey(judgement)
 			entry, exists := indexes[key]
@@ -444,19 +483,22 @@ func buildRuntimeEvidenceArtifacts(req RunInput, items []runtimeTaskKnowledgeIte
 				indexes[key] = entry
 				sourceEntries[sourceKey] = append(sourceEntries[sourceKey], entry)
 			} else {
-				quality.Items[entry.qualityIndex].TaskKeys = appendUniqueStrings(quality.Items[entry.qualityIndex].TaskKeys, item.TaskKey)
-				if entry.supporting && entry.legacyIndex >= 0 {
-					bundle.Items[entry.legacyIndex].TaskKeys = appendUniqueStrings(bundle.Items[entry.legacyIndex].TaskKeys, item.TaskKey)
+				if entry.supporting && entry.qualityIndex >= 0 && entry.qualityIndex < len(quality.Items) &&
+					!stringInSlice(item.TaskKey, quality.Items[entry.qualityIndex].TaskKeys) {
+					quality.Items[entry.qualityIndex].TaskKeys = appendUniqueStrings(quality.Items[entry.qualityIndex].TaskKeys, item.TaskKey)
+					if entry.legacyIndex >= 0 {
+						bundle.Items[entry.legacyIndex].TaskKeys = appendUniqueStrings(bundle.Items[entry.legacyIndex].TaskKeys, item.TaskKey)
+					}
+					supportingCountByTask[item.TaskKey]++
 				}
-			}
-			if entry.supporting {
 				outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, entry.ref)
 				supportingResults = append(supportingResults, result)
-			} else {
-				droppedQuality++
-				if judgement.ClaimType == "meta" || stringInSlice("meta_content", judgement.BlockedReasons) {
-					droppedMeta++
-				}
+				continue
+			}
+			if entry.supporting {
+				supportingCountByTask[item.TaskKey]++
+				outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, entry.ref)
+				supportingResults = append(supportingResults, result)
 			}
 		}
 		if len(outcome.SupportingRefs) == 0 && outcome.Status == "has_context" {

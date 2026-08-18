@@ -1140,48 +1140,16 @@ func (s *aiReplyJobService) markClaimedTasksTechnicalFailure(
 	return nil
 }
 
-// sendTechnicalFailureNotice 契约 14.5：技术终态至少向客户提交一条短提示
-// （不宣称需要人工），提示 MessageID 写入 ProgressNoticeMessageID；已发过提示时
-// 不重发。即使本轮部分成功，失败的问题也必须有明确结果，不能静默消失。
+// sendTechnicalFailureNotice 保留旧的终态编排调用点，但技术失败不再生成
+// 客户可见的“消息没有处理成功”消息。技术失败只写 Job/Task 终态和结构化日志；
+// 客户可见回复必须来自成功的业务回答、澄清或明确的业务人工路由。
 func (s *aiReplyJobService) sendTechnicalFailureNotice(state *aiReplyJobExecutionState, job *models.AIReplyJob) {
-	if state == nil || state.Conversation == nil || state.Instance == nil || job == nil {
+	if state == nil || job == nil {
 		return
 	}
-	if job.ProgressNoticeMessageID > 0 {
-		return
-	}
-	// A technical failure notice must not depend on resolving the intent profile
-	// again: a broken or temporarily unavailable runtime configuration is one of
-	// the reasons this path exists. The already validated execution state owns the
-	// immutable conversation route and protocol instance for this job.
-	if state.Instance.TenantID != state.Conversation.TenantID || !state.Instance.AIReplyEnabled {
-		return
-	}
-	aiAgent := WxWorkProtocolInstanceService.BuildRuntimeAIAgent(state.Instance)
-	messages, err := MessageService.SendAIMessageBatchForTurnWithRequestID(
-		state.Conversation.ID,
-		aiAgent.ID,
-		[]AIOutboundMessageDraft{{
-			ClientMsgID: "ai_tech_notice_" + fmt.Sprintf("%d_%d", job.TurnID, job.ID),
-			MessageType: enums.IMMessageTypeText,
-			Content:     "这条消息暂时没有处理成功，请稍后重发或换一种说法。",
-		}},
-		systemOperator(), job.RequestID, job.TurnID, job.TurnVersion, job.ID,
-	)
-	if err != nil {
-		slog.Warn("send technical failure notice failed", "job_id", job.ID, "error", err)
-		return
-	}
-	if len(messages) != 1 {
-		slog.Warn("send technical failure notice returned unexpected message count", "job_id", job.ID, "count", len(messages))
-		return
-	}
-	message := &messages[0]
-	_ = repositories.AIReplyJobRepository.UpdateColumnsInTenant(sqls.DB(), job.ID, job.TenantID, map[string]any{
-		"progress_notice_message_id": message.ID,
-		"result_code":                "technical_failure_notified",
-		"updated_at":                 time.Now(), "update_user_name": "ai_reply_tech_notice",
-	})
+	slog.Warn("ai reply technical failure kept internal; no customer notice sent",
+		"job_id", job.ID, "turn_id", job.TurnID, "error_class", job.LastErrorClass,
+		"result_code", "technical_failure_no_customer_notice")
 }
 
 func (s *aiReplyJobService) markTerminal(job *models.AIReplyJob, owner string, status enums.AIReplyJobStatus, resultCode, errorClass string, now time.Time) {

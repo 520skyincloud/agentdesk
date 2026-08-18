@@ -32,7 +32,9 @@ func TestDeriveRuntimeIntentCapabilitiesUsesPublishedConfig(t *testing.T) {
 		t.Fatalf("unexpected resource capability: %#v", derived[1])
 	}
 	trace := AdaptIntentV2ToLegacyTrace(contract, derived)
-	if trace.PrimaryIntent != "hotel_info" || !trace.NeedsKnowledge || !trace.NeedsResource || len(trace.ResourceActions) != 1 {
+	// 与 TestRuntimePipelineHotelVariableMixedHotelInfoRequiresKnowledge 的既有
+	// 契约一致：混合轮次中酒店变量任务保持主意图，知识能力以任务级聚合保留。
+	if trace.PrimaryIntent != "hotel_variable" || !trace.NeedsKnowledge || !trace.NeedsResource || len(trace.ResourceActions) != 1 {
 		t.Fatalf("unexpected compatibility trace: %#v", trace)
 	}
 	if trace.IntentTasks[0].MatchedConfigID != 11 || trace.IntentTasks[1].MatchedConfigID != 12 {

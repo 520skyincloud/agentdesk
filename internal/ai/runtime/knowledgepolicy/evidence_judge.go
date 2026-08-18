@@ -55,6 +55,12 @@ func Judge(input EvidenceJudgeInput) EvidenceJudgeResult {
 	}
 	result.TopicMatch = topicMatch(input.Task, input.Candidate, result.TopicLabels)
 	block := func(reason string) { result.BlockedReasons = appendUnique(result.BlockedReasons, reason) }
+	if isExceptionEvidence(input.Candidate.Title, input.Candidate.Content) && !taskRequestsException(input.Task) {
+		// An exception FAQ can be semantically close to a normal procedure
+		// question, but it is not permission to answer the normal case with an
+		// escalation path (for example, "another room cannot check in").
+		block("exception_evidence_for_normal_question")
+	}
 
 	if input.Metadata != nil && (input.Metadata.TenantID != input.TenantID || input.Metadata.StoreID != input.StoreID || input.Metadata.KnowledgeBaseID != input.Candidate.KnowledgeBaseID) {
 		block("metadata_scope_mismatch")
@@ -120,6 +126,12 @@ func Judge(input EvidenceJudgeInput) EvidenceJudgeResult {
 		result.Answerability = "supporting"
 		result.AllowedUses = []string{"answer_text", "recommend"}
 	case "procedure", "policy":
+		if result.TopicMatch != "exact" {
+			result.Answerability = "context_only"
+			result.BlockedReasons = appendUnique(result.BlockedReasons, "procedure_or_policy_topic_not_exact")
+			result.AllowedUses = []string{"resolve_reference"}
+			return result
+		}
 		if result.SourceClass == "unknown" && result.ReviewStatus != "approved" {
 			result.Answerability = "context_only"
 			result.BlockedReasons = appendUnique(result.BlockedReasons, "procedure_or_policy_source_unreviewed")
@@ -136,6 +148,23 @@ func Judge(input EvidenceJudgeInput) EvidenceJudgeResult {
 		result.AllowedUses = appendUnique(result.AllowedUses, "prepare_resource")
 	}
 	return result
+}
+
+// IsNonBypassableBoundary identifies the small set of evidence boundaries that
+// must remain effective even when the evidence-quality gate is excluded for a
+// tenant/store during a rollout. Gate exclusions may relax metadata/trust
+// checks, but they must never turn an exception FAQ or a cross-topic hit into
+// answer evidence.
+func IsNonBypassableBoundary(result EvidenceJudgeResult) bool {
+	for _, reason := range result.BlockedReasons {
+		switch strings.TrimSpace(reason) {
+		case "exception_evidence_for_normal_question", "topic_mismatch",
+			"direct_qa_topic_not_exact", "recommendation_topic_not_exact",
+			"procedure_or_policy_topic_not_exact":
+			return true
+		}
+	}
+	return false
 }
 
 func metadataProjection(input EvidenceJudgeInput) EvidenceJudgeResult {
@@ -264,6 +293,61 @@ func topicMatch(task Task, candidate rag.RetrieveResult, labels []string) string
 		return "related"
 	}
 	return "mismatch"
+}
+
+func taskRequestsException(task Task) bool {
+	// EvidenceQuery is the source-bound current question. Query may carry a
+	// parent-topic retrieval hint for an elliptical follow-up; including it here
+	// lets an old failure topic authorize an exception answer for a new topic.
+	text := normalizeText(firstNonEmpty(task.EvidenceQuery, task.Query))
+	text = normalizeText(strings.Join([]string{text, task.SubIntent}, " "))
+	if containsAny(text,
+		"办不了", "无法办理", "不能办理", "入住失败", "退房失败", "办理失败", "打不开",
+		"不制冷", "坏了", "故障", "出问题", "异常", "报错", "报错了", "没法", "无法",
+		"失败", "另一间房", "手机不能用", "收不到", "进不去", "卡住", "故障",
+	) {
+		return true
+	}
+	value := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	for _, marker := range []string{"failure", "failed", "exception", "error", "issue", "trouble", "repair", "maintenance"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExceptionEvidence(title, content string) bool {
+	titleText := normalizeText(title)
+	contentText := normalizeText(content)
+	strongMarkers := []string{
+		"办不了", "无法办理", "不能办理", "入住失败", "退房失败", "办理失败", "打不开",
+		"不制冷", "坏了", "故障", "报错", "失败", "另一间房", "手机不能用",
+		"收不到", "进不去", "卡住",
+	}
+	if containsAny(titleText, strongMarkers...) {
+		return true
+	}
+	if !containsAny(contentText, strongMarkers...) {
+		return false
+	}
+	// Normal procedure FAQs often include a conditional fallback such as
+	// “如无法办理请联系客服”. That clause must not downgrade the whole normal
+	// FAQ into an exception record; require an actual failure statement instead.
+	if containsAny(contentText, "如无法", "如果无法", "若无法", "如遇故障", "如有问题请", "遇到问题请") &&
+		!containsAny(contentText, "当前无法", "一直无法", "已经失败", "提示失败", "实际故障") {
+		return false
+	}
+	return true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func structuredQATopicMatch(task Task, normalizedQuery string, candidate rag.RetrieveResult) bool {
