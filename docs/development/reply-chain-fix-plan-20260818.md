@@ -78,23 +78,50 @@
 | 我有两间房另一间办不了入住 | 另一间房办不了→转接 | 同题（Query含"另一间/办不了"） | 转人工确认 ✓ |
 | 不要（纯功能词，见刀B） | 两点前不要打扰→转接 | 不进入检索 | — |
 
-### 刀B：确认应答独占三件套（治故障B）
+### 刀B：确认门禁白名单重排——挂起确认期间，AI 回复 Job 根本不出生（治故障B）
 
-**B1 意图层教学+适配**（`intent_model_detector.go`）：
-- 提示词新增：
-  > 【转人工确认应答·独占】若紧邻上一条AI消息是转人工确认问题（含"请回复确认或取消"字样），当前消息若是确认/取消类应答（确认/取消/不要/不用/不用了/不需要/行/好的/嗯/OK/转吧/要），只输出一个 interaction 任务，requestMode=confirm_previous 或 cancel_previous，dialogueAct=confirmation 或 cancellation；禁止输出 hotel_info/hotel_variable/service_request/human_complaint_risk，禁止查询语义。
-- 适配层归一化：`requestMode ∈ {confirm_previous, cancel_previous}` 的任务 → 强制 `intent=interaction, subIntent=confirm_answer|cancel_answer`，清 NeedsKnowledge/NeedsResource/NeedsHumanRoute（**这是硬保证，模型不守约也没用**）
+**你指出的问题成立：黑名单思路废弃。** 现有系统其实已有"白名单"设计意图——
+`route_state.pending_action == human_handoff` 时，确认服务对客户消息有**独占消费权**
+（message_service.go:1203 的 HandleCustomerMessage：分类 confirm/cancel → 消费 →
+SkipPendingForMessage → 关任务）。反复问的真因是这个白名单的**实现顺序反了**：
 
-**B2 纯功能词检索黑名单**（`task_knowledge.go`，检索前）：
-- 黑名单：{确认,取消,不要,不用,不用了,不需要,好的,行,嗯,ok,要,转吧}（≤4字精确匹配）
-- 命中 → **跳过知识检索**（不产生Query、不写检索日志）、knowledge_status=none、该任务直接由确认服务语义处理
-- 这从根上杜绝"不要"撞上任何库内容
+```
+现状（错序）：
+  消息落库事务内（:1078）→ AI Reply Job 立即创建 ← ★白名单还在 2 秒外的 :1203
+  → cron 1 秒内就可能 claim 这个 job 开始跑意图
+  → 确认门禁 2 秒后才判完 cancel（模型超时还要等满 2s）
+  → SkipPendingForMessage 只能跳过 pending/retry 状态的 job，
+    已被 worker claim（processing）的 job 漏网 ← ★洞1
+  → 漏网 job 把"不要"跑成 hotel_info 任务落账本
+  → 取消只关了当时的任务，漏网 job 后来新建的任务没人关 ← ★洞2
+  → job 卡满 15 分钟 → 无条件 dispatchHuman ← ★洞3（刀C 另治）
+```
 
-**B3 取消闭合补洞**（`conversation_handoff_confirmation_service.go`）：
-- 判定 cancel 后，现有 `CancelHandoffTransactionDB` 基础上，**同事务**把该轮所有 `source_message_id=当前确认应答消息` 且非终态的任务置 superseded（reason=`consumed_by_handoff_confirmation`）
-- 现有 `SkipPendingForMessage` 保留，但改为**终态 skipped**（非仅跳过），防 stale 恢复路径复活
+**修复＝把白名单放到 Job 出生之前，并把消费动作做成全量闭合：**
 
-**测试**：挂起确认 + "不要" → 断言：零新增 hotel_info 任务、零检索日志、仅一条取消回复；之后重试 job 恢复账本 → 无可跑任务 → job 正常收口。
+**B1 入队门禁（message_service.go:1077 一处改动）**
+- `EnqueueForMessageDB` 之前检查 `route_state.pending_action`：
+  - `== human_handoff` → **本次不入队**。确认门禁（事务提交后）对消息分类：
+    - confirm / cancel → 消费完毕，**这个消息永远不会有 AI job**（回复由门禁自己发）
+    - unknown（如"我要开车出去"这种新主题）→ 门禁调用既有 `EnsureForMessage`（:967 已有此函数）**此时才入队**，AI 正常处理新诉求
+  - 无挂起 → 照旧立即入队（99% 的正常消息零额外延迟）
+- 效果：挂起确认期间，"不要/取消/确认/随便什么字"**到不了意图链**——不是靠禁词，是靠"没有 job"这个结构性白名单
+
+**B2 消费闭合补强（conversation_handoff_confirmation_service.go，三件事一个事务）**
+判 cancel/confirm 消费后，除现有逻辑外：
+- 取消该消息已注册的活跃执行（service 已有 `activeExecutions[convID][msgID]` 的 cancel 句柄，现状没人调）
+- `SkipPendingForMessage` 覆盖面从 pending/retry 扩到含 processing（漏网兜底）
+- 把 `source_message_id=该消息` 的所有非终态任务置 superseded（reason=`consumed_by_handoff_confirmation`，堵洞2）
+
+**B3 意图教学（保留但降级为防御层，无任何词表）**
+- 提示词只加一条**状态规则**（不是词名单）：紧邻上一条 AI 消息是转人工确认问题时，当前短消息输出 interaction + requestMode=confirm_previous/cancel_previous；适配层对这两种 requestMode 强制 interaction 并清知识/资源能力
+- 因为 B1 已保证挂起期间没有 job，这条只防"确认早已结束、客户隔很久又发'不要'"的历史语境误判；即使误判成 hotel_info，刀A 的同题门禁也让它查不到可提升证据（"不要"与"两点前不要打扰"不同题），双保险
+
+**测试（对应用户场景）**：
+1. 挂起确认 + "不要" → 断言：该消息**无 job 行**、无意图 run、无检索日志、只有一条取消回复
+2. 挂起确认 + "我要开车出去"（unknown）→ 门禁不消费 → EnsureForMessage 入队 → 正常 AI 回复（不继承转人工语境）
+3. 无挂起 + "不要"（隔很久冷发）→ 意图判 interaction；即使误判 hotel_info，同题门禁下无转接提升、无新确认
+4. 消费瞬间 worker 已 claim（构造竞态）→ 活跃执行被取消、job 终态 skipped、其新建任务被 superseded
 
 ### 刀C：超时转人工前检查客户意愿（治故障C）
 
@@ -129,13 +156,13 @@ if route := ConversationRouteService.GetByConversationID(job.ConversationID); ro
 
 | 序 | 内容 | 预计 | 独立提交 |
 |---|---|---|---|
-| 1 | 刀B2+B3（先断循环，最急） | 30min | 1个 |
-| 2 | 刀B1（意图教学+适配） | 20min | 1个 |
+| 1 | 刀B1+B2（白名单重排+消费闭合，先断循环） | 40min | 1个 |
+| 2 | 刀B3（意图状态规则+适配，防御层） | 15min | 1个 |
 | 3 | 刀A（同题门禁+证据剔除+矩阵测试） | 45min | 1个 |
 | 4 | 刀C（超时意愿检查） | 20min | 1个 |
 | 5 | 全量测试+构建+部署+清残留 | 20min | — |
 
-顺序理由：先断循环（B）再治污染（A）——A 的效果矩阵依赖 B 先让"不要"不再进检索；C 独立收尾。
+顺序理由：先白名单断循环（B1/B2 是同一处改动的两面），再治证据污染（A），B3 防御层随后，C 独立收尾。
 
 ## 5. 生产回归验收表（部署后你按行发）
 
