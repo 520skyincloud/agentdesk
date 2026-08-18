@@ -126,3 +126,22 @@ func TestRuntimeActionInputsAllowImageForFacilityTasks(t *testing.T) {
 		t.Fatal("facility task should keep image eligibility")
 	}
 }
+
+func TestKnowledgeEvidencePlaceNameIsAllowed(t *testing.T) {
+	input := ReplyValidationInput{
+		Req: RunInput{},
+		Evidence: contracts.EvidenceBundleV1{Items: []contracts.EvidenceItemV1{{
+			Title:   "酒店提供行李寄存服务吗？",
+			Content: "问题：酒店提供行李寄存服务吗？ 答案：我们酒店提供行李寄存服务，如需寄存请自行前往1楼丽斯酒店前台处的寄存柜。",
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"t1"}, Content: "行李可以免费寄存，去1楼丽斯酒店前台处的寄存柜放就行。",
+		}}},
+	}
+	issues := validateStoreNameAssertions(input)
+	for _, issue := range issues {
+		if issue.Code == "protected_fact_source_violation" {
+			t.Fatalf("KB-sourced place name must not be rejected: %#v", issue)
+		}
+	}
+}

@@ -20,6 +20,7 @@ func validateStoreNameAssertions(input ReplyValidationInput) []contracts.Validat
 		return nil
 	}
 	issues := make([]contracts.ValidationIssueV1, 0)
+	evidenceCorpus := knowledgeEvidencePlaceNameCorpus(input)
 	for _, part := range input.Output.Parts {
 		content := strings.TrimSpace(part.Content)
 		if content == "" {
@@ -27,6 +28,12 @@ func validateStoreNameAssertions(input ReplyValidationInput) []contracts.Validat
 		}
 		for _, name := range extractAssertedPlaceNames(content) {
 			if placeNameAuthorized(name, authoritative) {
+				continue
+			}
+			// 生产回归 2026-08-18：知识库原文自带的合作方场所名（如行李寄存
+			// 答案里的“1楼丽斯酒店前台”）是门店自己发布的合法信息，模型如实
+			// 复述不得判违规；本拦截只针对客户注入、不在任何证据中的场所名。
+			if evidenceCorpus != "" && strings.Contains(evidenceCorpus, name) {
 				continue
 			}
 			issues = append(issues, validationIssue(
@@ -38,6 +45,16 @@ func validateStoreNameAssertions(input ReplyValidationInput) []contracts.Validat
 		}
 	}
 	return issues
+}
+
+// knowledgeEvidencePlaceNameCorpus 汇总本轮知识证据正文，作为场所名的合法来源之一。
+func knowledgeEvidencePlaceNameCorpus(input ReplyValidationInput) string {
+	var b strings.Builder
+	for _, item := range input.Evidence.Items {
+		b.WriteString(item.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // authoritativeStoreNames 契约 4.9/13.1-7：门店名称是受保护事实。权威集合
