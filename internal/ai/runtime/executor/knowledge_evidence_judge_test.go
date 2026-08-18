@@ -28,6 +28,21 @@ func TestKnowledgeEvidenceJudgeSeparatesNormalFlowFromExceptionFAQ(t *testing.T)
 	if knowledgeEvidenceMismatchesTask(normal, normalWithFallback) {
 		t.Fatal("a normal process document must survive when only its final sentence contains exception guidance")
 	}
+
+	entryStep := rag.RetrieveResult{
+		Title:   "酒店入口路线",
+		Content: "从昭潭路停车场入口右手边大楼进入，大厅左转乘电梯。",
+	}
+	if knowledgeEvidenceMismatchesTask(normal, entryStep) {
+		t.Fatal("the configured hotel entrance and elevator step belongs to the normal check-in procedure")
+	}
+	doorStep := rag.RetrieveResult{
+		Title:   "怎么开门",
+		Content: "完成入住登记后到店刷脸开门，不需要密码。",
+	}
+	if knowledgeEvidenceMismatchesTask(normal, doorStep) {
+		t.Fatal("registration followed by face access belongs to the normal check-in procedure")
+	}
 }
 
 func TestKnowledgeEvidenceJudgeRejectsCrossTopicResourceSource(t *testing.T) {

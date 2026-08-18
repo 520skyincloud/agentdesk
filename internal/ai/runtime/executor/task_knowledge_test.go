@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
 
@@ -277,5 +278,41 @@ func TestRedistributeKeepsAlreadySplitPlans(t *testing.T) {
 	got := redistributeMultiTopicClauses(plans)
 	if got[0].Text != "附近有什么好吃的" || got[1].Text != "怎么把门打开" {
 		t.Fatalf("should keep already split plans: %#v", got)
+	}
+}
+
+func TestBuildRuntimeEvidenceBundleAddsConfiguredNormalCheckinFact(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	conversation := seedRuntimeCheckinMiniProgram(t)
+	req := RunInput{
+		Conversation: conversation,
+		UserMessage:  models.Message{MessageType: enums.IMMessageTypeText, Content: "给我办入住"},
+	}
+	items := []runtimeTaskKnowledgeItem{{
+		TaskKey: "checkin", Query: runtimeNormalCheckinKnowledgeQueryText + " 入住流程",
+		Intent: "hotel_info", SubIntent: "checkin_process", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit,
+	}}
+	bundle, byTask, _ := buildRuntimeEvidenceBundle(req, items, nil)
+	if byTask["checkin"].Status != "has_context" || byTask["checkin"].ReasonCode != "authoritative_checkin_store_fact_available" {
+		t.Fatalf("configured checkin flow must remain answerable: %#v", byTask["checkin"])
+	}
+	found := false
+	for _, item := range bundle.Items {
+		if item.SourceType == "store_fact" && strings.Contains(item.Content, "入住小程序") && strings.Contains(item.Content, "刷脸开门") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("configured checkin store fact missing: %#v", bundle.Items)
+	}
+
+	exceptionItems := []runtimeTaskKnowledgeItem{{
+		TaskKey: "exception", Query: "入住小程序打不开怎么办 入住流程",
+		Intent: "hotel_info", SubIntent: "checkin_process", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit,
+	}}
+	_, exceptionByTask, _ := buildRuntimeEvidenceBundle(req, exceptionItems, nil)
+	if exceptionByTask["exception"].Status != "no_context" {
+		t.Fatalf("an exception must not be covered by the normal checkin fact: %#v", exceptionByTask["exception"])
 	}
 }

@@ -68,9 +68,18 @@ func assertsUngroundedFact(content string) bool {
 	if compact == "" {
 		return false
 	}
-	for _, safe := range []string{"没写", "未写明", "没有写", "资料里没有", "不清楚", "不确定", "要确认", "帮你问", "帮你查", "需要确认", "稍等确认"} {
-		if strings.Contains(compact, safe) {
-			return false
+	for _, safe := range []string{"没写", "未写明", "没有写", "资料里没有", "不清楚", "不确定", "要确认", "需要确认"} {
+		if index := strings.Index(compact, safe); index >= 0 {
+			tail := strings.TrimSpace(compact[index+len(safe):])
+			if tail == "" || isNoHitClarifyingQuestion(tail) || isNoHitBoundaryContinuation(tail) {
+				return false
+			}
+			// “资料没写”只能作为边界说明，不能再接“通常会有、可以去翻找”
+			// 等没有证据的酒店常识。让协议修复只移除这段猜测即可。
+			return containsAny(tail, []string{
+				"通常", "一般", "应该", "大概率", "可能有", "会有", "会备", "可以去", "可以先",
+				"提供", "配有", "放在", "位于", "桌上", "抽屉", "前台可以", "客房可以",
+			})
 		}
 	}
 	assertionVerbs := []string{
@@ -85,6 +94,20 @@ func assertsUngroundedFact(content string) bool {
 	}
 	// 两个及以上断言词才判编造，降低单字误伤（如“可以吗？”的疑问句）。
 	return count >= 2
+}
+
+func isNoHitClarifyingQuestion(text string) bool {
+	return containsAny(text, []string{
+		"请问", "方便说下", "方便告诉", "能说下", "可以说下", "你是想", "你主要想",
+		"具体是", "具体要", "哪个", "哪种", "哪一", "什么", "多少", "几点", "何时",
+	})
+}
+
+func isNoHitBoundaryContinuation(text string) bool {
+	return containsAny(text, []string{
+		"不清楚", "不确定", "无法确认", "暂时无法确认", "需要确认", "需要再确认", "还要确认",
+		"以门店实际为准", "以订单页面为准", "以小程序页面为准",
+	})
 }
 
 // assertsUngroundedDomainFact 判断内容是否对「系统没有数据源的领域」下了确定性断言。

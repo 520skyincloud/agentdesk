@@ -21,7 +21,10 @@ import (
 	"github.com/mlogclub/simple/sqls"
 )
 
-const runtimeKnowledgeTaskConcurrency = 4
+const (
+	runtimeKnowledgeTaskConcurrency        = 4
+	runtimeNormalCheckinKnowledgeQueryText = "我找不到酒店入口怎么走 登记入住后怎么开门刷脸"
+)
 
 type runtimeTaskKnowledgeOutcome struct {
 	Prefetched       *retrievers.KnowledgeRetrieveResult
@@ -214,6 +217,7 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	storeFactSeq := 0
 	addressTaskKeys := make([]string, 0, len(items))
 	identityTaskKeys := make([]string, 0, len(items))
+	checkinTaskKeys := make([]string, 0, len(items))
 	for _, item := range items {
 		// ProtectedFact Phase1（文档 9.3/18.2）：地址类任务的 store.address 是权威事实，
 		// 从 hydrate 后实例确定性取值注入 S* 证据。Generate 只能用它声明酒店地址，
@@ -223,6 +227,9 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 		}
 		if isStoreIdentitySubIntent(item.SubIntent) {
 			identityTaskKeys = append(identityTaskKeys, item.TaskKey)
+		}
+		if isNormalCheckinKnowledgeItem(item) {
+			checkinTaskKeys = append(checkinTaskKeys, item.TaskKey)
 		}
 		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
 		switch item.Status {
@@ -322,6 +329,28 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				}
 				byTask[taskKey] = outcome
 			}
+		}
+	}
+
+	// 正常入住流程同时依赖系统配置事实和门店知识：当前门店确实配置了
+	// 可发送的入住小程序时，系统可确定“先登记、后刷脸开门”的基础流程。
+	// 这份事实只绑定正常入住 Task；小程序打不开、手机不可用等异常问题仍
+	// 必须依赖对应知识，不能被正常流程覆盖。
+	if len(checkinTaskKeys) > 0 && runtimeCheckinMiniProgramAvailable(req) {
+		storeFactSeq++
+		ref := fmt.Sprintf("S%d", storeFactSeq)
+		bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
+			Ref: ref, SourceType: "store_fact", TaskKeys: append([]string(nil), checkinTaskKeys...),
+			Title:   "当前门店入住方式（系统权威）",
+			Content: "当前门店为无人值守智能化酒店，没有传统常驻前台和房卡；客户通过当前门店已配置的入住小程序完成入住登记，登记完成后到店刷脸开门。",
+			Score:   1, Answerability: "supporting", ResourceRefs: []string{},
+		})
+		for _, taskKey := range checkinTaskKeys {
+			outcome := byTask[taskKey]
+			outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, ref)
+			outcome.Status = "has_context"
+			outcome.ReasonCode = "authoritative_checkin_store_fact_available"
+			byTask[taskKey] = outcome
 		}
 	}
 
@@ -528,6 +557,10 @@ func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 	// Query 仍以客户当前问题为主体；若已有稳定的中文业务主题，只追加一个短主题锚点，
 	// 帮助向量检索区分“普通流程”与“同词异常 FAQ”。不追加英文内部枚举，也不发起第二次检索。
 	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
+		text = normalizeRuntimeTaskKnowledgeQuery(plan, text)
+		if text == runtimeNormalCheckinKnowledgeQueryText {
+			return text
+		}
 		if label := runtimeKnowledgeTopicLabelForPlan(plan); label != "" && !strings.Contains(text, label) {
 			return text + " " + label
 		}
@@ -539,8 +572,107 @@ func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 	return strings.TrimSpace(plan.Intent)
 }
 
+func normalizeRuntimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData, text string) string {
+	if isNormalCheckinKnowledgeRequest(plan.SubIntent, text) {
+		return runtimeNormalCheckinKnowledgeQueryText
+	}
+	topics := detectKnowledgeTopicClasses(text)
+	_, hasSupplyObject := topics["supplies"]
+	if isRuntimeSupplySubIntent(plan.SubIntent) || hasSupplyObject {
+		if normalized := normalizeRuntimeSpecificSupplyQuery(text); normalized != "" {
+			return normalized
+		}
+	}
+	return text
+}
+
+func isNormalCheckinKnowledgeRequest(subIntent, text string) bool {
+	if !isCheckinProcessSubIntent(subIntent) || knowledgeTextHasExceptionContext(text) {
+		return false
+	}
+	return runtimeTextHasCheckinContext(text)
+}
+
+func runtimeTextHasCheckinContext(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	return containsAny(compact, []string{"入住", "办房", "开门", "刷脸", "前台"})
+}
+
+func isRuntimeSupplySubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "supplies_self_help", "supplies", "room_supply", "room_supplies":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeRuntimeSpecificSupplyQuery 去掉用品问题中的请求语气和存在性问法，
+// 保留客户实际询问的对象。FastGPT 的 FAQ 标题通常以用品名为主，直接查对象
+// 比追加“客用品”或保留整句口语更稳定，也适用于牙刷、拖鞋、纸笔等同类问题。
+func normalizeRuntimeSpecificSupplyQuery(text string) string {
+	original := strings.TrimSpace(text)
+	value := strings.TrimSpace(strings.Trim(original, "，,。.!！?？；;、… "))
+	if value == "" {
+		return original
+	}
+	prefixes := []string{
+		"请问你们酒店有没有", "请问酒店有没有", "你们酒店有没有", "房间里有没有", "房间有没有", "酒店有没有", "这里有没有",
+		"可以给我拿点", "能不能给我拿点", "麻烦给我拿点", "能给我拿点", "帮我拿点", "给我拿点",
+		"可以给我", "能不能给我", "麻烦给我", "能给我", "我想要点", "想要点", "我想要", "帮我", "给我",
+		"麻烦问一下", "麻烦问下", "我想知道", "请问", "有没有",
+	}
+	suffixes := []string{
+		"什么的有没有", "什么的有吗", "什么的吗", "什么的么", "什么的呀", "什么的啊", "什么的",
+		"有没有啊", "有没有呀", "有没有呢", "有没有", "可以给吗", "能给吗", "给我吗", "有吗", "有么", "有不有",
+		"可以吗", "行吗", "吗", "么", "呢", "呀", "啊",
+	}
+	for {
+		previous := value
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
+				break
+			}
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(value, suffix) {
+				value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
+				break
+			}
+		}
+		value = strings.TrimSpace(strings.Trim(value, "，,。.!！?？；;、… "))
+		if value == previous {
+			break
+		}
+	}
+	compact := compactRuntimeProtocolText(value)
+	if value == "" || containsAny(compact, []string{"有哪些", "有什么", "什么用品"}) {
+		return original
+	}
+	switch compact {
+	case "用品", "客用品", "洗漱用品", "一次性用品", "东西":
+		return original
+	default:
+		return value
+	}
+}
+
 func runtimeKnowledgeTopicLabelForPlan(plan callbacks.ReplyTaskPlanTraceData) string {
 	if label := runtimeKnowledgeTopicLabel(plan.SubIntent); label != "" {
+		// 原子拆题会保留模型给整句的 subIntent。若当前子句本身已明显不是
+		// 入住问题，不能再把“入住流程”错误追加到停车、用品等子句上。
+		if label == "入住流程" && strings.TrimSpace(plan.Text) != "" && !runtimeTextHasCheckinContext(plan.Text) {
+			return ""
+		}
+		// 具体用品名称已经是更强的检索词。追加“客用品”这类宽泛分类会让
+		// FastGPT 全文检索把“草稿纸”拉向驱蚊用品、消毒用品等同类问句。
+		// 只有省略了具体对象的追问，才保留大类锚点。
+		if label == "客用品" {
+			if _, hasSpecificSupply := detectKnowledgeTopicClasses(plan.Text)["supplies"]; hasSpecificSupply {
+				return ""
+			}
+		}
 		return label
 	}
 	if strings.TrimSpace(plan.SubIntent) != "surrounding_facilities" {
@@ -613,7 +745,7 @@ func runtimeAtomicKnowledgeClauses(text string) []string {
 	parts := make([]string, 0, len(strongParts))
 	for _, strongPart := range strongParts {
 		split := []string{strongPart}
-		for _, separator := range []string{"或者", "或是", "以及", "还有", "、"} {
+		for _, separator := range []string{"或者", "或是", "以及", "还有", "和", "跟", "、"} {
 			candidate := normalizeRuntimeAtomicClauses(splitBySeparators([]string{strongPart}, []string{separator}))
 			if len(candidate) > 1 && runtimeClausesHaveDistinctTopics(candidate) {
 				split = candidate

@@ -113,6 +113,37 @@ func TestValidateReplyFactGroundingAllowsClarification(t *testing.T) {
 	}
 }
 
+func TestValidateReplyFactGroundingRejectsSpeculationAfterNoHitBoundary(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "t1", OutputMode: "clarification",
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"t1"},
+			Content:  "资料里没写，客房一般会备便签纸，你可以翻下抽屉。",
+		}}},
+	}
+	issues := validateReplyFactGrounding(input)
+	if len(issues) != 1 || issues[0].Code != "fact_ungrounded" {
+		t.Fatalf("speculation after no-hit boundary must be rejected: %+v", issues)
+	}
+}
+
+func TestValidateReplyFactGroundingAllowsBoundaryContinuation(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "t1", OutputMode: "clarification",
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"t1"},
+			Content:  "资料里没写明，当前还需要再确认一下。",
+		}}},
+	}
+	if issues := validateReplyFactGrounding(input); len(issues) != 0 {
+		t.Fatalf("a factual boundary continuation must remain valid: %+v", issues)
+	}
+}
+
 func TestValidateReplyFactGroundingSkipsGroundedTask(t *testing.T) {
 	input := ReplyValidationInput{
 		Plan: contracts.ReplyPlanV2{

@@ -55,6 +55,53 @@ func TestKnowledgeQueryNormalizesSpokenNearbyPlayTopic(t *testing.T) {
 	}
 }
 
+func TestKnowledgeQueryKeepsSpecificSupplyName(t *testing.T) {
+	tests := map[string]string{
+		"草稿纸有没有":        "草稿纸",
+		"可以给我拿点草稿纸什么的吗": "草稿纸",
+		"你们酒店有没有牙刷":     "牙刷",
+		"能不能给我拿点拖鞋啊":    "拖鞋",
+	}
+	for text, want := range tests {
+		query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+			Intent: "hotel_info", SubIntent: "supplies_self_help", Text: text,
+		})
+		if query != want {
+			t.Fatalf("specific supply query %q = %q, want %q", text, query, want)
+		}
+	}
+}
+
+func TestKnowledgeQueryNormalizesSupplyObjectAfterGenericTaskSplit(t *testing.T) {
+	query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "service_facility", Text: "草稿纸有没有",
+	})
+	if query != "草稿纸" {
+		t.Fatalf("supply object must be normalized even when the model kept a generic subIntent: %q", query)
+	}
+}
+
+func TestKnowledgeQueryUsesStableNormalCheckinProcedure(t *testing.T) {
+	normal := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "checkin_process", Text: "给我办入住",
+	})
+	if normal != runtimeNormalCheckinKnowledgeQueryText {
+		t.Fatalf("normal checkin query mismatch: %q", normal)
+	}
+	exception := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "checkin_process", Text: "手机不能用怎么办入住",
+	})
+	if exception != "手机不能用怎么办入住 入住流程" {
+		t.Fatalf("exception checkin query must preserve the customer's failure context: %q", exception)
+	}
+	foreignClause := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "checkin_process", Text: "停车场在哪里",
+	})
+	if foreignClause != "停车场在哪里" {
+		t.Fatalf("a split non-checkin clause must not inherit the checkin anchor: %q", foreignClause)
+	}
+}
+
 func TestExpandRuntimeAtomicReplyTaskPlansSplitsVoiceQuestions(t *testing.T) {
 	plans := []callbacks.ReplyTaskPlanTraceData{{
 		Sequence: 1, Intent: "hotel_info", SubIntent: "service_facility", Output: "knowledge_text_reply",
@@ -69,6 +116,20 @@ func TestExpandRuntimeAtomicReplyTaskPlansSplitsVoiceQuestions(t *testing.T) {
 	}
 	if got[0].Sequence != 1 || got[1].Sequence != 2 {
 		t.Fatalf("atomic task sequence mismatch: %#v", got)
+	}
+}
+
+func TestExpandRuntimeAtomicReplyTaskPlansSplitsDistinctConjunctionObjects(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "service_facility", Output: "knowledge_text_reply",
+		Text: "咖啡和草稿纸有没有",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 2 {
+		t.Fatalf("expected conjunction objects as two tasks, got %#v", got)
+	}
+	if got[0].Text != "咖啡" || got[1].Text != "草稿纸有没有" {
+		t.Fatalf("conjunction task text mismatch: %#v", got)
 	}
 }
 
