@@ -630,7 +630,7 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 	return TriggerAIReplySyncHook(ctx, *state.Conversation, *state.Message)
 }
 
-var errAIReplyJobExpired = errors.New("AI reply job expired after human dispatch")
+var errAIReplyJobExpired = errors.New("AI reply job expired")
 
 func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobExecutionState) error {
 	if state == nil || state.Message == nil {
@@ -766,6 +766,9 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				if err := s.markUnfinishedTasksTechnicalFailure(job, failureClass, now); err != nil {
 					return false
 				}
+				hasRunnable = AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
+				hasActiveTasks = AIReplyTurnTaskService.HasUnfinished(job.TenantID, job.TurnID) &&
+					!AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 			}
 		} else {
 			nextRetryAt := now.Add(aiReplyJobContinuationDelay)
@@ -859,23 +862,25 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 }
 
 func controlledExecutionErrorShouldRetry(err error) bool {
-	details, ok := AIReplyExecutionErrorDetailsOf(err)
-	if ok && details.RetryabilityKnown {
-		return details.Retryable
-	}
 	code, ok := AIReplyExecutionErrorCodeOf(err)
 	if !ok {
 		return false
 	}
-	// Runtime stages are technical failures by default. They must consume the
-	// existing Job retry budget before the conversation is offered to a human.
+	// Intent、Generate 和 Knowledge 的网络重试已经由九槽客户端或
+	// FastGPT Gateway 完成；协议修复也在 Runtime 内完成。Job 再跑会把
+	// 一次上游故障放大成多轮模型调用，并可能重复处理同一客户问题。
 	switch code {
 	case AIReplyExecutionErrorIntentDetectFailed,
 		AIReplyExecutionErrorGenerationFailed,
 		AIReplyExecutionErrorKnowledgeUnavailable,
 		AIReplyExecutionErrorEmptyOutput,
-		AIReplyExecutionErrorResourceInvariantBroken,
-		AIReplyExecutionErrorCommitFailed:
+		AIReplyExecutionErrorResourceInvariantBroken:
+		return false
+	case AIReplyExecutionErrorCommitFailed:
+		details, detailsOK := AIReplyExecutionErrorDetailsOf(err)
+		if detailsOK && details.RetryabilityKnown {
+			return details.Retryable
+		}
 		return true
 	default:
 		return false
@@ -992,7 +997,7 @@ func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIRe
 		}
 		if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(sqls.DB(), &models.AIReplyTurn{
 			ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID, SessionNo: job.SessionNo,
-		}, task.TaskKey, failureClass, 0, now); err != nil {
+		}, task.TaskKey, failureClass, 1, now); err != nil {
 			return err
 		}
 	}

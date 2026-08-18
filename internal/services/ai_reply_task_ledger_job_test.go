@@ -300,7 +300,7 @@ func TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "turn_tasks_remaining" || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%+v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 	stored := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
@@ -311,9 +311,9 @@ func TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge(t *t
 		stored[0].ClaimedByJobID != 0 || stored[0].NextRetryAt != nil || stored[0].FailureClass != string(FailureKnowledge) {
 		t.Fatalf("failed knowledge task should be technical terminal: %+v", stored[0])
 	}
-	if stored[1].Status != enums.AIReplyTurnTaskStatusPending || stored[1].KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusHit ||
+	if stored[1].Status != enums.AIReplyTurnTaskStatusFailed || stored[1].KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusHit ||
 		stored[1].ClaimedByJobID != 0 || stored[1].CommittedMessageID != 0 || stored[1].NextRetryAt != nil {
-		t.Fatalf("knowledge-hit task should wait for generation without retry timer: %+v", stored[1])
+		t.Fatalf("knowledge-hit task should stop after generation retry budget is exhausted: %+v", stored[1])
 	}
 
 	if _, err := fixture.service.ProcessMessageNow(fixture.message.ID); err != nil {

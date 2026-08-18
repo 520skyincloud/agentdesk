@@ -543,7 +543,7 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *testing.T) {
+func TestAIReplyJobControlledModelFailureStopsWithoutJobRetry(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
@@ -558,66 +558,39 @@ func TestAIReplyJobControlledModelFailureDispatchesOnceWithoutRuntimeRetry(t *te
 		dispatchCalls.Add(1)
 		return nil
 	}
-	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
-		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
-		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
-			current.LastErrorClass != "generation_failed" || dispatchCalls.Load() != 0 {
-			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
-		}
-	}
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || runtimeCalls.Load() != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 
-func TestAIReplyJobFailedDispatchRetriesDispatchOnly(t *testing.T) {
+func TestAIReplyJobRetryableModelTimeoutStillStopsAfterSlotRetries(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
 		runtimeCalls.Add(1)
 		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
-			AIReplyExecutionErrorGenerationFailed,
-			errors.New("upstream retries exhausted"),
+			AIReplyExecutionErrorIntentDetectFailed,
+			context.DeadlineExceeded,
 		)
 	})
 	var dispatchCalls atomic.Int32
 	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
-		if dispatchCalls.Add(1) == 1 {
-			return errors.New("dispatch unavailable")
-		}
+		dispatchCalls.Add(1)
 		return nil
 	}
-	for attempt := 0; attempt < len(aiReplyJobRetryDelays); attempt++ {
-		makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
-		current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != attempt+1 ||
-			runtimeCalls.Load() != int32(attempt+1) || dispatchCalls.Load() != 0 {
-			t.Fatalf("attempt=%d job=%#v runtimeCalls=%d dispatchCalls=%d", attempt+1, current, runtimeCalls.Load(), dispatchCalls.Load())
-		}
-	}
-
-	// 契约 22.16：generation_failed 属技术失败，耗尽预算后进入确定性终态，
-	// 不再触发人工派单，也不进入 human_dispatch_retry 循环。
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != aiReplyJobMaxAttempts || dispatchCalls.Load() != 0 {
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
