@@ -20,3 +20,8 @@
 ## 回滚
 
 `ln -sfn /opt/agentdesk/releases/20260815-takeover-responsive-726b0f3 /opt/agentdesk/current && systemctl restart agentdesk`
+
+
+## 追加修复 831505b（2026-08-18 13:2x）
+
+生产回归：行李寄存类问题命中正确 FAQ（top1 0.79 分）却被判 no_hit、回复"资料里没写明"。根因：`runtimeKnowledgeStatus` 额外要求 ContextText 展示缓存非空；高并发重试下该缓存偶发为空。修复：Hits 即证据本体，不再依赖 ContextText。同时清理了 5,599 条卡在 pending 的检索 checkpoint。部署：`20260818-hitfix-831505b`（SHA256 `e5e750f7…`）。
