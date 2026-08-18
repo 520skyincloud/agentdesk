@@ -35,3 +35,8 @@
 ## 追加 18b7fab（2026-08-18 14:0x）：并入 7 月金标意图纪律
 
 从 `codex/ai-billing` 7/11-12 链路（`f2d2da4` 的 `internal/pkg/replyintent/defaults.go`）提取五条纪律合入 V2 意图指令：办入住双任务（知识+小程序）、primaryIntent 聚合优先级、资源动作禁默认补齐、interaction 否定项（不查知识/不取变量/不转人工）、办入住禁归 service_request/human。部署 `20260818-golddisc-18b7fab`（SHA256 `10680273…`）。回复口吻基础指令经比对与金标逐字一致，无需改动。
+
+
+## 追加 2a0dd13（2026-08-18 15:1x）：checkpoint 缓存投毒根治
+
+最终病根：执行器 checkpoint 行不携带命中（检索器另写明细行），复用从空行取内容，把"0 命中"缓存成 succeeded 终态——同一问法（如"行李放哪"）被永久 no_hit。修复：复用时按 query_key 回落到带命中（hit_count>0）的最新明细行取快照；空 succeeded 缓存视为未命中强制重查。部署 `20260818-hydrfix-2a0dd13`（SHA256 `2217c66c…`），并清理 160 行投毒空缓存、5 行带命中 pending 转正。
