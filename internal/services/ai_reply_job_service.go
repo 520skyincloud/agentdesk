@@ -651,6 +651,36 @@ func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobE
 
 func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error) {
 	now := time.Now()
+	// 任何 Task 状态写入前先重新检查轮次所有权。客户新消息会提升 Turn Version
+	// 并取消旧 Context；旧 Job 即使稍后才从模型调用返回，也只能结束自己，绝不能
+	// 把新版本仍要处理的 Task 写成 failed/handoff。
+	if _, decision := s.inspectExecutionState(job, true); decision != nil {
+		switch decision.Status {
+		case enums.AIReplyJobStatusSkipped, enums.AIReplyJobStatusSuperseded:
+			s.markTerminalWithCoverage(job, owner, decision.Status, decision.Code, "", decision.CoveredByMessageID, decision.CoveredByTaskID, now)
+			return
+		case enums.AIReplyJobStatusFailed:
+			s.markTerminal(job, owner, decision.Status, decision.Code, "scope_invalid", now)
+			return
+		}
+	}
+	if result.Status == AIReplyExecutionStatusSuperseded || errors.Is(runErr, context.Canceled) {
+		reason := controlledResultCode(result.ReasonCode, "runtime_cancelled")
+		s.markTerminalWithCoverage(job, owner, enums.AIReplyJobStatusSuperseded, reason, "", result.CoveredByMessageID, result.CoveredByTaskID, now)
+		return
+	}
+	if runErr == nil && result.Status == AIReplyExecutionStatusSkipped {
+		if result.TaskLedgerEnabled {
+			_ = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+				return AIReplyTurnTaskService.SkipNonTerminalBySourceMessageDB(
+					ctx.Tx, job.TenantID, job.ConversationID, job.MessageID,
+					controlledResultCode(result.ReasonCode, "runtime_skipped"), now,
+				)
+			})
+		}
+		s.markTerminal(job, owner, enums.AIReplyJobStatusSkipped, controlledResultCode(result.ReasonCode, "runtime_skipped"), "", now)
+		return
+	}
 	if s.finishTaskLedgerOutcome(job, owner, result, runErr, now) {
 		return
 	}
@@ -754,6 +784,11 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 			failureClass := classifyTaskFailure(runErr)
 			if failureClassAllowsHumanHandoff(failureClass) {
 				if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+					if len(result.TaskKeys) > 0 {
+						return AIReplyTurnTaskService.MarkHandoffPendingDB(
+							ctx.Tx, job.TenantID, job.TurnID, job.ID, result.TaskKeys, failureClass, now,
+						)
+					}
 					return AIReplyTurnTaskService.MarkUnfinishedHandoffPendingDB(
 						ctx.Tx, job.TenantID, job.TurnID, job.ID, failureClass, now,
 					)
@@ -763,7 +798,14 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 			} else {
 				// 契约 22.16：技术失败走 Task 技术终态，不进入 handoff_pending。
-				if err := s.markUnfinishedTasksTechnicalFailure(job, failureClass, now); err != nil {
+				if err := s.markUnfinishedTasksTechnicalFailure(job, result.TaskKeys, failureClass, now); err != nil {
+					return false
+				}
+				// 当前批次里未失败的 Task 仍可能处于 running/claimed。把它们释放回
+				// pending，下面的 continuation 才能继续处理，不能随失败 Job 一起悬空。
+				if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+					return AIReplyTurnTaskService.ReleaseJobClaimsDB(ctx.Tx, job.TenantID, job.TurnID, job.ID, now)
+				}); err != nil {
 					return false
 				}
 				hasRunnable = AIReplyTurnTaskService.HasRunnable(job.TenantID, job.TurnID)
@@ -988,11 +1030,27 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 
 // markUnfinishedTasksTechnicalFailure 把未完成 Task 逐个标记为技术终态
 // failed（FailureClass=technical），不创建 handoff_pending。
-func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIReplyJob, failureClass string, now time.Time) error {
+func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIReplyJob, taskKeys []string, failureClass string, now time.Time) error {
+	selected := make(map[string]struct{}, len(taskKeys))
+	for _, taskKey := range taskKeys {
+		if taskKey = strings.TrimSpace(taskKey); taskKey != "" {
+			selected[taskKey] = struct{}{}
+		}
+	}
 	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID)
 	for index := range tasks {
 		task := &tasks[index]
 		if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || aiReplyTurnTaskTerminal(task.Status) {
+			continue
+		}
+		if len(selected) > 0 {
+			if _, ok := selected[task.TaskKey]; !ok {
+				continue
+			}
+		} else if task.ClaimedByJobID != job.ID || task.ClaimedVersion != job.TurnVersion {
+			continue
+		}
+		if task.ClaimedByJobID != 0 && task.ClaimedByJobID != job.ID {
 			continue
 		}
 		if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(sqls.DB(), &models.AIReplyTurn{

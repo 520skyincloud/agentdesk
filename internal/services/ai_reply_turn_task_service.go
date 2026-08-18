@@ -465,14 +465,10 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		claimedByJobID := task.ClaimedByJobID
 		claimedVersion := task.ClaimedVersion
 		var nextRetryAt *time.Time
-		if update.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-			// FastGPT Gateway 已经拥有唯一的网络重试预算。任务层不再把一次
-			// gateway 失败放大成多轮检索，更不能把技术失败改写为转人工。
-			status = enums.AIReplyTurnTaskStatusFailed
-			stage = enums.AIReplyTurnTaskStageComplete
-			claimedByJobID = 0
-			claimedVersion = 0
-		}
+		// FastGPT Gateway 已经拥有唯一的网络重试预算。检索耗尽只表示本任务
+		// 当前没有可用知识，不等于整项任务失败：任务继续进入 Generate，由
+		// ReplyPlan 生成受约束澄清。这样单个知识源故障不会拖死同轮其他问题，
+		// 也不会被任务层再次检索或直接改写为人工接管。
 		updatesMap := map[string]any{
 			"knowledge_status":    update.Status,
 			"knowledge_hit_count": max(update.HitCount, 0),
@@ -482,13 +478,10 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 			"claimed_version":     claimedVersion,
 			"attempt_count":       gorm.Expr("attempt_count + 1"),
 			"result_code":         controlledResultCode(update.ResultCode, string(update.Status)),
-			"failure_class":       gorm.Expr("CASE WHEN ? = ? THEN ? ELSE failure_class END", update.Status, enums.AIReplyTurnTaskKnowledgeStatusFailed, string(FailureKnowledge)),
+			"failure_class":       gorm.Expr("CASE WHEN ? = ? THEN ? ELSE '' END", update.Status, enums.AIReplyTurnTaskKnowledgeStatusFailed, string(FailureKnowledge)),
 			"next_retry_at":       nextRetryAt,
 			"updated_at":          now,
 			"update_user_name":    "ai_reply_knowledge",
-		}
-		if status == enums.AIReplyTurnTaskStatusFailed {
-			updatesMap["completed_at"] = now
 		}
 		// 契约 4.17：只在真实取得日志时写入，不覆盖重试前已绑定的 checkpoint。
 		if update.RetrieveLogID > 0 {
@@ -635,6 +628,26 @@ func (s *aiReplyTurnTaskService) HasUnfinishedDB(db *gorm.DB, tenantID, turnID i
 		return false
 	}
 	return repositories.AIReplyTurnTaskRepository.CountUnfinishedByTurnInTenant(db, tenantID, turnID) > 0
+}
+
+func (s *aiReplyTurnTaskService) TerminalOutcomeDB(db *gorm.DB, tenantID, turnID int64) (allTerminal bool, hasFailed bool) {
+	if db == nil || tenantID <= 0 || turnID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+		return false, false
+	}
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, tenantID, turnID)
+	if len(tasks) == 0 {
+		return false, false
+	}
+	allTerminal = true
+	for _, task := range tasks {
+		if task.Status == enums.AIReplyTurnTaskStatusFailed {
+			hasFailed = true
+		}
+		if !aiReplyTurnTaskTerminal(task.Status) {
+			allTerminal = false
+		}
+	}
+	return allTerminal, hasFailed
 }
 
 func (s *aiReplyTurnTaskService) HasRunnable(tenantID, turnID int64) bool {
@@ -1093,8 +1106,9 @@ func (s *aiReplyTurnTaskService) MarkTechnicalFailureDB(
 		maxAttempts = aiReplyJobMaxAttempts
 	}
 	nextAttempt := task.AttemptCount + 1
+	normalizedFailureClass := string(NormalizeAIReplyFailureClass(failureClass))
 	updates := map[string]any{
-		"failure_class":     limitText(strings.TrimSpace(failureClass), 40),
+		"failure_class":     gorm.Expr("CASE WHEN failure_class <> '' THEN failure_class ELSE ? END", limitText(normalizedFailureClass, 40)),
 		"attempt_count":     gorm.Expr("attempt_count + 1"),
 		"claimed_by_job_id": 0,
 		"claimed_version":   0,

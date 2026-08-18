@@ -209,9 +209,8 @@ func buildRuntimeIntentProtocolFallback(req RunInput, configs []models.ReplyInte
 	case explicitCheckinKnowledgeRequest(text) && runtimeIntentConfigEnabled(configs, "hotel_info"):
 		setTask("hotel_info", "checkin_process", "question")
 		intent.NeedsKnowledge = true
-		if runtimeIntentConfigEnabled(configs, "hotel_variable") {
-			intent = ensureCheckinProcessMiniProgramTask(intent, req)
-		}
+		intent = ensureCheckinProcessKnowledgeTask(intent, req)
+		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
 	case explicitCurrentHotelResourceRequest(text, "phone") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
 		setTask("hotel_variable", "phone", "request_action")
 		applyRuntimeProtocolFallbackResource(&intent, "provide_phone")
@@ -258,8 +257,8 @@ func explicitCheckinKnowledgeRequest(text string) bool {
 		return false
 	}
 	return containsAny(compact, []string{
-		"办理入住", "怎么入住", "咋入住", "怎么办入住", "入住怎么办", "入住怎么弄",
-		"如何入住", "入住流程", "入住步骤", "我想入住", "我要入住", "入住",
+		"办理入住", "办入住", "怎么入住", "咋入住", "怎么办入住", "入住怎么办", "入住怎么弄",
+		"如何入住", "入住流程", "入住步骤",
 	})
 }
 
@@ -390,8 +389,8 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"【多任务】当前消息有多个问题或动作时，intentTasks 必须逐项拆分、按用户原顺序排列；不能只输出主意图或最后一句。",
 		"【task.text 纪律】intentTasks[].text 必须只写该任务对应的原话子句（如“怎么把门打开”“附近有什么好玩的”），禁止把整句原文复制到每个任务；整句包含多个主题时，必须按主题拆成多个 text，每个 text 只承载一个主题，否则知识检索会错配到别的主题。",
 		"【subIntent 纪律】subIntent 写具体业务子意图，不要空泛写 store_knowledge。hotel_info 常用：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、surrounding_facilities、discount。human_complaint_risk 常用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。",
-		"【办入住双任务·金标】客户说“我要办入住/我想办入住/怎么入住/入住怎么弄/给我办入住”时，必须按顺序输出两个任务：hotel_info/checkin_process（needsKnowledge 语义，知识先回答自助办理步骤）+ hotel_variable/mini_program（资源任务，小程序由 Commit 阶段另行发送）。主意图保持 hotel_info。只有客户只说“入住小程序发我/办理入住的小程序发我”且没问步骤时，才只输出 mini_program 单任务。禁止把办入住整体归 service_request 或 human_complaint_risk。",
-		"【顶层聚合·金标】primaryIntent 按以下优先级确定：存在 human_complaint_risk 任务→human_complaint_risk；办入住双任务→hotel_info；存在 hotel_variable 任务→hotel_variable；否则按用户原顺序第一个业务任务；没有业务任务→interaction。忽略只表达语气的 interaction 任务。",
+		"【办入住·金标】客户说“我要办入住/我想办入住/怎么入住/入住怎么弄/给我办入住”时，只输出 hotel_info/checkin_process，完整回答办理流程。服务器会按当前门店真实配置决定是否另发入住小程序，模型不得默认补出资源任务。只有客户明确只索要“入住小程序/办理入住入口”且没有询问步骤时，才输出 hotel_variable/mini_program。禁止把办入住整体归 service_request 或 human_complaint_risk。",
+		"【顶层聚合·金标】primaryIntent 按以下优先级确定：存在 human_complaint_risk 任务→human_complaint_risk；入住流程任务→hotel_info；存在客户明确索要的 hotel_variable 任务→hotel_variable；否则按用户原顺序第一个业务任务；没有业务任务→interaction。忽略只表达语气的 interaction 任务。",
 		"【资源动作纪律·金标】本轮资源动作只来自客户明确索要的 hotel_variable 任务（电话/定位/小程序），禁止默认补齐任何变量，禁止把电话、定位、小程序当兜底一起输出。",
 		"【interaction 否定项】interaction 任务不查知识、不取变量、不转人工；不明确时只追问一个关键点。",
 	}
@@ -667,6 +666,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsHumanRoute = false
 	}
 	intent.IntentTasks = normalizeRuntimeIntentTasks(intent.IntentTasks)
+	intent = normalizeStoreIdentityQuestionIntent(intent, req)
 	intent = deriveModelIntentFromTasks(intent)
 	if intentHasHotelVariableTask(intent) {
 		intent.ResourceActions = normalizeHotelVariableResourceActions(intent.ResourceActions, intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
@@ -741,10 +741,12 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsClarification = false
 		intent.NeedsKnowledge = true
 		intent.Reason = appendIntentReason(intent.Reason, "deterministic checkin rule")
+		intent = ensureCheckinProcessKnowledgeTask(intent, req)
 		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
 	}
 	if shouldAttachCheckinMiniProgramTask(intent) {
-		intent = ensureCheckinProcessMiniProgramTask(intent, req)
+		intent = ensureCheckinProcessKnowledgeTask(intent, req)
+		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
 	}
 	if len(intent.ResourceActions) > 0 && intent.PrimaryIntent != "human_complaint_risk" {
 		intent.NeedsResource = true
@@ -775,19 +777,79 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 	return intent
 }
 
+// normalizeStoreIdentityQuestionIntent 纠正一类稳定的分类偏差：客户是在确认
+// “当前是哪家酒店/公寓”，不是在陈述一个门店事实，也不是普通闲聊。该类任务
+// 统一归 hotel_info/store_identity，后续只读取 Store 权威名称，不依赖客户口述
+// 或历史 AI 回复。规则按问题类型判断，不绑定任何具体门店名。
+func normalizeStoreIdentityQuestionIntent(intent callbacks.IntentTraceData, req RunInput) callbacks.IntentTraceData {
+	currentText := runtimeUserMessageText(req.UserMessage)
+	if !explicitStoreIdentityQuestion(currentText) {
+		return intent
+	}
+	matched := false
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		if !explicitStoreIdentityQuestion(task.Text) && !(len(intent.IntentTasks) == 1 && !hasMixedCustomerRequests(currentText)) {
+			continue
+		}
+		task.Intent = "hotel_info"
+		task.SubIntent = "store_identity"
+		task.NeedsKnowledge = true
+		task.NeedsResource = false
+		task.NeedsTool = false
+		task.NeedsHumanRoute = false
+		task.ResourceAction = ""
+		if strings.TrimSpace(task.Text) == "" {
+			task.Text = currentText
+		}
+		if strings.TrimSpace(task.RequestMode) == "" {
+			task.RequestMode = "question"
+		}
+		task.Reason = appendIntentReason(task.Reason, "store identity question uses authoritative store fact")
+		matched = true
+	}
+	if !matched && !hasMixedCustomerRequests(currentText) {
+		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "hotel_info", SubIntent: "store_identity", Text: currentText,
+			RequestMode: "question", Confidence: max(intent.IntentConfidence, 0.8), NeedsKnowledge: true,
+			Reason: "store identity question uses authoritative store fact",
+		}}
+	}
+	intent.NeedsClarification = false
+	intent.Reason = appendIntentReason(intent.Reason, "store identity normalized from current question")
+	return intent
+}
+
+func explicitStoreIdentityQuestion(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" {
+		return false
+	}
+	if containsAny(compact, []string{
+		"酒店叫什么", "酒店名字", "酒店名称", "门店叫什么", "门店名字", "门店名称",
+		"店名是什么", "这里叫什么", "这是什么酒店", "你们叫什么", "你们酒店名",
+	}) {
+		return true
+	}
+	if !containsAny(compact, []string{"酒店", "公寓", "宾馆", "旅店", "民宿"}) {
+		return false
+	}
+	if strings.HasSuffix(compact, "吗") || strings.HasSuffix(compact, "么") || strings.Contains(compact, "是不是") {
+		return true
+	}
+	return strings.ContainsAny(text, "?？") && containsAny(compact, []string{
+		"这里是", "这是", "你们是", "本店是", "我订的是", "名字是", "名称是", "叫",
+	})
+}
+
 // hasMixedCustomerRequests 判别一句话里是否叠加了多个诉求（定位+小程序+问答等）。
 // 直发规则只接管“单一聚焦请求”，混合轮次必须保留完整任务分解。
 func hasMixedCustomerRequests(rawText string) bool {
 	return strings.ContainsAny(rawText, "，,；;") || containsAny(compactRuntimeProtocolText(rawText), []string{"还要", "再发", "再帮", "顺便", "还有", "也发", "也帮"})
 }
 
-// applyDeterministicHotelDirectResources 在所有既有归一化规则之后兜底两条
-// 直发链路（生产回归 2026-08-18：模型把这些请求归成 hotel_info 后无规则纠正）：
-//  1. 办入住执行意愿 → e秒安心住小程序直发（前台入住是自助流程，AI/客服都无法
-//     在会话里代客执行，正确回复是自助流程入口）。
-//  2. 当前酒店定位/地址请求 → 位置卡片直发。
-//
-// 两类请求都不进知识检索，避免被"转接"类 FAQ 内容提升为人工确认。
+// applyDeterministicHotelDirectResources 在既有归一化之后兜底当前酒店定位卡片。
+// 入住流程始终进入知识任务；是否附加小程序由真实门店配置在后续服务器规则中决定。
 func applyDeterministicHotelDirectResources(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
 	if intent.PrimaryIntent == "human_complaint_risk" || !runtimeIntentConfigEnabled(configs, "hotel_variable") {
 		return intent
@@ -849,14 +911,47 @@ func explicitHotelLocationCardRequest(text string) bool {
 }
 
 func ensureCheckinProcessMiniProgramTaskIfConfigured(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
-	if !runtimeIntentConfigEnabled(configs, "hotel_variable") {
-		intent.NeedsResource = false
-		intent.ResourceActions = nil
+	if !runtimeIntentConfigEnabled(configs, "hotel_variable") || !runtimeCheckinMiniProgramAvailable(req) {
+		return removeCheckinMiniProgramTask(intent)
+	}
+	return ensureCheckinProcessMiniProgramTask(intent)
+}
+
+func runtimeCheckinMiniProgramAvailable(req RunInput) bool {
+	instance := findRuntimeWxWorkInstance(req)
+	if instance == nil || strings.TrimSpace(instance.DefaultMiniProgramPayload) == "" {
+		return false
+	}
+	_, _, err := services.WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance)
+	return err == nil
+}
+
+func removeCheckinMiniProgramTask(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	tasks := make([]callbacks.IntentTaskTraceData, 0, len(intent.IntentTasks))
+	for _, task := range intent.IntentTasks {
+		if task.Intent == "hotel_variable" && strings.TrimSpace(task.ResourceAction) == "provide_mini_program" {
+			continue
+		}
+		tasks = append(tasks, task)
+	}
+	intent.IntentTasks = tasks
+	resources := make([]string, 0, len(intent.ResourceActions))
+	for _, action := range intent.ResourceActions {
+		if strings.TrimSpace(action) != "provide_mini_program" {
+			resources = append(resources, action)
+		}
+	}
+	intent.ResourceActions = resources
+	if strings.TrimSpace(intent.ResourceAction) == "provide_mini_program" {
 		intent.ResourceAction = ""
 		intent.ResourceType = ""
-		return intent
+		if len(resources) > 0 {
+			intent.ResourceAction = resources[0]
+			intent.ResourceType = hotelVariableResourceTypeFromAction(resources[0])
+		}
 	}
-	return ensureCheckinProcessMiniProgramTask(intent, req)
+	intent.NeedsResource = len(resources) > 0
+	return intent
 }
 
 func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
@@ -1036,13 +1131,8 @@ func isCheckinProcessSubIntent(subIntent string) bool {
 	}
 }
 
-func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req RunInput) callbacks.IntentTraceData {
+func ensureCheckinProcessKnowledgeTask(intent callbacks.IntentTraceData, req RunInput) callbacks.IntentTraceData {
 	intent.NeedsKnowledge = true
-	intent.NeedsResource = true
-	intent.ResourceActions = normalizeHotelVariableResourceActions(append(intent.ResourceActions, "provide_mini_program"), intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
-	if strings.TrimSpace(intent.ResourceAction) == "" {
-		intent.ResourceAction = "provide_mini_program"
-	}
 	if strings.TrimSpace(intent.SubIntent) == "" || intent.SubIntent == "check_in" || intent.SubIntent == "checkin" {
 		intent.SubIntent = "checkin_process"
 	}
@@ -1051,7 +1141,6 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 		currentText = "办理入住"
 	}
 	hasKnowledgeTask := false
-	hasMiniProgramTask := false
 	for i := range intent.IntentTasks {
 		if intent.IntentTasks[i].Intent == "hotel_info" && isCheckinProcessSubIntent(intent.IntentTasks[i].SubIntent) {
 			intent.IntentTasks[i].SubIntent = "checkin_process"
@@ -1060,14 +1149,6 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 				intent.IntentTasks[i].Text = currentText
 			}
 			hasKnowledgeTask = true
-		}
-		if intent.IntentTasks[i].Intent == "hotel_variable" && strings.TrimSpace(intent.IntentTasks[i].ResourceAction) == "provide_mini_program" {
-			intent.IntentTasks[i].SubIntent = "mini_program"
-			intent.IntentTasks[i].NeedsResource = true
-			if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
-				intent.IntentTasks[i].Text = "发送入住小程序入口"
-			}
-			hasMiniProgramTask = true
 		}
 	}
 	if !hasKnowledgeTask {
@@ -1078,6 +1159,28 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 			NeedsKnowledge: true,
 			Reason:         "checkin process needs knowledge tutorial",
 		}}, intent.IntentTasks...)
+	}
+	intent.Reason = appendIntentReason(intent.Reason, "checkin_process requires knowledge tutorial")
+	return intent
+}
+
+func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	intent.NeedsResource = true
+	intent.ResourceActions = normalizeHotelVariableResourceActions(append(intent.ResourceActions, "provide_mini_program"), intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
+	if strings.TrimSpace(intent.ResourceAction) == "" {
+		intent.ResourceAction = "provide_mini_program"
+	}
+	hasMiniProgramTask := false
+	for i := range intent.IntentTasks {
+		if intent.IntentTasks[i].Intent != "hotel_variable" || strings.TrimSpace(intent.IntentTasks[i].ResourceAction) != "provide_mini_program" {
+			continue
+		}
+		intent.IntentTasks[i].SubIntent = "mini_program"
+		intent.IntentTasks[i].NeedsResource = true
+		if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
+			intent.IntentTasks[i].Text = "发送入住小程序入口"
+		}
+		hasMiniProgramTask = true
 	}
 	if !hasMiniProgramTask {
 		intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{

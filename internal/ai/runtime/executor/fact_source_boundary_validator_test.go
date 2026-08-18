@@ -48,8 +48,8 @@ func TestFactSourceBoundaryRejectsForeignAddress(t *testing.T) {
 	// 生产故障复现：点外卖回复了客户 OCR 里的“壹间公寓高新社区”。
 	input := addressBoundaryInput("order_food_delivery", "外卖得你自己下单，你填壹间公寓高新社区这个地址。", "合肥市包河区水阳江路392号职工之家12-15整层")
 	result := NewReplyValidator().Validate(input)
-	if result.Status != "rejected" {
-		t.Fatalf("expected rejected for foreign address, got %s", result.Status)
+	if result.Status != "repairable_protocol_error" {
+		t.Fatalf("expected one repair opportunity for foreign address when authoritative fact exists, got %s", result.Status)
 	}
 	found := false
 	for _, issue := range result.Errors {
@@ -59,6 +59,20 @@ func TestFactSourceBoundaryRejectsForeignAddress(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected protected_fact_source_violation, got %+v", result.Errors)
+	}
+}
+
+func TestFactSourceBoundaryAllowsQuestionAndNegativeCorrection(t *testing.T) {
+	for _, content := range []string{
+		"您问的是壹间公寓吗？这里是合肥南七店。",
+		"这里不是壹间公寓，这里是合肥南七店。",
+	} {
+		if placeNameMentionIsNonAssertive(content, "壹间公寓") != true {
+			t.Fatalf("question or correction must not be treated as a store assertion: %q", content)
+		}
+	}
+	if placeNameMentionIsNonAssertive("外卖地址填壹间公寓就行。", "壹间公寓") {
+		t.Fatal("positive instruction must remain an asserted foreign place name")
 	}
 }
 

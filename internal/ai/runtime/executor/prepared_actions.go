@@ -127,7 +127,7 @@ func buildPreparedRuntimeAction(
 	// 防止 ActionLedger 构建与 Prepare 之间规则漂移；拒绝即 resource invariant broken。
 	if action.ActionType == "send_knowledge_image" && gateEnabled(gateResourceEligibility, req) {
 		for _, task := range plan.Tasks {
-			if task.TaskKey == action.TaskKey && isAddressTextSubIntent(task.SubIntent) {
+			if task.TaskKey == action.TaskKey && taskRequestsStoreAddress(task.SubIntent, task.Objective) {
 				return contracts.PreparedActionV1{}, fmt.Errorf("resource eligibility invariant broken: address text task %s must not send images", action.TaskKey)
 			}
 		}

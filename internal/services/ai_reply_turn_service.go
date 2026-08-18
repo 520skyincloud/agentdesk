@@ -115,7 +115,8 @@ func (s *aiReplyTurnService) AssignCustomerMessageDB(db *gorm.DB, conversation *
 	created := false
 	activeJobID := int64(0)
 	if !attach {
-		if current != nil && current.Status != enums.AIReplyTurnStatusInterrupted && current.Status != enums.AIReplyTurnStatusClosed {
+		if current != nil && current.Status != enums.AIReplyTurnStatusInterrupted && current.Status != enums.AIReplyTurnStatusClosed &&
+			current.Status != enums.AIReplyTurnStatusFailed {
 			if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, current.ID, current.TenantID, map[string]any{
 				"status":           enums.AIReplyTurnStatusClosed,
 				"terminal_reason":  "new_customer_turn",
@@ -262,6 +263,8 @@ func (s *aiReplyTurnService) ReleaseJobLeaseDB(db *gorm.DB, job *models.AIReplyJ
 		}
 	}
 	status := turn.Status
+	terminalReason := turn.TerminalReason
+	completedAt := turn.CompletedAt
 	if status == enums.AIReplyTurnStatusRunning {
 		if AIReplyTurnTaskService.HasUnfinishedDB(db, turn.TenantID, turn.ID) {
 			status = enums.AIReplyTurnStatusOpen
@@ -270,11 +273,25 @@ func (s *aiReplyTurnService) ReleaseJobLeaseDB(db *gorm.DB, job *models.AIReplyJ
 		} else if turn.LastCommittedVersion > 0 {
 			status = enums.AIReplyTurnStatusCommitted
 		} else {
-			status = enums.AIReplyTurnStatusOpen
+			allTerminal, hasFailed := AIReplyTurnTaskService.TerminalOutcomeDB(db, turn.TenantID, turn.ID)
+			switch {
+			case allTerminal && hasFailed:
+				status = enums.AIReplyTurnStatusFailed
+				terminalReason = "task_failure_terminal"
+				completedAt = &now
+			case allTerminal:
+				status = enums.AIReplyTurnStatusClosed
+				terminalReason = "tasks_terminal_without_reply"
+				completedAt = &now
+			default:
+				status = enums.AIReplyTurnStatusOpen
+			}
 		}
 	}
 	return repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, map[string]any{
 		"status":           status,
+		"terminal_reason":  terminalReason,
+		"completed_at":     completedAt,
 		"active_job_id":    0,
 		"lease_owner":      "",
 		"lease_expires_at": nil,

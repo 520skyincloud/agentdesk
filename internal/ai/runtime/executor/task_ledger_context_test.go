@@ -55,7 +55,7 @@ func TestBuildRuntimeTaskInputsMapsSeparateMessagesAndLabelsExactDuplicate(t *te
 		{Intent: "hotel_info", SubIntent: "service_facility", Text: "有咖啡吗", Output: "knowledge_text_reply"},
 		{Intent: "hotel_info", SubIntent: "parking", Text: "停车场在哪里", Output: "knowledge_text_reply"},
 	}
-	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 14, messages)
+	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 14, messages, 1, 2)
 	if err != nil {
 		t.Fatalf("build runtime task inputs: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestBuildRuntimeTaskInputsMapsSeparateMessagesAndLabelsExactDuplicate(t *te
 	}
 	duplicateKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[3])
 	duplicatePlan, ok := plannedByKey[duplicateKey]
-	if !ok || duplicatePlan.Text != "有咖啡吗。" || duplicatePlan.Intent != "hotel_info" {
+	if !ok || normalizeRuntimeTaskText(duplicatePlan.Text) != normalizeRuntimeTaskText("有咖啡吗。") || duplicatePlan.Intent != "hotel_info" {
 		t.Fatalf("duplicate source was not assigned a stable task plan: %#v", duplicatePlan)
 	}
 	if services.AIReplyTurnTaskService.QuestionFingerprint(inputs[1].QuestionText) != services.AIReplyTurnTaskService.QuestionFingerprint(inputs[3].QuestionText) {
@@ -86,7 +86,7 @@ func TestBuildRuntimeTaskInputsSkipsPunctuationOnlyPlan(t *testing.T) {
 		{Intent: "hotel_info", SubIntent: "checkin_process", Text: "怎么办理入住", Output: "knowledge_text_reply"},
 		{Intent: "interaction", SubIntent: "chat", Text: "？？？", Output: "text_reply"},
 	}
-	inputs, _, err := buildRuntimeTaskInputs(plans, 22, messages)
+	inputs, _, err := buildRuntimeTaskInputs(plans, 22, messages, 1, 2)
 	if err != nil {
 		t.Fatalf("build runtime task inputs: %v", err)
 	}
@@ -95,6 +95,36 @@ func TestBuildRuntimeTaskInputsSkipsPunctuationOnlyPlan(t *testing.T) {
 	}
 	if inputs[0].SourceMessageID != 21 {
 		t.Fatalf("expected source=21, got %d", inputs[0].SourceMessageID)
+	}
+}
+
+func TestBuildRuntimeTaskInputsKeepsMultipleQuestionsOnSameMessage(t *testing.T) {
+	messages := []models.Message{{
+		ID: 41, MessageType: enums.IMMessageTypeText,
+		Content: "咖啡在哪里，停车场怎么走？",
+	}}
+	plans := []callbacks.ReplyTaskPlanTraceData{
+		{Sequence: 1, Intent: "hotel_info", SubIntent: "coffee", Text: "咖啡在哪里", Output: "knowledge_text_reply"},
+		{Sequence: 2, Intent: "hotel_info", SubIntent: "parking", Text: "停车场怎么走", Output: "knowledge_text_reply"},
+	}
+	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 41, messages, 9, 10)
+	if err != nil {
+		t.Fatalf("build runtime task inputs: %v", err)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("expected two tasks for one source message, got %#v", inputs)
+	}
+	if inputs[0].SourceMessageID != 41 || inputs[1].SourceMessageID != 41 {
+		t.Fatalf("both tasks must bind the same source message: %#v", inputs)
+	}
+	if len(plannedByKey) != 2 {
+		t.Fatalf("both scoped task keys must preserve their original plans: %#v", plannedByKey)
+	}
+	for _, input := range inputs {
+		key := services.AIReplyTurnTaskService.StableTaskKey(input)
+		if _, ok := plannedByKey[key]; !ok {
+			t.Fatalf("persisted task key %q lost its original plan", key)
+		}
 	}
 }
 

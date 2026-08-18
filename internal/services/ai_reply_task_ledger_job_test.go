@@ -315,12 +315,59 @@ func TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge(t *t
 		stored[1].ClaimedByJobID != 0 || stored[1].CommittedMessageID != 0 || stored[1].NextRetryAt != nil {
 		t.Fatalf("knowledge-hit task should stop after generation retry budget is exhausted: %+v", stored[1])
 	}
+	turn := repositories.AIReplyTurnRepository.GetInTenant(fixture.db, fixture.turn.ID, fixture.turn.TenantID)
+	if turn == nil || turn.Status != enums.AIReplyTurnStatusFailed || turn.TerminalReason != "task_failure_terminal" || turn.CompletedAt == nil {
+		t.Fatalf("all-terminal failed tasks must close the turn: %+v", turn)
+	}
 
 	if _, err := fixture.service.ProcessMessageNow(fixture.message.ID); err != nil {
 		t.Fatal(err)
 	}
 	if runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job reran work before its retry window: runtimeCalls=%d dispatchCalls=%d", runtimeCalls.Load(), dispatchCalls.Load())
+	}
+}
+
+func TestAIReplyTaskLedgerTechnicalFailureOnlyClosesSelectedTask(t *testing.T) {
+	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
+		enums.AIReplyTurnTaskTypeKnowledge,
+		enums.AIReplyTurnTaskTypeKnowledge,
+	})
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		var batch []models.AIReplyTurnTask
+		if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+			turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(ctx.Tx, fixture.turn.ID, fixture.turn.TenantID)
+			if err != nil {
+				return err
+			}
+			batch, _, err = AIReplyTurnTaskService.ClaimBatchDB(ctx.Tx, turn, fixture.job.ID)
+			return err
+		}); err != nil {
+			return AIReplyExecutionResult{}, err
+		}
+		if len(batch) != 2 {
+			return AIReplyExecutionResult{}, fmt.Errorf("claimed %d tasks, want 2", len(batch))
+		}
+		return AIReplyExecutionResult{
+			TaskLedgerEnabled: true,
+			TaskKeys:          []string{batch[0].TaskKey},
+		}, NewAIReplyExecutionError(AIReplyExecutionErrorGenerationFailed, errors.New("selected task failed"))
+	})
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "turn_tasks_remaining" {
+		t.Fatalf("remaining task must schedule continuation: %+v", current)
+	}
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
+	if len(tasks) != 2 || tasks[0].Status != enums.AIReplyTurnTaskStatusFailed || tasks[1].Status != enums.AIReplyTurnTaskStatusPending {
+		t.Fatalf("technical failure must stay scoped to selected task: %+v", tasks)
+	}
+	if tasks[1].ClaimedByJobID != 0 || tasks[1].ClaimedVersion != 0 {
+		t.Fatalf("remaining task claim was not released: %+v", tasks[1])
 	}
 }
 

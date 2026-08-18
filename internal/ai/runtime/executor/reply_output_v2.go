@@ -45,15 +45,15 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 	summary *RunResult,
 	collector *callbacks.RuntimeTraceCollector,
 ) error {
-	chatModel, err := factory.NewChatModelFactory().Build(ctx, req.ModelConfig)
-	if err != nil {
-		return markRuntimeGenerationError(summary, collector, time.Now(), err)
-	}
 	startedAt := time.Now()
 	// P9 门禁快照：按当前请求范围计算，Validator 按此启用/跳过（默认全开）。
 	summary.ValidationGates = ReplyValidationGates{
 		FactSourceBoundary: gateEnabled(gateFactSourceBoundary, req),
 		UnsupportedDomain:  gateEnabled(gateEvidenceQuality, req),
+	}
+	chatModel, err := factory.NewChatModelFactory().Build(ctx, req.ModelConfig)
+	if err != nil {
+		return finishRuntimeV2GenerationFailure(ctx, req, summary, collector, startedAt, err)
 	}
 
 	// 阶段一（取数）：若有可用工具，先用不带结构化输出的模型跑工具循环，
@@ -91,15 +91,40 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 			err = generate(repairMessages)
 		}
 	}
-	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	if err != nil {
-		var repeatedProtocolErr *replyOutputProtocolError
-		if errors.As(err, &repeatedProtocolErr) {
-			err = fmt.Errorf("reply_output.v2 protocol repair failed: %w", err)
-		}
-		return markRuntimeGenerationError(summary, collector, startedAt, err)
+		return finishRuntimeV2GenerationFailure(ctx, req, summary, collector, startedAt, err)
 	}
+	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	return completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, startedAt)
+}
+
+func finishRuntimeV2GenerationFailure(
+	ctx context.Context,
+	req RunInput,
+	summary *RunResult,
+	collector *callbacks.RuntimeTraceCollector,
+	startedAt time.Time,
+	err error,
+) error {
+	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		collector.Data.Pipeline.Generate.Status = "cancelled"
+		collector.Data.Pipeline.Generate.Reason = "superseded runtime generation cancelled"
+		collector.Data.Pipeline.Validate.Status = "cancelled"
+		collector.Data.Pipeline.Validate.Reason = "newer turn owns reply generation"
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return context.Canceled
+	}
+	if applyControlledRuntimeReplyFallback(summary, collector, req, err) {
+		return completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, startedAt)
+	}
+	var repeatedProtocolErr *replyOutputProtocolError
+	if errors.As(err, &repeatedProtocolErr) {
+		err = fmt.Errorf("reply_output.v2 protocol repair failed: %w", err)
+	}
+	return markRuntimeGenerationError(summary, collector, startedAt, err)
 }
 
 // runRuntimeToolCollection 是两阶段生成里的「取数」阶段。只在存在可用工具时执行，
@@ -270,17 +295,143 @@ func compileRuntimeReplyOutputRepairMessages(ctx context.Context, summary *RunRe
 
 func buildRuntimeReplyOutputRepairInstruction(protocolErr *replyOutputProtocolError) string {
 	reason := "invalid_protocol"
-	raw := ""
 	if protocolErr != nil {
 		reason = strings.TrimSpace(protocolErr.Reason)
-		raw = boundedRuntimeRepairText(protocolErr.RawResponse, 8*1024)
 	}
 	return strings.Join([]string{
 		"上一版输出存在可修复的 reply_output.v2 协议错误。只修复 JSON 结构和任务覆盖，不新增、删除或改写业务任务。",
 		"error=" + reason,
-		"第一次输出=" + raw,
 		"重新输出唯一一个严格 JSON Object；不得输出 Markdown、解释、注释或额外文本。",
 	}, "\n")
+}
+
+// applyControlledRuntimeReplyFallback 是 Generate 本身和唯一一次协议修复都失败后的
+// 最后发送边界。它只使用已经通过任务相关性裁决的 Evidence/Store Fact，不重新检索、
+// 不调用第二个模型，也不把知识全文倾倒给客户。取消中的旧 Job 不会进入这里。
+func applyControlledRuntimeReplyFallback(summary *RunResult, collector *callbacks.RuntimeTraceCollector, req RunInput, cause error) bool {
+	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
+		return false
+	}
+	parts := buildControlledRuntimeFallbackParts(*summary.ReplyPlanV2, *summary.EvidenceBundle)
+	if len(parts) == 0 {
+		return false
+	}
+	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
+		Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: parts},
+		Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
+		Gates: summary.ValidationGates,
+	})
+	if validation.Status != "passed" {
+		return false
+	}
+	summary.ValidationResult = &validation
+	summary.ReplyParts = append([]contracts.ReplyPartV2(nil), validation.NormalizedParts...)
+	summary.ReplyText = joinValidatedReplyParts(validation.NormalizedParts)
+	summary.Status = "fallback"
+	summary.ErrorMessage = ""
+	collector.Data.Status = "fallback"
+	collector.Data.Pipeline.Generate.Status = "fallback"
+	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+	collector.Data.Pipeline.Validate.Status = "passed"
+	collector.Data.Pipeline.Validate.Reason = "controlled fallback passed deterministic validation"
+	_ = cause
+	return strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func buildControlledRuntimeFallbackParts(plan contracts.ReplyPlanV2, evidence contracts.EvidenceBundleV1) []contracts.ReplyPartV2 {
+	parts := make([]contracts.ReplyPartV2, 0, min(plan.GlobalConstraints.MaxReplyParts, 3))
+	for _, task := range plan.Tasks {
+		if task.OutputMode != "text" && task.OutputMode != "text_and_resource" && task.OutputMode != "clarification" {
+			continue
+		}
+		content := controlledRuntimeTaskFallbackText(task, evidence)
+		if content == "" {
+			continue
+		}
+		part := contracts.ReplyPartV2{
+			TaskKeys: []string{task.TaskKey}, Content: content,
+			EvidenceRefs: append([]string(nil), task.EvidenceRefs...), ActionRefs: append([]string(nil), task.ActionRefs...),
+		}
+		if len(parts) < 3 {
+			parts = append(parts, part)
+			continue
+		}
+		last := &parts[len(parts)-1]
+		last.TaskKeys = appendUniqueStrings(last.TaskKeys, task.TaskKey)
+		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, task.EvidenceRefs...)
+		last.ActionRefs = appendUniqueStrings(last.ActionRefs, task.ActionRefs...)
+		last.Content = strings.TrimSpace(last.Content + "\n" + content)
+	}
+	return parts
+}
+
+func controlledRuntimeTaskFallbackText(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) string {
+	for _, item := range evidence.Items {
+		if !stringInSlice(item.Ref, task.EvidenceRefs) || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		content := strings.TrimSpace(item.Content)
+		if item.SourceType == "store_fact" {
+			switch {
+			case taskRequestsStoreAddress(task.SubIntent, task.Objective):
+				return "外卖或收货地址请填写：" + strings.TrimRight(content, "。！!？?") + "。"
+			case isStoreIdentitySubIntent(task.SubIntent):
+				return "这里是" + strings.TrimRight(content, "。！!？?") + "。"
+			}
+		}
+		if snippet := conciseRuntimeEvidenceSnippet(content, task); snippet != "" {
+			return snippet
+		}
+	}
+	if task.Knowledge.Status == "unavailable" {
+		return "这项门店信息我暂时没查准，为避免说错，您可以稍后再问我一次。"
+	}
+	if task.Knowledge.Policy == "required" || task.OutputMode == "clarification" {
+		return "当前门店资料里暂时没有写明这项信息，我先不乱回答。"
+	}
+	if task.Intent == "interaction" {
+		return "收到。"
+	}
+	return "收到，您可以再具体说一下需要了解什么。"
+}
+
+func conciseRuntimeEvidenceSnippet(content string, task contracts.ReplyPlanTaskV2) string {
+	content = strings.TrimSpace(strings.NewReplacer("\r", "\n", "\t", " ").Replace(content))
+	if content == "" {
+		return ""
+	}
+	segments := strings.FieldsFunc(content, func(r rune) bool {
+		return r == '。' || r == '！' || r == '!' || r == '\n'
+	})
+	maxSegments := 2
+	maxRunes := 260
+	if runtimeFallbackNeedsProcessCoverage(task) {
+		maxSegments = 6
+		maxRunes = 600
+	}
+	selected := make([]string, 0, maxSegments)
+	for _, segment := range segments {
+		segment = strings.TrimSpace(strings.TrimLeft(segment, "-#*•0123456789.、 "))
+		if segment == "" || strings.HasSuffix(segment, "？") || strings.HasSuffix(segment, "?") {
+			continue
+		}
+		selected = append(selected, segment)
+		if len(selected) == maxSegments {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return ""
+	}
+	ret := strings.Join(selected, "。") + "。"
+	return boundedEvidenceText(ret, maxRunes)
+}
+
+func runtimeFallbackNeedsProcessCoverage(task contracts.ReplyPlanTaskV2) bool {
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	return strings.Contains(subIntent, "process") || strings.Contains(subIntent, "steps") ||
+		strings.Contains(subIntent, "guide") || isCheckinProcessSubIntent(subIntent) ||
+		subIntent == "checkout" || subIntent == "check_out"
 }
 
 func replyProtocolErrorReason(err error) string {

@@ -182,6 +182,10 @@ IntentDetect、Knowledge、Generate、Validate 和 Commit 的运行错误只能�
 `resource_invariant_broken`、`commit_failed`。模型事件报错必须立即中止；普通客户文本没有回复
 文本、结构化动作或持久 Interrupt 时属于 `empty_output`，不能按完成或策略跳过处理。
 
+Generate 模型构建失败、调用失败或唯一一次协议修复失败时，若当前批次已有通过相关性裁决的
+Evidence/Store Fact，Runtime 使用同一 ReplyPlan 构造简短受控回复并再次经过 Validator；不得倾倒
+知识全文，也不得因为技术失败直接向客户发送固定失败话术或自动转人工。旧 Turn 被取消时禁止兜底。
+
 Runtime 的 `completed` 只表示返回了内部持久化证据：本轮已提交 AI Message ID 列表或已持久化
 Interrupt ID。Job 收到后还要按 Tenant、Conversation、源 Message、RequestID、Session 和稳定
 ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入受控技术失败，不得自动派人工或
@@ -251,9 +255,11 @@ open -> running -> committed -> delivered
                   \-> interrupted | closed | failed
 ```
 
-`AIReplyTurnTask` 是轮次内的逐题账本。每个独立问题、资源动作或人工动作使用
-`SourceMessageID + 顺序 + TaskType` 生成稳定 TaskKey，只保存范围、意图标签、确定性问题指纹、
-阶段、结果码和提交证据，不保存问题正文、知识正文或模型输出。状态为：
+`AIReplyTurnTask` 是轮次内的逐题账本。一条客户消息可以绑定多个独立问题、资源动作或人工动作；
+TaskKey 使用 Tenant、Turn 和确定性语义/来源指纹生成，内存 ReplyPlan 与持久 Task 必须使用同一个
+范围化 key。禁止把“一个 SourceMessage 只能有一个 Task”作为绑定条件，否则复合文字和语音会在
+恢复时退化成整句检索。Task 只保存范围、意图标签、确定性问题指纹、阶段、结果码和提交证据，
+不保存问题正文、知识正文或模型输出。状态为：
 
 ```text
 pending -> running -> ready -> committed -> delivered
@@ -270,6 +276,13 @@ pending -> running -> ready -> committed -> delivered
 `replyPart`，并在 `taskKeys[]` 中完整列出该组 TaskKey；Commit 只创建一条 AI Message，同时把该
 Message 作为组内全部 Task 的提交证据。不同首条命中保持独立回答；该规则不使用关键词或模糊语义
 判断，也不跨 Turn 复用旧知识答案。
+
+纯门店名称和纯地址文字任务可直接使用当前 Store 权威事实。外卖、收货等复合问题仍必须检索门店
+规则，再把 Store 地址作为独立权威 Evidence 注入；不能因为已有地址而跳过整项知识检索。
+
+入住请求始终创建 `hotel_info/checkin_process` 知识任务并回答流程。入住小程序不是 Intent 模型的
+默认附加任务：只有当前门店真实配置可构建的小程序 payload 时由服务器追加，或客户明确只索要
+小程序入口时创建资源任务。文字和语音转写使用同一规则。
 
 客户消息事务内完成 Message、Turn Version 和 AIReplyJob 的写入。Turn Version 是当前执行所有权：
 同一 Turn 每增加一条客户消息都递增 Version，释放旧 Job 的 Task 领取和 Turn 租约，将旧版本 Job

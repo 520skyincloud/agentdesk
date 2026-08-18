@@ -38,7 +38,7 @@ hotel_info 与 hotel_variable 的硬边界：
 多任务规则：
 - 当前消息里有多个问题或动作时，intentTasks 必须逐项拆分，按用户原顺序排列；不能只输出主意图或最后一句。
 - 混合任务示例：“定位发我，小程序也发一下，停车在哪”必须有 3 个 intentTasks：hotel_variable/location、hotel_variable/mini_program、hotel_info/parking。
-- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；办理入住同时包含 checkin_process 与小程序资源任务时，primaryIntent=hotel_info；其他混合变量请求若存在 hotel_variable 任务，primaryIntent=hotel_variable；否则忽略只表达语气的 interaction 任务，primaryIntent=按用户原顺序出现的第一个业务任务；若没有业务任务，primaryIntent=interaction。
+- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；入住流程任务的 primaryIntent=hotel_info；其他混合变量请求若存在客户明确索要的 hotel_variable 任务，primaryIntent=hotel_variable；否则忽略只表达语气的 interaction 任务，primaryIntent=按用户原顺序出现的第一个业务任务；若没有业务任务，primaryIntent=interaction。
 - needsKnowledge=true 当且仅当任一任务 needsKnowledge=true 或 intent=hotel_info。
 - needsResource=true 当且仅当任一任务 needsResource=true 或 intent=hotel_variable。
 
@@ -54,8 +54,8 @@ resourceActions 字段纪律：
 subIntent 字段纪律：
 - subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
 - hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities。
-- “我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process 和 hotel_variable/mini_program/provide_mini_program 两个任务；主意图保持 hotel_info，知识步骤先回答，小程序由 Commit 阶段另行发送。
-- 只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时，才只输出 hotel_variable/provide_mini_program。
+- “我要办理入住/怎么入住/入住怎么弄”只输出 hotel_info/checkin_process，完整回答办理步骤；服务器会按当前门店真实配置决定是否另发入住小程序，模型不得默认补出资源任务。
+- 只有用户明确只索要“办理入住的小程序/入住小程序/办理入口”且没有问步骤时，才输出 hotel_variable/mini_program/provide_mini_program。
 
 上下文规则：
 - 图片/文件/语音识别内容只是上下文文本，不是单独意图分类。

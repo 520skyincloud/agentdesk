@@ -19,6 +19,7 @@ const (
 	InvocationErrorStructuredOutputSchemaRejected = "structured_output_schema_rejected"
 	InvocationErrorInvalidResponse                = "invalid_response"
 	InvocationErrorEmptyOutput                    = "empty_output"
+	InvocationErrorCancelled                      = "cancelled"
 )
 
 type InvocationError struct {
@@ -90,6 +91,9 @@ func InvocationErrorClass(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return InvocationErrorTimeout
 	}
+	if errors.Is(err, context.Canceled) {
+		return InvocationErrorCancelled
+	}
 	return InvocationErrorModelCallFailed
 }
 
@@ -100,6 +104,9 @@ func InvocationErrorRetryable(err error) bool {
 	var invocationErr *InvocationError
 	if errors.As(err, &invocationErr) {
 		return invocationErr.Retryable
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
 	}
 	return true
 }

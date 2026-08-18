@@ -35,14 +35,15 @@ type runtimeTaskKnowledgeOutcome struct {
 }
 
 type runtimeTaskKnowledgeItem struct {
-	TaskKey     string
-	Query       string
-	Intent      string
-	SubIntent   string
-	AnswerGroup string
-	Result      *retrievers.KnowledgeRetrieveResult
-	Status      enums.AIReplyTurnTaskKnowledgeStatus
-	Err         error
+	TaskKey      string
+	Query        string
+	Intent       string
+	SubIntent    string
+	AnswerGroup  string
+	FilterReason string
+	Result       *retrievers.KnowledgeRetrieveResult
+	Status       enums.AIReplyTurnTaskKnowledgeStatus
+	Err          error
 }
 
 type runtimeEvidenceIndex struct {
@@ -93,6 +94,10 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	}
 	for index, plan := range knowledgePlans {
 		items[index] = runtimeTaskKnowledgeItem{TaskKey: plan.TaskKey, Query: runtimeTaskKnowledgeQuery(plan), Intent: plan.Intent, SubIntent: plan.SubIntent}
+		if runtimeTaskHasAuthoritativeStoreFact(req, plan) {
+			items[index].Status = enums.AIReplyTurnTaskKnowledgeStatusHit
+			continue
+		}
 		if index == 0 && len(knowledgePlans) == 1 && probe != nil && len(singleTaskClauses) == 0 {
 			items[index].Result = probe
 			items[index].Status = runtimeKnowledgeStatus(probe, nil)
@@ -159,16 +164,18 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 		}(index)
 	}
 	wg.Wait()
+	for index := range items {
+		judgeRuntimeTaskKnowledgeEvidence(req, &items[index])
+		items[index].AnswerGroup = runtimeKnowledgeAnswerGroup(items[index].Result)
+	}
 
 	updates := make([]services.AIReplyTurnTaskKnowledgeUpdate, 0, len(items))
-	failed := make(map[string]struct{})
 	for _, item := range items {
 		outcome.KnowledgeTaskIDs = append(outcome.KnowledgeTaskIDs, item.TaskKey)
 		resultCode := string(item.Status)
 		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
 			resultCode = "knowledge_unavailable"
 			outcome.FailedTaskKeys = append(outcome.FailedTaskKeys, item.TaskKey)
-			failed[item.TaskKey] = struct{}{}
 		}
 		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusNoHit {
 			outcome.NoHitTaskKeys = append(outcome.NoHitTaskKeys, item.TaskKey)
@@ -189,16 +196,6 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			return runtimeTaskKnowledgeOutcome{}, err
 		}
 	}
-
-	if len(failed) > 0 {
-		active := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans)-len(failed))
-		for _, plan := range plans {
-			if _, isFailed := failed[plan.TaskKey]; !isFailed {
-				active = append(active, plan)
-			}
-		}
-		outcome.ActiveTaskPlans = active
-	}
 	outcome.ActiveTaskPlans = applyRuntimeKnowledgeAnswerGroups(outcome.ActiveTaskPlans, items)
 	outcome.Prefetched = mergeRuntimeTaskKnowledge(items, retriever.KnowledgeBaseIDs())
 	outcome.Evidence, outcome.KnowledgeByTask, outcome.TaskActionCodes = buildRuntimeEvidenceBundle(req, items, outcome.Prefetched)
@@ -216,12 +213,16 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 	indexes := make(map[string]runtimeEvidenceIndex)
 	storeFactSeq := 0
 	addressTaskKeys := make([]string, 0, len(items))
+	identityTaskKeys := make([]string, 0, len(items))
 	for _, item := range items {
 		// ProtectedFact Phase1（文档 9.3/18.2）：地址类任务的 store.address 是权威事实，
 		// 从 hydrate 后实例确定性取值注入 S* 证据。Generate 只能用它声明酒店地址，
 		// FactSourceBoundaryValidator 拒绝任何与它不一致的地址断言（如客户 OCR 里的壹间公寓）。
-		if isAddressTextSubIntent(item.SubIntent) {
+		if taskRequestsStoreAddress(item.SubIntent, item.Query) {
 			addressTaskKeys = append(addressTaskKeys, item.TaskKey)
+		}
+		if isStoreIdentitySubIntent(item.SubIntent) {
+			identityTaskKeys = append(identityTaskKeys, item.TaskKey)
 		}
 		outcome := AnswerabilityOutcome{Status: "no_context", ReasonCode: "knowledge_no_context", SupportingRefs: []string{}}
 		switch item.Status {
@@ -232,6 +233,9 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			outcome.Status = "has_context"
 			outcome.ReasonCode = "knowledge_context_available"
 		}
+		if item.Status == enums.AIReplyTurnTaskKnowledgeStatusNoHit && strings.TrimSpace(item.FilterReason) != "" {
+			outcome.ReasonCode = item.FilterReason
+		}
 		results := []rag.RetrieveResult(nil)
 		if item.Result != nil {
 			results = item.Result.ContextResults
@@ -239,22 +243,6 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 				results = item.Result.Hits
 			}
 		}
-		// Evidence Judge Phase1（文档 7.5/判定矩阵）：派生元问题（出题式/审题式内容）
-		// 不得成为客户可见答案——先从候选中剔除，再构建证据。全部为元问题时任务降为
-		// no_context（reasonCode=knowledge_meta_content），按“资料未写明”澄清处理，
-		// 不默认转人工。判定来源：侧车表 metadata（claimType=meta）+ 确定性模式兜底。
-		var kept []rag.RetrieveResult
-		droppedMeta := 0
-		if gateEnabled(gateEvidenceQuality, req) {
-			kept, droppedMeta = filterKnowledgeMetaEvidence(req, results)
-		} else {
-			kept = results
-		}
-		if len(kept) == 0 && droppedMeta > 0 && outcome.Status == "has_context" {
-			outcome.Status = "no_context"
-			outcome.ReasonCode = "knowledge_meta_content"
-		}
-		results = kept
 		for _, result := range results {
 			if len(bundle.Items) >= 24 || strings.TrimSpace(result.Content) == "" {
 				break
@@ -291,6 +279,26 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			outcome.ReasonCode = "knowledge_context_not_supporting"
 		}
 		byTask[item.TaskKey] = outcome
+	}
+
+	storeIdentityTaskKeys := appendUniqueStrings(append([]string(nil), identityTaskKeys...), addressTaskKeys...)
+	if len(storeIdentityTaskKeys) > 0 {
+		if name := authoritativeStoreIdentity(req); name != "" {
+			storeFactSeq++
+			ref := fmt.Sprintf("S%d", storeFactSeq)
+			bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
+				Ref: ref, SourceType: "store_fact", TaskKeys: storeIdentityTaskKeys,
+				Title: "当前门店名称（系统权威）", Content: name, Score: 1,
+				Answerability: "supporting", ResourceRefs: []string{},
+			})
+			for _, taskKey := range storeIdentityTaskKeys {
+				outcome := byTask[taskKey]
+				outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, ref)
+				outcome.Status = "has_context"
+				outcome.ReasonCode = "authoritative_store_fact_available"
+				byTask[taskKey] = outcome
+			}
+		}
 	}
 
 	// ProtectedFact Phase1：地址类任务注入 store.address 权威 S* 证据（文档 9.3）。
@@ -517,9 +525,12 @@ func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData,
 }
 
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
-	// 契约 4.11/22.12：知识 Query 只使用规范化业务文本；[语音]/[图片]/文件名
-	// 等运输包装与 merge 前缀禁止进入检索文本。
+	// Query 仍以客户当前问题为主体；若已有稳定的中文业务主题，只追加一个短主题锚点，
+	// 帮助向量检索区分“普通流程”与“同词异常 FAQ”。不追加英文内部枚举，也不发起第二次检索。
 	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
+		if label := runtimeKnowledgeTopicLabel(plan.SubIntent); label != "" && !strings.Contains(text, label) {
+			return text + " " + label
+		}
 		return text
 	}
 	if subIntent := strings.TrimSpace(plan.SubIntent); subIntent != "" {

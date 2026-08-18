@@ -81,7 +81,7 @@ func buildRuntimeReplyPlanV2(
 				outputMode = "clarification"
 			}
 			if knowledgeStatus == "unavailable" {
-				outputMode = "skip"
+				outputMode = "clarification"
 			}
 		}
 		constraints := []string{"no_unsupported_facts", "no_action_claim", "no_internal_terms", "short_wechat_style"}
@@ -236,7 +236,7 @@ func runtimeActionInputs(plans []callbacks.ReplyTaskPlanTraceData, evidence *con
 			for _, taskKey := range resource.TaskKeys {
 				// ResourceEligibility Phase1（文档 10.3 规则 7）：地址文字类任务的
 				// 资源诉求是文字，默认禁止自动附图，即使检索命中了带图记录。
-				if planByTask := planByTaskKey(plans, taskKey); planByTask != nil && isAddressTextSubIntent(planByTask.SubIntent) {
+				if planByTask := planByTaskKey(plans, taskKey); planByTask != nil && taskRequestsStoreAddress(planByTask.SubIntent, planByTask.Text) {
 					continue
 				}
 				add(services.AIReplyTurnActionInput{TaskKey: taskKey, ActionType: "send_knowledge_image", ResourceType: "image:" + resource.Ref})
@@ -259,7 +259,7 @@ func planByTaskKey(plans []callbacks.ReplyTaskPlanTraceData, taskKey string) *ca
 // 地址文字任务的 resource demand 是 text，图片默认禁止（文档 10.3）。
 func isAddressTextSubIntent(subIntent string) bool {
 	switch strings.TrimSpace(subIntent) {
-	case "address", "address_for_delivery", "delivery_address", "store_address", "order_food_delivery":
+	case "address", "address_for_delivery", "delivery_address", "store_address", "order_food_delivery", "food_delivery", "takeaway":
 		return true
 	default:
 		return false

@@ -54,7 +54,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		summary.FailedTaskKeys = append([]string(nil), plan.TaskState.FailedTaskKeys...)
 		summary.HumanTaskKeys = append([]string(nil), plan.TaskState.HumanTaskKeys...)
 		summary.HasRemainingTasks = plan.TaskState.HasMore
-		summary.NeedsHumanDispatch = len(plan.TaskState.FailedTaskKeys) > 0
+		summary.NeedsHumanDispatch = len(plan.TaskState.HumanTaskKeys) > 0
 		summary.CoveredByTaskID = plan.TaskState.CoveredByTaskID
 	}
 	if collector != nil {
@@ -221,10 +221,11 @@ func compileRuntimeGenerateMessages(
 			preparedActions = append(preparedActions, action)
 		}
 	}
+	recentHistory := runtimeGenerateRelevantHistory(history.RawItems, plan.ReplyPlan.TaskPlans)
 	compileInput := contextcompiler.CompileInput{
 		Stage: contextcompiler.CompileStageGenerate,
 		Scope: runtimeCompilerScope(req, resolved, instance), Model: *resolved, Instance: *instance, Agent: req.AIAgent,
-		CurrentMessages: currentMessages, RecentHistory: history.RawItems, Memory: history.Memory, DialogueState: dialogueState,
+		CurrentMessages: currentMessages, RecentHistory: recentHistory, Memory: history.Memory, DialogueState: dialogueState,
 		ReplyPlan: &plan.ReplyPlanV2, Evidence: &plan.Evidence, PreparedActions: preparedActions,
 		ReplyTagText: tagText, IntentProfileRevision: runtimeIntentProfileRevision(req),
 		GenerationInstruction:            buildCompiledGenerationInstruction(ctx, req, history, plan, modes),
@@ -256,6 +257,30 @@ func compileRuntimeGenerateMessages(
 		}
 	}
 	return compiled.Messages, nil
+}
+
+// runtimeGenerateRelevantHistory 把“理解上下文”和“生成事实”分开。IntentDetect
+// 继续读取近期历史来解析指代；Generate 只有在当前 Task 明确是追问、纠正、重复、
+// 媒体追问或包含紧邻指代时才携带历史。独立新问题和闲聊不再被旧酒店答案污染。
+func runtimeGenerateRelevantHistory(history []models.Message, plans []callbacks.ReplyTaskPlanTraceData) []models.Message {
+	if len(history) == 0 || len(plans) == 0 {
+		return nil
+	}
+	for _, plan := range plans {
+		switch strings.TrimSpace(plan.RelationType) {
+		case "follow_up", "correction", "repeat", "continuation":
+			return history
+		}
+		switch strings.TrimSpace(plan.SubIntent) {
+		case "media_context_follow_up", "correction", "clarify_previous":
+			return history
+		}
+		compact := compactRuntimeProtocolText(plan.Text)
+		if containsAny(compact, []string{"这个", "那个", "刚才", "上面", "前面", "继续", "还是", "它", "那里", "那边", "这里说的"}) {
+			return history
+		}
+	}
+	return nil
 }
 
 func buildCompiledGenerationInstruction(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, plan runtimePipelinePlan, modes runtimeFeatureModes) string {

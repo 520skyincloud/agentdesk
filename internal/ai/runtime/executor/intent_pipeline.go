@@ -66,7 +66,7 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		// Clarification-like service questions use the same persisted task
 		// identity as every other knowledge query. A pre-ledger probe can lose its
 		// checkpoint and later report knowledge_unavailable after a successful hit.
-		intent = markConditionalKnowledgeTasksForFormalRetrieval(intent, currentText)
+		intent = markConditionalKnowledgeTasksForFormalRetrieval(intent, resolveClarifyKnowledgeProbeQuery(req, history))
 		prefetchedKnowledge = nil
 		promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		replyPlan = buildReplyPlan(intent, promptPack)

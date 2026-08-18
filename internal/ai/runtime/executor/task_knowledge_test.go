@@ -91,7 +91,7 @@ func TestRetrieveRuntimeTaskKnowledgeKeepsSuccessfulTasksWhenOneFails(t *testing
 	plans := testKnowledgeTaskPlans()
 	retriever := &testRuntimeTaskKnowledgeRetriever{
 		results: testKnowledgeTaskResults(plans),
-		errors:  map[string]error{plans[1].Text: errors.New("fastgpt unavailable")},
+		errors:  map[string]error{runtimeTaskKnowledgeQuery(plans[1]): errors.New("fastgpt unavailable")},
 	}
 	outcome, err := retrieveRuntimeTaskKnowledgeWithRetriever(context.Background(), RunInput{}, plans, nil, runtimeTaskBatchState{}, retriever)
 	if err != nil {
@@ -100,8 +100,8 @@ func TestRetrieveRuntimeTaskKnowledgeKeepsSuccessfulTasksWhenOneFails(t *testing
 	if len(outcome.FailedTaskKeys) != 1 || outcome.FailedTaskKeys[0] != plans[1].TaskKey {
 		t.Fatalf("failed task keys=%v", outcome.FailedTaskKeys)
 	}
-	if len(outcome.ActiveTaskPlans) != 2 || outcome.ActiveTaskPlans[0].TaskKey != plans[0].TaskKey || outcome.ActiveTaskPlans[1].TaskKey != plans[2].TaskKey {
-		t.Fatalf("successful task plans were not preserved: %#v", outcome.ActiveTaskPlans)
+	if len(outcome.ActiveTaskPlans) != 3 {
+		t.Fatalf("knowledge failure must remain in the batch for controlled clarification: %#v", outcome.ActiveTaskPlans)
 	}
 	if outcome.Prefetched == nil || strings.Contains(outcome.Prefetched.ContextText, plans[1].TaskKey) {
 		t.Fatalf("failed task leaked into merged knowledge context: %#v", outcome.Prefetched)
@@ -219,9 +219,10 @@ func testKnowledgeTaskResults(plans []callbacks.ReplyTaskPlanTraceData) map[stri
 			Content:         plan.Text + "的知识答案",
 			Score:           0.9,
 		}
-		results[plan.Text] = &retrievers.KnowledgeRetrieveResult{
+		query := runtimeTaskKnowledgeQuery(plan)
+		results[query] = &retrievers.KnowledgeRetrieveResult{
 			KnowledgeBaseIDs: []int64{99},
-			Query:            plan.Text,
+			Query:            query,
 			Hits:             []rag.RetrieveResult{hit},
 			ContextResults:   []rag.RetrieveResult{hit},
 			ContextText:      hit.Content,

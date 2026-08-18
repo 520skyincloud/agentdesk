@@ -27,6 +27,9 @@ func validateStoreNameAssertions(input ReplyValidationInput) []contracts.Validat
 			continue
 		}
 		for _, name := range extractAssertedPlaceNames(content) {
+			if placeNameMentionIsNonAssertive(content, name) {
+				continue
+			}
 			if placeNameAuthorized(name, authoritative) {
 				continue
 			}
@@ -45,6 +48,35 @@ func validateStoreNameAssertions(input ReplyValidationInput) []contracts.Validat
 		}
 	}
 	return issues
+}
+
+// placeNameMentionIsNonAssertive 区分“把名称当事实告诉客户”和“询问/否定/纠正
+// 一个名称”。事实边界只拦截前者；否则类似“这里不是 XX 公寓”也会因为复述
+// 客户的错误名称而被误判，最终让一条正常纠正回复连续生成失败。
+func placeNameMentionIsNonAssertive(content, name string) bool {
+	compact := compactRuntimeProtocolText(content)
+	compactName := compactRuntimeProtocolText(name)
+	if compact == "" || compactName == "" {
+		return false
+	}
+	for _, pattern := range []string{
+		"不是" + compactName,
+		"并非" + compactName,
+		"不叫" + compactName,
+		"不是叫" + compactName,
+		"不要填" + compactName,
+		"别填" + compactName,
+		"不能填" + compactName,
+		compactName + "吗",
+		compactName + "么",
+		compactName + "对吗",
+		compactName + "是不是",
+	} {
+		if strings.Contains(compact, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // knowledgeEvidencePlaceNameCorpus 汇总本轮知识证据正文，作为场所名的合法来源之一。
@@ -70,7 +102,7 @@ func authoritativeStoreNames(req RunInput) []string {
 		return nil
 	}
 	names := make([]string, 0, 3)
-	for _, name := range []string{store.Name, store.BrandName, store.NavigationName} {
+	for _, name := range []string{instance.StoreNavigationName, store.Name, store.BrandName, store.NavigationName} {
 		if trimmed := strings.TrimSpace(name); trimmed != "" {
 			names = append(names, trimmed)
 		}
@@ -149,7 +181,17 @@ func authoritativeStoreAddress(req RunInput) string {
 	if instance == nil {
 		return ""
 	}
-	return strings.TrimSpace(instance.StoreAddress)
+	if address := strings.TrimSpace(instance.StoreAddress); address != "" {
+		return address
+	}
+	if instance.StoreID <= 0 || sqls.DB() == nil {
+		return ""
+	}
+	store := repositories.StoreRepository.Get(sqls.DB(), instance.StoreID)
+	if store == nil || store.TenantID != req.Conversation.TenantID {
+		return ""
+	}
+	return strings.TrimSpace(store.Address)
 }
 
 // validateReplyFactSourceBoundary 是 FactSourceBoundary 的 Phase1 落地（文档 7/15.2）：
@@ -176,9 +218,13 @@ func validateReplyFactSourceBoundary(input ReplyValidationInput) []contracts.Val
 		}
 		addressTask := false
 		for _, taskKey := range part.TaskKeys {
-			if task, ok := planByTask[taskKey]; ok && isAddressTextSubIntent(task.SubIntent) {
-				addressTask = true
-				break
+			if task, ok := planByTask[taskKey]; ok {
+				// 外卖等任务未必在 objective 中重复写“地址”，但只要该类任务
+				// 输出了具体收货地址，就必须按当前门店权威地址校验。
+				if isAddressTextSubIntent(task.SubIntent) || taskRequestsStoreAddress(task.SubIntent, task.Objective) {
+					addressTask = true
+					break
+				}
 			}
 		}
 		if !addressTask {

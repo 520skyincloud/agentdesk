@@ -4,67 +4,69 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/rag"
-	"agent-desk/internal/ai/runtime/contracts"
-	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
 
-func TestFilterKnowledgeMetaEvidenceDropsDerivedMetaQuestions(t *testing.T) {
-	results := []rag.RetrieveResult{
-		{KnowledgeBaseID: 99, SourceRecordID: "meta-1", Title: "用户可能通过哪些不同的方式向助手询问附近的游玩推荐？", Content: "问题：…", Score: 0.9},
-		{KnowledgeBaseID: 99, SourceRecordID: "good-1", Title: "附近有哪些餐饮推荐？", Content: "罍街小吃街、小丁小吃", Score: 0.88},
-		{KnowledgeBaseID: 99, SourceRecordID: "meta-2", Title: "这个表格是否包含任何地理位置信息？", Content: "不包含", Score: 0.8},
+func TestKnowledgeEvidenceJudgeSeparatesNormalFlowFromExceptionFAQ(t *testing.T) {
+	normal := runtimeTaskKnowledgeItem{Query: "我要办入住 入住流程", SubIntent: "checkin_process"}
+	exception := rag.RetrieveResult{Content: "入住小程序打不开或手机不能使用时，请联系工作人员处理。"}
+	if !knowledgeEvidenceMismatchesTask(normal, exception) {
+		t.Fatal("normal check-in flow must not consume an exception-handling FAQ")
 	}
-	kept, dropped := filterKnowledgeMetaEvidence(RunInput{}, results)
-	if dropped != 2 || len(kept) != 1 {
-		t.Fatalf("kept=%d dropped=%d, want kept=1 dropped=2", len(kept), dropped)
+
+	exceptionTask := runtimeTaskKnowledgeItem{Query: "入住小程序打不开怎么办 入住流程", SubIntent: "checkin_process"}
+	if knowledgeEvidenceMismatchesTask(exceptionTask, exception) {
+		t.Fatal("an exception question must retain the matching exception FAQ")
 	}
-	if kept[0].SourceRecordID != "good-1" {
-		t.Fatalf("expected only real answer kept, got %s", kept[0].SourceRecordID)
+
+	normalWithFallback := rag.RetrieveResult{
+		Title:   "办理入住流程",
+		Content: "先打开入住小程序，填写订单和住客信息，完成实名认证后获取房间信息。如遇小程序打不开，请联系工作人员。",
+	}
+	if knowledgeEvidenceMismatchesTask(normal, normalWithFallback) {
+		t.Fatal("a normal process document must survive when only its final sentence contains exception guidance")
 	}
 }
 
-func TestBuildRuntimeEvidenceBundleDowngradesAllMetaToNoContext(t *testing.T) {
-	// 生产故障 3.3：吃喝玩乐检索命中的全是派生元问题，不得成为推荐证据。
-	metaHit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "m", Title: "美食推荐分为哪两个类别？", Content: "问题：美食推荐分为哪两个类别？", Score: 0.9}
-	items := []runtimeTaskKnowledgeItem{
-		{
-			TaskKey: "t-food", Intent: "hotel_info", SubIntent: "surrounding_facilities", Query: "附近吃的",
-			Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
-			Result: &retrievers.KnowledgeRetrieveResult{
-				KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{metaHit},
-				ContextResults: []rag.RetrieveResult{metaHit}, ContextText: metaHit.Content,
-			},
-		},
+func TestKnowledgeEvidenceJudgeRejectsCrossTopicResourceSource(t *testing.T) {
+	addressTask := runtimeTaskKnowledgeItem{Query: "外卖地址填哪里 门店地址", SubIntent: "address_for_delivery"}
+	laundry := rag.RetrieveResult{Title: "洗衣房位置和图片", Content: "洗衣房位于十二楼。"}
+	if !knowledgeEvidenceMismatchesTask(addressTask, laundry) {
+		t.Fatal("address task must reject laundry evidence and its bound resources")
 	}
-	_, byTask, _ := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
-	if byTask["t-food"].Status != "no_context" {
-		t.Fatalf("expected all-meta task downgrade to no_context, got %+v", byTask["t-food"])
+	laundryWithAddress := rag.RetrieveResult{Title: "洗衣房地址和图片", Content: "洗衣房位于十二楼。"}
+	if !knowledgeEvidenceMismatchesTask(addressTask, laundryWithAddress) {
+		t.Fatal("a generic address word must not make a foreign facility record eligible for a store-address task")
 	}
-	if byTask["t-food"].ReasonCode != "knowledge_meta_content" {
-		t.Fatalf("expected reasonCode=knowledge_meta_content, got %s", byTask["t-food"].ReasonCode)
+	laundryTask := runtimeTaskKnowledgeItem{Query: "洗衣房在哪里 洗衣", SubIntent: "laundry"}
+	if knowledgeEvidenceMismatchesTask(laundryTask, laundryWithAddress) {
+		t.Fatal("the same location record must remain eligible for its own facility task")
 	}
 }
 
-func TestRealAnswersStillSupportingAfterJudge(t *testing.T) {
-	// 正常知识（非元问题）不受 Judge 影响，仍为 supporting。
-	hit := rag.RetrieveResult{KnowledgeBaseID: 99, SourceRecordID: "real", Title: "附近有哪些餐饮推荐？", Content: "答案：罍街小吃街、小丁小吃。", Score: 0.9}
-	items := []runtimeTaskKnowledgeItem{
-		{
-			TaskKey: "t-food", Intent: "hotel_info", SubIntent: "surrounding_facilities", Query: "附近吃的",
-			Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
-			Result: &retrievers.KnowledgeRetrieveResult{
-				KnowledgeBaseIDs: []int64{99}, Hits: []rag.RetrieveResult{hit},
-				ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
-			},
-		},
+func TestStoreIdentityQuestionNormalizationIsGeneric(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这里是壹间公寓吗"}}
+	intent := normalizeStoreIdentityQuestionIntent(callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", IntentConfidence: 0.7,
+		IntentTasks: []callbacks.IntentTaskTraceData{{Intent: "interaction", SubIntent: "clarify", Text: req.UserMessage.Content}},
+	}, req)
+	if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "hotel_info" || intent.IntentTasks[0].SubIntent != "store_identity" {
+		t.Fatalf("store identity question was not normalized: %#v", intent)
 	}
-	bundle, byTask, _ := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
-	if byTask["t-food"].Status != "has_context" {
-		t.Fatalf("real answer must stay has_context, got %+v", byTask["t-food"])
+	if explicitStoreIdentityQuestion("外卖地址填壹间公寓就行") {
+		t.Fatal("a positive address instruction must not be reclassified as a store identity question")
 	}
-	if len(bundle.Items) == 0 {
-		t.Fatal("real answer must enter evidence items")
+}
+
+func TestAuthoritativeStoreFactDoesNotSkipDeliveryKnowledge(t *testing.T) {
+	if !runtimeTaskUsesOnlyAuthoritativeStoreAddress("address_for_delivery") {
+		t.Fatal("a pure delivery-address task may use the authoritative store address directly")
 	}
-	_ = contracts.EvidenceBundleV1SchemaVersion
+	for _, subIntent := range []string{"order_food_delivery", "food_delivery", "takeaway"} {
+		if runtimeTaskUsesOnlyAuthoritativeStoreAddress(subIntent) {
+			t.Fatalf("%s must still retrieve delivery instructions before adding the store address", subIntent)
+		}
+	}
 }

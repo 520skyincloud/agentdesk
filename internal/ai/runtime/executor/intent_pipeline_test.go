@@ -176,8 +176,8 @@ func TestRuntimeIntentDetectPromptRequiresSpecificHotelInfoSubIntent(t *testing.
 	for _, expected := range []string{
 		"subIntent 字段纪律",
 		"checkin_process",
-		"“我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process",
-		"只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时",
+		"只输出 hotel_info/checkin_process",
+		"服务器会按当前门店真实配置决定是否另发入住小程序",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent detect prompt missing %q: %s", expected, prompt)
@@ -242,7 +242,7 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 	}
 }
 
-func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *testing.T) {
+func TestNormalizeModelIntentTraceKeepsCheckinKnowledgeWithoutUnconfiguredResource(t *testing.T) {
 	configs := []models.ReplyIntentConfig{
 		{Code: "hotel_info", Status: enums.StatusOk},
 		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
@@ -253,23 +253,20 @@ func TestNormalizeModelIntentTraceDeterministicallyAddsCheckinResourceTask(t *te
 		IntentConfidence: 0.8,
 		ShouldReply:      true,
 	}, RunInput{UserMessage: models.Message{Content: "我想办理入住"}}, adapter.HistoryBuildResult{}, configs)
-	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || !intent.NeedsResource {
+	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || intent.NeedsResource {
 		t.Fatalf("expected deterministic checkin normalization, got %#v", intent)
 	}
-	if !containsString(intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("expected checkin mini program action, got %#v", intent.ResourceActions)
+	if containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("unconfigured mini program must not be attached, got %#v", intent.ResourceActions)
 	}
-	var knowledgeTask, resourceTask bool
+	var knowledgeTask bool
 	for _, task := range intent.IntentTasks {
 		if task.Intent == "hotel_info" && task.SubIntent == "checkin_process" && task.NeedsKnowledge {
 			knowledgeTask = true
 		}
-		if task.Intent == "hotel_variable" && task.ResourceAction == "provide_mini_program" && task.NeedsResource {
-			resourceTask = true
-		}
 	}
-	if !knowledgeTask || !resourceTask {
-		t.Fatalf("expected both checkin knowledge and resource tasks, got %#v", intent.IntentTasks)
+	if !knowledgeTask || len(intent.IntentTasks) != 1 {
+		t.Fatalf("expected only the checkin knowledge task, got %#v", intent.IntentTasks)
 	}
 }
 
@@ -286,7 +283,7 @@ func TestRuntimeIntentProtocolFallbackPreservesCheckinHandling(t *testing.T) {
 	if !ok {
 		t.Fatal("expected deterministic protocol fallback")
 	}
-	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || !containsString(intent.ResourceActions, "provide_mini_program") {
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || intent.NeedsResource || containsString(intent.ResourceActions, "provide_mini_program") {
 		t.Fatalf("protocol fallback lost checkin handling: %#v", intent)
 	}
 }
@@ -834,7 +831,8 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 90, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
-	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我要办理入住"}}
+	conversation := seedRuntimeCheckinMiniProgram(t)
+	req := RunInput{Conversation: conversation, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我要办理入住"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
 		PrimaryIntent:    "hotel_info",
 		SubIntent:        "check_in",
@@ -870,14 +868,15 @@ func TestRuntimePipelineVoiceCheckinMatchesTextCheckin(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 90, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
+	conversation := seedRuntimeCheckinMiniProgram(t)
 	detected := callbacks.IntentTraceData{
 		PrimaryIntent: "interaction", SubIntent: "clarify", IntentConfidence: 0.82,
 		ShouldReply: true, NeedsClarification: true, Reason: "model needs normalization",
 	}
-	textReq := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{
+	textReq := RunInput{Conversation: conversation, UserMessage: models.Message{
 		MessageType: enums.IMMessageTypeText, Content: "我要办理入住",
 	}}
-	voiceReq := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{
+	voiceReq := RunInput{Conversation: conversation, UserMessage: models.Message{
 		MessageType: enums.IMMessageTypeVoice, Content: "voice.amr",
 		Payload: `{"mediaText":"我要办理入住","mediaUnderstandingStatus":"understood"}`,
 	}}
@@ -1342,7 +1341,7 @@ func TestRuntimePipelineInvoiceAttachmentFollowUpUsesKnowledge(t *testing.T) {
 	}
 }
 
-func TestRuntimePipelineOrderAttachmentFollowUpUsesCheckInKnowledge(t *testing.T) {
+func TestRuntimePipelineOrderAttachmentFollowUpUsesCheckInKnowledgeWithoutUnconfiguredResource(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这个能入住吗"}}
 	history := adapter.HistoryBuildResult{RawItems: []models.Message{{
 		ID:             11,
@@ -1356,8 +1355,8 @@ func TestRuntimePipelineOrderAttachmentFollowUpUsesCheckInKnowledge(t *testing.T
 	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" {
 		t.Fatalf("expected order attachment follow-up to use hotel_info/checkin_process, got %#v", plan.Intent)
 	}
-	if !plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || !containsString(plan.Intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("order attachment follow-up should use knowledge plus mini program resource injection, got %#v", plan.Intent)
+	if !plan.Intent.NeedsKnowledge || plan.Intent.NeedsResource || containsString(plan.Intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("order attachment follow-up should keep checkin knowledge without an unconfigured mini program, got %#v", plan.Intent)
 	}
 }
 
@@ -1467,8 +1466,8 @@ func TestRuntimePipelineVoiceMixedResourceUsesMediaTextForActionLedger(t *testin
 func TestRuntimePipelineUnknownHotelInfoFallsBackToKnowledge(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "电视投屏怎么弄"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "interaction", IntentConfidence: 0.62, ShouldReply: true, NeedsClarification: true, Reason: "模型没有识别出业务分类"}})
-	if plan.Intent.PrimaryIntent != "interaction" || plan.Intent.NeedsKnowledge {
-		t.Fatalf("expected interaction to remain model-led without keyword fallback, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "interaction" || !plan.Intent.NeedsKnowledge {
+		t.Fatalf("a concrete service question must use formal conditional knowledge retrieval, got %#v", plan.Intent)
 	}
 }
 
@@ -1939,6 +1938,42 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func seedRuntimeCheckinMiniProgram(t *testing.T) models.Conversation {
+	t.Helper()
+	db := sqls.DB()
+	store := &models.Store{
+		ID: 1, TenantID: 1, StoreCode: "checkin-store", Name: "测试酒店", NavigationName: "测试酒店",
+		Address: "测试路1号", Status: enums.StatusOk,
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("seed checkin store: %v", err)
+	}
+	payload := `{"title":"安心住","appname":"安心住","username":"gh_test@app","file_id":"cover-file","aes_key":"cover-key","md5":"cover-md5","size":128,"page_path":"pages/order/index"}`
+	instance := &models.WxWorkProtocolInstance{
+		ID: 1, TenantID: 1, StoreID: store.ID, StoreStaffBindingID: 1,
+		DefaultMiniProgramPayload: payload, AIReplyEnabled: true, Status: enums.StatusOk,
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("seed checkin instance: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		TenantID: 1, ConversationID: 7, StoreID: store.ID, StoreStaffBindingID: 1,
+		WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, SessionNo: 1,
+	}).Error; err != nil {
+		t.Fatalf("seed checkin route: %v", err)
+	}
+	if err := db.Model(&models.Conversation{}).Where("id = ?", 7).Updates(map[string]any{
+		"store_id": store.ID, "store_staff_binding_id": 1,
+	}).Error; err != nil {
+		t.Fatalf("scope checkin conversation: %v", err)
+	}
+	conversation := models.Conversation{}
+	if err := db.First(&conversation, "id = ?", 7).Error; err != nil {
+		t.Fatalf("load checkin conversation: %v", err)
+	}
+	return conversation
 }
 
 func TestRuntimeIntentProtocolFallbackIsNarrowAndDeterministic(t *testing.T) {

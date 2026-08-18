@@ -97,7 +97,11 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		if issues := validateReplyFactSourceBoundary(input); len(issues) > 0 {
 			result.Checks.FactGrounding = "failed"
 			result.Errors = append(result.Errors, issues...)
-			result.Status = "rejected"
+			if replyEvidenceHasAuthoritativeStoreFact(input.Evidence) && result.Status != "rejected" {
+				result.Status = "repairable_protocol_error"
+			} else {
+				result.Status = "rejected"
+			}
 		}
 	}
 	if issues := validateReplyActionReferences(input); len(issues) > 0 {
@@ -123,6 +127,15 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		}
 	}
 	return result
+}
+
+func replyEvidenceHasAuthoritativeStoreFact(evidence contracts.EvidenceBundleV1) bool {
+	for _, item := range evidence.Items {
+		if item.SourceType == "store_fact" && strings.TrimSpace(item.Content) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeReplyParts(parts []contracts.ReplyPartV2, plan *contracts.ReplyPlanV2) []contracts.ReplyPartV2 {
