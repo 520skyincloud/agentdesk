@@ -71,9 +71,11 @@ func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, cal
 			Enabled: true, TurnID: turn.ID, TurnVersion: turn.Version,
 			HasMore: services.AIReplyTurnTaskService.HasRunnable(turn.TenantID, turn.ID),
 		}
+		covered := false
 		for index := range allTasks {
 			task := allTasks[index]
 			if task.SourceMessageID == req.UserMessage.ID && aiReplyTurnTaskLedgerTerminal(task.Status) {
+				covered = true
 				if task.CoveredByTaskID > 0 {
 					state.CoveredByTaskID = task.CoveredByTaskID
 				} else {
@@ -83,6 +85,12 @@ func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, cal
 			if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || task.Status == enums.AIReplyTurnTaskStatusFailed {
 				state.FailedTaskKeys = appendUniqueStrings(state.FailedTaskKeys, task.TaskKey)
 			}
+		}
+		// 生产回归 2026-08-18：生成失败后的重试进入空批次恢复分支，跳过意图/知识，
+		// 把已命中的知识丢掉，模型自由发挥"资料没写明"。当前消息没有任何已提交回复时
+		// 必须回到完整管线重跑（任务已终态，Ensure/Claim 幂等，checkpoint 防重复检索）。
+		if !covered {
+			return callbacks.IntentTraceData{}, callbacks.ReplyPlanTraceData{}, state, false, nil
 		}
 		return callbacks.IntentTraceData{}, callbacks.ReplyPlanTraceData{}, state, true, nil
 	}
