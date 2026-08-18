@@ -390,6 +390,10 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"【多任务】当前消息有多个问题或动作时，intentTasks 必须逐项拆分、按用户原顺序排列；不能只输出主意图或最后一句。",
 		"【task.text 纪律】intentTasks[].text 必须只写该任务对应的原话子句（如“怎么把门打开”“附近有什么好玩的”），禁止把整句原文复制到每个任务；整句包含多个主题时，必须按主题拆成多个 text，每个 text 只承载一个主题，否则知识检索会错配到别的主题。",
 		"【subIntent 纪律】subIntent 写具体业务子意图，不要空泛写 store_knowledge。hotel_info 常用：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、surrounding_facilities、discount。human_complaint_risk 常用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。",
+		"【办入住双任务·金标】客户说“我要办入住/我想办入住/怎么入住/入住怎么弄/给我办入住”时，必须按顺序输出两个任务：hotel_info/checkin_process（needsKnowledge 语义，知识先回答自助办理步骤）+ hotel_variable/mini_program（资源任务，小程序由 Commit 阶段另行发送）。主意图保持 hotel_info。只有客户只说“入住小程序发我/办理入住的小程序发我”且没问步骤时，才只输出 mini_program 单任务。禁止把办入住整体归 service_request 或 human_complaint_risk。",
+		"【顶层聚合·金标】primaryIntent 按以下优先级确定：存在 human_complaint_risk 任务→human_complaint_risk；办入住双任务→hotel_info；存在 hotel_variable 任务→hotel_variable；否则按用户原顺序第一个业务任务；没有业务任务→interaction。忽略只表达语气的 interaction 任务。",
+		"【资源动作纪律·金标】本轮资源动作只来自客户明确索要的 hotel_variable 任务（电话/定位/小程序），禁止默认补齐任何变量，禁止把电话、定位、小程序当兜底一起输出。",
+		"【interaction 否定项】interaction 任务不查知识、不取变量、不转人工；不明确时只追问一个关键点。",
 	}
 	if profile != nil {
 		if description := strings.TrimSpace(profile.Description); description != "" {
