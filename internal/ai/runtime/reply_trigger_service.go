@@ -436,18 +436,54 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
 		}
 		replyCtx.Trace.ReplySent = len(replyMessages) > 0
-		return executionResultWithTaskSummary(completedInterruptResult("runtime_completed", replyMessages, 0), summary), nil
+		result := executionResultWithTaskSummary(completedInterruptResult("runtime_completed", replyMessages, 0), summary)
+		if err := s.requestDeferredTaskHandoff(replyCtx, summary); err != nil {
+			// 成功答案已经提交，人工确认失败只续跑未完成的人工 Task，不能让
+			// 已回答任务重新生成，也不能把技术故障伪装成已完成 handoff。
+			slog.Warn("request deferred task handoff failed",
+				"conversation_id", replyCtx.Conversation.ID,
+				"message_id", replyCtx.Message.ID,
+				"error", err,
+			)
+			result.HumanTaskKeys = nil
+			result.HasRemainingTasks = true
+		}
+		return result, nil
 	}
 	if evidence := s.findCommittedReplyEvidence(replyCtx); len(evidence) > 0 {
-		return executionResultWithTaskSummary(svc.AIReplyExecutionResult{
+		result := executionResultWithTaskSummary(svc.AIReplyExecutionResult{
 			Status: svc.AIReplyExecutionStatusCompleted, ReasonCode: "runtime_action_committed",
 			CommittedMessageIDs: evidence,
-		}, summary), nil
+		}, summary)
+		if err := s.requestDeferredTaskHandoff(replyCtx, summary); err != nil {
+			result.HumanTaskKeys = nil
+			result.HasRemainingTasks = true
+		}
+		return result, nil
 	}
 	return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
 		svc.AIReplyExecutionErrorEmptyOutput,
 		fmt.Errorf("runtime completed without durable output"),
 	)
+}
+
+func (s *aiReplyService) requestDeferredTaskHandoff(replyCtx aiReplyContext, summary *applicationruntime.Summary) error {
+	if summary == nil || len(summary.HumanTaskKeys) == 0 || !summary.TaskLedgerEnabled {
+		return nil
+	}
+	if !svc.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(replyCtx.Conversation.ID) {
+		return nil
+	}
+	_, err := svc.ConversationHandoffConfirmationService.RequestByAIForTasksWithOriginMessage(
+		replyCtx.Conversation.ID,
+		replyCtx.AIAgent,
+		"客人有一项服务需要人工协助",
+		strings.TrimSpace(replyCtx.Message.RequestID),
+		replyCtx.Message.ID,
+		replyCtx.Message.AIReplyTurnID,
+		summary.HumanTaskKeys,
+	)
+	return err
 }
 
 func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {

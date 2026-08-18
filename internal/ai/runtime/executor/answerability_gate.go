@@ -410,7 +410,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but retriever has no knowledge", nil)
 		return state, nil
 	}
-	query := strings.TrimSpace(req.UserMessage.Content)
+	query := runtimeUserMessageText(req.UserMessage)
 	if query == "" {
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
@@ -418,7 +418,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		return state, nil
 	}
 	retrieveOptions := retrievers.DefaultKnowledgeRetrieveOptions()
-	retrieveOptions.QueryPreview = preview(req.UserMessage.Content, 120)
+	retrieveOptions.QueryPreview = preview(query, 120)
 	result := state.Input.PrefetchedKnowledge
 	var err error
 	if result == nil {
@@ -475,7 +475,9 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 	case "service_request":
 		parts = append(parts, "服务请求：按当前分类提示词处理；普通设施/设备/用品问题先使用知识库。没有知识库或工具结果时，不得承诺派人、送物、维修、叫醒或记录完成。")
 	case "interaction":
-		if strings.TrimSpace(intent.SubIntent) == "media_context_follow_up" {
+		if intent.NeedsKnowledge {
+			parts = append(parts, "互动/澄清服务问题：本轮已升级为正式知识任务，必须使用当前任务的检索结果回答；无命中只追问一个关键点，不得自行转人工。")
+		} else if strings.TrimSpace(intent.SubIntent) == "media_context_follow_up" {
 			parts = append(parts, "图片/文件上下文：围绕当前问题使用最近图片/文件解析文本，不机械复述 OCR，不说系统识别。语音仍按既有语转文文本链路处理。")
 		} else if strings.TrimSpace(intent.SubIntent) == "clarify" || intent.NeedsClarification {
 			parts = append(parts, "互动/澄清：只追问一个关键点或给安全短答，不调用知识、变量或人工路由。")
@@ -487,7 +489,7 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 }
 
 func buildHotelVariableInstruction(req RunInput, intent callbacks.IntentTraceData) string {
-	return buildHotelVariableInstructionFromInstance(findRuntimeWxWorkInstance(req), req.UserMessage.Content, intent)
+	return buildHotelVariableInstructionFromInstance(findRuntimeWxWorkInstance(req), runtimeUserMessageText(req.UserMessage), intent)
 }
 
 func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolInstance, currentText string, intent callbacks.IntentTraceData) string {
@@ -552,7 +554,7 @@ func buildMissingMediaContextInstruction(req RunInput, messages []*schema.Messag
 	if strings.TrimSpace(intent.SubIntent) != "media_context_follow_up" {
 		return ""
 	}
-	text := normalizeGateText(req.UserMessage.Content)
+	text := normalizeGateText(runtimeUserMessageText(req.UserMessage))
 	if text == "" || !isMediaFollowUpIntent(text) || hasUsableMediaUnderstanding(messages) || hasRecentUsableMediaUnderstanding(req) {
 		return ""
 	}

@@ -81,7 +81,7 @@ func buildRuntimeReplyPlanV2(
 				outputMode = "clarification"
 			}
 			if knowledgeStatus == "unavailable" {
-				outputMode = "handoff"
+				outputMode = "skip"
 			}
 		}
 		constraints := []string{"no_unsupported_facts", "no_action_claim", "no_internal_terms", "short_wechat_style"}

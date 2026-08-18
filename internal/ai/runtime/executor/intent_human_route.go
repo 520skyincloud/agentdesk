@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/services"
@@ -35,6 +36,20 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
+	if runtimeReplyPlanHasNonHandoffTask(summary.ReplyPlanV2) {
+		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"intent":    intent.PrimaryIntent,
+				"subIntent": intent.SubIntent,
+			},
+			Status:            "skipped",
+			RecommendedAction: "defer_handoff_until_other_tasks_commit",
+			ResultPreview:     "当前轮还有可直接回答或发送的任务，先提交成功项，再发人工确认",
+		})
+		return false, nil
+	}
 	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
@@ -49,7 +64,7 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	reason := buildIntentHumanRouteReason(intent, req.UserMessage.Content)
+	reason := buildIntentHumanRouteReason(intent, runtimeUserMessageText(req.UserMessage))
 	started := time.Now()
 	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID), req.UserMessage.ID)
 	item := callbacks.GraphToolTraceItem{
@@ -81,6 +96,18 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+func runtimeReplyPlanHasNonHandoffTask(plan *contracts.ReplyPlanV2) bool {
+	if plan == nil {
+		return false
+	}
+	for _, task := range plan.Tasks {
+		if task.OutputMode != "handoff" && task.OutputMode != "skip" {
+			return true
+		}
+	}
+	return false
 }
 
 func isHandoffIntentCategory(intent callbacks.IntentTraceData) bool {

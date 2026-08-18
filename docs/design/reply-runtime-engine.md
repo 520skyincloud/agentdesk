@@ -122,6 +122,10 @@ Prompt 要求模型返回 JSON：Intent 调用附加 `text.format=json_schema`�
 TaskCoverage、EvidenceReference、ActionReference、Safety 和 CommitInvariant 校验；上游 Schema
 不是替代本地验证的成功凭据。
 
+生产默认固定使用上述 V2 契约。历史变量 `AI_RUNTIME_MULTIMODAL_V3` 只保留配置兼容性，不能再
+启用严格 V3；只有显式设置实验变量 `AI_RUNTIME_MULTIMODAL_V3_STRICT=on` 才进入 V3 Intent、
+ContextCompiler 和 Generate 传输契约。生产环境必须保持该实验变量未设置或为 `off`。
+
 DeepSeek Responses 当前只允许精确模型名 `deepseek-v4-flash`。请求显式携带
 `reasoning.effort=none`。发送到 Responses 的 Schema 必须为 `const`、`enum` 等原本可推断的
 原始类型补齐显式 `type`，以满足 NewAPI/DeepSeek 对每个 Schema 节点必须声明 `type`、`anyOf`
@@ -164,7 +168,8 @@ Trigger / Batch
 - Normalize：合并当前批次并保留消息类型、媒体理解和 RequestID。
 - IntentDetect：基于行业 Prompt/Schema 识别主意图、次意图和所需能力。
 - PromptSelect：只装载当前意图需要的规则。
-- ContextBuild：当前问题优先，其次近期原文、媒体理解、压缩记忆、Store 事实和标签。
+- ContextBuild：Intent 可读取近期原文、媒体理解和压缩记忆；Generate 只读取当前未完成 Task、
+  对应 Evidence、Store 事实、标签和最多两个必要历史轮次，不注入压缩记忆中的旧 AI 答案。
 - Knowledge：逐问题检索，不用一个命中覆盖其他问题。
 - ReplyPlan：确定目标、依据、禁止事项和允许动作。
 - Generate：只自然表达计划，不能重新决定真实动作。
@@ -179,7 +184,8 @@ IntentDetect、Knowledge、Generate、Validate 和 Commit 的运行错误只能�
 
 Runtime 的 `completed` 只表示返回了内部持久化证据：本轮已提交 AI Message ID 列表或已持久化
 Interrupt ID。Job 收到后还要按 Tenant、Conversation、源 Message、RequestID、Session 和稳定
-ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入人工兜底。AgentRunLog 仅记录
+ClientMsgID 重新查询数据库；证据不匹配按 `commit_failed` 进入受控技术失败，不得自动派人工或
+向客户发送固定失败话术。AgentRunLog 仅记录
 `committed`、`policy_skipped`、`interrupted`、`failed` 等诊断状态，空错误 RunLog 不是成功凭据。
 
 `provide_location` 是回复计划中的定位资源动作：只有 Store 已配置导航名、地址和有效经纬度
@@ -210,15 +216,14 @@ pending -> processing -> completed | skipped | superseded | expired | failed
 - 每个模型阶段由当前九槽 `MaxRetryCount` 控制调用重试，默认 `2`，即初次调用加两次重试；
   Intent 严格 JSON 修复属于协议修复，不计作网络重试。Responses 结构化 Schema 被上游以确定性
   HTTP 400 拒绝时，归类为 `structured_output_schema_rejected`，同一非法请求不重复发送。
-- Job 最多 4 次 Claim 用于进程崩溃、租约、数据库和可重试 Runtime 失败的恢复，退避为 15 秒、
-  1 分钟、3 分钟。阶段重试耗尽后的技术错误仍先进入 Job 的受控重试预算；Job 重试只重新执行
-  尚未提交的 Runtime，不重建已经提交的 Message、Outbox、Usage 或人工任务。只有 Job 重试耗尽、
-  任务账本达到任务重试上限，或错误明确不可恢复时，才使用稳定键
-  `ai_reply_job_handoff_<jobID>` 进入现有人工任务池。
+- Job 最多 4 次 Claim 只用于进程崩溃、租约、数据库和未完成状态恢复，退避为 15 秒、1 分钟、
+  3 分钟；九槽模型客户端和 FastGPT Gateway 分别拥有各自唯一的网络重试预算。已耗尽的模型、
+  协议或知识调用不得被 Task/Job 再次放大，也不得自动改写为人工诉求。
 - 人工派单失败时记录 `human_dispatch_retry`，后续 Claim 只重试派单，不再调用模型。
-- 知识任务失败会释放任务占用并写入 `next_retry_at`，不把整轮立即改成 `handoff_pending`；同轮已
-  成功的任务继续保留，只有该任务重试耗尽后才转人工。
-- 任务创建 15 分钟后仍是最新消息且无人回复时，不再调用模型，使用稳定请求键进入现有人工任务池。
+- 知识基础设施失败在 Gateway 重试耗尽后直接进入该 Task 的 `failed/knowledge` 技术终态；同轮已
+  成功任务继续提交，不进入 `handoff_pending`，也不再次检索。
+- 任务创建 15 分钟后仍未完成时进入 `expired_technical_terminal`，不再调用模型、不自动派人工。
+- 技术失败只写受控日志、RunLog、Job 和 Task 状态，不发送“消息暂时没有处理成功”等客户可见话术。
 - 最近 15 分钟补偿扫描只补非历史、未撤回、可触发且缺任务的客户消息，不扫描旧历史。
 - 同 Session 更新客户消息使旧任务 `superseded`；更新人工消息按人工接管处理；System、欢迎语、
   欢迎图片、小程序或绑定卡不能覆盖客户任务。Session 变化或已有回复按现有状态机收敛，关闭、
@@ -252,13 +257,13 @@ open -> running -> committed -> delivered
 
 ```text
 pending -> running -> ready -> committed -> delivered
-                   \-> covered | handoff | skipped | superseded
+                   \-> covered | handoff | skipped | superseded | failed
 ```
 
 同一 Turn 通过租约保证只有一个 AI Job 执行；每批最多领取 6 个未完成 Task，余量由同一持久 Job
 自动续批。正常多题链路保持一次 Intent、知识 Task 最多 4 路并行检索、一次 Generate；Generate
 必须按 taskKey 覆盖所有成功文本 Task，最多拆成三条文本消息。知识 `no_hit` 明确禁止猜测，单项
-`failed` 只将对应 Task 转人工，不能清空其他成功结果或重跑完整模型链。
+`failed` 只关闭对应 Task 并记录技术分类，不能清空其他成功结果、转人工或重跑完整模型链。
 
 同批知识 Task 各自独立检索。两个及以上 Task 的排名第一命中同时指向相同
 `KnowledgeBaseID + SourceRecordID` 时，Runtime 生成内部 `AnswerGroup`，Generate 必须只输出一个
@@ -303,7 +308,7 @@ customer Message(sendtime)
 ### 5.3 紧邻回答上下文
 
 Generate 在不改变 Intent Schema 和模型调用次数的前提下，可读取当前 Session 内最近 10 分钟的
-紧邻上一组客户问题和 AI 回复批次。AI 批次按相同 RequestID 聚合文本、图片、定位和小程序；
+紧邻上一组客户问题和 AI 回复批次，最多保留两个完整历史轮次。AI 批次按相同 RequestID 聚合文本、图片、定位和小程序；
 System/欢迎消息既不进入回答内容，也不切断承接关系。出现新的客户消息、人工客服消息、Session
 变化或超过窗口时，不启用该提示。
 
@@ -412,16 +417,17 @@ ChunkID 或本地知识兼容字段，也不通过标题猜测身份。
 知识规则：
 
 - 多问题分别检索后合并，不能只检索整段。
-- IntentDetect 明确识别寒暄、感谢、表情等社交意图时不检索；`interaction/clarify` 且未声明
-  知识需求时允许一次条件 FastGPT 探测，达到当前阈值后补成 `hotel_info/store_knowledge`
-  任务，探测结果直接复用于正式回答，禁止重复检索。
-- 包含明确对象的澄清问题可直接探测；“这个呢”“还有吗”“它有吗”等纯指代问题只有在紧邻
-  上下文能唯一解析一个对象时才允许探测。无法唯一解析时保留澄清，不能因任意知识命中强制
-  改成知识意图。
+- IntentDetect 明确识别寒暄、感谢、表情等社交意图时不检索；不明确但包含具体服务对象的
+  `interaction/clarify` 先升级为持久化知识 Task，再走一次正式 FastGPT 检索，禁止在 Task 账本前
+  做一次性预探测。
+- “这个呢”“还有吗”“它有吗”等纯指代问题只有在紧邻上下文能唯一解析对象时才升级知识 Task；
+  无法唯一解析时保留澄清，不能因任意知识命中强制改成知识意图。
 - 未命中时不编造，也不注入固定“已记录/同事跟进”话术。
 - FastGPT 无命中与基础设施失败必须分开：无命中可追问一个关键点；基础设施失败在网关初次
-  调用加两次重试后返回 `knowledge_unavailable` 并进入人工。
+  调用加两次重试后返回 `knowledge_unavailable`，只关闭对应 Task 并记录技术失败，不进入人工。
 - 低风险 FAQ 优先回答或追问关键字段，不默认转人工。
+- 知识正文只作为事实 Evidence，不能因为正文出现“转接”“人工”等字样改变路由；动作只认当前
+  Store 下显式配置的 `KnowledgeActionBinding`。
 - 真实服务动作只能由当前工具/接待路由决定，模型不能虚构已执行。
 - 检索失败时仍可基于非知识上下文继续 ReplyPlan，但必须带“不编造门店事实”约束。
 
@@ -525,8 +531,8 @@ ActionLedger 可在内部 TraceData 的 `suppressedActions` 记录资源去重�
 - FastGPT 未就绪：知识路径失败关闭，不读取本地 fallback。
 - 任一父链跨 Tenant/Store：拒绝执行。
 - IntentDetect、Generate、Knowledge、Validate、资源构建或 Commit 受控失败：先按错误元数据判断
-  是否可重试；可重试错误进入 Job 或逐题任务的退避队列，重新检查会话新鲜度后继续处理。确定性
-  Schema/配置错误，或重试预算耗尽后，进入现有人工任务池，不把 Job 标成 `completed`。
+  是否可重试；网络重试只由对应九槽模型客户端或 FastGPT Gateway 执行。确定性 Schema/配置错误
+  或重试预算耗尽后进入受控技术终态，不自动派人工，也不发送固定失败话术。
 - Commit 已成功但外部发送失败：只重试 Outbox，不重跑模型。
 - 需要人工且 AI 不可用：仍可进入现有人工池。
 

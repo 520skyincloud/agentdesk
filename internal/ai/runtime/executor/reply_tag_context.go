@@ -45,7 +45,8 @@ func appendReplyTagContext(req RunInput, intent callbacks.IntentTraceData, reply
 			collector.SetGenerateTagContext(trace)
 		}
 	}
-	scenes, reason := selectReplyTagScenes(req.UserMessage.Content, intent, replyPlan)
+	currentText := runtimeUserMessageText(req.UserMessage)
+	scenes, reason := selectReplyTagScenes(currentText, intent, replyPlan)
 	trace.Scenes = append([]string(nil), scenes...)
 	if len(scenes) == 0 {
 		trace.Reason = reason
@@ -57,7 +58,7 @@ func appendReplyTagContext(req RunInput, intent callbacks.IntentTraceData, reply
 		setTrace()
 		return
 	}
-	candidates, err := services.CustomerTagService.SelectReplyTagCandidates(req.Conversation.ID, scenes, currentTurnDisplayText(req.UserMessage.Content))
+	candidates, err := services.CustomerTagService.SelectReplyTagCandidates(req.Conversation.ID, scenes, currentText)
 	if err != nil {
 		trace.Status = "failed"
 		trace.Reason = "candidate_query_failed"

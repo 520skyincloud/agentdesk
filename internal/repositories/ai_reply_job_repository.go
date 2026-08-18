@@ -180,9 +180,9 @@ func (r *aiReplyJobRepository) SupersedeOlderTurnVersions(db *gorm.DB, tenantID,
 	}).Error
 }
 
-// SkipPendingByMessageInTenant 把某条客户消息尚未开始执行的 AI Reply Job 标记为 skipped。
-// 用于客户消息已被确定性消费（例如转人工二次确认的"取消/确认"），不再需要 AI 生成回复，
-// 避免 job worker 后续又把这条消息当成普通诉求重新走意图/转人工。
+// SkipPendingByMessageInTenant 把某条已被确定性消费的客户消息对应 Job 标记为 skipped。
+// processing 也必须覆盖：确认消息可能在事务提交后被 worker 抢先领取，若只跳过
+// pending/retry，仍会出现同一句既被确认服务消费、又进入普通 AI 链路的双重处理。
 func (r *aiReplyJobRepository) SkipPendingByMessageInTenant(db *gorm.DB, tenantID, conversationID, messageID int64, resultCode string, now time.Time) error {
 	if db == nil || tenantID <= 0 || conversationID <= 0 || messageID <= 0 {
 		return nil
@@ -192,12 +192,15 @@ func (r *aiReplyJobRepository) SkipPendingByMessageInTenant(db *gorm.DB, tenantI
 		Where("status IN ?", []enums.AIReplyJobStatus{
 			enums.AIReplyJobStatusPending,
 			enums.AIReplyJobStatusRetry,
+			enums.AIReplyJobStatusProcessing,
 		}).
 		Updates(map[string]any{
 			"status":           enums.AIReplyJobStatusSkipped,
 			"result_code":      strings.TrimSpace(resultCode),
 			"last_error_class": "",
 			"next_retry_at":    nil,
+			"lease_owner":      "",
+			"lease_expires_at": nil,
 			"completed_at":     now,
 			"updated_at":       now,
 			"update_user_name": "ai_reply_handoff",

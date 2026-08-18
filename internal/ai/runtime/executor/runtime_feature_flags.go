@@ -24,6 +24,11 @@ const (
 
 	runtimeActionLedgerShadow        = "shadow"
 	runtimeActionLedgerAuthoritative = "authoritative"
+
+	// The old production flag is intentionally ignored. Strict V3 remains
+	// available only as an explicit experiment so stale server configuration
+	// cannot put customer traffic back on the span/group protocol.
+	runtimeMultimodalV3StrictEnv = "AI_RUNTIME_MULTIMODAL_V3_STRICT"
 )
 
 type runtimeFeatureModes struct {
@@ -42,13 +47,12 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	// legacyRuntimeFeatureModes() 仅在 runtimeV2ScopeEnabled 白名单排除时作为回退手段保留。
 	modes := runtimeFeatureModes{
 		ContextCompiler: runtimeModeEnv("AI_RUNTIME_CONTEXT_COMPILER", runtimeContextCompilerV2, runtimeContextCompilerLegacy, runtimeContextCompilerShadow, runtimeContextCompilerV2),
-		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2, runtimeIntentContractV3),
+		IntentContract:  runtimeModeEnv("AI_RUNTIME_INTENT_CONTRACT", runtimeIntentContractV2, runtimeIntentContractV1, runtimeIntentContractV2),
 		ReplyContract:   runtimeModeEnv("AI_RUNTIME_REPLY_CONTRACT", runtimeReplyContractV2, runtimeReplyContractLegacy, runtimeReplyContractV2),
 		Validator:       runtimeModeEnv("AI_RUNTIME_VALIDATOR", runtimeValidatorV2, runtimeValidatorLegacy, runtimeValidatorV2),
 		ActionLedger:    runtimeModeEnv("AI_RUNTIME_ACTION_LEDGER", runtimeActionLedgerAuthoritative, runtimeActionLedgerShadow, runtimeActionLedgerAuthoritative),
 	}
-	// 成组开关：V3 只允许整组启用（Intent V3 + Context V2），
-	// 禁止单独打开 IntentTasksV3 而其它部分仍为 legacy。
+	// Strict V3 is isolated from ordinary production overrides.
 	if multimodalV3Enabled() {
 		modes.IntentContract = runtimeIntentContractV3
 		modes.ContextCompiler = runtimeContextCompilerV2
@@ -56,12 +60,11 @@ func resolveRuntimeFeatureModes(req RunInput) runtimeFeatureModes {
 	return modes
 }
 
-// multimodalV3Enabled 契约 2.1 成组总开关：AI_RUNTIME_MULTIMODAL_V3=on 时
-// Intent 必须走 intent_tasks.v3（Envelope + SourceSpan + QuestionUnit）。
-// Reply/Validator 侧的 V3 语义（服务端派生引用、组覆盖）已在 V2 主链通过
-// deterministic autofix 与 AnswerGroup 落地；OutputV3 传输协议切换保持灰度。
+// multimodalV3Enabled is an explicit experimental opt-in. The former
+// AI_RUNTIME_MULTIMODAL_V3 variable is retained only for compatibility and
+// cannot activate strict V3 serving behavior.
 func multimodalV3Enabled() bool {
-	return strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on"
+	return strings.TrimSpace(os.Getenv(runtimeMultimodalV3StrictEnv)) == "on"
 }
 
 func legacyRuntimeFeatureModes() runtimeFeatureModes {

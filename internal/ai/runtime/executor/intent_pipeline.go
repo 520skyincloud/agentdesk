@@ -42,7 +42,7 @@ type runtimePipelinePlan struct {
 }
 
 func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) (runtimePipelinePlan, error) {
-	currentText := strings.TrimSpace(req.UserMessage.Content)
+	currentText := runtimeUserMessageText(req.UserMessage)
 	intent, replyPlan, taskState, restored, err := loadPersistedRuntimeTaskBatch(req)
 	if err != nil {
 		return runtimePipelinePlan{}, err
@@ -63,26 +63,12 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 				fmt.Errorf("intent model unavailable"),
 			)
 		}
-		prefetchedKnowledge, err = probeClarifyKnowledge(ctx, req, history, intent)
-		if err != nil {
-			return runtimePipelinePlan{}, err
-		}
-		if prefetchedKnowledge != nil && len(prefetchedKnowledge.Hits) > 0 && strings.TrimSpace(prefetchedKnowledge.ContextText) != "" {
-			intent.PrimaryIntent = "hotel_info"
-			intent.MatchedIntentCode = "hotel_info"
-			intent.DetectedIntent = "hotel_info"
-			intent.SubIntent = "store_knowledge"
-			intent.NeedsClarification = false
-			intent.NeedsKnowledge = true
-			intent.ShouldReply = true
-			intent.MatchMode = "knowledge_probe"
-			intent.Reason = appendIntentReason(intent.Reason, "clarify knowledge probe matched current store knowledge")
-			intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-				Intent: "hotel_info", SubIntent: "store_knowledge", Text: currentText,
-				NeedsKnowledge: true, Reason: "clarify knowledge probe matched",
-			}}
-			promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
-		}
+		// Clarification-like service questions use the same persisted task
+		// identity as every other knowledge query. A pre-ledger probe can lose its
+		// checkpoint and later report knowledge_unavailable after a successful hit.
+		intent = markConditionalKnowledgeTasksForFormalRetrieval(intent, currentText)
+		prefetchedKnowledge = nil
+		promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
 		replyPlan = buildReplyPlan(intent, promptPack)
 		intent, replyPlan, taskState, err = persistAndSelectRuntimeTaskBatch(req, intent, replyPlan)
 		if err != nil {
@@ -110,12 +96,24 @@ func buildRuntimePipelinePlanStrict(ctx context.Context, req RunInput, history a
 		if knowledgeOutcome.Evidence != nil {
 			evidence = *knowledgeOutcome.Evidence
 		}
-		// 知识命中绑定动作：把“转人工”类知识答案从口头文本提升为结构化人工路由，
-		// 让既有二次确认链真正触发，而不是模型复述“我要转人工”。
-		activePlans, knowledgeHandoff := applyKnowledgeActionBindings(activePlans, knowledgeOutcome.TaskActionCodes)
+		// 知识命中绑定动作只改写对应 Task。混合轮次中的知识回答、入住小程序、
+		// 定位等其他任务继续执行，不能被单个人工动作清空。
+		taskActionCodes := knowledgeOutcome.TaskActionCodes
+		if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+			taskActionCodes = withoutRuntimeActionCode(taskActionCodes, "human_handoff")
+		}
+		activePlans, knowledgeHandoff := applyKnowledgeActionBindings(activePlans, taskActionCodes)
 		replyPlan.TaskPlans = activePlans
 		if knowledgeHandoff {
-			intent = markIntentAsKnowledgeHandoff(intent)
+			intent = filterIntentForReplyTaskPlans(intent, activePlans)
+			if strings.TrimSpace(intent.HumanRoutePolicy) == "" {
+				intent.HumanRoutePolicy = "managed_mode"
+			}
+			for _, plan := range activePlans {
+				if runtimeTaskTypeForPlan(plan) == enums.AIReplyTurnTaskTypeHuman {
+					taskState.HumanTaskKeys = appendUniqueStrings(taskState.HumanTaskKeys, plan.TaskKey)
+				}
+			}
 		}
 	}
 	actionLedgerV2, err := ensureRuntimeActionLedger(req, taskState, replyPlan.TaskPlans, &evidence)
@@ -285,6 +283,39 @@ func probeClarifyKnowledge(ctx context.Context, req RunInput, history adapter.Hi
 	return result, nil
 }
 
+func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
+	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
+		return intent
+	}
+	marked := false
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		if task.Intent != "interaction" || (strings.TrimSpace(task.SubIntent) != "clarify" && !intent.NeedsClarification) {
+			continue
+		}
+		task.NeedsKnowledge = true
+		if strings.TrimSpace(task.Text) == "" {
+			task.Text = strings.TrimSpace(currentText)
+		}
+		task.Reason = appendIntentReason(task.Reason, "clarification task uses formal persisted knowledge retrieval")
+		marked = true
+	}
+	if !marked && strings.TrimSpace(currentText) != "" {
+		intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{
+			Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: strings.TrimSpace(currentText),
+			NeedsKnowledge: true, Reason: "clarification task uses formal persisted knowledge retrieval",
+		})
+		marked = true
+	}
+	if !marked {
+		return intent
+	}
+	intent.NeedsKnowledge = true
+	intent.ShouldReply = true
+	intent.Reason = appendIntentReason(intent.Reason, "conditional knowledge routed through persisted task ledger")
+	return intent
+}
+
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {
 	policy := "当前意图无需额外工具或知识检索；继续携带完整上下文。"
 	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute {
@@ -330,7 +361,9 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "按当前门店托管模式和排班处理人工、投诉和风险。", "不要口头假装已经通知或处理完成。", "普通设施/设备问题若知识库命中，知识库优先，不要反复诱导转人工。")
 		}
 	case "interaction":
-		if intent.SubIntent == "media_context_follow_up" {
+		if intent.NeedsKnowledge {
+			instructions = append(instructions, "当前任务按正式门店知识检索处理；命中就直接用当前问题对应的知识自然回答，未命中时只追问一个关键点。不要因为分类暂时是互动/澄清就跳过知识，也不要转人工。")
+		} else if intent.SubIntent == "media_context_follow_up" {
 			instructions = append(instructions, "当前问题是在追问最近图片/文件解析文本；直接结合上下文回答用户问法，不机械复述解析全文，不说系统识别。语音仍按既有语转文文本链路处理。")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
 			instructions = append(instructions, "当前问题是在纠正或澄清上一轮误会；只接住当前纠正，轻声道歉或确认即可，不要继续补答历史里的电视、早餐、停车、语音等旧主题。")
@@ -367,7 +400,7 @@ func buildContextTrace(req RunInput, history adapter.HistoryBuildResult, intent 
 		mediaCount++
 	}
 	return callbacks.ContextBuildTraceData{
-		CurrentTurn:             preview(req.UserMessage.Content, 240),
+		CurrentTurn:             preview(runtimeUserMessageText(req.UserMessage), 240),
 		RecentRawMessageCount:   len(history.Messages),
 		CompressedMemorySource:  history.MemorySource,
 		CompressedMemoryCount:   history.MemoryItemCount,
@@ -384,7 +417,9 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 	taskPlans := buildReplyTaskPlans(intent)
 	switch intent.PrimaryIntent {
 	case "interaction":
-		if intent.SubIntent == "media_context_follow_up" {
+		if intent.NeedsKnowledge {
+			goal = "先完成当前澄清任务的门店知识检索，再逐题回答或追问一个关键点"
+		} else if intent.SubIntent == "media_context_follow_up" {
 			goal = "结合最近图片/文件解析文本回答用户追问"
 			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
@@ -616,19 +651,18 @@ func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, task
 	return ret, hasHandoff
 }
 
-// markIntentAsKnowledgeHandoff 把意图收敛为人工路由，驱动 executeIntentHumanRoute 发起二次确认。
-func markIntentAsKnowledgeHandoff(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
-	intent.PrimaryIntent = "human_complaint_risk"
-	intent.MatchedIntentCode = "human_complaint_risk"
-	intent.DetectedIntent = "human_complaint_risk"
-	intent.SubIntent = "explicit_handoff"
-	intent.NeedsHumanRoute = true
-	intent.HumanRoutePolicy = "managed_mode"
-	intent.NeedsKnowledge = false
-	intent.NeedsResource = false
-	intent.NeedsTool = false
-	intent.Reason = appendIntentReason(intent.Reason, "knowledge action binding promoted to human handoff")
-	return intent
+func withoutRuntimeActionCode(values map[string]string, blocked string) map[string]string {
+	if len(values) == 0 {
+		return values
+	}
+	ret := make(map[string]string, len(values))
+	for key, value := range values {
+		if strings.TrimSpace(value) == strings.TrimSpace(blocked) {
+			continue
+		}
+		ret[key] = value
+	}
+	return ret
 }
 
 func expectedIntentResources(intent callbacks.IntentTraceData) []string {

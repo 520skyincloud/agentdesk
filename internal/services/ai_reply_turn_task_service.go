@@ -388,12 +388,22 @@ func (s *aiReplyTurnTaskService) ClaimBatchDB(db *gorm.DB, turn *models.AIReplyT
 	if db == nil || turn == nil || turn.ID <= 0 || turn.TenantID <= 0 || jobID <= 0 {
 		return nil, false, errorsx.InvalidParam("AI 回复逐题任务缺少领取范围")
 	}
+	job := repositories.AIReplyJobRepository.GetInTenant(db, jobID, turn.TenantID)
+	if job == nil || job.TurnID != turn.ID || job.TurnVersion != turn.Version ||
+		job.ConversationID != turn.ConversationID || job.SessionNo != turn.SessionNo || job.MessageID <= 0 {
+		return nil, false, ErrAIReplyTurnStale
+	}
 	allTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
 	claimed := make([]models.AIReplyTurnTask, 0, aiReplyTurnTaskBatchLimit)
 	hasMore := false
 	now := time.Now()
 	for index := range allTasks {
 		task := allTasks[index]
+		// 当前 Job 只能处理自己版本已经看见的来源消息。这样即使旧 Turn 中
+		// 残留了异常任务，也不能越过 message/version 边界被后续 Job 复活。
+		if task.IntroducedVersion > job.TurnVersion || task.SourceMessageID > job.MessageID {
+			continue
+		}
 		if task.Status == enums.AIReplyTurnTaskStatusHandoffPending || aiReplyTurnTaskTerminal(task.Status) {
 			continue
 		}
@@ -456,17 +466,12 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 		claimedVersion := task.ClaimedVersion
 		var nextRetryAt *time.Time
 		if update.Status == enums.AIReplyTurnTaskKnowledgeStatusFailed {
-			status = enums.AIReplyTurnTaskStatusPending
-			stage = enums.AIReplyTurnTaskStageKnowledge
+			// FastGPT Gateway 已经拥有唯一的网络重试预算。任务层不再把一次
+			// gateway 失败放大成多轮检索，更不能把技术失败改写为转人工。
+			status = enums.AIReplyTurnTaskStatusFailed
+			stage = enums.AIReplyTurnTaskStageComplete
 			claimedByJobID = 0
 			claimedVersion = 0
-			nextAttempt := task.AttemptCount + 1
-			if nextAttempt >= aiReplyJobMaxAttempts {
-				status = enums.AIReplyTurnTaskStatusHandoffPending
-				stage = enums.AIReplyTurnTaskStageHandoff
-			} else {
-				nextRetryAt = aiReplyTaskRetryAt(now, nextAttempt)
-			}
 		}
 		updatesMap := map[string]any{
 			"knowledge_status":    update.Status,
@@ -477,9 +482,13 @@ func (s *aiReplyTurnTaskService) MarkKnowledgeResultsDB(db *gorm.DB, tenantID, t
 			"claimed_version":     claimedVersion,
 			"attempt_count":       gorm.Expr("attempt_count + 1"),
 			"result_code":         controlledResultCode(update.ResultCode, string(update.Status)),
+			"failure_class":       gorm.Expr("CASE WHEN ? = ? THEN ? ELSE failure_class END", update.Status, enums.AIReplyTurnTaskKnowledgeStatusFailed, string(FailureKnowledge)),
 			"next_retry_at":       nextRetryAt,
 			"updated_at":          now,
 			"update_user_name":    "ai_reply_knowledge",
+		}
+		if status == enums.AIReplyTurnTaskStatusFailed {
+			updatesMap["completed_at"] = now
 		}
 		// 契约 4.17：只在真实取得日志时写入，不覆盖重试前已绑定的 checkpoint。
 		if update.RetrieveLogID > 0 {
@@ -914,6 +923,39 @@ func (s *aiReplyTurnTaskService) CancelHandoffPendingBySourceMessageDB(db *gorm.
 			"next_retry_at":     nil,
 			"updated_at":        now,
 			"update_user_name":  "ai_reply_handoff_cancel",
+		}).Error
+}
+
+// SkipNonTerminalBySourceMessageDB closes every task derived from a message that
+// was consumed by a deterministic control flow (for example handoff confirm/cancel).
+// It is deliberately source-scoped so unrelated questions in the same Turn survive.
+func (s *aiReplyTurnTaskService) SkipNonTerminalBySourceMessageDB(
+	db *gorm.DB,
+	tenantID, conversationID, sourceMessageID int64,
+	resultCode string,
+	now time.Time,
+) error {
+	if db == nil || tenantID <= 0 || conversationID <= 0 || sourceMessageID <= 0 || !db.Migrator().HasTable(&models.AIReplyTurnTask{}) {
+		return nil
+	}
+	return db.Model(&models.AIReplyTurnTask{}).
+		Where("tenant_id = ? AND conversation_id = ? AND source_message_id = ?", tenantID, conversationID, sourceMessageID).
+		Where("status IN ?", []enums.AIReplyTurnTaskStatus{
+			enums.AIReplyTurnTaskStatusPending,
+			enums.AIReplyTurnTaskStatusReady,
+			enums.AIReplyTurnTaskStatusRunning,
+			enums.AIReplyTurnTaskStatusHandoffPending,
+		}).
+		Updates(map[string]any{
+			"stage":             enums.AIReplyTurnTaskStageComplete,
+			"status":            enums.AIReplyTurnTaskStatusSkipped,
+			"result_code":       controlledResultCode(resultCode, "consumed_by_control_flow"),
+			"claimed_by_job_id": 0,
+			"claimed_version":   0,
+			"next_retry_at":     nil,
+			"completed_at":      now,
+			"updated_at":        now,
+			"update_user_name":  "ai_reply_control_flow",
 		}).Error
 }
 

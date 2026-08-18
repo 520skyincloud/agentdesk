@@ -30,7 +30,7 @@ const (
 	aiReplyJobInitialDelay      = 250 * time.Millisecond
 	aiReplyJobLeaseDuration     = 90 * time.Second
 	aiReplyJobRenewInterval     = 30 * time.Second
-	aiReplyJobContinuationDelay = 25 * time.Millisecond
+	aiReplyJobContinuationDelay = 250 * time.Millisecond
 	aiReplyJobMaxAttempts       = 4
 	aiReplyJobMaxConcurrency    = 4
 )
@@ -163,6 +163,12 @@ func (s *aiReplyJobService) EnqueueForMessageDB(db *gorm.DB, conversation *model
 	if conversation.ID <= 0 || conversation.TenantID <= 0 || message.ID <= 0 ||
 		message.TenantID != conversation.TenantID || message.ConversationID != conversation.ID {
 		return nil, false, errorsx.InvalidParam("AI 回复任务消息与会话范围不一致")
+	}
+	// 转人工二次确认是消息的独占消费者。确认窗口内先不创建普通 AI Job，
+	// 由事务后的确认分类决定：confirm/cancel 直接消费；unknown 清除门禁后
+	// 再通过 EnsureForMessage 幂等补建。已消费标记同时阻止补偿扫描复活该消息。
+	if isConsumedHandoffConfirmationMessage(*message) || activeHumanHandoffConfirmationDB(db, conversation.ID, conversation.TenantID, time.Now()) {
+		return nil, false, nil
 	}
 	requestID := tracex.EnsureRequestID(message.RequestID)
 	if requestID == "" {
@@ -352,7 +358,38 @@ func (s *aiReplyJobService) SkipPendingForMessage(tenantID, conversationID, mess
 	if tenantID <= 0 || conversationID <= 0 || messageID <= 0 {
 		return nil
 	}
-	return repositories.AIReplyJobRepository.SkipPendingByMessageInTenant(sqls.DB(), tenantID, conversationID, messageID, resultCode, time.Now())
+	now := time.Now()
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if err := repositories.AIReplyJobRepository.SkipPendingByMessageInTenant(ctx.Tx, tenantID, conversationID, messageID, resultCode, now); err != nil {
+			return err
+		}
+		return AIReplyTurnTaskService.SkipNonTerminalBySourceMessageDB(ctx.Tx, tenantID, conversationID, messageID, resultCode, now)
+	})
+	s.cancelActiveExecution(conversationID, messageID)
+	return err
+}
+
+func activeHumanHandoffConfirmationDB(db *gorm.DB, conversationID, tenantID int64, now time.Time) bool {
+	if db == nil || conversationID <= 0 || tenantID <= 0 {
+		return false
+	}
+	state := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversationID, tenantID)
+	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
+		return false
+	}
+	return state.PendingActionExpireAt == nil || now.Before(*state.PendingActionExpireAt)
+}
+
+func (s *aiReplyJobService) cancelActiveExecution(conversationID, messageID int64) {
+	if conversationID <= 0 || messageID <= 0 {
+		return
+	}
+	s.activeMu.Lock()
+	cancel := s.activeExecutions[conversationID][messageID]
+	s.activeMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (s *aiReplyJobService) registerActiveExecution(job *models.AIReplyJob, cancel context.CancelFunc) func() {
@@ -561,10 +598,7 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 		if decision := s.inspectFreshness(state); decision != nil {
 			return executionResultForDecision(*decision), nil
 		}
-		if err := s.dispatchHuman(state, job, "AI 回复任务超过等待时限"); err != nil {
-			return AIReplyExecutionResult{}, err
-		}
-		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "expired_human_dispatch"}, errAIReplyJobExpired
+		return AIReplyExecutionResult{}, errAIReplyJobExpired
 	}
 	if job.TriggerKind == enums.AIReplyJobTriggerKindMedia {
 		if err := s.prepareMedia(ctx, state); err != nil {
@@ -637,7 +671,7 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		return
 	}
 	if errors.Is(runErr, errAIReplyJobExpired) {
-		s.markTerminal(job, owner, enums.AIReplyJobStatusExpired, "expired_human_dispatch", "", now)
+		s.markTerminal(job, owner, enums.AIReplyJobStatusExpired, "expired_technical_terminal", "timeout", now)
 		return
 	}
 	if runErr != nil {
@@ -965,43 +999,18 @@ func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIRe
 	return nil
 }
 
-// sendTechnicalFailureNotice 契约 14.5：技术终态至少向客户提交一条短提示
-// （不宣称需要人工），提示 MessageID 写入 ProgressNoticeMessageID；本轮已有
-// 提交消息（部分成功）或已发过提示时只告警不重发。
+// sendTechnicalFailureNotice 只记录内部告警。技术故障不是客户意图，也不是
+// “资料库无内容”；向客户发送固定失败话术会覆盖原问题并污染下一轮上下文。
 func (s *aiReplyJobService) sendTechnicalFailureNotice(state *aiReplyJobExecutionState, job *models.AIReplyJob) {
 	if state == nil || state.Conversation == nil || job == nil {
 		return
 	}
-	if job.ProgressNoticeMessageID > 0 {
-		return
-	}
-	if tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID); len(tasks) > 0 {
-		for _, task := range tasks {
-			if task.CommittedMessageID > 0 || task.Status == enums.AIReplyTurnTaskStatusDelivered {
-				return // 部分成功：成功项已可见，不追加技术噪音
-			}
-		}
-	}
-	aiAgent, ok := WxWorkProtocolInstanceService.BuildRuntimeAIAgentForConversation(state.Conversation.ID)
-	if !ok || aiAgent.TenantID != state.Conversation.TenantID {
-		return
-	}
-	message, err := MessageService.SendAIMessageWithRequestID(
-		state.Conversation.ID, aiAgent.ID,
-		"ai_tech_notice_"+fmt.Sprintf("%d_%d", job.TurnID, job.ID),
-		enums.IMMessageTypeText,
-		"这条消息暂时没有处理成功，请稍后重发或换一种说法。",
-		"", systemOperator(), job.RequestID,
+	slog.Warn("ai reply technical failure kept internal",
+		"job_id", job.ID,
+		"tenant_id", job.TenantID,
+		"conversation_id", state.Conversation.ID,
+		"error_class", controlledErrorClass(job.LastErrorClass),
 	)
-	if err != nil {
-		slog.Warn("send technical failure notice failed", "job_id", job.ID, "error", err)
-		return
-	}
-	_ = repositories.AIReplyJobRepository.UpdateColumnsInTenant(sqls.DB(), job.ID, job.TenantID, map[string]any{
-		"progress_notice_message_id": message.ID,
-		"result_code":                "technical_failure_notified",
-		"updated_at":                 time.Now(), "update_user_name": "ai_reply_tech_notice",
-	})
 }
 
 func (s *aiReplyJobService) markTerminal(job *models.AIReplyJob, owner string, status enums.AIReplyJobStatus, resultCode, errorClass string, now time.Time) {

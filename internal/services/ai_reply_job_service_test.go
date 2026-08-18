@@ -57,6 +57,55 @@ func TestAIReplyJobEnqueueIsUniqueAndKeepsBindingScope(t *testing.T) {
 	}
 }
 
+func TestAIReplyJobWaitsForHandoffConfirmationDecision(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "不要")
+	if err := fixture.db.Delete(&models.AIReplyJob{}, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ConversationRouteService.SetPendingAction(
+		fixture.conversation.ID,
+		enums.ConversationPendingActionHumanHandoff,
+		`{"reason":"test"}`,
+		time.Now().Add(time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	job, created, err := fixture.service.EnsureForMessage(fixture.message.ID)
+	if err != nil || created || job != nil {
+		t.Fatalf("pending confirmation must own the message: job=%#v created=%v err=%v", job, created, err)
+	}
+	if err := ConversationRouteService.ClearPendingAction(fixture.conversation.ID); err != nil {
+		t.Fatal(err)
+	}
+	job, created, err = fixture.service.EnsureForMessage(fixture.message.ID)
+	if err != nil || !created || job == nil {
+		t.Fatalf("unknown confirmation must re-enter normal AI path: job=%#v created=%v err=%v", job, created, err)
+	}
+}
+
+func TestAIReplyJobConsumedConfirmationCannotBeRepaired(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "不要")
+	if err := fixture.service.SkipPendingForMessage(
+		fixture.message.TenantID,
+		fixture.message.ConversationID,
+		fixture.message.ID,
+		"consumed_by_handoff_confirmation",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Model(&models.Message{}).Where("id = ?", fixture.message.ID).
+		Update("payload", `{"handoffConfirmationDecision":"cancel"}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.Delete(&models.AIReplyJob{}, fixture.job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	job, created, err := fixture.service.EnsureForMessage(fixture.message.ID)
+	if err != nil || created || job != nil {
+		t.Fatalf("consumed confirmation must stay consumed: job=%#v created=%v err=%v", job, created, err)
+	}
+}
+
 func TestCustomerMessageAndAIReplyJobShareTransaction(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")
@@ -752,7 +801,7 @@ func TestAIReplyJobAgentMessageStopsAI(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobExpiresIntoExistingHumanPool(t *testing.T) {
+func TestAIReplyJobExpiryStaysTechnical(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "还在吗")
 	var dispatchCalls atomic.Int32
 	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
@@ -768,7 +817,7 @@ func TestAIReplyJobExpiresIntoExistingHumanPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_human_dispatch" || dispatchCalls.Load() != 1 {
+	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_technical_terminal" || dispatchCalls.Load() != 0 {
 		t.Fatalf("expired job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 	}
 }

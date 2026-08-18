@@ -158,7 +158,7 @@ func TestAIReplyTaskLedgerContinuesPastSixTasksWithoutNewCustomerMessage(t *test
 	}
 }
 
-func TestAIReplyTaskLedgerPartialKnowledgeFailureKeepsSuccessAndSchedulesRetry(t *testing.T) {
+func TestAIReplyTaskLedgerPartialKnowledgeFailureKeepsSuccessWithoutTaskRetry(t *testing.T) {
 	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
 		enums.AIReplyTurnTaskTypeKnowledge,
 		enums.AIReplyTurnTaskTypeKnowledge,
@@ -179,7 +179,7 @@ func TestAIReplyTaskLedgerPartialKnowledgeFailureKeepsSuccessAndSchedulesRetry(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "turn_tasks_remaining" ||
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted ||
 		runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
 		t.Fatalf("job=%+v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
@@ -221,38 +221,15 @@ func TestAIReplyTaskLedgerUnfinishedRuntimeFailureClosesAllUnfinishedTasks(t *te
 	}
 }
 
-func TestAIReplyTaskLedgerKnowledgeRetryRunsOnlyDueTasks(t *testing.T) {
+func TestAIReplyTaskLedgerKnowledgeGatewayFailureIsNotAmplified(t *testing.T) {
 	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
 		enums.AIReplyTurnTaskTypeKnowledge,
 		enums.AIReplyTurnTaskTypeKnowledge,
 	})
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
-		call := runtimeCalls.Add(1)
-		if call == 1 {
-			return commitPartialKnowledgeTaskLedgerBatch(fixture)
-		}
-		var batch []models.AIReplyTurnTask
-		err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-			turn, err := repositories.AIReplyTurnRepository.GetForUpdateInTenant(ctx.Tx, fixture.turn.ID, fixture.turn.TenantID)
-			if err != nil {
-				return err
-			}
-			batch, _, err = AIReplyTurnTaskService.ClaimBatchDB(ctx.Tx, turn, fixture.job.ID)
-			if err != nil {
-				return err
-			}
-			if len(batch) != 1 || batch[0].TaskKey == fixture.tasks[0].TaskKey {
-				return fmt.Errorf("claimed batch=%+v, want only the due failed task", batch)
-			}
-			return AIReplyTurnTaskService.MarkKnowledgeResultsDB(ctx.Tx, turn.TenantID, turn.ID, fixture.job.ID, []AIReplyTurnTaskKnowledgeUpdate{
-				{TaskKey: batch[0].TaskKey, Status: enums.AIReplyTurnTaskKnowledgeStatusHit, HitCount: 1, ResultCode: "hit"},
-			})
-		})
-		if err != nil {
-			return AIReplyExecutionResult{}, err
-		}
-		return AIReplyExecutionResult{TaskLedgerEnabled: true, TaskKeys: []string{batch[0].TaskKey}, HasRemainingTasks: true}, nil
+		runtimeCalls.Add(1)
+		return commitPartialKnowledgeTaskLedgerBatch(fixture)
 	})
 
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
@@ -260,23 +237,19 @@ func TestAIReplyTaskLedgerKnowledgeRetryRunsOnlyDueTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first == nil || first.Status != enums.AIReplyJobStatusRetry || first.ResultCode != "turn_tasks_remaining" || runtimeCalls.Load() != 1 {
+	if first == nil || first.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 1 {
 		t.Fatalf("first job=%+v runtimeCalls=%d", first, runtimeCalls.Load())
 	}
 	failed := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)[1]
-	if failed.NextRetryAt == nil {
-		t.Fatalf("failed task did not receive retry time: %+v", failed)
-	}
-	if err := fixture.db.Model(&models.AIReplyTurnTask{}).Where("id = ?", failed.ID).Update("next_retry_at", time.Now().Add(-time.Second)).Error; err != nil {
-		t.Fatal(err)
+	if failed.Status != enums.AIReplyTurnTaskStatusFailed || failed.NextRetryAt != nil || failed.FailureClass != string(FailureKnowledge) {
+		t.Fatalf("failed knowledge task must be terminal without task retry: %+v", failed)
 	}
 
-	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
 	final, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final == nil || final.Status != enums.AIReplyJobStatusRetry || runtimeCalls.Load() != 2 {
+	if final == nil || final.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 1 {
 		t.Fatalf("final job=%+v runtimeCalls=%d", final, runtimeCalls.Load())
 	}
 	assertPartialKnowledgeTaskStates(t, fixture)
@@ -334,9 +307,9 @@ func TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge(t *t
 	if len(stored) != 2 {
 		t.Fatalf("stored tasks=%d want 2", len(stored))
 	}
-	if stored[0].Status != enums.AIReplyTurnTaskStatusPending || stored[0].KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusFailed ||
-		stored[0].ClaimedByJobID != 0 || stored[0].NextRetryAt == nil {
-		t.Fatalf("failed knowledge task should remain retryable: %+v", stored[0])
+	if stored[0].Status != enums.AIReplyTurnTaskStatusFailed || stored[0].KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusFailed ||
+		stored[0].ClaimedByJobID != 0 || stored[0].NextRetryAt != nil || stored[0].FailureClass != string(FailureKnowledge) {
+		t.Fatalf("failed knowledge task should be technical terminal: %+v", stored[0])
 	}
 	if stored[1].Status != enums.AIReplyTurnTaskStatusPending || stored[1].KnowledgeStatus != enums.AIReplyTurnTaskKnowledgeStatusHit ||
 		stored[1].ClaimedByJobID != 0 || stored[1].CommittedMessageID != 0 || stored[1].NextRetryAt != nil {
@@ -600,7 +573,7 @@ func assertPartialKnowledgeTaskStates(t *testing.T, fixture *aiReplyTaskLedgerJo
 	if stored[0].Status == enums.AIReplyTurnTaskStatusHandoff || stored[0].Status == enums.AIReplyTurnTaskStatusHandoffPending {
 		t.Fatalf("successful knowledge task was handed off: %+v", stored[0])
 	}
-	if stored[1].Status != enums.AIReplyTurnTaskStatusPending || stored[1].ClaimedByJobID != 0 {
+	if stored[1].Status != enums.AIReplyTurnTaskStatusFailed || stored[1].ClaimedByJobID != 0 || stored[1].NextRetryAt != nil {
 		t.Fatalf("failed task=%+v", stored[1])
 	}
 }

@@ -866,6 +866,37 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 	}
 }
 
+func TestRuntimePipelineVoiceCheckinMatchesTextCheckin(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 90, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
+	detected := callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "clarify", IntentConfidence: 0.82,
+		ShouldReply: true, NeedsClarification: true, Reason: "model needs normalization",
+	}
+	textReq := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeText, Content: "我要办理入住",
+	}}
+	voiceReq := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeVoice, Content: "voice.amr",
+		Payload: `{"mediaText":"我要办理入住","mediaUnderstandingStatus":"understood"}`,
+	}}
+	textPlan := buildRuntimePipelinePlanWithModel(context.Background(), textReq, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: detected})
+	voicePlan := buildRuntimePipelinePlanWithModel(context.Background(), voiceReq, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: detected})
+	if runtimeUserMessageText(voiceReq.UserMessage) != runtimeUserMessageText(textReq.UserMessage) {
+		t.Fatalf("voice/text projection differs: voice=%q text=%q", runtimeUserMessageText(voiceReq.UserMessage), runtimeUserMessageText(textReq.UserMessage))
+	}
+	for label, plan := range map[string]runtimePipelinePlan{"text": textPlan, "voice": voicePlan} {
+		if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "checkin_process" || !plan.Intent.NeedsKnowledge || !plan.Intent.NeedsResource || plan.Intent.NeedsHumanRoute {
+			t.Fatalf("%s checkin plan mismatch: %#v", label, plan.Intent)
+		}
+		if len(plan.ReplyPlan.TaskPlans) != 2 || plan.ReplyPlan.TaskPlans[0].Output != "knowledge_text_reply" ||
+			plan.ReplyPlan.TaskPlans[1].ResourceAction != "provide_mini_program" {
+			t.Fatalf("%s checkin tasks mismatch: %#v", label, plan.ReplyPlan.TaskPlans)
+		}
+	}
+}
+
 func TestRuntimePipelineDoesNotNormalizeDeviceServiceRequestByKeyword(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "过几天我又来了，电视打不开"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
@@ -1943,6 +1974,27 @@ func TestRuntimeIntentProtocolFallbackIsNarrowAndDeterministic(t *testing.T) {
 				t.Fatalf("external location must not send hotel resource: %+v", intent)
 			}
 		})
+	}
+}
+
+func TestConditionalKnowledgeTasksUseFormalPersistedRetrieval(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "interaction", SubIntent: "clarify",
+			RequestMode: "clarify_previous", Text: "咖啡在哪里？",
+		}},
+	}
+	marked := markConditionalKnowledgeTasksForFormalRetrieval(intent, "咖啡在哪里？")
+	if len(marked.IntentTasks) != 1 || !marked.IntentTasks[0].NeedsKnowledge {
+		t.Fatalf("conditional task was not marked for formal retrieval: %#v", marked.IntentTasks)
+	}
+	plans := buildReplyTaskPlans(marked)
+	if len(plans) != 1 || plans[0].Output != "knowledge_text_reply" {
+		t.Fatalf("conditional task must become a knowledge task after persistence: %#v", plans)
+	}
+	if !marked.NeedsKnowledge || !marked.ShouldReply {
+		t.Fatalf("intent capability projection was not updated: %#v", marked)
 	}
 }
 

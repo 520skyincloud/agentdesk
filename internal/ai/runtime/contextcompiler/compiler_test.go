@@ -54,6 +54,21 @@ func TestCompilerGenerateHasHardBudgetAndFixedOrder(t *testing.T) {
 	if len(result.Fingerprint) != 64 || result.Estimator != "conservative" {
 		t.Fatalf("fingerprint=%q estimator=%q", result.Fingerprint, result.Estimator)
 	}
+	if result.CategoryTokens["compressed_memory"] != 0 {
+		t.Fatalf("generate must not inject compressed memory: %+v", result.CategoryTokens)
+	}
+	assistantCount := 0
+	for _, message := range result.Messages {
+		if string(message.Role) == "assistant" {
+			assistantCount++
+		}
+		if strings.Contains(message.Content, "稳定事实") || strings.Contains(message.Content, "喜静") {
+			t.Fatalf("generate leaked compressed memory: %q", message.Content)
+		}
+	}
+	if assistantCount > 2 {
+		t.Fatalf("generate history count=%d want<=2", assistantCount)
+	}
 }
 
 func TestCompilerGenerateAllowsMandatoryPolicyBeyondSoftCategoryShare(t *testing.T) {

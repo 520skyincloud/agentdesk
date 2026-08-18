@@ -161,14 +161,14 @@ func TestRuntimeKnowledgeAnswerGroupRequiresFullEvidenceSet(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeEvidenceBundleServiceRequestNoContextHandsOff(t *testing.T) {
-	// 要动作（service_request）且知识库无答案（no_context）→ 转人工二次确认，不再模型自由发挥。
+func TestBuildRuntimeEvidenceBundleServiceRequestNoContextDoesNotHandOff(t *testing.T) {
+	// 知识无命中只表示当前资料不足，不构成人工路由授权。
 	items := []runtimeTaskKnowledgeItem{
 		{TaskKey: "t-change-room", Intent: "service_request", Query: "换1203", Status: enums.AIReplyTurnTaskKnowledgeStatusNoHit},
 	}
 	_, _, actionCodes := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
-	if got := actionCodes["t-change-room"]; got != "human_handoff" {
-		t.Fatalf("expected service_request no_context to hand off, got %q", got)
+	if got := actionCodes["t-change-room"]; got != "" {
+		t.Fatalf("service_request no_context must not hand off, got %q", got)
 	}
 }
 

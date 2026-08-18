@@ -276,26 +276,15 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			}
 			outcome.SupportingRefs = appendUniqueStrings(outcome.SupportingRefs, bundle.Items[entry.index].Ref)
 		}
-		// 只有「排名第一」的检索结果（实际采用的答案）才允许触发"转接"判定；
-		// 后续候选只是噪声，不能因为它们正文里出现"转接"就误判转人工。
+		// 动作只认显式 KnowledgeActionBinding。知识正文是事实证据，不是控制协议；
+		// “转接”“人工”等普通文字不得改变路由状态。
 		if outcome.Status == "has_context" && strings.TrimSpace(taskActionCodes[item.TaskKey]) == "" && len(results) > 0 {
 			top := results[0]
 			if actionCode := services.KnowledgeActionBindingService.ActionCodeForHit(
 				req.Conversation.TenantID, req.Conversation.StoreID, top.KnowledgeBaseID, top.SourceRecordID,
 			); actionCode != "" {
 				taskActionCodes[item.TaskKey] = actionCode
-			} else if knowledgeContentRequiresHandoff(top.Content) && handoffPromotionAllowedForTask(item, top) {
-				// 生产回归 2026-08-18："我要办理入住"被"把跟我一起入住的人信息删掉→转接"
-				// 这类异常 FAQ 语义误配抢走第一名，正常流程被提升人工、知识回答+小程序
-				// 双任务全部作废。异常 FAQ（删除同住人/退订/办不了类）只对客户本身在
-				// 描述异常的任务有转接授权；正常咨询任务命中它时不得提升。
-				taskActionCodes[item.TaskKey] = "human_handoff"
 			}
-		}
-		// 要动作（service_request）但知识库没有任何答案（no_context）：系统没有自动执行能力，
-		// 统一转人工二次确认，不再让模型在"没答案"时自由发挥、口头编造"帮你办/改成1203"。
-		if outcome.Status == "no_context" && strings.TrimSpace(item.Intent) == "service_request" {
-			taskActionCodes[item.TaskKey] = "human_handoff"
 		}
 		if outcome.Status == "has_context" && len(outcome.SupportingRefs) == 0 {
 			outcome.Status = "unanswerable"
@@ -727,13 +716,6 @@ func mergeRuntimeTaskKnowledge(items []runtimeTaskKnowledgeItem, knowledgeBaseID
 	return merged
 }
 
-// knowledgeContentRequiresHandoff 判断知识正文是否明确要求转接。
-// 只认"转接"两个字精确出现；"转人工/需要人工/人工客服/联系人工"等一律不算，
-// 避免把"让客户打客服电话"这类知识误判成要转接。
-func knowledgeContentRequiresHandoff(content string) bool {
-	return strings.Contains(strings.TrimSpace(content), "转接")
-}
-
 // filterKnowledgeMetaEvidence 是 Evidence Judge 的元问题过滤（文档 7.5 判定矩阵）。
 // 判定双来源：KnowledgeEvidenceMetadata 侧车表（claimType=meta）命中即剔除；
 // 无侧车记录时用确定性模式（DetectKnowledgeMetaContent）兜底，覆盖未回填数据。
@@ -776,44 +758,4 @@ func filterKnowledgeMetaEvidence(req RunInput, results []rag.RetrieveResult) (ke
 		kept = append(kept, r)
 	}
 	return kept, droppedMeta
-}
-
-// handoffPromotionAllowedForTask 判定"转接"内容提升对当前任务是否合法：
-// 异常类 FAQ（删除/退订/办不了/两间房等）只有在客户本身描述同类异常时才可
-// 授权转接；正常咨询（办理入住/问流程）被语义误配命中时不得触发人工提升。
-func handoffPromotionAllowedForTask(item runtimeTaskKnowledgeItem, top rag.RetrieveResult) bool {
-	if !looksLikeExceptionFAQ(top.Title, top.Content) {
-		return true
-	}
-	return taskTextRequestsException(item.Query)
-}
-
-// looksLikeExceptionFAQ 识别异常/变更类 FAQ（标题或正文含退订、删除、办不了等）。
-func looksLikeExceptionFAQ(title, content string) bool {
-	text := strings.TrimSpace(title + " " + content)
-	markers := []string{
-		"删掉", "删除", "退订", "退掉", "退房退", "剩下的天数", "住不了", "办不了",
-		"无法办理", "不能办理", "办理失败", "入住失败", "另一间", "两间", "手机不能用",
-	}
-	for _, marker := range markers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-// taskTextRequestsException 判定客户当前问句本身是否在描述同类异常。
-func taskTextRequestsException(query string) bool {
-	text := strings.TrimSpace(query)
-	markers := []string{
-		"删掉", "删除", "退订", "退掉", "退了", "退款", "住不了", "办不了",
-		"无法办理", "不能办理", "失败", "另一间", "两间", "手机不能用", "换掉", "取消",
-	}
-	for _, marker := range markers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
 }

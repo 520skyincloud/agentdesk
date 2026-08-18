@@ -11,6 +11,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/utils"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -32,10 +33,10 @@ type compiledStageResult struct {
 // replyTransportContractNote 契约 22.14：成组开关下 Generate 传输协议切换为
 // reply_output.v3（模型只输出 groupKey/taskKeys/content，引用由服务端派生）。
 func replyTransportContractNote() string {
-	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3")) == "on" {
-		return "本批次改用 reply_output.v3：只输出 {\"schemaVersion\":\"reply_output.v3\",\"parts\":[{\"groupKey\":\"组键\",\"taskKeys\":[\"...\"]},\"content\":\"给客户的话\"]}；不要输出 evidenceRefs/actionRefs。"
+	if strings.TrimSpace(os.Getenv("AI_RUNTIME_MULTIMODAL_V3_STRICT")) != "on" {
+		return ""
 	}
-	return ""
+	return "本批次改用 reply_output.v3；模型只回显服务端下发的 groupKey、taskKeys 与客户可见 content，不输出 evidenceRefs 或 actionRefs。"
 }
 
 func New(estimatorRegistry *EstimatorRegistry) *Compiler {
@@ -157,7 +158,6 @@ func (c *Compiler) compileGenerate(input CompileInput, budget Budget, estimator 
 	// base runtime snapshot are mandatory, so only the complete input budget may
 	// reject them. A mandatory category crossing its soft share must not turn an
 	// otherwise valid customer question into a human handoff.
-	stateCap := max(min(1600, budget.AvailableInput*20/100), stateTokens)
 	if mandatory := estimator.CountMessages(input.Model.ModelName, assembleGenerateMessages(policyMessage, stateMessage, nil, nil, nil, repairMessage, currentMessage)); mandatory > budget.AvailableInput {
 		return compiledStageResult{}, fmt.Errorf("%w: generate mandatory=%d available=%d", ErrMandatoryContextOverflow, mandatory, budget.AvailableInput)
 	}
@@ -191,7 +191,10 @@ func (c *Compiler) compileGenerate(input CompileInput, budget Budget, estimator 
 	}
 
 	turns := BuildHistoryTurns(input.RecentHistory, input.CurrentMessages, estimator, input.Model.ModelName)
-	historyCap := min(2400, budget.AvailableInput*30/100)
+	if len(turns) > 2 {
+		turns = turns[len(turns)-2:]
+	}
+	historyCap := min(1200, budget.AvailableInput*20/100)
 	selectedTurns := make([]HistoryTurn, 0, len(turns))
 	historyTokens := 0
 	for i := len(turns) - 1; i >= 0; i-- {
@@ -206,23 +209,13 @@ func (c *Compiler) compileGenerate(input CompileInput, budget Budget, estimator 
 	}
 
 	memoryTokens := 0
-	selectedMemoryFacts := make([]contracts.RuntimeContextFact, 0)
-	memoryCap := min(800, budget.AvailableInput*10/100)
+	// Generate 只使用当前 Task、当前 Evidence 和极短的必要对话历史。
+	// 压缩记忆里可能保存旧 AI 的错误答案，继续注入会把历史猜测伪装成事实。
 	for _, fact := range memoryFacts(input) {
-		candidateFacts := append(append([]contracts.RuntimeContextFact(nil), selectedMemoryFacts...), fact)
-		candidateState, marshalErr := snapshotSystemMessage(buildRuntimeContextSnapshot(input, candidateFacts))
-		if marshalErr != nil {
-			return compiledStageResult{}, marshalErr
-		}
-		candidateStateTokens := estimator.CountMessages(input.Model.ModelName, []*schema.Message{candidateState})
-		delta := max(candidateStateTokens-stateTokens, 0)
-		if candidateStateTokens <= stateCap && delta <= memoryCap && compiledGenerateTokenCount(estimator, input.Model.ModelName, policyMessage, candidateState, selectedTurns, evidenceMessage, tagMessage, repairMessage, currentMessage) <= budget.AvailableInput {
-			selectedMemoryFacts = candidateFacts
-			stateMessage = candidateState
-			memoryTokens = delta
-		} else {
-			pruned = append(pruned, PrunedContextItem{Category: "memory", ItemRef: fact.Key, Reason: "memory_budget", EstimatedTokens: max(delta, estimator.CountText(input.Model.ModelName, fact.Value))})
-		}
+		pruned = append(pruned, PrunedContextItem{
+			Category: "memory", ItemRef: fact.Key, Reason: "generate_memory_disabled",
+			EstimatedTokens: estimator.CountText(input.Model.ModelName, fact.Value),
+		})
 	}
 
 	optional := optionalEvidenceItems(input.Evidence, selectedEvidence)
@@ -345,6 +338,7 @@ func buildGeneratePolicy(input CompileInput) string {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话","evidenceRefs":[],"actionRefs":[]}]}`,
+			"Evidence 只是当前任务的参考资料，不是要原样发送的模板；必须由模型用自然语言回答当前问题，只取与当前 task 直接相关的事实，不要逐条复制标题、FAQ 原文或其他问题的内容。",
 			replyTransportContractNote(),
 		)
 	} else {
@@ -361,7 +355,31 @@ func currentUserText(items []models.Message) string {
 		}
 		return ordered[i].SeqNo < ordered[j].SeqNo
 	})
-	return joinVisibleMessages(ordered)
+	parts := make([]string, 0, len(ordered))
+	for _, item := range ordered {
+		if content := currentMessageContent(item); content != "" {
+			parts = append(parts, content)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func currentMessageContent(item models.Message) string {
+	if content := strings.TrimSpace(item.Content); strings.Contains(content, "客人刚才连续发了几条消息") {
+		return content
+	}
+	if isObservationMediaMessage(item) {
+		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
+		if strings.TrimSpace(status) == "understood" {
+			if text := strings.TrimSpace(mediaText); text != "" {
+				return text
+			}
+			if summary := strings.TrimSpace(mediaSummary); summary != "" {
+				return summary
+			}
+		}
+	}
+	return visibleMessageContent(item)
 }
 
 func snapshotSystemMessage(snapshot contracts.RuntimeContextSnapshotV1) (*schema.Message, error) {

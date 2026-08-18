@@ -29,7 +29,7 @@ func TestNormalCheckinNotPromotedByExceptionFAQ(t *testing.T) {
 	}
 }
 
-func TestExceptionTaskStillPromotedByTransferFAQ(t *testing.T) {
+func TestKnowledgeTextNeverPromotesHandoffWithoutExplicitBinding(t *testing.T) {
 	hits := []rag.RetrieveResult{
 		{KnowledgeBaseID: 1, SourceRecordID: "x1", Title: "我有两间房，另一间房办不了入住",
 			Content: "问题：我有两间房，另一间房办不了入住 答案：转接", Score: 0.79},
@@ -40,7 +40,7 @@ func TestExceptionTaskStillPromotedByTransferFAQ(t *testing.T) {
 		Result: &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{1}, Hits: hits, ContextResults: hits},
 	}}
 	_, _, taskActions := buildRuntimeEvidenceBundle(RunInput{}, items, nil)
-	if code := taskActions["t-exc"]; code != "human_handoff" {
-		t.Fatalf("exception task must still be promoted to handoff, got %q", code)
+	if code := taskActions["t-exc"]; code != "" {
+		t.Fatalf("knowledge text must not control routing without an explicit binding, got %q", code)
 	}
 }

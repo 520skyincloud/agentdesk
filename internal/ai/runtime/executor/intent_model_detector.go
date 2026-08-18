@@ -60,8 +60,8 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if modes.IntentContract == runtimeIntentContractV1 {
 		return detectRuntimeIntentLegacy(ctx, req, history, configs)
 	}
-	// 契约 2.1 成组灰度：AI_RUNTIME_MULTIMODAL_V3=on 时 Intent 走 V3 主链
-	// （Envelope + SourceSpan + utteranceCoverage + QuestionUnit Normalize）。
+	// Strict V3 只保留给显式实验开关 AI_RUNTIME_MULTIMODAL_V3_STRICT；
+	// 生产旧变量不能再切换这条链路。
 	if modes.IntentContract == runtimeIntentContractV3 {
 		return detectRuntimeIntentV3(ctx, req, history, configs)
 	}
@@ -140,7 +140,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 			contracts.SchemaIntentTasksV2,
 			err,
 			schemaCatalog,
-			req.UserMessage.Content,
+			runtimeUserMessageText(req.UserMessage),
 			result.Content,
 		)
 		repairContext, compileErr := contextcompiler.New(nil).Compile(intentCtx, compileInput)
@@ -181,7 +181,7 @@ func buildRuntimeIntentProtocolFallback(req RunInput, configs []models.ReplyInte
 	if _, ok := strictjson.CodeOf(protocolErr); !ok {
 		return callbacks.IntentTraceData{}, false
 	}
-	text := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	text := runtimeUserMessageText(req.UserMessage)
 	if text == "" {
 		return callbacks.IntentTraceData{}, false
 	}
@@ -567,8 +567,8 @@ func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfil
 
 func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) string {
 	var b strings.Builder
-	currentText := strings.TrimSpace(req.UserMessage.Content)
-	currentDisplayText := currentTurnDisplayText(currentText)
+	currentText := runtimeUserMessageText(req.UserMessage)
+	currentDisplayText := currentText
 	b.WriteString("必须分类的当前消息:\n")
 	b.WriteString(currentDisplayText)
 	b.WriteString("\n\n当前消息类型: ")
@@ -732,7 +732,8 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 			intent.HumanRoutePolicy = "managed_mode"
 		}
 	}
-	if explicitCheckinKnowledgeRequest(req.UserMessage.Content) && intent.PrimaryIntent != "human_complaint_risk" &&
+	currentText := runtimeUserMessageText(req.UserMessage)
+	if explicitCheckinKnowledgeRequest(currentText) && intent.PrimaryIntent != "human_complaint_risk" &&
 		runtimeIntentConfigEnabled(configs, "hotel_info") {
 		intent.PrimaryIntent = "hotel_info"
 		intent.MatchedIntentCode = "hotel_info"
@@ -761,7 +762,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsKnowledge = true
 	}
 	intent = enforceHumanRouteFlagByIntentCategory(intent)
-	intent = suppressNonHotelLocationResource(intent, req.UserMessage.Content)
+	intent = suppressNonHotelLocationResource(intent, currentText)
 	intent = applyDeterministicHotelDirectResources(intent, req, configs)
 	if intent.DetectedIntent == "" {
 		intent.DetectedIntent = intent.PrimaryIntent
@@ -796,7 +797,7 @@ func applyDeterministicHotelDirectResources(intent callbacks.IntentTraceData, re
 	if intent.PrimaryIntent == "hotel_variable" && strings.TrimSpace(intent.ResourceAction) != "" {
 		return intent
 	}
-	text := req.UserMessage.Content
+	text := runtimeUserMessageText(req.UserMessage)
 	if explicitHotelLocationCardRequest(text) {
 		return convertHotelDirectResourceIntent(intent, text, "location", "provide_location", "hotel location request routed to location card direct")
 	}
@@ -1045,7 +1046,7 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 	if strings.TrimSpace(intent.SubIntent) == "" || intent.SubIntent == "check_in" || intent.SubIntent == "checkin" {
 		intent.SubIntent = "checkin_process"
 	}
-	currentText := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	currentText := runtimeUserMessageText(req.UserMessage)
 	if currentText == "" {
 		currentText = "办理入住"
 	}

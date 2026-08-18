@@ -20,7 +20,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// 多模态契约 9/10/12：IntentTasksV3 主链接线（成组灰度 AI_RUNTIME_MULTIMODAL_V3=on）。
+// 多模态契约 9/10/12：IntentTasksV3 实验链路，仅由
+// AI_RUNTIME_MULTIMODAL_V3_STRICT=on 显式启用。
 // Intent 收到 TurnInputEnvelope，输出 intent_tasks.v3（来源引用 + rune span +
 // utteranceCoverage）；服务端校验 span、做集合等式覆盖校验，再经 QuestionUnit
 // Normalize 收敛（同源去重 / degraded_single_task），最后适配到既有 V2 下游。

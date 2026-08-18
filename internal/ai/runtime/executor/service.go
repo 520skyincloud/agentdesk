@@ -324,7 +324,7 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsHumanRoute {
 		return false
 	}
-	resourceTypes := requestedHotelVariableResourceTypes(req.UserMessage.Content, intent)
+	resourceTypes := requestedHotelVariableResourceTypes(runtimeUserMessageText(req.UserMessage), intent)
 	if len(resourceTypes) == 0 {
 		return false
 	}

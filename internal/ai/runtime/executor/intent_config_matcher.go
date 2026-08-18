@@ -182,7 +182,7 @@ func intentContextMatches(config models.ReplyIntentConfig, req RunInput, history
 				return false
 			}
 		case "text", "文本":
-			if strings.TrimSpace(req.UserMessage.Content) == "" {
+			if runtimeUserMessageText(req.UserMessage) == "" {
 				return false
 			}
 		case "memory", "summary", "记忆", "压缩记忆":

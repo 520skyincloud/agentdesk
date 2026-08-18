@@ -41,7 +41,7 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 		collector.Data.Input.ContextMemorySource = history.MemorySource
 		collector.Data.Input.ContextMemoryMessageCount = history.MemoryItemCount
 		collector.Data.Input.KnowledgeBaseIDs = utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
-		collector.Data.Input.CurrentUserMessagePreview = preview(req.UserMessage.Content, 120)
+		collector.Data.Input.CurrentUserMessagePreview = preview(runtimeUserMessageText(req.UserMessage), 120)
 		collector.Data.Pipeline.ContextBuild.Mode = modes.ContextCompiler
 	}
 	plan, err := buildRuntimePipelinePlanStrict(ctx, req, history, nil)
@@ -175,7 +175,7 @@ func buildLegacyGenerateMessagesStrict(
 	if instruction := buildGenerationScopeInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
-	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
+	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(runtimeUserMessageText(req.UserMessage), plan.Intent)))
 	return messages, nil
 }
 
@@ -525,13 +525,13 @@ func actionLedgerContainsAction(items []callbacks.ActionLedgerItem, action strin
 }
 
 func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) string {
-	currentText := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	currentText := runtimeUserMessageText(req.UserMessage)
 	if currentText == "" {
 		return ""
 	}
 	boundaryText := currentText
 	if intent.NeedsKnowledge && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
-		if generationText := strings.TrimSpace(buildGenerationUserMessageText(req.UserMessage.Content, intent)); generationText != "" {
+		if generationText := strings.TrimSpace(buildGenerationUserMessageText(currentText, intent)); generationText != "" {
 			boundaryText = generationText
 		}
 	}
@@ -555,7 +555,7 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答，缺资料时逐项说明“当前资料没写明”，不能说“帮你查/我查一下”。")
 	}
 	if intent.PrimaryIntent == "service_request" {
-		parts = append(parts, "服务请求回复结构：先看知识库有没有自助路径或处理边界；没有明确答案时追问一个必要字段或进入人工意图/接待路由。没有路由或工具结果时，禁止表达动作已执行、内部确认或后续有人处理。")
+		parts = append(parts, "服务请求回复结构：先看知识库有没有自助路径或处理边界；没有明确答案时只说明当前资料未写明，并追问一个必要字段，不得自行转人工。没有路由或工具结果时，禁止表达动作已执行、内部确认或后续有人处理。")
 	}
 	if looksLikeReturningCustomerTurn(currentText) {
 		parts = append(parts, "当前消息像是跨天/隔一段时间后重新咨询；旧消息或长期记忆里的房号、入住事实都已过期。缺少当前房号时只能重新询问，回复中不能沿用旧房号。回复必须点名当前问题本身，例如当前问电视就要提到电视，不能只欢迎回来或只问是否到房间。")
@@ -614,7 +614,7 @@ func buildRecentMediaContextInstruction(req RunInput, history adapter.HistoryBui
 	if isRuntimeMediaMessage(req.UserMessage.MessageType) {
 		return ""
 	}
-	if !replyengine.LooksLikeMediaFollowUp(req.UserMessage.Content) {
+	if !replyengine.LooksLikeMediaFollowUp(runtimeUserMessageText(req.UserMessage)) {
 		return ""
 	}
 	mediaText := recentUsableMediaTextFromHistory(history)

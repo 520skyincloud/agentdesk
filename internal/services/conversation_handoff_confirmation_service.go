@@ -85,6 +85,17 @@ func (s *conversationHandoffConfirmationService) RequestByAI(conversationID int6
 }
 
 func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (bool, error) {
+	return s.RequestByAIForTasksWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, 0, nil)
+}
+
+func (s *conversationHandoffConfirmationService) RequestByAIForTasksWithOriginMessage(
+	conversationID int64,
+	aiAgent models.AIAgent,
+	reason string,
+	requestID string,
+	originMessageID, turnID int64,
+	taskKeys []string,
+) (bool, error) {
 	unlock := lockConversationHandoff(conversationID)
 	defer unlock()
 
@@ -109,12 +120,19 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		}
 		_ = ConversationRouteService.ClearPendingAction(conversationID)
 	}
+	if turnID <= 0 && originMessageID > 0 {
+		if origin := repositories.MessageRepository.GetInTenant(sqls.DB(), originMessageID, conversation.TenantID); origin != nil {
+			turnID = origin.AIReplyTurnID
+		}
+	}
 	payload, _ := json.Marshal(handoffConfirmationPayload{
 		Reason:          cleanHumanHandoffReason(reason),
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
 		HandoffToken:    handoffToken,
 		CreatedAt:       time.Now().Format(time.RFC3339),
+		TaskKeys:        uniqueTaskKeys(taskKeys),
+		TurnID:          turnID,
 	})
 	claimed, err := ConversationRouteService.TrySetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute))
 	if err != nil {

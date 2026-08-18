@@ -1212,6 +1212,13 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 					return message, err
 				}
 			}
+			// EnqueueForMessageDB 会在人工确认窗口内主动让出消费权。
+			// 若本条被分类为 unknown，确认服务已清除门禁，此处幂等补建正常 Job；
+			// 普通消息已有 Job 时不会产生第二条。
+			if _, _, ensureErr := AIReplyJobService.EnsureForMessage(message.ID); ensureErr != nil {
+				slog.Warn("ensure AI reply job after control-flow gate failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", ensureErr)
+				return message, ensureErr
+			}
 			if routeState.RouteStatus == enums.ConversationRouteStatusAIServing {
 				AIManualResumeTaskService.CancelActive(conversation.ID, "new customer message is handled by the normal AI path")
 			}
