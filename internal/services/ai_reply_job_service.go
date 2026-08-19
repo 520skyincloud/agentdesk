@@ -1435,6 +1435,9 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 				return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "stale_turn_version"}
 			}
 		case enums.IMSenderTypeAgent:
+			if standaloneOne {
+				continue
+			}
 			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_replied"}
 		}
 	}

@@ -153,4 +153,13 @@ func TestStandaloneOneAndNormalJobsDoNotSupersedeOrCancelEachOther(t *testing.T)
 	if !normalCancelled.Load() || standaloneCancelled.Load() {
 		t.Fatalf("normal input cancellation scope mismatch: normal=%v standalone=%v", normalCancelled.Load(), standaloneCancelled.Load())
 	}
+
+	createAIReplyJobTestMessageWithSender(
+		t, fixture.db, fixture.conversation, 4, "agent-after-standalone", now.Add(2*time.Second), false, enums.IMSenderTypeAgent,
+	)
+	if decision := fixture.service.inspectFreshness(&aiReplyJobExecutionState{
+		Job: standaloneJob, Conversation: fixture.conversation, Message: standaloneMessage,
+	}); decision != nil {
+		t.Fatalf("agent message interrupted standalone job: %#v", decision)
+	}
 }
