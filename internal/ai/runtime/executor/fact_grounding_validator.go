@@ -7,7 +7,7 @@ import (
 )
 
 // validateReplyFactGrounding 拦截“知识未命中却下确定性结论”的编造。
-// 只处理 clarification 约束：知识未命中的澄清任务只能追问或说明资料未写明，
+// 知识边界任务只能说明资料未写明；只有真正含糊的表达才使用 clarification 追问。
 // 不得下确定性结论。领域硬约束（房态/会员）由 validateReplyUnsupportedDomain 独立处理。
 func validateReplyFactGrounding(input ReplyValidationInput) []contracts.ValidationIssueV1 {
 	planByTask := make(map[string]contracts.ReplyPlanTaskV2, len(input.Plan.Tasks))
@@ -25,11 +25,11 @@ func validateReplyFactGrounding(input ReplyValidationInput) []contracts.Validati
 			if !ok {
 				continue
 			}
-			if task.OutputMode == "clarification" && assertsUngroundedFact(content) {
+			if (task.OutputMode == "clarification" || replyTaskHasKnowledgeBoundary(task)) && assertsUngroundedFact(content) {
 				issues = append(issues, validationIssue(
 					"fact_ungrounded",
 					"$.parts",
-					"clarification task "+taskKey+" asserts an ungrounded fact instead of asking or stating the knowledge is absent",
+					"knowledge-boundary task "+taskKey+" asserts an ungrounded fact instead of stating the knowledge is absent",
 				))
 				break
 			}
@@ -37,6 +37,10 @@ func validateReplyFactGrounding(input ReplyValidationInput) []contracts.Validati
 		_ = partIndex
 	}
 	return issues
+}
+
+func replyTaskHasKnowledgeBoundary(task contracts.ReplyPlanTaskV2) bool {
+	return task.Knowledge.Policy == "required" && runtimeKnowledgeBoundaryStatus(task.Knowledge.Status)
 }
 
 // validateReplyUnsupportedDomain 拦截「系统无数据源领域」的确定性断言。
@@ -68,7 +72,7 @@ func assertsUngroundedFact(content string) bool {
 	if compact == "" {
 		return false
 	}
-	for _, safe := range []string{"没写", "未写明", "没有写", "资料里没有", "不清楚", "不确定", "要确认", "需要确认"} {
+	for _, safe := range []string{"没写", "未写明", "没有写", "资料里没有", "不清楚", "不确定", "无法确认", "不能确认", "要确认", "需要确认"} {
 		if index := strings.Index(compact, safe); index >= 0 {
 			tail := strings.TrimSpace(compact[index+len(safe):])
 			if tail == "" || isNoHitClarifyingQuestion(tail) || isNoHitBoundaryContinuation(tail) {

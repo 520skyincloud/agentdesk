@@ -55,6 +55,11 @@ func promptTraceFromConfig(config models.ReplyIntentConfig, intent callbacks.Int
 	if validation := sanitizeConfiguredReplyInstruction(intentCode, config.ValidationRules); validation != "" {
 		instructions = append(instructions, "发送前校验："+validation)
 	}
+	if intentCode == "hotel_info" {
+		instructions = append(instructions,
+			"价格、优惠、政策、房态、权益等完整信息问题，知识未命中时直接说明当前资料无法确认；只有客户表达本身含糊或指代不清时才追问，不索要房号、订单、姓名或手机号，不引导联系前台、同事或承诺后续跟进。",
+		)
+	}
 	if intentCode == "service_request" {
 		instructions = append(instructions,
 			"没有真实工具、已发布处理流程或接待路由时，直接说明当前能力边界，不索要房号、订单、姓名或手机号，不引导联系不存在的前台，也不承诺同事后续处理。",
@@ -87,12 +92,23 @@ func sanitizeConfiguredReplyInstruction(intentCode, value string) string {
 		compact := normalizeConfiguredIntentText(part)
 		genericFieldCollection := (strings.Contains(compact, "追问") || strings.Contains(compact, "收集")) &&
 			(strings.Contains(compact, "字段") || strings.Contains(compact, "必要信息"))
-		if part == "" || genericFieldCollection {
+		if part == "" || genericFieldCollection || configuredInstructionSuggestsUnsupportedHandoff(compact) {
 			continue
 		}
 		ret = append(ret, part)
 	}
 	return strings.Join(ret, "；")
+}
+
+func configuredInstructionSuggestsUnsupportedHandoff(compact string) bool {
+	if compact == "" || containsAny(compact, []string{"不得", "不能", "不要", "禁止", "不引导", "不承诺", "没有真实", "已有真实接待路由"}) {
+		return false
+	}
+	return containsAny(compact, []string{
+		"联系前台", "找前台", "问前台", "前台处理",
+		"联系同事", "找同事", "问同事", "同事处理", "同事跟进",
+		"后续跟进", "稍后跟进", "人工处理", "转人工",
+	})
 }
 
 func normalizeIntentConfigs(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {

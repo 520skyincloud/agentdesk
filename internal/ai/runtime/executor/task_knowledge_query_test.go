@@ -46,6 +46,24 @@ func TestKnowledgeQueryStripsVoiceTransportWrapper(t *testing.T) {
 	}
 }
 
+func TestKnowledgeQuerySelectsTaskClauseFromFullMultiQuestionSource(t *testing.T) {
+	source := "早餐几点？停车场怎么走？WiFi密码是多少？"
+	for label, text := range map[string]string{
+		"text":  source,
+		"voice": "[语音] voice.amr 语音内容是：" + source,
+	} {
+		query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+			Intent: "hotel_info", SubIntent: "parking", Text: text,
+		})
+		if query != "停车场怎么走" {
+			t.Fatalf("%s task query must use only its normalized sub-question, got %q", label, query)
+		}
+		if strings.Contains(query, "早餐") || strings.Contains(strings.ToLower(query), "wifi") {
+			t.Fatalf("%s task query leaked sibling questions: %q", label, query)
+		}
+	}
+}
+
 func TestKnowledgeQueryNormalizesSpokenNearbyPlayTopic(t *testing.T) {
 	query := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
 		Intent: "hotel_info", SubIntent: "surrounding_facilities", Text: "这个附近有什么可以玩的呀",

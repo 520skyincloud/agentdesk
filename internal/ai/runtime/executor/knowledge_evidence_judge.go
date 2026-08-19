@@ -250,7 +250,7 @@ func knowledgeEvidenceHasPositiveRelevance(item runtimeTaskKnowledgeItem, result
 	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceSupportsNormalCheckinStep(strings.Join([]string{result.Title, result.DocumentTitle, result.Content}, "\n")) {
 		return true
 	}
-	taskTopics := detectKnowledgeTopicClasses(item.Query + " " + item.SubIntent)
+	taskTopics := detectKnowledgeTopicClasses(item.Query + " " + item.SubIntent + " " + runtimeKnowledgeTopicLabel(item.SubIntent))
 	candidate := strings.TrimSpace(strings.Join([]string{result.Title, result.DocumentTitle, result.SectionPath, result.Content}, "\n"))
 	if candidate == "" {
 		return false
@@ -291,7 +291,7 @@ func knowledgeTextHasMeaningfulOverlap(query, candidate string) bool {
 	query = compactRuntimeProtocolText(query)
 	candidate = compactRuntimeProtocolText(candidate)
 	for _, noise := range []string{
-		"请问", "麻烦", "帮我", "一下", "有没有", "有吗", "怎么", "如何", "哪里", "什么", "可以", "酒店", "门店", "这个", "那个", "想问", "我想", "我要", "需要",
+		"请问", "麻烦", "帮我", "一下", "有没有", "有吗", "怎么", "如何", "哪里", "什么", "可以", "酒店", "门店", "这个", "那个", "想问", "我想", "我要", "我是", "需要",
 	} {
 		query = strings.ReplaceAll(query, noise, "")
 	}
@@ -328,7 +328,7 @@ func knowledgeEvidenceMismatchesTask(item runtimeTaskKnowledgeItem, result rag.R
 	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceSupportsNormalCheckinStep(candidate) {
 		return false
 	}
-	taskTopics := detectKnowledgeTopicClasses(query + " " + item.SubIntent)
+	taskTopics := detectKnowledgeTopicClasses(query + " " + item.SubIntent + " " + runtimeKnowledgeTopicLabel(item.SubIntent))
 	strongTopics := detectKnowledgeTopicClasses(title)
 	if len(taskTopics) > 0 && len(strongTopics) > 0 {
 		if !knowledgeTopicSetsIntersect(taskTopics, strongTopics) {

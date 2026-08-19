@@ -560,7 +560,7 @@ func applyRuntimeKnowledgeAnswerGroups(plans []callbacks.ReplyTaskPlanTraceData,
 func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 	// Query 仍以客户当前问题为主体；若已有稳定的中文业务主题，只追加一个短主题锚点，
 	// 帮助向量检索区分“普通流程”与“同词异常 FAQ”。不追加英文内部枚举，也不发起第二次检索。
-	if text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text))); text != "" {
+	if text := runtimeTaskKnowledgeQueryText(plan); text != "" {
 		text = normalizeRuntimeTaskKnowledgeQuery(plan, text)
 		if text == runtimeNormalCheckinKnowledgeQueryText {
 			return text
@@ -574,6 +574,47 @@ func runtimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData) string {
 		return subIntent
 	}
 	return strings.TrimSpace(plan.Intent)
+}
+
+func runtimeTaskKnowledgeQueryText(plan callbacks.ReplyTaskPlanTraceData) string {
+	text := strings.TrimSpace(stripKnowledgeQueryTransportWrapper(currentTurnDisplayText(plan.Text)))
+	if text == "" {
+		return ""
+	}
+	clauses := dedupeAdjacentClauses(runtimeAtomicKnowledgeClauses(text))
+	if len(clauses) <= 1 || strings.TrimSpace(plan.SubIntent) == "" {
+		return text
+	}
+
+	matched := ""
+	for _, clause := range clauses {
+		if !runtimeTaskKnowledgeClauseMatchesSubIntent(plan.SubIntent, clause) {
+			continue
+		}
+		if matched != "" {
+			// 多个子句属于同一业务主题时无法仅凭 SubIntent 可靠定位；保留
+			// 原有逐子句检索兜底，避免任意丢掉其中一个真实问题。
+			return text
+		}
+		matched = clause
+	}
+	if matched != "" {
+		return matched
+	}
+	return text
+}
+
+func runtimeTaskKnowledgeClauseMatchesSubIntent(subIntent, clause string) bool {
+	target := strings.TrimSpace(subIntent)
+	inferred := strings.TrimSpace(runtimeAtomicClauseSubIntent("", clause))
+	if target == "" || inferred == "" {
+		return false
+	}
+	if target == inferred {
+		return true
+	}
+	targetLabel := runtimeKnowledgeTopicLabel(target)
+	return targetLabel != "" && targetLabel == runtimeKnowledgeTopicLabel(inferred)
 }
 
 func normalizeRuntimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData, text string) string {

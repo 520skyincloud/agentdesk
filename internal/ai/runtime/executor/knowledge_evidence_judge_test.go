@@ -95,6 +95,16 @@ func TestKnowledgeEvidenceJudgeRequiresPositiveRelevanceEvenAtHighScore(t *testi
 	}
 }
 
+func TestKnowledgeEvidenceJudgeDoesNotTreatRelationshipContextAsDiscountEvidence(t *testing.T) {
+	item := runtimeTaskKnowledgeItem{Query: "我是老客户", SubIntent: "discount"}
+	kept, stats := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
+		Title: "客服介绍", Content: "我是24小时客服，有什么可以帮您？", Score: 0.96,
+	}})
+	if len(kept) != 0 || stats.droppedWeak+stats.droppedMismatch != 1 {
+		t.Fatalf("relationship context must not admit unrelated customer-service evidence: kept=%+v stats=%+v", kept, stats)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeEnforcesStoreScopeAndMetadataAcrossKnowledgeBases(t *testing.T) {
 	db := setupRuntimeIntentConfigTestDB(t)
 	if err := db.AutoMigrate(&models.KnowledgeBase{}, &models.KnowledgeEvidenceMetadata{}); err != nil {

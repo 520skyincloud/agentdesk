@@ -28,6 +28,34 @@ func TestCustomerVisibleBoundaryCleansEveryReplyPartAndRebuildsText(t *testing.T
 	}
 }
 
+func TestCustomerVisibleBoundaryRevalidatesCleanedTaskPayload(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	summary := &RunResult{
+		RunRequest:  summaryRunRequestForBoundaryTest(),
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+		ReplyParts: []contracts.ReplyPartV2{
+			{TaskKeys: []string{"parking"}, Content: "停车场从酒店东侧入口进。", EvidenceRefs: []string{"K1"}},
+			{TaskKeys: []string{"address"}, Content: "内部 taskKey=address"},
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	if err := applyCustomerVisibleBoundary(summary, collector); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.ReplyParts) != 2 || !strings.Contains(summary.ReplyText, "停车场") || !strings.Contains(summary.ReplyText, "水阳江路392号") ||
+		strings.Contains(summary.ReplyText, "taskKey") {
+		t.Fatalf("cleaned payload was not revalidated by task: parts=%#v text=%q", summary.ReplyParts, summary.ReplyText)
+	}
+	if summary.ValidationResult == nil || summary.ValidationResult.Status != "passed" {
+		t.Fatalf("final visible payload did not pass validation: %#v", summary.ValidationResult)
+	}
+}
+
+func summaryRunRequestForBoundaryTest() RunInput {
+	return RunInput{}
+}
+
 func TestCustomerVisibleBoundaryDropsInvalidPart(t *testing.T) {
 	summary := &RunResult{ReplyParts: []contracts.ReplyPartV2{
 		{TaskKeys: []string{"internal"}, Content: "内部 taskKey=internal"},

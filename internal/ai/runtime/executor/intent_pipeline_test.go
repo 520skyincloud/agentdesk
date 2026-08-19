@@ -359,12 +359,16 @@ func TestIntentPromptPackBlocksCoworkerFakeCommitment(t *testing.T) {
 	for _, expected := range []string{
 		"没有真实工具、资源提交或接待路由结果",
 		"内部核实、通知转告、登记安排、现场查看、后续跟进",
-		"只能如实引导客户联系",
-		"不能改写成系统已经替客户执行了真实动作",
+		"历史知识库里出现的前台、管家或工作人员话术，不代表当前存在可用接待路径",
+		"直接说明当前不能办理或确认",
+		"不暗示前台、同事或后续流程会处理",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("intent prompt pack missing fake commitment guard %q: %s", expected, joined)
 		}
+	}
+	if strings.Contains(joined, "只能如实引导客户联系") {
+		t.Fatalf("historical front-desk wording must not authorize a nonexistent route: %s", joined)
 	}
 }
 
@@ -920,13 +924,13 @@ func TestRuntimePipelineDoesNotNormalizeDeviceServiceRequestByKeyword(t *testing
 func TestConfiguredServicePromptDropsGenericFieldCollection(t *testing.T) {
 	config := models.ReplyIntentConfig{
 		Code:              "service_request",
-		PromptPack:        "服务请求先看自助路径。服务请求缺少资料时，追问一个必要字段。缺少资料时收集必要信息。",
-		ReplyPlanTemplate: "先给自助路径或追问一个必要字段；需要人工时走流程。",
-		ValidationRules:   "缺少关键字段时收集一个必要字段。",
+		PromptPack:        "服务请求先看自助路径。服务请求缺少资料时，追问一个必要字段。缺少资料时收集必要信息。联系前台处理。同事后续跟进。",
+		ReplyPlanTemplate: "先给自助路径或追问一个必要字段；需要人工时走流程；找同事处理。",
+		ValidationRules:   "缺少关键字段时收集一个必要字段；稍后跟进。",
 	}
 	trace := promptTraceFromConfig(config, callbacks.IntentTraceData{PrimaryIntent: "service_request"})
 	text := strings.Join(trace.Instructions, "\n")
-	for _, forbidden := range []string{"追问一个必要字段", "收集一个必要字段", "收集必要信息", "需要人工时走流程"} {
+	for _, forbidden := range []string{"追问一个必要字段", "收集一个必要字段", "收集必要信息", "需要人工时走流程", "联系前台处理", "同事后续跟进", "找同事处理", "稍后跟进"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("persisted service prompt leaked generic field collection %q: %s", forbidden, text)
 		}
@@ -934,6 +938,25 @@ func TestConfiguredServicePromptDropsGenericFieldCollection(t *testing.T) {
 	for _, required := range []string{"不索要房号、订单、姓名或手机号", "当前不能改房型", "不引导联系不存在的前台"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("configured service prompt missing boundary %q: %s", required, text)
+		}
+	}
+}
+
+func TestConfiguredHotelInfoPromptUsesDirectBoundaryForCompleteQuestion(t *testing.T) {
+	config := models.ReplyIntentConfig{
+		Code:       "hotel_info",
+		PromptPack: "优惠不清楚时联系前台确认。缺资料追问必要字段。",
+	}
+	trace := promptTraceFromConfig(config, callbacks.IntentTraceData{PrimaryIntent: "hotel_info", SubIntent: "discount"})
+	text := strings.Join(trace.Instructions, "\n")
+	for _, forbidden := range []string{"联系前台确认", "追问必要字段"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("persisted hotel-info prompt leaked unsupported fallback %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{"完整信息问题", "知识未命中时直接说明当前资料无法确认", "只有客户表达本身含糊或指代不清时才追问", "不索要房号、订单、姓名或手机号"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("configured hotel-info prompt missing direct boundary %q: %s", required, text)
 		}
 	}
 }
@@ -949,6 +972,19 @@ func TestIntentPromptSeparatesNearbyFoodFromTakeawayFlow(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("intent prompt missing food/takeaway boundary %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestRuntimeIntentPromptKeepsRelationshipAndStateStatementsAsContext(t *testing.T) {
+	prompt := runtimeIntentDetectV2Instruction(nil, nil)
+	for _, required := range []string{
+		"只表达身份、状态或场景",
+		"不得自行推导成优惠、升房、服务或其他知识任务",
+		"只作为该主问题的 context sourceRef",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("intent prompt missing context-only discipline %q: %s", required, prompt)
 		}
 	}
 }

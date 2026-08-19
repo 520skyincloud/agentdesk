@@ -191,8 +191,13 @@ func normalizeReplyParts(parts []contracts.ReplyPartV2, plan *contracts.ReplyPla
 		// 按计划派生。模型漏回显不得触发 rejected 与整链重试（生产
 		// missing_task_evidence 根因）；模型多回显的未知引用仍在
 		// evidence_reference_validator 中拒绝。
-		part.EvidenceRefs = unionStringSets(part.EvidenceRefs, planEvidenceRefsForTasks(plan, part.TaskKeys))
-		part.ActionRefs = unionStringSets(part.ActionRefs, planActionRefsForTasks(plan, part.TaskKeys))
+		if isRuntimeTaskFailureNotice(part.Content) {
+			part.EvidenceRefs = nil
+			part.ActionRefs = nil
+		} else {
+			part.EvidenceRefs = unionStringSets(part.EvidenceRefs, planEvidenceRefsForTasks(plan, part.TaskKeys))
+			part.ActionRefs = unionStringSets(part.ActionRefs, planActionRefsForTasks(plan, part.TaskKeys))
+		}
 		ret = append(ret, part)
 	}
 	sort.SliceStable(ret, func(i, j int) bool {

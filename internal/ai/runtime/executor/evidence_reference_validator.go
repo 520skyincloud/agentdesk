@@ -13,6 +13,9 @@ func validateReplyEvidenceReferences(input ReplyValidationInput) []contracts.Val
 	}
 	issues := make([]contracts.ValidationIssueV1, 0)
 	for partIndex, part := range input.Output.Parts {
+		if isRuntimeTaskFailureNotice(part.Content) {
+			continue
+		}
 		for _, ref := range part.EvidenceRefs {
 			item, ok := evidenceByRef[ref]
 			if !ok {

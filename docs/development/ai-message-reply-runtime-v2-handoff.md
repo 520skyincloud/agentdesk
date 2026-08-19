@@ -592,3 +592,24 @@ go test ./internal/ai/runtime/contracts ./internal/ai/runtime/executor ./interna
 go test ./internal/services -run 'TestAIReplyJobControlledModelFailureRetriesOnceThenSucceeds|TestAIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery|TestAIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery|TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge|TestAIReplyTaskLedgerGenerationRecoveryOnlyClaimsUncommittedTask' -count=1
 git diff --check
 ```
+
+### 8.15 2026-08-19 多问题检索隔离与无知识回复收口
+
+生产回放确认，长文字和语音虽然已经拆出多个 Task，但个别 Task 的知识 Query 仍会退化成整段原文，造成串题检索；完整的优惠、
+升房等问题在无知识时又被错误转成追问。此次保持一次 Intent、并行检索和一次 Generate：
+
+- 多问题文字与语音共用按 `SubIntent` 选取唯一子句的 Query 逻辑，避免停车、草稿纸等 Task 携带整段其他问题检索。
+- 完整问题无知识时直接说明当前资料无法确认；只有真实指代不清才澄清，不索要房号、订单、姓名或手机号。
+- “我是老客户、我好困”等背景陈述不再自行扩展成优惠或服务 Task；与明确问题相邻时仅作为该 Task 的 context 来源。
+- 合并回复按 Task 隔离校验，保留合法子答案；首次协议错误仍仅修复 pending Task，修复失败或硬拒绝后逐题给出明确边界，
+  最终可见文本清洗也会补齐被移除的 Task，避免一个错误答案拖成整段漏答。
+- Generate 输出预算恢复为生产配置对应的 1024 token，没有增加模型调用、固定等待、事实核验或计费变化。
+
+本次没有 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、前端或数据库变化。验证通过：
+
+```bash
+go test ./internal/ai/runtime/executor -count=1
+go test ./internal/ai/runtime -run 'RuntimeReply|NormalizeRuntimeReply' -count=1
+go build ./cmd/server
+git diff --check
+```

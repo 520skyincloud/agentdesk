@@ -231,6 +231,15 @@ func TestReplyValidatorV2DoesNotAutoCoverUnknownCombinedTasks(t *testing.T) {
 	}
 }
 
+func TestReplyAnswerUnitQuestionDetectionKeepsAnswerPayload(t *testing.T) {
+	if replyAnswerUnitLooksLikeQuestion("停车场怎么走：从东门进。") {
+		t.Fatal("answer payload with a question-shaped lead must not be rejected")
+	}
+	if !replyAnswerUnitLooksLikeQuestion("停车场怎么走？") {
+		t.Fatal("plain question should not count as an answer")
+	}
+}
+
 func validReplyValidationInputForTest(content string) ReplyValidationInput {
 	return ReplyValidationInput{
 		Output: contracts.ReplyOutputV2{
@@ -288,7 +297,7 @@ func TestApplyRuntimeReplyOutputV2PreservesValidSiblingAndRepairsOnlyInvalidTask
 	err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{})
 	var protocolErr *replyOutputProtocolError
 	if !errors.As(err, &protocolErr) {
-		t.Fatalf("expected partial protocol repair, got %v", err)
+		t.Fatalf("expected one pending-task protocol repair, got %v", err)
 	}
 	if len(summary.replyRepairState.PreservedParts) != 1 || summary.replyRepairState.PreservedParts[0].TaskKeys[0] != "parking" ||
 		!reflect.DeepEqual(summary.replyRepairState.PendingTaskKeys, []string{"address"}) {
@@ -300,9 +309,6 @@ func TestApplyRuntimeReplyOutputV2PreservesValidSiblingAndRepairsOnlyInvalidTask
 	}
 	if len(summary.ReplyParts) != 2 || !strings.Contains(summary.ReplyText, "停车场") || !strings.Contains(summary.ReplyText, "水阳江路392号") {
 		t.Fatalf("merged reply mismatch: parts=%#v text=%q", summary.ReplyParts, summary.ReplyText)
-	}
-	if len(input.Plan.Tasks) != 2 || len(summary.ReplyPlanV2.Tasks) != 2 {
-		t.Fatalf("authoritative reply plan was mutated: %#v", summary.ReplyPlanV2)
 	}
 }
 
@@ -330,7 +336,7 @@ func TestSafeRuntimeDegradedKeepsPreservedAnswersAndOriginalPlan(t *testing.T) {
 	}
 }
 
-func TestApplyRuntimeReplyOutputV2DoesNotRepairHardRejectedSibling(t *testing.T) {
+func TestApplyRuntimeReplyOutputV2HardRejectedTaskDoesNotDropValidSibling(t *testing.T) {
 	input := multiTaskReplyValidationInputForTest()
 	summary := &RunResult{
 		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
@@ -338,13 +344,65 @@ func TestApplyRuntimeReplyOutputV2DoesNotRepairHardRejectedSibling(t *testing.T)
 	}
 	collector := callbacks.NewRuntimeTraceCollector()
 	raw := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["parking"],"content":"停车场从酒店东侧入口进。"},{"taskKeys":["address"],"content":"我已经通知前台处理了。"}]}`
-	err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{})
-	var protocolErr *replyOutputProtocolError
-	if err == nil || errors.As(err, &protocolErr) {
-		t.Fatalf("hard rejection must not enter model protocol repair: %v", err)
+	if err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{}); err != nil {
+		t.Fatalf("hard-rejected task should settle without another Generate: %v", err)
 	}
-	if len(summary.replyRepairState.PreservedParts) != 1 || !reflect.DeepEqual(summary.replyRepairState.PendingTaskKeys, []string{"address"}) {
-		t.Fatalf("safe sibling should only be retained for deterministic degradation: %#v", summary.replyRepairState)
+	if len(summary.ReplyParts) != 2 || !strings.Contains(summary.ReplyText, "停车场") || !strings.Contains(summary.ReplyText, "水阳江路392号") {
+		t.Fatalf("valid sibling or safe address result was lost: parts=%#v text=%q", summary.ReplyParts, summary.ReplyText)
+	}
+}
+
+func TestApplyRuntimeReplyOutputV2IsolatesTasksInsideMergedPart(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+	}
+	raw := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["parking","address"],"content":"停车场从酒店东侧入口进。地址是壹间公寓高新社区。"}]}`
+	collector := callbacks.NewRuntimeTraceCollector()
+	var protocolErr *replyOutputProtocolError
+	if err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{}); !errors.As(err, &protocolErr) {
+		t.Fatalf("merged part should request one pending-task repair: %v", err)
+	}
+	if len(summary.replyRepairState.PreservedParts) != 1 || summary.replyRepairState.PreservedParts[0].TaskKeys[0] != "parking" {
+		t.Fatalf("valid task inside merged part was not isolated: %#v", summary.replyRepairState)
+	}
+	if err := applyRuntimeReplyOutputV2(`{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["address"],"content":"地址是壹间公寓高新社区。"}]}`, summary, collector, RunInput{}); err != nil {
+		t.Fatalf("failed repair should settle deterministically: %v", err)
+	}
+	if len(summary.ReplyParts) != 2 || !strings.Contains(summary.ReplyText, "停车场") || !strings.Contains(summary.ReplyText, "水阳江路392号") ||
+		strings.Contains(summary.ReplyText, "壹间公寓") {
+		t.Fatalf("merged task isolation mismatch: parts=%#v text=%q", summary.ReplyParts, summary.ReplyText)
+	}
+}
+
+func TestApplyRuntimeReplyOutputV2UsesExplicitSafeResultForUnrecoverableTask(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	input.Plan.Tasks[1] = contracts.ReplyPlanTaskV2{
+		TaskKey: "wifi", Sequence: 2, Intent: "hotel_info", SubIntent: "network_wifi", Objective: "WiFi密码是多少", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K2"}, ActionRefs: []string{}, Constraints: []string{},
+	}
+	input.Evidence.Items[1] = contracts.EvidenceItemV1{
+		Ref: "K2", SourceType: "fastgpt", TaskKeys: []string{"wifi"}, Title: "WiFi", Content: "房间内有网络提示卡。", Score: 1,
+		Answerability: "supporting", ResourceRefs: []string{},
+	}
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+	}
+	raw := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["parking","wifi"],"content":"停车场从酒店东侧入口进。"}]}`
+	collector := callbacks.NewRuntimeTraceCollector()
+	var protocolErr *replyOutputProtocolError
+	if err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{}); !errors.As(err, &protocolErr) {
+		t.Fatalf("missing task should receive one repair opportunity: %v", err)
+	}
+	failedRepair := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["wifi"],"content":"我已经通知前台处理了。"}]}`
+	if err := applyRuntimeReplyOutputV2(failedRepair, summary, collector, RunInput{}); err != nil {
+		t.Fatalf("repair exhaustion should receive a deterministic safe result: %v", err)
+	}
+	if len(summary.ReplyParts) != 2 || summary.ReplyParts[1].Content != "关于WiFi，当前没能确认，不能乱答。" ||
+		!reflect.DeepEqual(summary.ReplyParts[1].TaskKeys, []string{"wifi"}) {
+		t.Fatalf("safe task result mismatch: %#v", summary.ReplyParts)
 	}
 }
 

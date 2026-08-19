@@ -281,6 +281,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"每个任务都要输出 sourceRefs。sourceRefs[0] 是该任务的主问题来源，后续 ref 是被同一任务消化的相邻上下文；只能引用当前 [CURRENT_TURN_ENVELOPE] 中的 URef。标记为“必须覆盖”的 URef 必须至少出现在一个任务中。纠正或取消时，后续 sourceRefs 必须包含被纠正或取消的相邻 URef。",
 		"当前消息中的每个有效问题、资源请求、人工诉求或社交表达都必须覆盖；不得把跨主题问题压成一个任务，也不得从无关历史补出当前未问的任务。",
 		"连续短句共同组成一个完整诉求时只建一个任务，并把相关 URef 放进同一 sourceRefs。例如先表达困倦、紧接着询问有没有咖啡，应作为咖啡问题统一理解，不能之后再把困倦补成第二次回复。",
+		"【背景陈述纪律】“我是老客户/我好困/明天要出门/和女朋友一起”等只表达身份、状态或场景、但没有明确问题或动作的句子，不得自行推导成优惠、升房、服务或其他知识任务；单独出现时归 interaction。若它与相邻的明确问题共同组成一个诉求，则只作为该主问题的 context sourceRef，不再单独建任务。",
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
 		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
 		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",

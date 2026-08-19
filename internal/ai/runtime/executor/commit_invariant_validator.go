@@ -97,6 +97,9 @@ func splitReplyAnswerUnits(content string) []string {
 }
 
 func replyAnswerUnitExplicitlyNamesTask(unit string, task contracts.ReplyPlanTaskV2) bool {
+	if replyAnswerUnitLooksLikeQuestion(unit) {
+		return false
+	}
 	compact := compactRuntimeProtocolText(unit)
 	markers := replyTaskObjectiveMarkers(task)
 	if len(markers) > 0 {
@@ -144,6 +147,9 @@ func replyUnitHasAnswerPayload(compact string) bool {
 }
 
 func replyAnswerUnitImplicitlySupportsTask(unit string, task contracts.ReplyPlanTaskV2) bool {
+	if replyAnswerUnitLooksLikeQuestion(unit) {
+		return false
+	}
 	topic := replyTaskTopicClass(task)
 	if topic == "" {
 		return false
@@ -175,6 +181,33 @@ func replyAnswerUnitImplicitlySupportsTask(unit string, task contracts.ReplyPlan
 	default:
 		return false
 	}
+}
+
+func replyAnswerUnitLooksLikeQuestion(unit string) bool {
+	unit = strings.TrimSpace(unit)
+	if unit == "" {
+		return false
+	}
+	if strings.ContainsAny(unit, "？?") {
+		return true
+	}
+	compact := compactRuntimeProtocolText(unit)
+	if !containsAny(compact, []string{
+		"请问", "能否", "可否", "可以吗", "方便吗", "怎么", "如何", "多少", "几点", "哪家", "哪个", "哪种", "什么",
+	}) {
+		return false
+	}
+	if containsAny(compact, []string{
+		"从", "在", "是", "有", "没有", "不能", "无法", "免费", "收费", "入口", "出口", "楼", "层", "路", "街", "号", "密码", "自取", "柜",
+	}) {
+		return false
+	}
+	for _, r := range compact {
+		if r >= '0' && r <= '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func repairableReplyCommitInvariantIssues(issues []contracts.ValidationIssueV1) bool {

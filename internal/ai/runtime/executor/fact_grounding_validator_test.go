@@ -144,6 +144,37 @@ func TestValidateReplyFactGroundingAllowsBoundaryContinuation(t *testing.T) {
 	}
 }
 
+func TestValidateReplyFactGroundingProtectsTextModeKnowledgeBoundary(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "discount", OutputMode: "text",
+			Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "no_context"},
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"discount"}, Content: "现在入住可以打八折。",
+		}}},
+	}
+	issues := validateReplyFactGrounding(input)
+	if len(issues) != 1 || issues[0].Code != "fact_ungrounded" {
+		t.Fatalf("text-mode knowledge boundary must still block fabricated facts: %+v", issues)
+	}
+}
+
+func TestValidateReplyFactGroundingAllowsDirectNoHitBoundaryText(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "upgrade", OutputMode: "text",
+			Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "unavailable"},
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"upgrade"}, Content: "当前资料无法确认能不能升级大床房。",
+		}}},
+	}
+	if issues := validateReplyFactGrounding(input); len(issues) != 0 {
+		t.Fatalf("direct no-hit boundary text must remain valid: %+v", issues)
+	}
+}
+
 func TestValidateReplyFactGroundingSkipsGroundedTask(t *testing.T) {
 	input := ReplyValidationInput{
 		Plan: contracts.ReplyPlanV2{

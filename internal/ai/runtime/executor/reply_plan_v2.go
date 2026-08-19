@@ -80,10 +80,7 @@ func buildRuntimeReplyPlanV2(
 				reasonCode = outcome.ReasonCode
 				evidenceRefs = append([]string(nil), outcome.SupportingRefs...)
 			}
-			if knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable" {
-				outputMode = "clarification"
-			}
-			if knowledgeStatus == "unavailable" {
+			if runtimeKnowledgeBoundaryStatus(knowledgeStatus) && runtimeReplyPlanNeedsClarification(plan) {
 				outputMode = "clarification"
 			}
 		}
@@ -94,9 +91,10 @@ func buildRuntimeReplyPlanV2(
 		case "correction":
 			constraints = appendUniqueStrings(constraints, "answer_current_correction_only")
 		}
-		if knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable" || knowledgeStatus == "unavailable" {
+		if runtimeKnowledgeBoundaryStatus(knowledgeStatus) {
 			constraints = appendUniqueStrings(constraints, "state_knowledge_boundary_only", "do_not_collect_customer_fields", "do_not_ask_known_store_scope")
-		} else if outputMode == "clarification" {
+		}
+		if outputMode == "clarification" {
 			constraints = appendUniqueStrings(constraints, "clarify_ambiguous_expression_only", "acknowledge_uncertainty")
 		}
 		objective := strings.TrimSpace(plan.Text)
@@ -121,6 +119,30 @@ func buildRuntimeReplyPlanV2(
 		return contracts.ReplyPlanV2{}, err
 	}
 	return ret, nil
+}
+
+func runtimeKnowledgeBoundaryStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "no_context", "unanswerable", "unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeReplyPlanNeedsClarification(plan callbacks.ReplyTaskPlanTraceData) bool {
+	if strings.TrimSpace(plan.RequestMode) == "clarify_previous" {
+		return true
+	}
+	if strings.TrimSpace(plan.RequestMode) != "" || strings.TrimSpace(plan.Intent) != "interaction" {
+		return false
+	}
+	switch strings.TrimSpace(plan.SubIntent) {
+	case "clarify", "clarification", "unknown_clarify":
+		return true
+	default:
+		return false
+	}
 }
 
 func nonNilStrings(items []string) []string {

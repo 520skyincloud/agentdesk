@@ -43,6 +43,17 @@ func applyCustomerVisibleBoundary(summary *RunResult, collector *callbacks.Runti
 		}
 		summary.ReplyParts = parts
 		summary.ReplyText = joinValidatedReplyParts(parts)
+		if dropped > 0 && summary.ReplyPlanV2 != nil && summary.EvidenceBundle != nil && summary.ActionLedgerV2 != nil {
+			output := contracts.ReplyOutputV2{
+				SchemaVersion: contracts.ReplyOutputV2SchemaVersion,
+				Parts:         append([]contracts.ReplyPartV2(nil), parts...),
+			}
+			preserveRuntimeValidReplyParts(summary, output, summary.RunRequest, false)
+			cause := &runtimeTaskValidationFailure{Reason: "customer visible boundary removed an invalid task answer"}
+			if !applySafeRuntimeDegraded(summary, collector, summary.RunRequest, cause) {
+				return fmt.Errorf("customer visible boundary could not settle every reply task")
+			}
+		}
 		if summary.ReplyText != joinValidatedReplyParts(summary.ReplyParts) {
 			return fmt.Errorf("customer visible reply parts do not match reply text")
 		}
