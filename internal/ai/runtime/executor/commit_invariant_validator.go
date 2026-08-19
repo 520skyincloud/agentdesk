@@ -29,7 +29,7 @@ func validateReplyCommitInvariants(input ReplyValidationInput) []contracts.Valid
 		if limit := input.Plan.GlobalConstraints.MaxQuestionsPerPart; limit > 0 && len(part.TaskKeys) > limit {
 			issues = append(issues, validationIssue("too_many_questions_in_part", "$.parts", "reply part exceeds the plan question limit"))
 		}
-		if replyPartMissesDistinctTaskAnswers(part, planByTask) {
+		if !input.ServerValidatedTaskBindings && replyPartMissesDistinctTaskAnswers(part, planByTask) {
 			issues = append(issues, validationIssue("task_answer_obligation_missing", "$.parts", "reply part content does not answer every distinct task key"))
 		}
 	}
@@ -52,12 +52,19 @@ func replyPartMissesDistinctTaskAnswers(part contracts.ReplyPartV2, planByTask m
 		return true
 	}
 	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].Sequence < tasks[j].Sequence })
+	if replyPartHasOrderedInteractionAnswerUnits(part, tasks) {
+		return false
+	}
 	units := splitReplyAnswerUnits(part.Content)
 	if len(units) == 0 {
 		return true
 	}
+	deterministicFailureTasks := runtimeDeterministicFailureTaskKeys(part.Content, tasks)
 	usedImplicitUnits := make([]bool, len(units))
 	for _, task := range tasks {
+		if _, ok := deterministicFailureTasks[task.TaskKey]; ok {
+			continue
+		}
 		matched := false
 		for _, unit := range units {
 			if replyAnswerUnitExplicitlyNamesTask(unit, task) {
@@ -81,6 +88,59 @@ func replyPartMissesDistinctTaskAnswers(part contracts.ReplyPartV2, planByTask m
 		}
 	}
 	return false
+}
+
+// replyPartHasOrderedInteractionAnswerUnits provides a structural coverage
+// rule for ordinary conversation, whose answers do not have hotel-topic
+// keywords. It is intentionally limited to interaction-only parts: taskKeys
+// must remain in plan order and every task needs its own sentence or line.
+// All other fact, evidence, action and safety validators still run normally.
+func replyPartHasOrderedInteractionAnswerUnits(part contracts.ReplyPartV2, tasks []contracts.ReplyPlanTaskV2) bool {
+	if len(tasks) < 2 || len(part.TaskKeys) != len(tasks) {
+		return false
+	}
+	for index, task := range tasks {
+		if strings.TrimSpace(task.Intent) != "interaction" || part.TaskKeys[index] != task.TaskKey {
+			return false
+		}
+	}
+	return len(splitIndependentReplyAnswerUnits(part.Content)) >= len(tasks)
+}
+
+func splitIndependentReplyAnswerUnits(content string) []string {
+	parts := strings.FieldsFunc(content, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '。' || r == '！' || r == '!' || r == '？' || r == '?' || r == '；' || r == ';'
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			ret = append(ret, part)
+		}
+	}
+	return ret
+}
+
+// runtimeDeterministicFailureTaskKeys recognizes only the exact per-task
+// boundary sentences emitted by the server. mergeRuntimeReplyParts keeps each
+// source part on its own line, so compacting six task results into at most
+// three customer messages must not make the validator guess task ownership
+// from business keywords again.
+func runtimeDeterministicFailureTaskKeys(content string, tasks []contracts.ReplyPlanTaskV2) map[string]struct{} {
+	lines := strings.FieldsFunc(content, func(r rune) bool { return r == '\n' || r == '\r' })
+	used := make([]bool, len(lines))
+	covered := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		expected := runtimeTaskFailureNotice(task)
+		for index, line := range lines {
+			if used[index] || strings.TrimSpace(line) != expected {
+				continue
+			}
+			used[index] = true
+			covered[task.TaskKey] = struct{}{}
+			break
+		}
+	}
+	return covered
 }
 
 func splitReplyAnswerUnits(content string) []string {
@@ -134,7 +194,7 @@ func replyTaskObjectiveMarkers(task contracts.ReplyPlanTaskV2) []string {
 func replyUnitHasAnswerPayload(compact string) bool {
 	if containsAny(compact, []string{
 		"是", "在", "从", "到", "有", "没有", "可以", "不能", "无法", "免费", "收费", "开放", "提供", "需要", "使用", "办理", "填写", "下单",
-		"当前资料", "没写明", "入口", "出口", "楼", "层", "路", "街", "号", "点", "时", "密码", "自取", "柜", "前", "后",
+		"当前资料", "没写明", "无法确认", "入口", "出口", "楼", "层", "路", "街", "号", "点", "时", "密码", "自取", "柜", "前", "后",
 	}) {
 		return true
 	}

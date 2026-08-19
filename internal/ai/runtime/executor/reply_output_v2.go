@@ -337,6 +337,7 @@ func preserveRuntimeValidReplyParts(summary *RunResult, output contracts.ReplyOu
 		result := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 			Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: compacted},
 			Plan: plan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2, Gates: summary.ValidationGates,
+			ServerValidatedTaskBindings: true,
 		})
 		if result.Status == "passed" {
 			summary.ValidationResult = &result
@@ -605,17 +606,13 @@ const (
 func isRuntimeTaskFailureNotice(content string) bool {
 	content = strings.TrimSpace(content)
 	return strings.HasPrefix(content, "关于") &&
-		(strings.HasSuffix(content, "，当前资料没写明，不能乱答。") || strings.HasSuffix(content, "，当前没能确认，不能乱答。"))
+		(strings.HasSuffix(content, "，当前资料没写明，不能乱答。") ||
+			strings.HasSuffix(content, "，当前没能确认，不能乱答。") ||
+			strings.HasSuffix(content, "，当前无法确认，不能乱答。"))
 }
 
 func runtimeTaskFailureNotice(task contracts.ReplyPlanTaskV2) string {
-	label := runtimeTaskFailureLabel(task)
-	switch task.Knowledge.Status {
-	case "no_context", "unanswerable", "unavailable":
-		return "关于" + label + "，当前资料没写明，不能乱答。"
-	default:
-		return "关于" + label + "，当前没能确认，不能乱答。"
-	}
+	return "关于" + runtimeTaskFailureLabel(task) + "，当前无法确认，不能乱答。"
 }
 
 func runtimeTaskFailureLabel(task contracts.ReplyPlanTaskV2) string {
@@ -721,7 +718,7 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 		Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: parts},
 		Plan: validationPlan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
-		Gates: summary.ValidationGates,
+		Gates: summary.ValidationGates, ServerValidatedTaskBindings: true,
 	})
 	if validation.Status != "passed" {
 		return false

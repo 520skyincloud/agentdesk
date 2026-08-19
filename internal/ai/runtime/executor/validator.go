@@ -15,6 +15,11 @@ type ReplyValidationInput struct {
 	Plan         contracts.ReplyPlanV2
 	Evidence     contracts.EvidenceBundleV1
 	ActionLedger contracts.ActionLedgerV1
+	// ServerValidatedTaskBindings is set only after every logical reply part has
+	// already been validated separately and the server merely packs those parts
+	// to the outbound message limit. The packed content must keep its TaskKeys
+	// without re-inferring ownership from customer-visible wording.
+	ServerValidatedTaskBindings bool
 	// Gates 是 P9 灰度开关快照（构造时按 RunInput 计算）；零值默认全开，
 	// 保证纯函数测试与未接线的调用方保持门禁开启的安全默认。
 	Gates ReplyValidationGates

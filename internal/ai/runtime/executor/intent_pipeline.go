@@ -288,13 +288,13 @@ func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTrac
 	if isStructuredSocialInteractionIntent(intent) {
 		return intent
 	}
-	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
+	if intent.PrimaryIntent != "interaction" {
 		return intent
 	}
 	marked := false
 	for index := range intent.IntentTasks {
 		task := &intent.IntentTasks[index]
-		if task.Intent != "interaction" || (strings.TrimSpace(task.SubIntent) != "clarify" && !intent.NeedsClarification) {
+		if !isConditionalBusinessKnowledgeFollowUp(*task) {
 			continue
 		}
 		task.NeedsKnowledge = true
@@ -304,13 +304,6 @@ func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTrac
 		task.Reason = appendIntentReason(task.Reason, "clarification task uses formal persisted knowledge retrieval")
 		marked = true
 	}
-	if !marked && strings.TrimSpace(currentText) != "" {
-		intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{
-			Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: strings.TrimSpace(currentText),
-			NeedsKnowledge: true, Reason: "clarification task uses formal persisted knowledge retrieval",
-		})
-		marked = true
-	}
 	if !marked {
 		return intent
 	}
@@ -318,6 +311,23 @@ func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTrac
 	intent.ShouldReply = true
 	intent.Reason = appendIntentReason(intent.Reason, "conditional knowledge routed through persisted task ledger")
 	return intent
+}
+
+func isConditionalBusinessKnowledgeFollowUp(task callbacks.IntentTaskTraceData) bool {
+	if canonicalIntentCode(task.Intent) != "interaction" || strings.TrimSpace(task.RequestMode) != "clarify_previous" {
+		return false
+	}
+	subIntent := strings.TrimSpace(task.SubIntent)
+	switch subIntent {
+	case "clarify", "clarification", "unknown_clarify":
+		return true
+	case "":
+		return false
+	}
+	if isStructuredSocialSubIntent(subIntent) {
+		return false
+	}
+	return runtimeKnowledgeTopicLabel(subIntent) != "" || runtimeAtomicClauseSubIntent("", task.Text) != ""
 }
 
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {
@@ -376,7 +386,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		} else if intent.SubIntent == "clarify" || intent.NeedsClarification {
 			instructions = append(instructions, "当前表达不明确时，只追问一个关键点；不要乱查知识、乱取变量或乱转人工。")
 		} else {
-			instructions = append(instructions, "所有闲聊、玩笑、感谢、确认、表情和非业务互动都归本类；自然短句接住当前话题，别只回哈哈，语气不要淡。")
+			instructions = append(instructions, "所有闲聊、玩笑、感谢、确认、表情、身份问答和与酒店无关的普通常识都归本类；直接自然回答当前问题，别只回哈哈，也不要用‘当前资料没写明’这类酒店知识兜底。")
 		}
 	default:
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")

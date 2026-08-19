@@ -139,8 +139,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if err == nil {
 		err = resolveIntentV2TaskSources(&parsed, sourceScope)
 	}
+	if err == nil {
+		err = validateIntentV2ClauseCoverage(parsed, sourceScope)
+	}
 	if err != nil && runtimeProtocolRepairAllowed(err) {
 		firstProtocolErr := err
+		firstParsed := parsed
 		logRuntimeIntentProtocolFailure("initial", err, result.Content)
 		compileInput.RepairInstruction = buildRuntimeProtocolRepairInstruction(
 			contracts.SchemaIntentTasksV2,
@@ -162,12 +166,28 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		repairCallCancel()
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
+			if isIntentV2ClauseCoverageError(firstProtocolErr) {
+				if fallbackParsed, fallbackDerived, fallbackErr := completeIntentV2ClauseCoverage(firstParsed, sourceScope, configs); fallbackErr == nil {
+					return AdaptIntentV2ToLegacyTrace(fallbackParsed, fallbackDerived), nil
+				}
+			}
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", firstProtocolErr, retryErr)
 		}
 		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, runtimeSchema, configs)
 		if err == nil {
 			err = resolveIntentV2TaskSources(&parsed, sourceScope)
+		}
+		if err == nil {
+			err = validateIntentV2ClauseCoverage(parsed, sourceScope)
+		}
+		if invariant, coverageMissing := runtimeIntentInvariantDetails(err); coverageMissing && invariant.Code == intentInvariantSourceClauseMissing {
+			parsed, derived, err = completeIntentV2ClauseCoverage(parsed, sourceScope, configs)
+		}
+		if err != nil && isIntentV2ClauseCoverageError(firstProtocolErr) {
+			if fallbackParsed, fallbackDerived, fallbackErr := completeIntentV2ClauseCoverage(firstParsed, sourceScope, configs); fallbackErr == nil {
+				parsed, derived, err = fallbackParsed, fallbackDerived, nil
+			}
 		}
 		if err != nil {
 			logRuntimeIntentProtocolFailure("repair", err, retry.Content)
@@ -240,7 +260,7 @@ func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error,
 		path = strings.TrimSpace(typed.Path)
 	}
 	parts := []string{
-		"上一版输出存在可修复的 JSON 协议错误。只修复协议，不新增、删除或改写当前客户原文中的业务任务。",
+		"上一版输出存在可修复的 JSON 协议错误。只修复协议：不得补造客户未表达的业务，但必须补齐 error 中点名的当前客户原文分句。",
 		"schema=" + strings.TrimSpace(schemaName),
 		"errorCode=" + strings.TrimSpace(code),
 		"jsonPath=" + path,
@@ -248,6 +268,9 @@ func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error,
 	}
 	if invariant, ok := runtimeIntentInvariantDetails(protocolErr); ok {
 		parts = append(parts, "businessErrorCode="+invariant.Code)
+		if strings.TrimSpace(invariant.Value) != "" {
+			parts = append(parts, "businessErrorValue="+preview(invariant.Value, 1200))
+		}
 		if len(invariant.AllowedValues) > 0 {
 			parts = append(parts, "allowedValues="+strings.Join(invariant.AllowedValues, ","))
 		}
@@ -282,6 +305,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"当前消息中的每个有效问题、资源请求、人工诉求或社交表达都必须覆盖；不得把跨主题问题压成一个任务，也不得从无关历史补出当前未问的任务。",
 		"连续短句共同组成一个完整诉求时只建一个任务，并把相关 URef 放进同一 sourceRefs。例如先表达困倦、紧接着询问有没有咖啡，应作为咖啡问题统一理解，不能之后再把困倦补成第二次回复。",
 		"【背景陈述纪律】“我是老客户/我好困/明天要出门/和女朋友一起”等只表达身份、状态或场景、但没有明确问题或动作的句子，不得自行推导成优惠、升房、服务或其他知识任务；单独出现时归 interaction。若它与相邻的明确问题共同组成一个诉求，则只作为该主问题的 context sourceRef，不再单独建任务。",
+		"【闲聊与普通对话·金标】问候、情绪、玩笑、生活闲聊、身份问答（如“你是谁呀/我是谁呀”）以及与酒店无关的普通常识（如“你知道李白吗”）都归 interaction，subIntent 用 social/identity/general_knowledge 等直接表达语义，requestMode 用 social 或 answer。它们不是酒店资料问题，禁止输出 clarify_previous，禁止走知识库，也禁止回答“当前资料没写明”。",
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
 		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
 		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",
@@ -303,7 +327,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"【房型升级边界·金标】“可不可以升级大床房/能升大床吗”是在询问能力或政策，归 hotel_info/room_change；“给我换个大床房/帮我升级房型”才是 service_request/room_change。不得因为出现“大床房”就默认索要房号、订单、姓名或手机号。",
 		"【顶层聚合·金标】primaryIntent 按以下优先级确定：存在 human_complaint_risk 任务→human_complaint_risk；入住流程任务→hotel_info；存在客户明确索要的 hotel_variable 任务→hotel_variable；否则按用户原顺序第一个业务任务；没有业务任务→interaction。忽略只表达语气的 interaction 任务。",
 		"【资源动作纪律·金标】本轮资源动作只来自客户明确索要的 hotel_variable 任务（电话/定位/小程序），禁止默认补齐任何变量，禁止把电话、定位、小程序当兜底一起输出。",
-		"【interaction 否定项】interaction 任务不查知识、不取变量、不转人工；不明确时只追问一个关键点。",
+		"【interaction 否定项】interaction 任务不查酒店知识、不取变量、不转人工；身份、常识、玩笑和生活闲聊直接自然回答。只有当前表达确实在追问紧邻的上一轮业务问题时，才使用 requestMode=clarify_previous；不明确时只追问一个关键点。",
 	}
 	if profile != nil {
 		if description := strings.TrimSpace(profile.Description); description != "" {
@@ -1047,10 +1071,20 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 			task.NeedsKnowledge = true
 		}
 		if task.Intent == "interaction" {
-			// The model may copy a knowledge flag from nearby business context.
-			// Interaction tasks start as text-only; the conditional knowledge
-			// router can promote a concrete, unresolved service question later.
+			// Interaction is always text-only by default, regardless of published
+			// config flags. Only an explicit clarify_previous business follow-up
+			// may be promoted by the conditional knowledge router later.
 			task.NeedsKnowledge = false
+			task.NeedsResource = false
+			task.NeedsTool = false
+			task.NeedsHumanRoute = false
+			task.ResourceAction = ""
+			if strings.TrimSpace(task.RequestMode) == "answer" {
+				switch task.SubIntent {
+				case "clarify", "clarification", "unknown_clarify":
+					task.SubIntent = "social"
+				}
+			}
 		}
 		if task.Intent == "hotel_variable" {
 			task.NeedsResource = true
@@ -1121,7 +1155,8 @@ func isStructuredSocialInteractionTask(task callbacks.IntentTaskTraceData) bool 
 
 func isStructuredSocialSubIntent(subIntent string) bool {
 	switch strings.TrimSpace(subIntent) {
-	case "social", "greeting", "thanks", "thank_you", "ack", "acknowledgment", "acknowledgement", "farewell", "goodbye", "emoji", "smalltalk", "small_talk":
+	case "social", "greeting", "thanks", "thank_you", "ack", "acknowledgment", "acknowledgement", "farewell", "goodbye", "emoji", "smalltalk", "small_talk",
+		"identity", "general_knowledge", "common_knowledge", "casual_chat", "life_chat", "joke", "humor":
 		return true
 	default:
 		return false

@@ -1541,11 +1541,11 @@ func TestRuntimePipelineVoiceMixedResourceUsesMediaTextForActionLedger(t *testin
 	}
 }
 
-func TestRuntimePipelineUnknownHotelInfoFallsBackToKnowledge(t *testing.T) {
+func TestRuntimePipelineUnstructuredInteractionDoesNotGuessKnowledge(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "电视投屏怎么弄"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "interaction", IntentConfidence: 0.62, ShouldReply: true, NeedsClarification: true, Reason: "模型没有识别出业务分类"}})
-	if plan.Intent.PrimaryIntent != "interaction" || !plan.Intent.NeedsKnowledge {
-		t.Fatalf("a concrete service question must use formal conditional knowledge retrieval, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent != "interaction" || plan.Intent.NeedsKnowledge {
+		t.Fatalf("unstructured interaction must not be guessed into a knowledge task, got %#v", plan.Intent)
 	}
 }
 
@@ -2114,6 +2114,57 @@ func TestConditionalKnowledgeSkipsPureSocialInteraction(t *testing.T) {
 				t.Fatalf("pure interaction must not become a knowledge task: %#v", marked)
 			}
 		})
+	}
+}
+
+func TestConditionalKnowledgeSkipsDirectIdentityKnowledgeAndCasualInteraction(t *testing.T) {
+	tests := []struct {
+		name        string
+		messageType enums.IMMessageType
+		text        string
+		subIntent   string
+	}{
+		{name: "assistant identity", messageType: enums.IMMessageTypeText, text: "你是谁呀", subIntent: "identity"},
+		{name: "ordinary knowledge", messageType: enums.IMMessageTypeText, text: "你知道李白吗", subIntent: "clarify"},
+		{name: "joke", messageType: enums.IMMessageTypeText, text: "给我讲个笑话", subIntent: "joke"},
+		{name: "voice life chat", messageType: enums.IMMessageTypeVoice, text: "我今天有点困，陪我聊聊天", subIntent: "life_chat"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+				PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true,
+				NeedsClarification: true, NeedsKnowledge: true, NeedsTool: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Sequence: 1, Intent: "interaction", SubIntent: test.subIntent, RequestMode: "answer", Text: test.text,
+					NeedsKnowledge: true, NeedsResource: true, NeedsTool: true, NeedsHumanRoute: true,
+				}},
+			}, RunInput{UserMessage: models.Message{MessageType: test.messageType, Content: test.text}}, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{{
+				Code: "interaction", Status: enums.StatusOk, NeedsKnowledge: true, NeedsTool: true,
+			}})
+			marked := markConditionalKnowledgeTasksForFormalRetrieval(intent, test.text)
+			if marked.PrimaryIntent != "interaction" || marked.NeedsKnowledge || marked.NeedsTool || marked.NeedsResource || marked.NeedsHumanRoute {
+				t.Fatalf("direct interaction must stay text-only: %#v", marked)
+			}
+			if len(marked.IntentTasks) != 1 || marked.IntentTasks[0].NeedsKnowledge || marked.IntentTasks[0].NeedsTool || marked.IntentTasks[0].NeedsResource || marked.IntentTasks[0].NeedsHumanRoute {
+				t.Fatalf("direct interaction task must forbid execution capabilities: %#v", marked.IntentTasks)
+			}
+			plans := buildReplyTaskPlans(marked)
+			if len(plans) != 1 || plans[0].Output != "text_reply" {
+				t.Fatalf("direct interaction must generate a normal text reply: %#v", plans)
+			}
+			if got := runtimeGenerateRelevantHistory([]models.Message{{ID: 1, Content: "旧酒店问题"}}, plans); len(got) != 0 {
+				t.Fatalf("independent interaction must not carry stale business history: %#v", got)
+			}
+		})
+	}
+}
+
+func TestIntentPromptDefinesIdentityKnowledgeAndCasualInteractionBoundary(t *testing.T) {
+	prompt := runtimeIntentDetectV2Instruction(nil, nil)
+	for _, required := range []string{"你是谁呀", "我是谁呀", "你知道李白吗", "禁止输出 clarify_previous", "禁止走知识库"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("interaction boundary prompt missing %q: %s", required, prompt)
+		}
 	}
 }
 

@@ -231,6 +231,51 @@ func TestReplyValidatorV2DoesNotAutoCoverUnknownCombinedTasks(t *testing.T) {
 	}
 }
 
+func TestReplyValidatorV2AcceptsOrderedInteractionAnswerUnitsWithinPartLimit(t *testing.T) {
+	input := interactionReplyValidationInputForTest()
+	input.Output.Parts = []contracts.ReplyPartV2{
+		{TaskKeys: []string{"assistant_identity"}, Content: "我是酒店的智能客服。"},
+		{TaskKeys: []string{"customer_identity"}, Content: "我还不知道你的名字。"},
+		{TaskKeys: []string{"li_bai", "unclear_tail"}, Content: "李白是唐代诗人。\n最后一句我没听清，请再说一遍。"},
+	}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "passed" {
+		t.Fatalf("ordered interaction answers should fit three reply parts: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2RejectsOneInteractionAnswerUnitForMultipleTasks(t *testing.T) {
+	input := interactionReplyValidationInputForTest()
+	input.Plan.Tasks = input.Plan.Tasks[2:]
+	input.Output.Parts = []contracts.ReplyPartV2{{
+		TaskKeys: []string{"li_bai", "unclear_tail"}, Content: "李白是唐代诗人。",
+	}}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "task_answer_obligation_missing") {
+		t.Fatalf("one interaction answer must not cover multiple tasks: %+v", result)
+	}
+}
+
+func interactionReplyValidationInputForTest() ReplyValidationInput {
+	return ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{
+			SchemaVersion: contracts.ReplyPlanV2SchemaVersion, TurnVersion: 1, ShouldGenerate: true,
+			Tasks: []contracts.ReplyPlanTaskV2{
+				{TaskKey: "assistant_identity", Sequence: 1, Intent: "interaction", SubIntent: "identity", Objective: "你是谁呀", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}},
+				{TaskKey: "customer_identity", Sequence: 2, Intent: "interaction", SubIntent: "identity", Objective: "我是谁呀", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}},
+				{TaskKey: "li_bai", Sequence: 3, Intent: "interaction", SubIntent: "general_knowledge", Objective: "你知道李白吗", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}},
+				{TaskKey: "unclear_tail", Sequence: 4, Intent: "interaction", SubIntent: "social", Objective: "我想带s go了", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}},
+			},
+			GlobalConstraints: contracts.ReplyPlanGlobalConstraints{MaxReplyParts: 3, MaxQuestionsPerPart: 4},
+		},
+		Evidence: contracts.EvidenceBundleV1{
+			SchemaVersion: contracts.EvidenceBundleV1SchemaVersion, ScopeFingerprint: "scope-interaction-four",
+			RetrievalStatus: "not_needed",
+		},
+		ActionLedger: contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: 1},
+	}
+}
+
 func TestReplyAnswerUnitQuestionDetectionKeepsAnswerPayload(t *testing.T) {
 	if replyAnswerUnitLooksLikeQuestion("停车场怎么走：从东门进。") {
 		t.Fatal("answer payload with a question-shaped lead must not be rejected")
@@ -400,9 +445,70 @@ func TestApplyRuntimeReplyOutputV2UsesExplicitSafeResultForUnrecoverableTask(t *
 	if err := applyRuntimeReplyOutputV2(failedRepair, summary, collector, RunInput{}); err != nil {
 		t.Fatalf("repair exhaustion should receive a deterministic safe result: %v", err)
 	}
-	if len(summary.ReplyParts) != 2 || summary.ReplyParts[1].Content != "关于WiFi，当前没能确认，不能乱答。" ||
+	if len(summary.ReplyParts) != 2 || summary.ReplyParts[1].Content != "关于WiFi，当前无法确认，不能乱答。" ||
 		!reflect.DeepEqual(summary.ReplyParts[1].TaskKeys, []string{"wifi"}) {
 		t.Fatalf("safe task result mismatch: %#v", summary.ReplyParts)
+	}
+}
+
+func TestSafeRuntimeDegradedPacksSixTaskBoundariesDeterministically(t *testing.T) {
+	tasks := []contracts.ReplyPlanTaskV2{
+		{TaskKey: "food", Sequence: 1, Intent: "hotel_info", SubIntent: "nearby_food", Objective: "附近有什么吃饭的地方", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K1"}},
+		{TaskKey: "play", Sequence: 2, Intent: "hotel_info", SubIntent: "nearby_play", Objective: "附近有什么玩的地方", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K2"}},
+		{TaskKey: "door", Sequence: 3, Intent: "hotel_info", SubIntent: "door_open", Objective: "房门怎么开", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K3"}},
+		{TaskKey: "parking", Sequence: 4, Intent: "hotel_info", SubIntent: "parking", Objective: "停车场怎么走", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K4"}},
+		{TaskKey: "charging", Sequence: 5, Intent: "hotel_info", SubIntent: "ev_charging", Objective: "停车场能不能充电", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K5"}},
+		{TaskKey: "invoice", Sequence: 6, Intent: "hotel_info", SubIntent: "invoice", Objective: "发票怎么开", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K6"}},
+	}
+	evidence := make([]contracts.EvidenceItemV1, 0, len(tasks))
+	for _, task := range tasks {
+		evidence = append(evidence, contracts.EvidenceItemV1{
+			Ref: task.EvidenceRefs[0], SourceType: "fastgpt", TaskKeys: []string{task.TaskKey},
+			Title: task.Objective, Content: "已检索到相关资料", Score: 1, Answerability: "supporting",
+		})
+	}
+	plan := contracts.ReplyPlanV2{
+		SchemaVersion: contracts.ReplyPlanV2SchemaVersion, TurnVersion: 1, ShouldGenerate: true, Tasks: tasks,
+		GlobalConstraints: contracts.ReplyPlanGlobalConstraints{MaxReplyParts: 3, MaxQuestionsPerPart: 4},
+	}
+	bundle := contracts.EvidenceBundleV1{
+		SchemaVersion: contracts.EvidenceBundleV1SchemaVersion, ScopeFingerprint: "scope-six-tasks",
+		RetrievalStatus: "has_context", Items: evidence,
+	}
+	ledger := contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: 1}
+	summary := &RunResult{
+		ReplyPlanV2: &plan, EvidenceBundle: &bundle, ActionLedgerV2: &ledger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+		replyRepairState: runtimeReplyRepairState{
+			PreservedParts: []contracts.ReplyPartV2{{
+				TaskKeys: []string{"food"}, Content: "附近吃饭可以参考商圈餐饮列表。", EvidenceRefs: []string{"K1"},
+			}},
+			PendingTaskKeys: []string{"play", "door", "parking", "charging", "invoice"},
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	if !applySafeRuntimeDegraded(summary, collector, RunInput{}, &runtimeTaskValidationFailure{Reason: "task_answer_obligation_missing"}) {
+		t.Fatal("six task boundaries must settle into a sendable reply")
+	}
+	if len(summary.ReplyParts) == 0 || len(summary.ReplyParts) > 3 {
+		t.Fatalf("six task boundaries were not packed to the configured limit: %#v", summary.ReplyParts)
+	}
+	seen := make(map[string]int, len(tasks))
+	for _, part := range summary.ReplyParts {
+		for _, taskKey := range part.TaskKeys {
+			seen[taskKey]++
+		}
+		if !strings.Contains(part.Content, "当前无法确认") {
+			t.Fatalf("unexpected task boundary wording: %q", part.Content)
+		}
+	}
+	for _, task := range tasks {
+		if seen[task.TaskKey] != 1 {
+			t.Fatalf("task %s coverage = %d, want 1; parts=%#v", task.TaskKey, seen[task.TaskKey], summary.ReplyParts)
+		}
+	}
+	if !strings.Contains(summary.ReplyText, "附近吃饭可以参考商圈餐饮列表") {
+		t.Fatalf("already-valid sibling was lost while packing pending task boundaries: %q", summary.ReplyText)
 	}
 }
 

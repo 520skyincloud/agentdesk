@@ -613,3 +613,33 @@ go test ./internal/ai/runtime -run 'RuntimeReply|NormalizeRuntimeReply' -count=1
 go build ./cmd/server
 git diff --check
 ```
+
+### 8.16 2026-08-19 闲聊路由、语音分句覆盖与多题确定性收敛
+
+生产会话确认两类故障来自 V2 运行链内部，而不是 ASR、FastGPT 或企微发送：身份/常识闲聊被
+`interaction/clarify` 条件路由错误升级为酒店知识任务；同一长文字或语音虽然绑定了 `sourceRefs`，但其中遗漏的
+分句没有 Task。另有六 Task Generate 校验失败后，服务端逐题边界在压缩到三条消息时被再次按关键词猜归属，
+导致 `task_answer_obligation_missing` 并最终没有提交回复。
+
+- `interaction` 默认禁止知识、工具、资源和人工能力；只有 `requestMode=clarify_previous` 的明确业务追问才允许
+  进入条件知识链。身份问答、普通常识、玩笑和生活闲聊统一自然回复，不使用酒店知识缺失话术，也不携带旧业务历史。
+- Intent V2 在现有 `sourceRefs` 协议内增加同一 URef 的分句覆盖检查。漏句先使用已有唯一一次 Intent repair；修复仍漏、
+  输出非法或调用失败时，服务端根据首次合法结果本地补齐缺失 Task，不增加正常模型调用。文字和已完成 ASR 的语音使用
+  相同规则；跨主题整段 Task 会按原句展开，同一早餐任务仍可覆盖时间和地点，业务背景陈述不会被错误补成独立 Task。
+- 多个 `interaction` Task 被压缩到同一回复 Part 时，按计划顺序和独立句/行确认逐题覆盖；一条闲聊答案不能冒充多个
+  Task。该规则只作用于纯 `interaction` Part，不放宽知识、事实、证据、动作或安全校验。
+- 已逐 Task 验证或由服务器确定生成的回复，在压缩到 `MaxReplyParts` 后不再重新按客户可见文字猜 Task 归属；合法 sibling
+  保留，pending Task 使用绑定 TaskKey 的确定性边界收敛。没有新增客户技术失败提示，也没有重新运行整个 Executor。
+
+影响仅限 `internal/ai/runtime/executor` 和本交接文档；无 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、
+模型供应商、Token/Usage、计费、前端或数据库变化。与并行客服/审计分支无共享契约变化；AI 计费分支合并时仍应按语义
+cherry-pick，禁止整文件覆盖 Runtime 提示词和 Validator。验证通过：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/executor ./internal/ai/runtime -count=1
+go test ./internal/services -run 'Test(AIReplyJobControlledModelFailureRetriesOnceThenSucceeds|AIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery|AIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery|AIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge|AIReplyTaskLedgerGenerationRecoveryOnlyClaimsUncommittedTask|ChannelMessageOutbox|WxWorkProtocolFinalDispatchCheck)' -count=1
+go build ./cmd/server
+git diff --check
+```
+
+回滚边界为本次提交及对应 release；没有数据库变更，切回上一 release 并重启 `agentdesk.service` 即可。
