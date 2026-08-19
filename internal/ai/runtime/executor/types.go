@@ -38,6 +38,7 @@ type RunResult struct {
 	// RunRequest 保留本次运行输入，供受保护事实校验解析权威门店。
 	RunRequest                 RunInput
 	Status                     string
+	GenerationOutcome          GenerationOutcome
 	ReplyText                  string
 	RawReplyOutput             string
 	SelectedSkillCode          string

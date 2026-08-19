@@ -1087,7 +1087,7 @@ func TestWxWorkProtocolEchoMatchesMediaFingerprint(t *testing.T) {
 	}
 }
 
-func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
+func TestWxWorkProtocolUnknownEmployeeOutgoingEchoStaysPendingReconciliation(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
 	channel := &models.Channel{
@@ -1180,23 +1180,33 @@ func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	}
 
 	ref := WxWorkKFMessageRefService.GetByWxMsgID(wxMsgID)
-	if ref == nil || ref.MessageID <= 0 || ref.ConversationID != conversation.ID {
-		t.Fatalf("expected legacy ref to be repaired with local message id, got %+v", ref)
+	if ref == nil || ref.MessageID != 0 || ref.ConversationID != conversation.ID ||
+		ref.SendStatus != string(enums.WxWorkKFMessageSendStatusPendingReconciliation) ||
+		ref.FailReason != "unknown_outbound_pending_reconciliation" {
+		t.Fatalf("expected unknown outbound to remain pending reconciliation, got %+v", ref)
 	}
-	message := MessageService.Get(ref.MessageID)
-	if message == nil || message.SenderType != enums.IMSenderTypeAgent || message.Content != "我在企微回复" {
-		t.Fatalf("expected repaired local agent message, got %+v", message)
+	var agentMessageCount int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAgent).
+		Count(&agentMessageCount).Error; err != nil {
+		t.Fatalf("count agent messages: %v", err)
+	}
+	if agentMessageCount != 0 {
+		t.Fatalf("unknown outbound must not create an agent message, got %d", agentMessageCount)
 	}
 	var outboxCount int64
-	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", ref.MessageID).Count(&outboxCount).Error; err != nil {
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("conversation_id = ?", conversation.ID).Count(&outboxCount).Error; err != nil {
 		t.Fatalf("count outbox: %v", err)
 	}
 	if outboxCount != 0 {
-		t.Fatalf("expected repaired echo to avoid outbound outbox, got %d", outboxCount)
+		t.Fatalf("unknown outbound must not create an outbox, got %d", outboxCount)
+	}
+	if route := ConversationRouteService.GetByConversationIDInTenant(conversation.ID, conversation.TenantID); route != nil && routeStatusBlocksAIReply(route.RouteStatus) {
+		t.Fatalf("unknown outbound must not switch the conversation to manual routing, got %+v", route)
 	}
 }
 
-func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testing.T) {
+func TestWxWorkProtocolUnknownOutgoingFirstMessageCreatesConversationWithoutAgentMessage(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()
 	store := &models.Store{
@@ -1239,7 +1249,8 @@ func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testin
 		t.Fatalf("create instance: %v", err)
 	}
 
-	err := WxWorkProtocolService.handleChatMessage(instance, request.WxProtocolChatMsg{
+	svc := &wxWorkProtocolService{}
+	err := svc.handleChatMessage(instance, request.WxProtocolChatMsg{
 		Seq:         "100",
 		ID:          "outgoing-first-message",
 		Sender:      instance.EmployeeUserID,
@@ -1254,7 +1265,7 @@ func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testin
 		t.Fatalf("handle outgoing-first message: %v", err)
 	}
 
-	mapping := WxWorkProtocolService.findProtocolConversationMapping(instance, request.WxProtocolChatMsg{
+	mapping := svc.findProtocolConversationMapping(instance, request.WxProtocolChatMsg{
 		Sender:   instance.EmployeeUserID,
 		Receiver: "external-first-customer",
 	}, "external-first-customer")
@@ -1265,15 +1276,274 @@ func TestWxWorkProtocolEmployeeOutgoingFirstMessageCreatesConversation(t *testin
 	if err := db.Where("conversation_id = ? AND sender_type = ?", mapping.ConversationID, enums.IMSenderTypeAgent).Find(&messages).Error; err != nil {
 		t.Fatalf("find external agent message: %v", err)
 	}
-	if len(messages) != 1 || messages[0].Content != "您好，我先联系您" {
-		t.Fatalf("unexpected external agent messages: %+v", messages)
+	if len(messages) != 0 {
+		t.Fatalf("unknown outbound must not create external agent messages: %+v", messages)
+	}
+	wxMsgID := "wx_protocol:guid-outgoing-first:outgoing-first-message"
+	ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(wxMsgID, instance.TenantID)
+	if ref == nil || ref.MessageID != 0 || ref.ConversationID != mapping.ConversationID ||
+		ref.SendStatus != string(enums.WxWorkKFMessageSendStatusPendingReconciliation) ||
+		ref.FailReason != "unknown_outbound_pending_reconciliation" {
+		t.Fatalf("unexpected unresolved outbound ref: %+v", ref)
 	}
 	var outboxCount int64
-	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", messages[0].ID).Count(&outboxCount).Error; err != nil {
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("conversation_id = ?", mapping.ConversationID).Count(&outboxCount).Error; err != nil {
 		t.Fatalf("count outbox: %v", err)
 	}
 	if outboxCount != 0 {
-		t.Fatalf("employee native echo must not create outbound loop, got %d outbox rows", outboxCount)
+		t.Fatalf("unknown outbound must not create outbound loop, got %d outbox rows", outboxCount)
+	}
+	if route := ConversationRouteService.GetByConversationIDInTenant(mapping.ConversationID, instance.TenantID); route != nil && routeStatusBlocksAIReply(route.RouteStatus) {
+		t.Fatalf("unknown outbound must not switch the conversation to manual routing, got %+v", route)
+	}
+}
+
+func TestWxWorkProtocolConfirmedHumanOutgoingCreatesAgentMessage(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微人工回显测试",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-human-outbound",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	store := &models.Store{
+		TenantID:    101,
+		StoreCode:   "human-outbound-store",
+		Name:        "人工回显门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, "human-outbound")
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:            101,
+		Guid:                "guid-human-outbound",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-human",
+		EmployeeName:        "人工客服",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, _, err := ConversationService.CreateStoreScopedWithRuntimeProfileWithoutWelcome(
+		welcomeTestExternalUser("external-human-outbound"), channel.ID, *aiAgent, StoreConversationScope{
+			StoreID:             store.ID,
+			StoreStaffBindingID: binding.ID,
+		})
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.WxWorkKFConversation{
+		TenantID:       instance.TenantID,
+		ConversationID: conversation.ID,
+		ChannelID:      channel.ID,
+		OpenKfID:       "wx_protocol:" + instance.Guid + ":single",
+		ExternalUserID: "external-human-outbound",
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create conversation mapping: %v", err)
+	}
+	if err := ConversationRouteService.MarkExternalAgentMessage(conversation.ID, now.Add(-2*time.Second)); err != nil {
+		t.Fatalf("mark manual route: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	err = svc.handleChatMessage(instance, request.WxProtocolChatMsg{
+		Seq:         "human-seq-1",
+		ID:          "human-outbound-message",
+		Sender:      instance.EmployeeUserID,
+		Receiver:    "external-human-outbound",
+		RoomID:      "0",
+		MsgType:     wxProtocolMsgText,
+		ContentType: wxProtocolMsgText,
+		Content:     "我来帮您处理",
+		SendTime:    now.Unix(),
+	}, `{"id":"human-outbound-message","content":"我来帮您处理"}`)
+	if err != nil {
+		t.Fatalf("handle confirmed human outbound: %v", err)
+	}
+
+	ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant("wx_protocol:guid-human-outbound:human-outbound-message", instance.TenantID)
+	if ref == nil || ref.MessageID <= 0 || ref.SendStatus != string(enums.WxWorkKFMessageSendStatusSent) {
+		t.Fatalf("expected confirmed human outbound ref, got %+v", ref)
+	}
+	message := MessageService.Get(ref.MessageID)
+	if message == nil || message.SenderType != enums.IMSenderTypeAgent || message.Content != "我来帮您处理" {
+		t.Fatalf("unexpected confirmed human message: %+v", message)
+	}
+	var outboxCount int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("message_id = ?", ref.MessageID).Count(&outboxCount).Error; err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("confirmed employee echo must not create a second outbound send, got %d", outboxCount)
+	}
+}
+
+func TestWxWorkProtocolProviderSequenceReconcilesOriginalAIMessage(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	channel := &models.Channel{
+		TenantID:    101,
+		Name:        "企微序号对账测试",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-provider-seq",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	store := &models.Store{
+		TenantID:    101,
+		StoreCode:   "provider-seq-store",
+		Name:        "序号对账门店",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	binding := createWxWorkProtocolTestBinding(t, db, store, "provider-seq")
+	instance := &models.WxWorkProtocolInstance{
+		TenantID:            101,
+		Guid:                "guid-provider-seq",
+		ChannelID:           channel.ID,
+		EmployeeUserID:      "employee-provider-seq",
+		StoreID:             store.ID,
+		StoreStaffBindingID: binding.ID,
+		HealthStatus:        "online",
+		Status:              enums.StatusOk,
+		AuditFields:         models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, _, err := ConversationService.CreateStoreScopedWithRuntimeProfileWithoutWelcome(
+		welcomeTestExternalUser("external-provider-seq"), channel.ID, *aiAgent, StoreConversationScope{
+			StoreID:             store.ID,
+			StoreStaffBindingID: binding.ID,
+		})
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	var maxSeq int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).
+		Select("COALESCE(MAX(seq_no), 0)").Scan(&maxSeq).Error; err != nil {
+		t.Fatalf("find max sequence: %v", err)
+	}
+	sentAt := now.Add(-time.Second)
+	message := &models.Message{
+		TenantID:       conversation.TenantID,
+		ConversationID: conversation.ID,
+		SessionNo:      1,
+		ClientMsgID:    "local-ai-provider-seq",
+		SenderType:     enums.IMSenderTypeAI,
+		SenderID:       aiAgent.ID,
+		ReceiverType:   "customer",
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "这是平台 AI 的回复",
+		SeqNo:          maxSeq + 1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         &sentAt,
+		AuditFields:    models.AuditFields{CreatedAt: sentAt, UpdatedAt: sentAt},
+	}
+	if err := db.Create(message).Error; err != nil {
+		t.Fatalf("create AI message: %v", err)
+	}
+	if err := db.Create(&models.ChannelMessageOutbox{
+		TenantID:       conversation.TenantID,
+		ChannelType:    enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversation.ID,
+		MessageID:      message.ID,
+		SendStatus:     string(enums.ChannelMessageOutboxStatusSent),
+		SentAt:         &sentAt,
+		AuditFields:    models.AuditFields{CreatedAt: sentAt, UpdatedAt: sentAt},
+	}).Error; err != nil {
+		t.Fatalf("create AI outbox: %v", err)
+	}
+	if err := db.Create(&models.WxWorkKFMessageRef{
+		TenantID:       conversation.TenantID,
+		ConversationID: conversation.ID,
+		MessageID:      message.ID,
+		WxMsgID:        "wx_protocol:guid-provider-seq:local-send-response",
+		Direction:      string(enums.WxWorkKFMessageDirectionOut),
+		OpenKfID:       "wx_protocol:" + instance.Guid,
+		ExternalUserID: "external-provider-seq",
+		SendStatus:     string(enums.WxWorkKFMessageSendStatusSent),
+		RawPayload:     `{"data":{"msg_data":{"id":"provider-send-id","msg_id":"provider-msg-id","seq":"provider-seq-900"}}}`,
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: sentAt, UpdatedAt: sentAt},
+	}).Error; err != nil {
+		t.Fatalf("create provider response ref: %v", err)
+	}
+
+	svc := &wxWorkProtocolService{}
+	classification, reconciled := svc.reconcilePlatformOutboxEcho(instance, conversation.ID, 1, request.WxProtocolChatMsg{
+		Seq:     "provider-seq-900",
+		ID:      "different-callback-id",
+		MsgType: wxProtocolMsgText,
+	}, "wx_protocol:guid-provider-seq:different-callback-id", "external-provider-seq", enums.IMMessageTypeText, "这是平台 AI 的回复", "", `{"id":"different-callback-id","seq":"provider-seq-900"}`)
+	if !reconciled || classification != wxWorkOutboundAI {
+		t.Fatalf("expected provider sequence to reconcile AI echo, classification=%s reconciled=%v", classification, reconciled)
+	}
+	ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant("wx_protocol:guid-provider-seq:different-callback-id", conversation.TenantID)
+	if ref == nil || ref.MessageID != message.ID || ref.SendStatus != string(enums.WxWorkKFMessageSendStatusSent) {
+		t.Fatalf("unexpected reconciled callback ref: %+v", ref)
+	}
+	var agentMessageCount int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAgent).
+		Count(&agentMessageCount).Error; err != nil {
+		t.Fatalf("count agent messages: %v", err)
+	}
+	if agentMessageCount != 0 {
+		t.Fatalf("AI self echo must not create an agent message, got %d", agentMessageCount)
+	}
+}
+
+func TestWxWorkProtocolUnknownOutboundHoldExpires(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	ref := &models.WxWorkKFMessageRef{
+		TenantID:       101,
+		ConversationID: 2001,
+		WxMsgID:        "unknown-outbound-hold",
+		Direction:      string(enums.WxWorkKFMessageDirectionOut),
+		SendStatus:     string(enums.WxWorkKFMessageSendStatusPendingReconciliation),
+		Status:         enums.StatusOk,
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(ref).Error; err != nil {
+		t.Fatalf("create pending outbound ref: %v", err)
+	}
+	deadline, held := WxWorkKFMessageRefService.ActiveOutboundReconciliationHold(ref.TenantID, ref.ConversationID, now.Add(time.Second))
+	if !held || deadline == nil || !deadline.Equal(now.Add(wxWorkUnknownOutboundReconciliationHold)) {
+		t.Fatalf("expected active reconciliation hold, deadline=%v held=%v", deadline, held)
+	}
+	if deadline, held = WxWorkKFMessageRefService.ActiveOutboundReconciliationHold(ref.TenantID, ref.ConversationID, now.Add(3*time.Second)); held || deadline != nil {
+		t.Fatalf("expected reconciliation hold to expire, deadline=%v held=%v", deadline, held)
+	}
+	updated := WxWorkKFMessageRefService.Get(ref.ID)
+	if updated == nil || updated.SendStatus != string(enums.WxWorkKFMessageSendStatusUnresolvedOutbound) ||
+		updated.FailReason != "unknown_outbound_reconciliation_timeout" {
+		t.Fatalf("unexpected expired reconciliation ref: %+v", updated)
 	}
 }
 

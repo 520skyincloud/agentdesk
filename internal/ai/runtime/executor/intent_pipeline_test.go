@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
@@ -248,10 +249,14 @@ func TestNormalizeModelIntentTraceKeepsCheckinKnowledgeWithoutUnconfiguredResour
 		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
 	}
 	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
-		PrimaryIntent:    "interaction",
-		SubIntent:        "chat",
+		PrimaryIntent:    "hotel_info",
+		SubIntent:        "checkin_process",
 		IntentConfidence: 0.8,
 		ShouldReply:      true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "hotel_info", SubIntent: "checkin_process", Text: "我想办理入住",
+			RequestMode: "answer", Confidence: 0.8,
+		}},
 	}, RunInput{UserMessage: models.Message{Content: "我想办理入住"}}, adapter.HistoryBuildResult{}, configs)
 	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "checkin_process" || !intent.NeedsKnowledge || intent.NeedsResource {
 		t.Fatalf("expected deterministic checkin normalization, got %#v", intent)
@@ -270,21 +275,19 @@ func TestNormalizeModelIntentTraceKeepsCheckinKnowledgeWithoutUnconfiguredResour
 	}
 }
 
-func TestRuntimeIntentProtocolFallbackPreservesCheckinHandling(t *testing.T) {
-	configs := []models.ReplyIntentConfig{
-		{Code: "hotel_info", Status: enums.StatusOk},
-		{Code: "hotel_variable", Status: enums.StatusOk, NeedsResource: true, ResourceType: "store_variable"},
-	}
-	intent, ok := buildRuntimeIntentProtocolFallback(
-		RunInput{UserMessage: models.Message{Content: "咋入住"}},
-		configs,
+func TestRuntimeIntentProtocolRepairDoesNotIncludeModelOutput(t *testing.T) {
+	instruction := buildRuntimeProtocolRepairInstruction(
+		contracts.SchemaIntentTasksV2,
 		&strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.tasks"},
+		contracts.RuntimeIntentSchemaCatalog{IntentCodes: []string{"hotel_info", "interaction"}},
+		"咋入住",
 	)
-	if !ok {
-		t.Fatal("expected deterministic protocol fallback")
+	if !strings.Contains(instruction, "errorCode=json_schema_invalid") || !strings.Contains(instruction, "jsonPath=$.tasks") ||
+		!strings.Contains(instruction, "当前客户原文：咋入住") {
+		t.Fatalf("repair instruction missing protocol metadata: %q", instruction)
 	}
-	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || intent.NeedsResource || containsString(intent.ResourceActions, "provide_mini_program") {
-		t.Fatalf("protocol fallback lost checkin handling: %#v", intent)
+	if strings.Contains(instruction, "第一次输出") {
+		t.Fatalf("repair instruction must not replay the model output: %q", instruction)
 	}
 }
 
@@ -870,8 +873,8 @@ func TestRuntimePipelineVoiceCheckinMatchesTextCheckin(t *testing.T) {
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_variable", Name: "酒店变量", Priority: 90, MatchMode: "hybrid", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk})
 	conversation := seedRuntimeCheckinMiniProgram(t)
 	detected := callbacks.IntentTraceData{
-		PrimaryIntent: "interaction", SubIntent: "clarify", IntentConfidence: 0.82,
-		ShouldReply: true, NeedsClarification: true, Reason: "model needs normalization",
+		PrimaryIntent: "hotel_info", SubIntent: "checkin_process", IntentConfidence: 0.82,
+		ShouldReply: true, NeedsKnowledge: true, Reason: "model identified the normal check-in process",
 	}
 	textReq := RunInput{Conversation: conversation, UserMessage: models.Message{
 		MessageType: enums.IMMessageTypeText, Content: "我要办理入住",
@@ -1734,9 +1737,7 @@ func TestResolveRuntimeIntentDetectModelCallRejectsMissingStoreAssignment(t *tes
 }
 
 func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
-	// 本测试 mock 的是 legacy chat.completion 协议，显式固定 intent contract=v1，
-	// 避免 V2 成为默认后误走 responses 路径（该路径需要已发布意图配置）。
-	t.Setenv("AI_RUNTIME_INTENT_CONTRACT", "v1")
+	// 生产只运行 stable-v2；测试真实 v2 Schema、一次 repair 和消息顺序。
 	const generateOnlyPersona = "PERSONA_MUST_NOT_ENTER_INTENT_DETECT"
 	for _, scenario := range []struct {
 		name         string
@@ -1791,10 +1792,13 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 			result, err := (llmRuntimeIntentDetector{}).DetectRuntimeIntent(context.Background(), RunInput{
 				Conversation: models.Conversation{ID: 7, TenantID: 1},
 				UserMessage: models.Message{
-					ConversationID: 7, TenantID: 1, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
+					ConversationID: 7, TenantID: 1, SessionNo: 1, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
 				},
 				AIAgent: models.AIAgent{SystemPrompt: generateOnlyPersona},
-			}, adapter.HistoryBuildResult{}, nil)
+			}, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{
+				{Code: "hotel_info", NeedsKnowledge: true, Status: enums.StatusOk},
+				{Code: "interaction", Status: enums.StatusOk},
+			})
 			if err != nil {
 				t.Fatalf("detect intent: %v", err)
 			}
@@ -1806,10 +1810,10 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(capturedMessages) != int(scenario.wantCalls) || len(capturedMessages[0]) != 2 {
+			if len(capturedMessages) != int(scenario.wantCalls) || len(capturedMessages[0]) != 3 {
 				t.Fatalf("unexpected first-attempt messages: %#v", capturedMessages)
 			}
-			if capturedMessages[0][0]["role"] != "system" || capturedMessages[0][1]["role"] != "user" {
+			if capturedMessages[0][0]["role"] != "system" || capturedMessages[0][1]["role"] != "system" || capturedMessages[0][2]["role"] != "user" {
 				t.Fatalf("intent message order changed: %#v", capturedMessages[0])
 			}
 			firstAttemptJSON, err := json.Marshal(capturedMessages[0])
@@ -1819,7 +1823,7 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 			if strings.Contains(string(firstAttemptJSON), generateOnlyPersona) {
 				t.Fatalf("WxWork persona leaked into IntentDetect messages")
 			}
-			if scenario.invalidFirst && len(capturedMessages[1]) != 3 {
+			if scenario.invalidFirst && len(capturedMessages[1]) != 4 {
 				t.Fatalf("retry must append exactly one repair instruction: %#v", capturedMessages[1])
 			}
 		})
@@ -1859,7 +1863,7 @@ func TestRuntimeIntentModelInvocationTimeoutClampsRetryCount(t *testing.T) {
 }
 
 func validIntentDetectGoldenJSON() string {
-	return `{"primaryIntent":"hotel_info","subIntent":"network_wifi","confidence":0.95,"needsKnowledge":true,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceAction":"","resourceActions":[],"secondaryIntents":[],"intentTasks":[{"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"询问网络信息"}],"reason":"酒店网络信息咨询"}`
+	return `{"schemaVersion":"intent_tasks.v2","dialogueAct":"new_topic","tasks":[{"sequence":1,"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","requestMode":"answer","confidence":0.95}]}`
 }
 
 func seedRuntimeIntentConfig(t *testing.T, item models.ReplyIntentConfig) {
@@ -1976,39 +1980,16 @@ func seedRuntimeCheckinMiniProgram(t *testing.T) models.Conversation {
 	return conversation
 }
 
-func TestRuntimeIntentProtocolFallbackIsNarrowAndDeterministic(t *testing.T) {
-	configs := []models.ReplyIntentConfig{
-		{Code: "interaction", Status: enums.StatusOk},
-		{Code: "hotel_variable", NeedsResource: true, ResourceType: "store_variable", Status: enums.StatusOk},
-		{Code: "human_complaint_risk", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", Status: enums.StatusOk},
-	}
-	protocolErr := &strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.tasks[0].intent", Message: "invalid intent"}
-	tests := []struct {
-		name       string
-		text       string
-		intent     string
-		subIntent  string
-		action     string
-		needsHuman bool
-	}{
-		{name: "explicit human", text: "别机器人了，帮我转人工", intent: "human_complaint_risk", subIntent: "explicit_handoff", needsHuman: true},
-		{name: "current hotel location", text: "把这家酒店定位发我", intent: "hotel_variable", subIntent: "location", action: "provide_location"},
-		{name: "external location", text: "把酒店附近小区定位发我", intent: "interaction", subIntent: "clarify"},
-		{name: "ordinary text", text: "来一杯生椰拿铁", intent: "interaction", subIntent: "clarify"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			intent, ok := buildRuntimeIntentProtocolFallback(RunInput{
-				UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: test.text},
-			}, configs, protocolErr)
-			if !ok || intent.PrimaryIntent != test.intent || intent.SubIntent != test.subIntent ||
-				intent.ResourceAction != test.action || intent.NeedsHumanRoute != test.needsHuman {
-				t.Fatalf("fallback=%+v ok=%v", intent, ok)
-			}
-			if test.name == "external location" && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
-				t.Fatalf("external location must not send hotel resource: %+v", intent)
-			}
-		})
+func TestNormalizeModelIntentTraceDoesNotKeywordReclassifyLowConfidenceTask(t *testing.T) {
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", SubIntent: "supplies_self_help", IntentConfidence: 0.3, ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "hotel_info", SubIntent: "supplies_self_help", Text: "草稿纸有吗",
+			RequestMode: "answer", Confidence: 0.3,
+		}},
+	}, RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "草稿纸有吗"}}, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{{Code: "hotel_info", Status: enums.StatusOk}})
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || len(intent.IntentTasks) != 1 {
+		t.Fatalf("server must preserve the model task instead of keyword fallback classification: %+v", intent)
 	}
 }
 

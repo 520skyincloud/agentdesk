@@ -35,6 +35,7 @@ type InterruptContextSummary struct {
 type Summary struct {
 	RunID                     string
 	Status                    string
+	GenerationOutcome         string
 	ReplyText                 string
 	PlannedSkillCode          string
 	PlannedSkillName          string

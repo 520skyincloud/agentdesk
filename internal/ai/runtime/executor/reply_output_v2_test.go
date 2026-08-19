@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func assertRuntimeStructuredOutput(t *testing.T, config modelconfig.Config, name
 	if err := json.Unmarshal(contracts.MustSchema(schemaName), &want); err != nil {
 		t.Fatal(err)
 	}
-	if string(config.StructuredOutput.JSONSchema) != string(contracts.MustSchema(schemaName)) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("structured output schema mismatch: got=%#v want=%#v", got, want)
 	}
 }
@@ -85,31 +86,35 @@ func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
 	}
 }
 
-func TestCompleteRuntimeGenerationPreservesControlledFallbackTrace(t *testing.T) {
+func TestCompleteRuntimeGenerationPreservesSafeDegradedOutcome(t *testing.T) {
 	summary := &RunResult{
-		Status: "fallback", ReplyText: "请先在小程序登记，登记后刷脸开门。",
-		ReplyParts: []contracts.ReplyPartV2{{TaskKeys: []string{"checkin"}, Content: "请先在小程序登记，登记后刷脸开门。"}},
+		Status: string(GenerationOutcomeSafeDegraded), GenerationOutcome: GenerationOutcomeSafeDegraded,
+		ReplyText:  "当前门店地址是：合肥市包河区水阳江路392号。",
+		ReplyParts: []contracts.ReplyPartV2{{TaskKeys: []string{"address"}, Content: "当前门店地址是：合肥市包河区水阳江路392号。"}},
 	}
 	collector := callbacks.NewRuntimeTraceCollector()
-	collector.Data.Pipeline.Generate.Status = "fallback"
-	collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
-	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+	collector.Data.Pipeline.Generate.Status = string(GenerationOutcomeSafeDegraded)
+	collector.Data.Pipeline.Generate.Mode = string(GenerationOutcomeSafeDegraded)
+	collector.Data.Pipeline.Generate.Reason = "generation failed; only authoritative scalar facts were allowed through safe degraded mode"
 	collector.Data.Pipeline.Generate.InitialErrorCode = "json_root_not_object"
 	collector.Data.Pipeline.Generate.RepairErrorCode = "missing_required_task"
 	collector.Data.Pipeline.Validate.Status = "passed"
-	collector.Data.Pipeline.Validate.Reason = "controlled fallback passed deterministic validation"
+	collector.Data.Pipeline.Validate.Reason = "safe degraded scalar facts passed deterministic validation"
 	if err := completeRuntimeGeneration(summary, collector, "test-model", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if summary.Status != "completed" || collector.Data.Pipeline.Generate.Status != "fallback" ||
-		collector.Data.Pipeline.Generate.Mode != "controlled_fallback" || collector.Data.Output.FinishReason != "controlled_fallback" {
-		t.Fatalf("fallback trace was overwritten: summary=%#v generate=%#v finish=%q", summary, collector.Data.Pipeline.Generate, collector.Data.Output.FinishReason)
+	if summary.Status != string(GenerationOutcomeSafeDegraded) || summary.GenerationOutcome != GenerationOutcomeSafeDegraded ||
+		collector.Data.Pipeline.Generate.Status != string(GenerationOutcomeSafeDegraded) ||
+		collector.Data.Pipeline.Generate.Mode != string(GenerationOutcomeSafeDegraded) ||
+		collector.Data.Output.FinishReason != string(GenerationOutcomeSafeDegraded) ||
+		collector.Data.Output.GenerationOutcome != string(GenerationOutcomeSafeDegraded) {
+		t.Fatalf("safe degraded outcome was overwritten: summary=%#v generate=%#v output=%#v", summary, collector.Data.Pipeline.Generate, collector.Data.Output)
 	}
 	if collector.Data.Pipeline.Generate.InitialErrorCode == "" || collector.Data.Pipeline.Generate.RepairErrorCode == "" {
-		t.Fatalf("fallback failure evidence was lost: %#v", collector.Data.Pipeline.Generate)
+		t.Fatalf("safe degraded failure evidence was lost: %#v", collector.Data.Pipeline.Generate)
 	}
-	if collector.Data.Error.Message == "" || collector.Data.Error.Stage != "generate_fallback" {
-		t.Fatalf("fallback must preserve a diagnosable generation error: %#v", collector.Data.Error)
+	if collector.Data.Error.Message == "" || collector.Data.Error.Stage != "generate_safe_degraded" {
+		t.Fatalf("safe degraded mode must preserve a diagnosable generation error: %#v", collector.Data.Error)
 	}
 }
 
@@ -169,7 +174,7 @@ func validationHasCode(result contracts.ValidationResultV1, code string) bool {
 }
 
 func TestParseRuntimeReplyOutputV2LooseExtraction(t *testing.T) {
-	raw := "好的，这是给客人的回复：\n{\"schemaVersion\":\"reply_output.v2\",\"parts\":[{\"taskKeys\":[\"t1\"],\"content\":\"行李可以免费寄存在一楼前台寄存柜。\",\"evidenceRefs\":[\"K1\"],\"actionRefs\":[]}]}\n以上。"
+	raw := "好的，这是给客人的回复：\n{\"schemaVersion\":\"reply_output.v2\",\"parts\":[{\"taskKeys\":[\"t1\"],\"content\":\"行李可以免费寄存在一楼前台寄存柜。\"}]}\n以上。"
 	parsed, err := parseRuntimeReplyOutputV2(extractLooseJSONObject(raw))
 	if err != nil {
 		t.Fatalf("loose extraction must recover JSON object: %v", err)

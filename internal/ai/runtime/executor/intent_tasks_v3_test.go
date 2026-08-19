@@ -52,13 +52,13 @@ func TestV3DegradePerUtterance(t *testing.T) {
 	}
 }
 
-// 契约 2.1：成组开关只允许整组（Intent V3 + Context V2）。
-func TestV3GroupFlagForcesIntentContract(t *testing.T) {
+// V3 代码仅保留给离线测试，环境变量不能切换在线主链。
+func TestV3GroupFlagCannotForceProductionIntentContract(t *testing.T) {
 	t.Setenv("AI_RUNTIME_MULTIMODAL_V3_STRICT", "on")
 	t.Setenv("AI_RUNTIME_INTENT_CONTRACT", "v2")
 	resolved := resolveRuntimeFeatureModes(RunInput{})
-	if resolved.IntentContract != runtimeIntentContractV3 {
-		t.Fatalf("group flag must force intent v3, got %s", resolved.IntentContract)
+	if resolved.IntentContract != runtimeIntentContractV2 {
+		t.Fatalf("production contract must remain v2, got %s", resolved.IntentContract)
 	}
 	if resolved.ContextCompiler != runtimeContextCompilerV2 {
 		t.Fatalf("group flag must force context v2, got %s", resolved.ContextCompiler)

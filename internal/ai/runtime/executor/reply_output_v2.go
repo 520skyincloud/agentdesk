@@ -127,7 +127,7 @@ func finishRuntimeV2GenerationFailure(
 		}
 		return context.Canceled
 	}
-	if applyControlledRuntimeReplyFallback(summary, collector, req, err) {
+	if applySafeRuntimeDegraded(summary, collector, req, err) {
 		return completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, startedAt)
 	}
 	var repeatedProtocolErr *replyOutputProtocolError
@@ -204,20 +204,7 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return fmt.Errorf("reply_output.v2 validation context is incomplete")
 	}
-	var parsed contracts.ReplyOutputV2
-	var err error
-	if multimodalV3Enabled() {
-		// 契约 22.14/15：成组开关下模型只输出 groupKey+taskKeys+content；
-		// Evidence/Action 引用由服务端 deterministic autofix 派生。
-		// 模型仍按 v2 形态输出时兼容解析（引用一律由服务端覆盖派生），
-		// 避免协议切换期回复中断。
-		parsed, err = parseRuntimeReplyOutputV3AsV2(raw)
-		if err != nil {
-			parsed, err = parseRuntimeReplyOutputV2(raw)
-		}
-	} else {
-		parsed, err = parseRuntimeReplyOutputV2(raw)
-	}
+	parsed, err := parseRuntimeReplyOutputV2(raw)
 	if err != nil {
 		// 生产回归 2026-08-18：模型偶发在 JSON 前后夹带说明文字或思考前缀
 		// （行李类问题连续触发 json_root_not_object → 技术失败提示）。先做
@@ -315,20 +302,27 @@ func buildRuntimeReplyOutputRepairInstruction(protocolErr *replyOutputProtocolEr
 	}, "\n")
 }
 
-// applyControlledRuntimeReplyFallback 是 Generate 本身和唯一一次协议修复都失败后的
-// 最后发送边界。它只使用已经通过任务相关性裁决的 Evidence/Store Fact，不重新检索、
-// 不调用第二个模型，也不把知识全文倾倒给客户。取消中的旧 Job 不会进入这里。
-func applyControlledRuntimeReplyFallback(summary *RunResult, collector *callbacks.RuntimeTraceCollector, req RunInput, cause error) bool {
+const (
+	authoritativeStoreNameEvidenceTitle    = "当前门店名称（系统权威）"
+	authoritativeStoreAddressEvidenceTitle = "当前门店地址（系统权威）"
+	authoritativeStorePhoneEvidenceTitle   = "当前门店电话（系统权威）"
+)
+
+// applySafeRuntimeDegraded may only expose server-owned scalar facts. It is not
+// a second answer engine and must never render FastGPT text, process templates,
+// cached answers, generic acknowledgements, or no-hit business replies.
+func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTraceCollector, req RunInput, cause error) bool {
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return false
 	}
-	parts := buildControlledRuntimeFallbackParts(*summary.ReplyPlanV2, *summary.EvidenceBundle)
+	parts := buildSafeRuntimeDegradedParts(*summary.ReplyPlanV2, *summary.EvidenceBundle)
 	if len(parts) == 0 {
 		return false
 	}
+	validationPlan := safeDegradedValidationPlan(*summary.ReplyPlanV2, parts)
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 		Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: parts},
-		Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
+		Plan: validationPlan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
 		Gates: summary.ValidationGates,
 	})
 	if validation.Status != "passed" {
@@ -337,33 +331,33 @@ func applyControlledRuntimeReplyFallback(summary *RunResult, collector *callback
 	summary.ValidationResult = &validation
 	summary.ReplyParts = append([]contracts.ReplyPartV2(nil), validation.NormalizedParts...)
 	summary.ReplyText = joinValidatedReplyParts(validation.NormalizedParts)
-	summary.Status = "fallback"
+	summary.Status = string(GenerationOutcomeSafeDegraded)
 	summary.ErrorMessage = ""
-	collector.Data.Status = "fallback"
+	setGenerationOutcome(summary, collector, GenerationOutcomeSafeDegraded)
+	collector.Data.Status = summary.Status
 	collector.Data.Error.Message = runtimeGenerationFailureCode(collector, cause)
-	collector.Data.Error.Stage = "generate_fallback"
-	collector.Data.Pipeline.Generate.Status = "fallback"
-	collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
-	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+	collector.Data.Error.Stage = "generate_safe_degraded"
+	collector.Data.Pipeline.Generate.Status = string(GenerationOutcomeSafeDegraded)
+	collector.Data.Pipeline.Generate.Mode = string(GenerationOutcomeSafeDegraded)
+	collector.Data.Pipeline.Generate.Reason = "generation failed; only authoritative scalar facts were allowed through safe degraded mode"
 	collector.Data.Pipeline.Validate.Status = "passed"
-	collector.Data.Pipeline.Validate.Reason = "controlled fallback passed deterministic validation"
-	_ = cause
+	collector.Data.Pipeline.Validate.Reason = "safe degraded scalar facts passed deterministic validation"
 	return strings.TrimSpace(summary.ReplyText) != ""
 }
 
-func buildControlledRuntimeFallbackParts(plan contracts.ReplyPlanV2, evidence contracts.EvidenceBundleV1) []contracts.ReplyPartV2 {
+func buildSafeRuntimeDegradedParts(plan contracts.ReplyPlanV2, evidence contracts.EvidenceBundleV1) []contracts.ReplyPartV2 {
 	parts := make([]contracts.ReplyPartV2, 0, min(plan.GlobalConstraints.MaxReplyParts, 3))
 	for _, task := range plan.Tasks {
 		if task.OutputMode != "text" && task.OutputMode != "text_and_resource" && task.OutputMode != "clarification" {
 			continue
 		}
-		content := controlledRuntimeTaskFallbackText(task, evidence)
-		if content == "" {
+		content, evidenceRef := safeRuntimeScalarFact(task, evidence)
+		if content == "" || evidenceRef == "" {
 			continue
 		}
 		part := contracts.ReplyPartV2{
 			TaskKeys: []string{task.TaskKey}, Content: content,
-			EvidenceRefs: append([]string(nil), task.EvidenceRefs...), ActionRefs: append([]string(nil), task.ActionRefs...),
+			EvidenceRefs: []string{evidenceRef}, ActionRefs: []string{},
 		}
 		if len(parts) < 3 {
 			parts = append(parts, part)
@@ -371,199 +365,60 @@ func buildControlledRuntimeFallbackParts(plan contracts.ReplyPlanV2, evidence co
 		}
 		last := &parts[len(parts)-1]
 		last.TaskKeys = appendUniqueStrings(last.TaskKeys, task.TaskKey)
-		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, task.EvidenceRefs...)
-		last.ActionRefs = appendUniqueStrings(last.ActionRefs, task.ActionRefs...)
+		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, evidenceRef)
 		last.Content = strings.TrimSpace(last.Content + "\n" + content)
 	}
 	return parts
 }
 
-func controlledRuntimeTaskFallbackText(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) string {
-	if runtimeFallbackNeedsProcessCoverage(task) {
-		if content := controlledRuntimeProcessFallbackText(task, evidence); content != "" {
-			return content
+func safeDegradedValidationPlan(plan contracts.ReplyPlanV2, parts []contracts.ReplyPartV2) contracts.ReplyPlanV2 {
+	covered := make(map[string]struct{})
+	for _, part := range parts {
+		for _, taskKey := range part.TaskKeys {
+			covered[taskKey] = struct{}{}
 		}
 	}
+	filtered := make([]contracts.ReplyPlanTaskV2, 0, len(covered))
+	for _, task := range plan.Tasks {
+		if _, ok := covered[task.TaskKey]; ok {
+			filtered = append(filtered, task)
+		}
+	}
+	plan.Tasks = filtered
+	plan.ShouldGenerate = len(filtered) > 0
+	if plan.GlobalConstraints.MaxReplyParts < len(parts) {
+		plan.GlobalConstraints.MaxReplyParts = len(parts)
+	}
+	return plan
+}
+
+func safeRuntimeScalarFact(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) (string, string) {
 	for _, item := range evidence.Items {
-		if !stringInSlice(item.Ref, task.EvidenceRefs) || strings.TrimSpace(item.Content) == "" {
+		if item.SourceType != "store_fact" || item.Answerability != "supporting" ||
+			!stringInSlice(item.Ref, task.EvidenceRefs) || !stringInSlice(task.TaskKey, item.TaskKeys) ||
+			strings.TrimSpace(item.Content) == "" {
 			continue
 		}
 		content := strings.TrimSpace(item.Content)
-		if item.SourceType == "store_fact" {
-			switch {
-			case taskRequestsStoreAddress(task.SubIntent, task.Objective):
-				return "外卖或收货地址请填写：" + strings.TrimRight(content, "。！!？?") + "。"
-			case isStoreIdentitySubIntent(task.SubIntent):
-				return "这里是" + strings.TrimRight(content, "。！!？?") + "。"
-			}
-		}
-		if snippet := conciseRuntimeEvidenceSnippet(content, task); snippet != "" {
-			return snippet
+		switch {
+		case item.Title == authoritativeStoreNameEvidenceTitle && isStoreIdentitySubIntent(task.SubIntent):
+			return "这里是" + strings.TrimRight(content, "。！!？?") + "。", item.Ref
+		case item.Title == authoritativeStoreAddressEvidenceTitle && runtimeTaskUsesOnlyAuthoritativeStoreAddress(task.SubIntent):
+			return "当前门店地址是：" + strings.TrimRight(content, "。！!？?") + "。", item.Ref
+		case item.Title == authoritativeStorePhoneEvidenceTitle && isStorePhoneSubIntent(task.SubIntent):
+			return "当前门店联系电话是：" + strings.TrimRight(content, "。！!？?") + "。", item.Ref
 		}
 	}
-	if task.Knowledge.Status == "unavailable" {
-		return "这项门店信息我暂时没查准，为避免说错，您可以稍后再问我一次。"
-	}
-	if task.Knowledge.Policy == "required" || task.OutputMode == "clarification" {
-		return "当前门店资料里暂时没有写明这项信息，我先不乱回答。"
-	}
-	if task.Intent == "interaction" {
-		return "收到。"
-	}
-	return "收到，您可以再具体说一下需要了解什么。"
+	return "", ""
 }
 
-func controlledRuntimeProcessFallbackText(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) string {
-	items := make([]contracts.EvidenceItemV1, 0, len(task.EvidenceRefs))
-	hasAuthoritativeCheckinFact := false
-	for _, sourceType := range []string{"store_fact", "fastgpt"} {
-		for _, item := range evidence.Items {
-			if item.SourceType != sourceType || !stringInSlice(item.Ref, task.EvidenceRefs) || strings.TrimSpace(item.Content) == "" {
-				continue
-			}
-			items = append(items, item)
-			if item.SourceType == "store_fact" {
-				facts := runtimeProcessFactMask(item.Content)
-				if facts&runtimeProcessFactRegistration != 0 && facts&runtimeProcessFactAccess != 0 {
-					hasAuthoritativeCheckinFact = true
-				}
-			}
-		}
-	}
-	segments := make([]string, 0, 6)
-	seen := make(map[string]struct{})
-	coveredProcessFacts := uint8(0)
-	for _, item := range items {
-		content := cleanRuntimeEvidenceAnswer(item.Content)
-		for _, segment := range splitRuntimeEvidenceSegments(content) {
-			key := compactRuntimeProtocolText(segment)
-			if key == "" {
-				continue
-			}
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			facts := runtimeProcessFactMask(segment)
-			if isCheckinProcessSubIntent(task.SubIntent) && facts == runtimeProcessFactRoute && !runtimeTaskRequestsRoute(task) {
-				continue
-			}
-			if facts != 0 && facts&^coveredProcessFacts == 0 {
-				continue
-			}
-			seen[key] = struct{}{}
-			coveredProcessFacts |= facts
-			segments = append(segments, segment)
-			if len(segments) >= 6 {
-				break
-			}
-		}
-		if len(segments) >= 6 {
-			break
-		}
-	}
-	if len(segments) == 0 {
-		return ""
-	}
-	if isCheckinProcessSubIntent(task.SubIntent) && hasAuthoritativeCheckinFact && coveredProcessFacts&runtimeProcessFactRegistration != 0 && coveredProcessFacts&runtimeProcessFactAccess != 0 {
-		ret := "我们这边是无人值守自助入住，没有传统前台和房卡。请先在下面的入住小程序按提示完成入住登记，登记成功后到店直接刷脸开门，不需要密码。"
-		if runtimeTaskRequestsRoute(task) {
-			for _, segment := range segments {
-				if runtimeProcessFactMask(segment)&runtimeProcessFactRoute != 0 {
-					ret += segment + "。"
-					break
-				}
-			}
-		}
-		return boundedEvidenceText(ret, 600)
-	}
-	return boundedEvidenceText(strings.Join(segments, "。")+"。", 600)
-}
-
-func cleanRuntimeEvidenceAnswer(content string) string {
-	content = strings.TrimSpace(strings.NewReplacer("\r", "\n", "\t", " ").Replace(content))
-	if index := strings.LastIndex(content, "答案："); index >= 0 {
-		content = strings.TrimSpace(content[index+len("答案："):])
-	} else if index := strings.LastIndex(content, "答案:"); index >= 0 {
-		content = strings.TrimSpace(content[index+len("答案:"):])
-	}
-	return strings.TrimLeft(content, "-#*• ")
-}
-
-func splitRuntimeEvidenceSegments(content string) []string {
-	raw := strings.FieldsFunc(content, func(r rune) bool {
-		return r == '。' || r == '！' || r == '!' || r == '\n'
-	})
-	ret := make([]string, 0, len(raw))
-	for _, segment := range raw {
-		segment = strings.TrimSpace(strings.TrimLeft(segment, "-#*•0123456789.、 "))
-		if segment == "" || strings.HasSuffix(segment, "？") || strings.HasSuffix(segment, "?") {
-			continue
-		}
-		ret = append(ret, segment)
-	}
-	return ret
-}
-
-func runtimeProcessFactMask(text string) uint8 {
-	compact := compactRuntimeProtocolText(text)
-	var mask uint8
-	if containsAny(compact, []string{"小程序", "登记", "实名", "证件", "订单", "入住信息"}) {
-		mask |= runtimeProcessFactRegistration
-	}
-	if containsAny(compact, []string{"刷脸", "开门", "门禁", "房卡", "密码"}) {
-		mask |= runtimeProcessFactAccess
-	}
-	if containsAny(compact, []string{"入口", "大楼", "大厅", "电梯", "楼层", "停车场"}) {
-		mask |= runtimeProcessFactRoute
-	}
-	return mask
-}
-
-const (
-	runtimeProcessFactRegistration uint8 = 1 << iota
-	runtimeProcessFactAccess
-	runtimeProcessFactRoute
-)
-
-func runtimeTaskRequestsRoute(task contracts.ReplyPlanTaskV2) bool {
-	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
-	if containsAny(subIntent, []string{"entrance", "navigation", "route", "address", "location"}) {
+func isStorePhoneSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "phone", "contact_phone", "store_phone":
 		return true
+	default:
+		return false
 	}
-	return runtimeTextRequestsEntranceRoute(task.Objective)
-}
-
-func conciseRuntimeEvidenceSnippet(content string, task contracts.ReplyPlanTaskV2) string {
-	content = cleanRuntimeEvidenceAnswer(content)
-	if content == "" {
-		return ""
-	}
-	segments := splitRuntimeEvidenceSegments(content)
-	maxSegments := 2
-	maxRunes := 260
-	if runtimeFallbackNeedsProcessCoverage(task) {
-		maxSegments = 6
-		maxRunes = 600
-	}
-	selected := make([]string, 0, maxSegments)
-	for _, segment := range segments {
-		selected = append(selected, segment)
-		if len(selected) == maxSegments {
-			break
-		}
-	}
-	if len(selected) == 0 {
-		return ""
-	}
-	ret := strings.Join(selected, "。") + "。"
-	return boundedEvidenceText(ret, maxRunes)
-}
-
-func runtimeFallbackNeedsProcessCoverage(task contracts.ReplyPlanTaskV2) bool {
-	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
-	return strings.Contains(subIntent, "process") || strings.Contains(subIntent, "steps") ||
-		strings.Contains(subIntent, "guide") || isCheckinProcessSubIntent(subIntent) ||
-		subIntent == "checkout" || subIntent == "check_out"
 }
 
 func replyProtocolErrorReason(err error) string {
@@ -644,6 +499,7 @@ func markRuntimeGenerationError(summary *RunResult, collector *callbacks.Runtime
 		err = svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, cause)
 	}
 	summary.Status = "error"
+	setGenerationOutcome(summary, collector, GenerationOutcomeGenerationFailed)
 	summary.ErrorMessage = err.Error()
 	collector.Data.Status = summary.Status
 	collector.Data.Error.Message = summary.ErrorMessage
@@ -666,39 +522,45 @@ func completeRuntimeGeneration(summary *RunResult, collector *callbacks.RuntimeT
 	}
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
 	summary.ModelName = modelName
+	if err := applyCustomerVisibleBoundary(summary, collector); err != nil {
+		return markRuntimeGenerationError(summary, collector, startedAt, err)
+	}
 	if !summary.Interrupted && len(summary.ReplyParts) == 0 && strings.TrimSpace(summary.ReplyText) == "" && !hasInvokedGraphTool(summary.InvokedToolCodes) {
 		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, fmt.Errorf("runtime produced no reply or action"))
 		return markRuntimeGenerationError(summary, collector, startedAt, err)
 	}
-	fallback := summary.Status == "fallback" || collector.Data.Pipeline.Generate.Mode == "controlled_fallback"
-	if summary.Status == "started" || fallback {
+	safeDegraded := summary.GenerationOutcome == GenerationOutcomeSafeDegraded
+	if summary.Status == "started" {
 		summary.Status = "completed"
 	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
-	if fallback {
-		collector.Data.Output.FinishReason = "controlled_fallback"
-		collector.Data.Pipeline.Generate.Status = "fallback"
-		collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
+	if safeDegraded {
+		setGenerationOutcome(summary, collector, GenerationOutcomeSafeDegraded)
+		collector.Data.Output.FinishReason = string(GenerationOutcomeSafeDegraded)
+		collector.Data.Pipeline.Generate.Status = string(GenerationOutcomeSafeDegraded)
+		collector.Data.Pipeline.Generate.Mode = string(GenerationOutcomeSafeDegraded)
 		if strings.TrimSpace(collector.Data.Error.Message) == "" {
 			collector.Data.Error.Message = firstNonEmpty(
 				collector.Data.Pipeline.Generate.RepairErrorCode,
 				collector.Data.Pipeline.Generate.InitialErrorCode,
 				"generation_failed",
 			)
-			collector.Data.Error.Stage = "generate_fallback"
+			collector.Data.Error.Stage = "generate_safe_degraded"
 		}
 		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
-			collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+			collector.Data.Pipeline.Generate.Reason = "generation failed; only authoritative scalar facts were allowed through safe degraded mode"
 		}
 		return nil
 	}
 	collector.Data.Output.FinishReason = summary.Status
 	collector.Data.Pipeline.Generate.Status = summary.Status
 	if collector.Data.Pipeline.Generate.InitialErrorCode != "" {
+		setGenerationOutcome(summary, collector, GenerationOutcomeRepaired)
 		collector.Data.Pipeline.Generate.Mode = "repaired"
 		collector.Data.Pipeline.Generate.Reason = "reply_output.v2 repaired and validated"
 	} else {
+		setGenerationOutcome(summary, collector, GenerationOutcomeGenerated)
 		collector.Data.Pipeline.Generate.Mode = "generated"
 		collector.Data.Pipeline.Generate.Reason = "reply_output.v2 generated and validated"
 	}

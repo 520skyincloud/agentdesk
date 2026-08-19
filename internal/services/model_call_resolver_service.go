@@ -63,6 +63,8 @@ func (c ModelCallConfig) RuntimeConfig() modelconfig.Config {
 		TimeoutMS:        c.TimeoutMS,
 		MaxRetryCount:    c.MaxRetryCount,
 		Temperature:      c.Temperature,
+		ProfileCode:      c.ProfileCode,
+		ProfileRevision:  c.ProfileRevision,
 	}
 }
 

@@ -1,18 +1,23 @@
 package executor
 
 import (
+	"encoding/json"
 	"strings"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
+	"agent-desk/internal/services"
 
 	"github.com/mlogclub/simple/sqls"
 )
 
 type runtimeKnowledgeEvidenceFilterStats struct {
 	droppedMeta     int
+	droppedScope    int
+	droppedPolicy   int
 	droppedAction   int
 	droppedMismatch int
 	droppedWeak     int
@@ -56,7 +61,11 @@ func judgeRuntimeTaskKnowledgeEvidence(req RunInput, item *runtimeTaskKnowledgeI
 	item.Result.TraceSummary.ContextCount = len(item.Result.ContextResults)
 	if len(item.Result.Hits) == 0 && len(item.Result.ContextResults) == 0 {
 		item.Status = enums.AIReplyTurnTaskKnowledgeStatusNoHit
-		if stats.droppedAction > 0 {
+		if stats.droppedScope > 0 {
+			item.FilterReason = "knowledge_scope_mismatch"
+		} else if stats.droppedPolicy > 0 {
+			item.FilterReason = "knowledge_use_not_allowed"
+		} else if stats.droppedAction > 0 {
 			item.FilterReason = "knowledge_unbound_action_marker"
 		} else if stats.droppedMismatch > 0 || stats.droppedWeak > 0 {
 			item.FilterReason = "knowledge_context_not_relevant"
@@ -68,11 +77,24 @@ func judgeRuntimeTaskKnowledgeEvidence(req RunInput, item *runtimeTaskKnowledgeI
 
 func filterKnowledgeEvidenceForTask(req RunInput, item runtimeTaskKnowledgeItem, results []rag.RetrieveResult) ([]rag.RetrieveResult, runtimeKnowledgeEvidenceFilterStats) {
 	stats := runtimeKnowledgeEvidenceFilterStats{}
-	kept, droppedMeta := filterKnowledgeMetaEvidence(req, results)
-	stats.droppedMeta = droppedMeta
-	actionBindings := runtimeKnowledgeActionBindings(req, kept)
-	filtered := make([]rag.RetrieveResult, 0, len(kept))
-	for _, result := range kept {
+	metadata := runtimeKnowledgeEvidenceMetadata(req, results)
+	allowedKnowledgeBases := runtimeKnowledgeEvidenceScope(req, results)
+	actionBindings := runtimeKnowledgeActionBindings(req, results)
+	filtered := make([]rag.RetrieveResult, 0, len(results))
+	for _, result := range results {
+		meta, hasMetadata := metadata[runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)]
+		if knowledgeEvidenceIsMetaOrBlocked(result, meta, hasMetadata) {
+			stats.droppedMeta++
+			continue
+		}
+		if !knowledgeEvidenceScopeAllowed(req, result, allowedKnowledgeBases) {
+			stats.droppedScope++
+			continue
+		}
+		if knowledgeEvidenceUseBlocked(meta, hasMetadata) {
+			stats.droppedPolicy++
+			continue
+		}
 		if knowledgeEvidenceIsUnboundActionMarker(result, actionBindings) {
 			stats.droppedAction++
 			continue
@@ -81,13 +103,101 @@ func filterKnowledgeEvidenceForTask(req RunInput, item runtimeTaskKnowledgeItem,
 			stats.droppedMismatch++
 			continue
 		}
-		if knowledgeEvidenceIsWeaklyRelated(item, result) {
+		if !knowledgeEvidenceHasPositiveRelevance(item, result, meta, hasMetadata) {
 			stats.droppedWeak++
 			continue
 		}
 		filtered = append(filtered, result)
 	}
 	return filtered, stats
+}
+
+func runtimeKnowledgeEvidenceMetadata(req RunInput, results []rag.RetrieveResult) map[string]models.KnowledgeEvidenceMetadata {
+	ret := make(map[string]models.KnowledgeEvidenceMetadata)
+	if req.Conversation.TenantID <= 0 || req.Conversation.StoreID <= 0 || sqls.DB() == nil {
+		return ret
+	}
+	recordsByKnowledgeBase := make(map[int64][]string)
+	for _, result := range results {
+		recordID := strings.TrimSpace(result.SourceRecordID)
+		if result.KnowledgeBaseID <= 0 || recordID == "" {
+			continue
+		}
+		recordsByKnowledgeBase[result.KnowledgeBaseID] = appendUniqueStrings(recordsByKnowledgeBase[result.KnowledgeBaseID], recordID)
+	}
+	for knowledgeBaseID, recordIDs := range recordsByKnowledgeBase {
+		items := services.KnowledgeEvidenceMetadataService.JudgeBySourceRecords(
+			req.Conversation.TenantID,
+			req.Conversation.StoreID,
+			knowledgeBaseID,
+			recordIDs,
+		)
+		for recordID, item := range items {
+			ret[runtimeEvidenceSourceKey(knowledgeBaseID, recordID)] = item
+		}
+	}
+	return ret
+}
+
+func runtimeKnowledgeEvidenceScope(req RunInput, results []rag.RetrieveResult) map[int64]bool {
+	if req.Conversation.TenantID <= 0 || req.Conversation.StoreID <= 0 || sqls.DB() == nil {
+		return nil
+	}
+	ids := make([]int64, 0, len(results))
+	seen := make(map[int64]struct{}, len(results))
+	for _, result := range results {
+		if result.KnowledgeBaseID <= 0 {
+			continue
+		}
+		if _, exists := seen[result.KnowledgeBaseID]; exists {
+			continue
+		}
+		seen[result.KnowledgeBaseID] = struct{}{}
+		ids = append(ids, result.KnowledgeBaseID)
+	}
+	allowed := make(map[int64]bool, len(ids))
+	if len(ids) == 0 {
+		return allowed
+	}
+	items := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().
+		Eq("tenant_id", req.Conversation.TenantID).
+		Eq("store_id", req.Conversation.StoreID).
+		Eq("status", enums.StatusOk).
+		In("id", ids))
+	for _, item := range items {
+		allowed[item.ID] = true
+	}
+	return allowed
+}
+
+func knowledgeEvidenceScopeAllowed(req RunInput, result rag.RetrieveResult, allowed map[int64]bool) bool {
+	if req.Conversation.TenantID <= 0 || req.Conversation.StoreID <= 0 || allowed == nil {
+		return true
+	}
+	return result.KnowledgeBaseID > 0 && allowed[result.KnowledgeBaseID]
+}
+
+func knowledgeEvidenceIsMetaOrBlocked(result rag.RetrieveResult, meta models.KnowledgeEvidenceMetadata, hasMetadata bool) bool {
+	if hasMetadata && (meta.ClaimType == "meta" || meta.TrustLevel == "blocked") {
+		return true
+	}
+	title := firstNonEmpty(result.Title, result.DocumentTitle)
+	return services.DetectKnowledgeMetaContent(title, result.Content)
+}
+
+func knowledgeEvidenceUseBlocked(meta models.KnowledgeEvidenceMetadata, hasMetadata bool) bool {
+	if !hasMetadata {
+		return false
+	}
+	if meta.ReviewStatus == "rejected" || meta.Freshness == "stale" {
+		return true
+	}
+	switch meta.SourceClass {
+	case "customer_content", "internal_control", "action_instruction":
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeKnowledgeActionBindings(req RunInput, results []rag.RetrieveResult) map[string]struct{} {
@@ -132,21 +242,49 @@ func knowledgeEvidenceIsUnboundActionMarker(result rag.RetrieveResult, bindings 
 	}
 }
 
-func knowledgeEvidenceIsWeaklyRelated(item runtimeTaskKnowledgeItem, result rag.RetrieveResult) bool {
-	taskTopics := detectKnowledgeTopicClasses(item.Query + " " + item.SubIntent)
-	if len(taskTopics) == 0 || float64(result.Score) >= 0.65 {
-		return false
+// knowledgeEvidenceHasPositiveRelevance is fail-closed: retrieval score is
+// never sufficient by itself. A candidate must prove relevance through a
+// matching business topic, reviewed metadata topic, normal-flow invariant, or
+// meaningful lexical overlap with the current task.
+func knowledgeEvidenceHasPositiveRelevance(item runtimeTaskKnowledgeItem, result rag.RetrieveResult, meta models.KnowledgeEvidenceMetadata, hasMetadata bool) bool {
+	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceSupportsNormalCheckinStep(strings.Join([]string{result.Title, result.DocumentTitle, result.Content}, "\n")) {
+		return true
 	}
+	taskTopics := detectKnowledgeTopicClasses(item.Query + " " + item.SubIntent)
 	candidate := strings.TrimSpace(strings.Join([]string{result.Title, result.DocumentTitle, result.SectionPath, result.Content}, "\n"))
 	if candidate == "" {
-		return true
+		return false
 	}
 	candidateTopics := detectKnowledgeTopicClasses(candidate)
 	if knowledgeTopicSetsIntersect(taskTopics, candidateTopics) {
-		return false
+		return true
+	}
+	if hasMetadata && knowledgeMetadataTopicMatches(taskTopics, meta.TopicLabels) {
+		return true
 	}
 	query := strings.TrimSpace(item.Query + " " + runtimeKnowledgeTopicLabel(item.SubIntent))
-	return !knowledgeTextHasMeaningfulOverlap(query, candidate)
+	return knowledgeTextHasMeaningfulOverlap(query, candidate)
+}
+
+func knowledgeMetadataTopicMatches(taskTopics map[string]struct{}, raw string) bool {
+	if len(taskTopics) == 0 || strings.TrimSpace(raw) == "" {
+		return false
+	}
+	labels := make([]string, 0)
+	if err := json.Unmarshal([]byte(raw), &labels); err != nil {
+		labels = strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '，' || r == ';' || r == '；' || r == '|'
+		})
+	}
+	for _, label := range labels {
+		if knowledgeTopicSetsIntersect(taskTopics, detectKnowledgeTopicClasses(label)) {
+			return true
+		}
+		if _, exists := taskTopics[strings.TrimSpace(label)]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 func knowledgeTextHasMeaningfulOverlap(query, candidate string) bool {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"agent-desk/internal/ai/runtime/channelbreaker"
 	"agent-desk/internal/ai/runtime/contextcompiler"
@@ -136,12 +136,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, runtimeSchema, configs)
 	if err != nil && runtimeProtocolRepairAllowed(err) {
 		firstProtocolErr := err
+		logRuntimeIntentProtocolFailure("initial", err, result.Content)
 		compileInput.RepairInstruction = buildRuntimeProtocolRepairInstruction(
 			contracts.SchemaIntentTasksV2,
 			err,
 			schemaCatalog,
 			runtimeUserMessageText(req.UserMessage),
-			result.Content,
 		)
 		repairContext, compileErr := contextcompiler.New(nil).Compile(intentCtx, compileInput)
 		if compileErr != nil {
@@ -157,17 +157,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		repairCallCancel()
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, resolved, nil, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
-			if fallback, ok := buildRuntimeIntentProtocolFallback(req, configs, firstProtocolErr); ok {
-				return fallback, nil
-			}
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", firstProtocolErr, retryErr)
 		}
 		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, runtimeSchema, configs)
 		if err != nil {
-			if fallback, ok := buildRuntimeIntentProtocolFallback(req, configs, err); ok {
-				return fallback, nil
-			}
+			logRuntimeIntentProtocolFailure("repair", err, retry.Content)
 			return callbacks.IntentTraceData{}, err
 		}
 	}
@@ -177,112 +172,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	return AdaptIntentV2ToLegacyTrace(parsed, derived), nil
 }
 
-func buildRuntimeIntentProtocolFallback(req RunInput, configs []models.ReplyIntentConfig, protocolErr error) (callbacks.IntentTraceData, bool) {
-	if _, ok := strictjson.CodeOf(protocolErr); !ok {
-		return callbacks.IntentTraceData{}, false
-	}
-	text := runtimeUserMessageText(req.UserMessage)
-	if text == "" {
-		return callbacks.IntentTraceData{}, false
-	}
-	intent := callbacks.IntentTraceData{
-		ShouldReply: true, IntentConfidence: 0.55, MatchMode: "protocol_local_recovery",
-		Reason: "intent protocol repair exhausted; deterministic narrow recovery",
-	}
-	setTask := func(code, subIntent, requestMode string) {
-		intent.PrimaryIntent = code
-		intent.MatchedIntentCode = code
-		intent.DetectedIntent = code
-		intent.SubIntent = subIntent
-		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-			Sequence: 1, Intent: code, SubIntent: subIntent, Text: text,
-			RequestMode: requestMode, Confidence: intent.IntentConfidence,
-			Reason: "deterministic protocol recovery",
-		}}
-	}
-	switch {
-	case explicitRuntimeHumanRequest(text) && runtimeIntentConfigEnabled(configs, "human_complaint_risk"):
-		setTask("human_complaint_risk", "explicit_handoff", "request_action")
-		intent.NeedsHumanRoute = true
-		intent.HumanRoutePolicy = "managed_mode"
-		intent.IntentTasks[0].NeedsHumanRoute = true
-	case explicitCheckinKnowledgeRequest(text) && runtimeIntentConfigEnabled(configs, "hotel_info"):
-		setTask("hotel_info", "checkin_process", "question")
-		intent.NeedsKnowledge = true
-		intent = ensureCheckinProcessKnowledgeTask(intent, req)
-		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
-	case explicitCurrentHotelResourceRequest(text, "phone") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
-		setTask("hotel_variable", "phone", "request_action")
-		applyRuntimeProtocolFallbackResource(&intent, "provide_phone")
-	case explicitCurrentHotelResourceRequest(text, "location") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
-		setTask("hotel_variable", "location", "request_action")
-		applyRuntimeProtocolFallbackResource(&intent, "provide_location")
-	case explicitCurrentHotelResourceRequest(text, "mini_program") && runtimeIntentConfigEnabled(configs, "hotel_variable"):
-		setTask("hotel_variable", "mini_program", "request_action")
-		applyRuntimeProtocolFallbackResource(&intent, "provide_mini_program")
-	default:
-		setTask("interaction", "clarify", "clarify_previous")
-		intent.NeedsClarification = true
-	}
-	return normalizeModelIntentTrace(intent, req, adapter.HistoryBuildResult{}, configs), true
-}
-
-func applyRuntimeProtocolFallbackResource(intent *callbacks.IntentTraceData, action string) {
-	if intent == nil {
-		return
-	}
-	intent.NeedsResource = true
-	intent.ResourceAction = action
-	intent.ResourceActions = []string{action}
-	intent.ResourceType = hotelVariableResourceTypeFromAction(action)
-	if len(intent.IntentTasks) > 0 {
-		intent.IntentTasks[0].NeedsResource = true
-		intent.IntentTasks[0].ResourceAction = action
-	}
-}
-
 func runtimeIntentConfigEnabled(configs []models.ReplyIntentConfig, code string) bool {
 	_, ok := findIntentConfigByCode(configs, code)
 	return ok
-}
-
-func explicitRuntimeHumanRequest(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	return containsAny(compact, []string{"转人工", "人工客服", "找人工", "找客服", "真人客服", "找真人", "人工接待", "客服人员"})
-}
-
-func explicitCheckinKnowledgeRequest(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" || strings.Contains(compact, "小程序") || strings.Contains(compact, "入口") {
-		return false
-	}
-	return containsAny(compact, []string{
-		"办理入住", "办入住", "怎么入住", "咋入住", "怎么办入住", "入住怎么办", "入住怎么弄",
-		"如何入住", "入住流程", "入住步骤",
-	})
-}
-
-func explicitCurrentHotelResourceRequest(text, resourceType string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" {
-		return false
-	}
-	if resourceType == "location" && containsAny(compact, []string{
-		"小区", "商场", "车站", "机场", "餐厅", "饭店", "景点", "医院", "学校", "公司", "写字楼", "地铁", "高铁站", "火车站", "超市", "附近",
-	}) {
-		return false
-	}
-	currentHotel := containsAny(compact, []string{"酒店", "门店", "你们店", "贵店", "这家店", "这家酒店", "本店", "前台"})
-	switch resourceType {
-	case "phone":
-		return currentHotel && containsAny(compact, []string{"电话", "号码", "联系电话"})
-	case "location":
-		return currentHotel && containsAny(compact, []string{"定位", "地址", "导航", "在哪里", "在哪儿", "怎么去"})
-	case "mini_program":
-		return containsAny(compact, []string{"入住小程序", "酒店小程序", "门店小程序", "你们店小程序"})
-	default:
-		return false
-	}
 }
 
 func compactRuntimeProtocolText(value string) string {
@@ -332,7 +224,7 @@ func runtimeProtocolRepairAllowed(err error) bool {
 	}
 }
 
-func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error, catalog contracts.RuntimeIntentSchemaCatalog, currentText, firstOutput string) string {
+func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error, catalog contracts.RuntimeIntentSchemaCatalog, currentText string) string {
 	code, _ := strictjson.CodeOf(protocolErr)
 	path := "$"
 	var typed *strictjson.ProtocolError
@@ -344,8 +236,7 @@ func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error,
 		"schema=" + strings.TrimSpace(schemaName),
 		"errorCode=" + strings.TrimSpace(code),
 		"jsonPath=" + path,
-		"当前客户原文：" + boundedRuntimeRepairText(currentText, 4096),
-		"第一次输出：" + boundedRuntimeRepairText(firstOutput, 8*1024),
+		"当前客户原文：" + preview(currentText, 2000),
 	}
 	if invariant, ok := runtimeIntentInvariantDetails(protocolErr); ok {
 		parts = append(parts, "businessErrorCode="+invariant.Code)
@@ -359,16 +250,20 @@ func buildRuntimeProtocolRepairInstruction(schemaName string, protocolErr error,
 	return strings.Join(parts, "\n")
 }
 
-func boundedRuntimeRepairText(value string, maxBytes int) string {
-	value = strings.TrimSpace(value)
-	if maxBytes <= 0 || len(value) <= maxBytes {
-		return value
+func logRuntimeIntentProtocolFailure(stage string, protocolErr error, raw string) {
+	code, _ := strictjson.CodeOf(protocolErr)
+	path := "$"
+	var typed *strictjson.ProtocolError
+	if errors.As(protocolErr, &typed) && strings.TrimSpace(typed.Path) != "" {
+		path = strings.TrimSpace(typed.Path)
 	}
-	value = value[:maxBytes]
-	for value != "" && !utf8.ValidString(value) {
-		value = value[:len(value)-1]
-	}
-	return strings.TrimSpace(value)
+	slog.Warn("runtime intent protocol rejected",
+		"stage", strings.TrimSpace(stage),
+		"contract", contracts.SchemaIntentTasksV2,
+		"error_code", strings.TrimSpace(code),
+		"json_path", path,
+		"raw_bytes", len(raw),
+	)
 }
 
 func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, configs []models.ReplyIntentConfig) string {
@@ -657,17 +552,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 	if intent.IntentConfidence <= 0 || intent.IntentConfidence > 1 {
 		intent.IntentConfidence = 0.65
 	}
-	if intent.IntentConfidence < 0.45 && intent.PrimaryIntent != "human_complaint_risk" {
-		intent.PrimaryIntent = "interaction"
-		intent.MatchedIntentCode = "interaction"
-		intent.SubIntent = "clarify"
-		intent.NeedsClarification = true
-		intent.NeedsKnowledge = false
-		intent.NeedsResource = false
-		intent.NeedsHumanRoute = false
-	}
 	intent.IntentTasks = normalizeRuntimeIntentTasks(intent.IntentTasks)
-	intent = normalizeStoreIdentityQuestionIntent(intent, req)
 	intent = deriveModelIntentFromTasks(intent)
 	intent = normalizeStructuredSocialIntent(intent)
 	if intentHasHotelVariableTask(intent) {
@@ -734,18 +619,6 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 			intent.HumanRoutePolicy = "managed_mode"
 		}
 	}
-	currentText := runtimeUserMessageText(req.UserMessage)
-	if explicitCheckinKnowledgeRequest(currentText) && intent.PrimaryIntent != "human_complaint_risk" &&
-		runtimeIntentConfigEnabled(configs, "hotel_info") {
-		intent.PrimaryIntent = "hotel_info"
-		intent.MatchedIntentCode = "hotel_info"
-		intent.SubIntent = "checkin_process"
-		intent.NeedsClarification = false
-		intent.NeedsKnowledge = true
-		intent.Reason = appendIntentReason(intent.Reason, "deterministic checkin rule")
-		intent = ensureCheckinProcessKnowledgeTask(intent, req)
-		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
-	}
 	if shouldAttachCheckinMiniProgramTask(intent) {
 		intent = ensureCheckinProcessKnowledgeTask(intent, req)
 		intent = ensureCheckinProcessMiniProgramTaskIfConfigured(intent, req, configs)
@@ -766,8 +639,6 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsKnowledge = true
 	}
 	intent = enforceHumanRouteFlagByIntentCategory(intent)
-	intent = suppressNonHotelLocationResource(intent, currentText)
-	intent = applyDeterministicHotelDirectResources(intent, req, configs)
 	if intent.DetectedIntent == "" {
 		intent.DetectedIntent = intent.PrimaryIntent
 	}
@@ -777,139 +648,6 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.MatchMode = "model"
 	}
 	return intent
-}
-
-// normalizeStoreIdentityQuestionIntent 纠正一类稳定的分类偏差：客户是在确认
-// “当前是哪家酒店/公寓”，不是在陈述一个门店事实，也不是普通闲聊。该类任务
-// 统一归 hotel_info/store_identity，后续只读取 Store 权威名称，不依赖客户口述
-// 或历史 AI 回复。规则按问题类型判断，不绑定任何具体门店名。
-func normalizeStoreIdentityQuestionIntent(intent callbacks.IntentTraceData, req RunInput) callbacks.IntentTraceData {
-	currentText := runtimeUserMessageText(req.UserMessage)
-	if !explicitStoreIdentityQuestion(currentText) {
-		return intent
-	}
-	matched := false
-	for index := range intent.IntentTasks {
-		task := &intent.IntentTasks[index]
-		if !explicitStoreIdentityQuestion(task.Text) && !(len(intent.IntentTasks) == 1 && !hasMixedCustomerRequests(currentText)) {
-			continue
-		}
-		task.Intent = "hotel_info"
-		task.SubIntent = "store_identity"
-		task.NeedsKnowledge = true
-		task.NeedsResource = false
-		task.NeedsTool = false
-		task.NeedsHumanRoute = false
-		task.ResourceAction = ""
-		if strings.TrimSpace(task.Text) == "" {
-			task.Text = currentText
-		}
-		if strings.TrimSpace(task.RequestMode) == "" {
-			task.RequestMode = "question"
-		}
-		task.Reason = appendIntentReason(task.Reason, "store identity question uses authoritative store fact")
-		matched = true
-	}
-	if !matched && !hasMixedCustomerRequests(currentText) {
-		intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-			Sequence: 1, Intent: "hotel_info", SubIntent: "store_identity", Text: currentText,
-			RequestMode: "question", Confidence: max(intent.IntentConfidence, 0.8), NeedsKnowledge: true,
-			Reason: "store identity question uses authoritative store fact",
-		}}
-	}
-	intent.NeedsClarification = false
-	intent.Reason = appendIntentReason(intent.Reason, "store identity normalized from current question")
-	return intent
-}
-
-func explicitStoreIdentityQuestion(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" {
-		return false
-	}
-	if containsAny(compact, []string{
-		"酒店叫什么", "酒店名字", "酒店名称", "门店叫什么", "门店名字", "门店名称",
-		"店名是什么", "这里叫什么", "这是什么酒店", "你们叫什么", "你们酒店名",
-	}) {
-		return true
-	}
-	if !containsAny(compact, []string{"酒店", "公寓", "宾馆", "旅店", "民宿"}) {
-		return false
-	}
-	if strings.HasSuffix(compact, "吗") || strings.HasSuffix(compact, "么") || strings.Contains(compact, "是不是") {
-		return true
-	}
-	return strings.ContainsAny(text, "?？") && containsAny(compact, []string{
-		"这里是", "这是", "你们是", "本店是", "我订的是", "名字是", "名称是", "叫",
-	})
-}
-
-// hasMixedCustomerRequests 判别一句话里是否叠加了多个诉求（定位+小程序+问答等）。
-// 直发规则只接管“单一聚焦请求”，混合轮次必须保留完整任务分解。
-func hasMixedCustomerRequests(rawText string) bool {
-	return strings.ContainsAny(rawText, "，,；;") || containsAny(compactRuntimeProtocolText(rawText), []string{"还要", "再发", "再帮", "顺便", "还有", "也发", "也帮"})
-}
-
-// applyDeterministicHotelDirectResources 在既有归一化之后兜底当前酒店定位卡片。
-// 入住流程始终进入知识任务；是否附加小程序由真实门店配置在后续服务器规则中决定。
-func applyDeterministicHotelDirectResources(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
-	if intent.PrimaryIntent == "human_complaint_risk" || !runtimeIntentConfigEnabled(configs, "hotel_variable") {
-		return intent
-	}
-	// 模型已明确选择资源类型时尊重模型（既有契约：关键词不得覆盖模型资源选择），
-	// 只在模型把明确卡片请求归成纯知识/互动时兜底。
-	if intent.PrimaryIntent == "hotel_variable" && strings.TrimSpace(intent.ResourceAction) != "" {
-		return intent
-	}
-	text := runtimeUserMessageText(req.UserMessage)
-	if explicitHotelLocationCardRequest(text) {
-		return convertHotelDirectResourceIntent(intent, text, "location", "provide_location", "hotel location request routed to location card direct")
-	}
-	return intent
-}
-
-func convertHotelDirectResourceIntent(intent callbacks.IntentTraceData, text, resourceType, action, reason string) callbacks.IntentTraceData {
-	intent.PrimaryIntent = "hotel_variable"
-	intent.MatchedIntentCode = "hotel_variable"
-	intent.DetectedIntent = "hotel_variable"
-	intent.SubIntent = resourceType
-	intent.IntentTasks = []callbacks.IntentTaskTraceData{{
-		Sequence: 1, Intent: "hotel_variable", SubIntent: resourceType, Text: strings.TrimSpace(text),
-		RequestMode: "request_action", Confidence: intent.IntentConfidence, NeedsResource: true,
-		ResourceAction: action, Reason: reason,
-	}}
-	intent.NeedsKnowledge = false
-	intent.NeedsTool = false
-	intent.NeedsHumanRoute = false
-	intent.HumanRoutePolicy = ""
-	intent.NeedsClarification = false
-	intent.ShouldReply = true
-	applyRuntimeProtocolFallbackResource(&intent, action)
-	intent.Reason = appendIntentReason(intent.Reason, reason)
-	return intent
-}
-
-// explicitHotelLocationCardRequest 识别对"当前酒店"的位置/地址/定位请求。
-// 外部地点（商场/车站等）与"附近"类探索性请求继续走知识或澄清，不发本店卡片。
-func explicitHotelLocationCardRequest(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" {
-		return false
-	}
-	if hasMixedCustomerRequests(text) {
-		return false
-	}
-	if containsAny(compact, []string{
-		"小区", "商场", "车站", "机场", "餐厅", "饭店", "景点", "医院", "学校", "公司", "写字楼", "地铁", "高铁站", "火车站", "超市", "附近",
-	}) {
-		return false
-	}
-	// 只接“明确索要卡片”的措辞；“酒店在哪/在哪里”等描述性提问仍按既有契约
-	// 由模型决定知识回答（知识库含地理位置答案行），不用关键词强行覆盖。
-	return containsAny(compact, []string{
-		"发定位", "发个定位", "发一下定位", "定位发我", "位置发我", "地址发我",
-		"发我定位", "发我地址", "发下定位", "定位发一下", "发个地址", "酒店定位", "门店定位",
-	})
 }
 
 func ensureCheckinProcessMiniProgramTaskIfConfigured(intent callbacks.IntentTraceData, req RunInput, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
@@ -1397,70 +1135,4 @@ func normalizeHotelVariableResourceType(resourceType string) string {
 	default:
 		return strings.TrimSpace(resourceType)
 	}
-}
-
-// suppressNonHotelLocationResource 在最终归一化阶段兜底：如果用户要的是非酒店地标定位，
-// 即使上游把意图判成了 hotel_variable/location，也移除 provide_location，避免错误发送酒店定位。
-// 这是确定性兜底，覆盖意图模型和协议恢复两条路径。
-func suppressNonHotelLocationResource(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
-	if !looksLikeNonHotelLocation(currentText) {
-		return intent
-	}
-	// 只有纯定位诉求才需要抑制；若同时问了酒店电话/小程序等其它变量，不整体清空。
-	if intentHasHotelVariableTask(intent) {
-		intent.ResourceActions = removeString(intent.ResourceActions, "provide_location")
-	}
-	if strings.TrimSpace(intent.ResourceAction) == "provide_location" {
-		intent.ResourceAction = ""
-		intent.ResourceType = ""
-	}
-	// 清理任务账本里对应 location 任务。
-	kept := make([]callbacks.IntentTaskTraceData, 0, len(intent.IntentTasks))
-	for _, task := range intent.IntentTasks {
-		if task.Intent == "hotel_variable" && strings.TrimSpace(task.ResourceAction) == "provide_location" {
-			continue
-		}
-		kept = append(kept, task)
-	}
-	intent.IntentTasks = kept
-	if !intentHasHotelVariableTask(intent) && len(intent.ResourceActions) == 0 {
-		intent.NeedsResource = false
-		if intent.PrimaryIntent == "hotel_variable" {
-			intent.PrimaryIntent = "interaction"
-			intent.MatchedIntentCode = "interaction"
-			intent.SubIntent = "clarify"
-			intent.NeedsClarification = true
-		}
-	}
-	return intent
-}
-
-func looksLikeNonHotelLocation(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" || !containsAny(compact, []string{"定位", "地址", "导航", "怎么去", "在哪里", "在哪儿"}) {
-		return false
-	}
-	return containsAny(compact, nonHotelLocationMarkers())
-}
-
-func nonHotelLocationMarkers() []string {
-	return []string{
-		"菜市场", "菜场", "市场", "超市", "商场", "商店", "便利店",
-		"银行", "药房", "药店", "医院", "诊所", "学校", "幼儿园",
-		"小区", "公寓", "写字楼", "公司", "工厂", "地铁", "地铁站",
-		"高铁站", "火车站", "机场", "车站", "汽车站", "公交站",
-		"餐厅", "饭店", "小吃", "火锅", "烧烤", "咖啡馆", "奶茶",
-		"景点", "公园", "游乐园", "博物馆", "图书馆", "政府", "派出所",
-		"健身房", "影院", "电影院", "ktv", "酒吧", "网咖", "网吧",
-	}
-}
-
-func removeString(values []string, target string) []string {
-	ret := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) != target {
-			ret = append(ret, value)
-		}
-	}
-	return ret
 }

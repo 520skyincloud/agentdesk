@@ -13,6 +13,7 @@ func toSummary(summary *executor.RunResult) *Summary {
 	ret := &Summary{
 		RunID:                     summary.RunID,
 		Status:                    summary.Status,
+		GenerationOutcome:         string(summary.GenerationOutcome),
 		ReplyText:                 summary.ReplyText,
 		PlannedSkillCode:          strings.TrimSpace(summary.SelectedSkillCode),
 		PlannedSkillName:          strings.TrimSpace(summary.SelectedSkillName),

@@ -1,13 +1,19 @@
 package executor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/services"
+
+	"github.com/mlogclub/simple/sqls"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestValidateRuntimeTaskPlanBlocksAllFailedKnowledgeTasks(t *testing.T) {
@@ -124,6 +130,62 @@ func TestBuildRuntimeTaskInputsKeepsMultipleQuestionsOnSameMessage(t *testing.T)
 		key := services.AIReplyTurnTaskService.StableTaskKey(input)
 		if _, ok := plannedByKey[key]; !ok {
 			t.Fatalf("persisted task key %q lost its original plan", key)
+		}
+	}
+}
+
+func TestBuildRuntimeTaskInputsBindsLongVoiceQuestionsToReadyAnalysis(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.MessageAnalysis{}); err != nil {
+		t.Fatal(err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() { sqls.SetDB(nil) })
+
+	transcript := "我想办理入住，然后想问一下附近哪里有咖啡"
+	message := models.Message{
+		ID: 501, TenantID: 1, ConversationID: 9, SessionNo: 1,
+		MessageType: enums.IMMessageTypeVoice, Content: "voice.amr",
+		Payload: `{"mediaText":"旧的载荷文本","mediaUnderstandingStatus":"understood"}`,
+	}
+	if err := services.MessageAnalysisService.RecordMediaReady(&message, transcript, services.MessageAnalyzerIdentity{
+		Kind: "asr", Name: "voice-asr", Version: "v2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{
+		{Sequence: 1, Intent: "hotel_info", SubIntent: "checkin_process", RequestMode: "answer", Text: "办理入住", Output: "knowledge_text_reply"},
+		{Sequence: 2, Intent: "hotel_info", SubIntent: "surrounding_facilities", RequestMode: "answer", Text: "附近哪里有咖啡", Output: "knowledge_text_reply"},
+	}
+	inputs, _, err := buildRuntimeTaskInputs(plans, message.ID, []models.Message{message}, 1, 10)
+	if err != nil {
+		t.Fatalf("build runtime task inputs: %v", err)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("long voice must create both tasks, got %#v", inputs)
+	}
+	if inputs[0].SourceMessageID != message.ID || inputs[1].SourceMessageID != message.ID ||
+		inputs[0].AnalysisRevision != 1 || inputs[1].AnalysisRevision != 1 {
+		t.Fatalf("voice source binding lost authoritative revision: %#v", inputs)
+	}
+	if inputs[0].SourceSpanEnd <= inputs[0].SourceSpanStart || inputs[1].SourceSpanEnd <= inputs[1].SourceSpanStart ||
+		inputs[0].SourceSpanStart == inputs[1].SourceSpanStart {
+		t.Fatalf("voice questions must keep distinct source spans: %#v", inputs)
+	}
+	if inputs[0].CanonicalQuestionHash == "" || inputs[1].CanonicalQuestionHash == "" ||
+		inputs[0].CanonicalQuestionHash == inputs[1].CanonicalQuestionHash {
+		t.Fatalf("voice questions must keep distinct canonical hashes: %#v", inputs)
+	}
+	for _, input := range inputs {
+		var bindings contracts.TaskSourceBindingsV1
+		if err := json.Unmarshal([]byte(input.SourceBindingsJSON), &bindings); err != nil {
+			t.Fatalf("decode source bindings: %v", err)
+		}
+		if bindings.SchemaVersion != contracts.TaskSourceBindingsV1SchemaVersion || bindings.PrimaryMessageID != message.ID || len(bindings.Bindings) != 1 {
+			t.Fatalf("unexpected source bindings: %#v", bindings)
 		}
 	}
 }

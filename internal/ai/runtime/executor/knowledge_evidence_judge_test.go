@@ -2,8 +2,10 @@ package executor
 
 import (
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
@@ -76,13 +78,13 @@ func TestKnowledgeEvidenceJudgeRejectsUnboundActionMarker(t *testing.T) {
 	}
 }
 
-func TestKnowledgeEvidenceJudgeRejectsWeakUnrelatedCandidate(t *testing.T) {
+func TestKnowledgeEvidenceJudgeRequiresPositiveRelevanceEvenAtHighScore(t *testing.T) {
 	item := runtimeTaskKnowledgeItem{Query: "老客户可以享受优惠吗", SubIntent: "discount"}
 	kept, stats := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
-		Title: "其他服务", Content: "可以开水单。", Score: 0.58,
+		Title: "其他服务", Content: "可以开水单。", Score: 0.95,
 	}})
 	if len(kept) != 0 || stats.droppedWeak != 1 {
-		t.Fatalf("weak unrelated evidence must be rejected: kept=%+v stats=%+v", kept, stats)
+		t.Fatalf("retrieval score alone must not admit unrelated evidence: kept=%+v stats=%+v", kept, stats)
 	}
 
 	relevant, _ := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
@@ -93,17 +95,68 @@ func TestKnowledgeEvidenceJudgeRejectsWeakUnrelatedCandidate(t *testing.T) {
 	}
 }
 
-func TestStoreIdentityQuestionNormalizationIsGeneric(t *testing.T) {
-	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这里是壹间公寓吗"}}
-	intent := normalizeStoreIdentityQuestionIntent(callbacks.IntentTraceData{
-		PrimaryIntent: "interaction", IntentConfidence: 0.7,
-		IntentTasks: []callbacks.IntentTaskTraceData{{Intent: "interaction", SubIntent: "clarify", Text: req.UserMessage.Content}},
-	}, req)
-	if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "hotel_info" || intent.IntentTasks[0].SubIntent != "store_identity" {
-		t.Fatalf("store identity question was not normalized: %#v", intent)
+func TestKnowledgeEvidenceJudgeEnforcesStoreScopeAndMetadataAcrossKnowledgeBases(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	if err := db.AutoMigrate(&models.KnowledgeBase{}, &models.KnowledgeEvidenceMetadata{}); err != nil {
+		t.Fatalf("migrate knowledge evidence fixture: %v", err)
 	}
-	if explicitStoreIdentityQuestion("外卖地址填壹间公寓就行") {
-		t.Fatal("a positive address instruction must not be reclassified as a store identity question")
+	now := time.Now()
+	store := &models.Store{TenantID: 1, StoreCode: "evidence-store", Name: "证据门店", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
+	foreignStore := &models.Store{TenantID: 1, StoreCode: "foreign-evidence-store", Name: "其他门店", Status: enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
+	if err := db.Create(store).Error; err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := db.Create(foreignStore).Error; err != nil {
+		t.Fatalf("create foreign store: %v", err)
+	}
+	createKnowledge := func(storeID int64, name string) *models.KnowledgeBase {
+		item := &models.KnowledgeBase{TenantID: 1, StoreID: storeID, DatasetID: name, Name: name,
+			KnowledgeType: string(enums.KnowledgeBaseTypeFastGPTCloud), Status: enums.StatusOk,
+			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now}}
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("create knowledge base %s: %v", name, err)
+		}
+		return item
+	}
+	allowed := createKnowledge(store.ID, "allowed")
+	blockedByMetadata := createKnowledge(store.ID, "blocked-metadata")
+	foreign := createKnowledge(foreignStore.ID, "foreign")
+	if err := db.Create(&models.KnowledgeEvidenceMetadata{
+		TenantID: 1, StoreID: store.ID, KnowledgeBaseID: blockedByMetadata.ID, SourceRecordID: "blocked-record",
+		SourceClass: "customer_content", FactScope: "store", ClaimType: "fact", TrustLevel: "supported",
+		Freshness: "current", ReviewStatus: "approved", CreatedAt: now, UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create blocked metadata: %v", err)
+	}
+
+	req := RunInput{Conversation: models.Conversation{TenantID: 1, StoreID: store.ID}}
+	item := runtimeTaskKnowledgeItem{Query: "早餐几点开始", SubIntent: "breakfast"}
+	kept, stats := filterKnowledgeEvidenceForTask(req, item, []rag.RetrieveResult{
+		{KnowledgeBaseID: allowed.ID, SourceRecordID: "allowed-record", Title: "早餐时间", Content: "早餐七点开始。", Score: 0.8},
+		{KnowledgeBaseID: blockedByMetadata.ID, SourceRecordID: "blocked-record", Title: "早餐时间", Content: "早餐八点开始。", Score: 0.9},
+		{KnowledgeBaseID: foreign.ID, SourceRecordID: "foreign-record", Title: "早餐时间", Content: "早餐九点开始。", Score: 0.99},
+	})
+	if len(kept) != 1 || kept[0].KnowledgeBaseID != allowed.ID {
+		t.Fatalf("only in-scope answerable evidence may remain: %+v", kept)
+	}
+	if stats.droppedPolicy != 1 || stats.droppedScope != 1 {
+		t.Fatalf("unexpected evidence rejection stats: %+v", stats)
+	}
+}
+
+func TestStoreIdentityUsesStructuredModelTask(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这里是哪家酒店"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", SubIntent: "store_identity", IntentConfidence: 0.7, ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "hotel_info", SubIntent: "store_identity", Text: req.UserMessage.Content,
+			RequestMode: "answer", Confidence: 0.7,
+		}},
+	}, req, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{{Code: "hotel_info", Status: enums.StatusOk}})
+	if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "hotel_info" || intent.IntentTasks[0].SubIntent != "store_identity" || !intent.NeedsKnowledge {
+		t.Fatalf("structured store identity task was not preserved: %#v", intent)
 	}
 }
 

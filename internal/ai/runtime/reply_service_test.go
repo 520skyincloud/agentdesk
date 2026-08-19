@@ -17,6 +17,10 @@ import (
 )
 
 func TestReplyEligibilityCanReply(t *testing.T) {
+	previousDB := sqls.DB()
+	sqls.SetDB(nil)
+	t.Cleanup(func() { sqls.SetDB(previousDB) })
+
 	eligibility := newReplyEligibility()
 	conversation := newConversationFixture()
 	message := newCustomerMessageFixture("hello")

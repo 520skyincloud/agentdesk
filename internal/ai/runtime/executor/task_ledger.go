@@ -1,16 +1,21 @@
 package executor
 
 import (
-	"agent-desk/internal/ai/runtime/contracts"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
@@ -30,6 +35,12 @@ type runtimeTaskBatchState struct {
 	CoveredByTaskID    int64
 	// TaskIDByTaskKey 绑定 Task 持久 ID（契约 4.17 审计链）。
 	TaskIDByTaskKey map[string]int64
+}
+
+type runtimeTaskSource struct {
+	Message          models.Message
+	Text             string
+	AnalysisRevision int
 }
 
 func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, callbacks.ReplyPlanTraceData, runtimeTaskBatchState, bool, error) {
@@ -199,36 +210,87 @@ func runtimeTaskSourcesCovered(messages []models.Message, tasks []models.AIReply
 	return true
 }
 
+func buildRuntimeTaskSources(messages []models.Message) []runtimeTaskSource {
+	ret := make([]runtimeTaskSource, 0, len(messages))
+	for index := range messages {
+		message := messages[index]
+		source := runtimeTaskSource{Message: message}
+		switch message.MessageType {
+		case enums.IMMessageTypeText, enums.IMMessageTypeHTML:
+			source.Text = strings.TrimSpace(message.Content)
+		default:
+			analysis, err := services.MessageAnalysisService.ReadyForMessage(&message)
+			if err != nil {
+				slog.Warn("runtime task source analysis rejected",
+					"tenant_id", message.TenantID,
+					"conversation_id", message.ConversationID,
+					"message_id", message.ID,
+					"error", err,
+				)
+			} else if analysis != nil && analysis.Result != nil {
+				source.Text = strings.TrimSpace(analysis.Result.NormalizedText)
+				source.AnalysisRevision = analysis.SourceRevision
+			}
+			if source.Text == "" {
+				mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+				if strings.TrimSpace(status) == "understood" {
+					source.Text = strings.TrimSpace(mediaText)
+					if source.Text == "" {
+						source.Text = strings.TrimSpace(mediaSummary)
+					}
+				}
+			}
+		}
+		if source.Text == "" {
+			source.Text = strings.TrimSpace(currentTurnDisplayText(utils.BuildRuntimeMessageTextWithPayload(
+				message.MessageType,
+				message.Content,
+				message.Payload,
+			)))
+		}
+		ret = append(ret, source)
+	}
+	return ret
+}
+
 func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, sourceMessages []models.Message, tenantID, turnID int64) ([]services.AIReplyTurnTaskInput, map[string]callbacks.ReplyTaskPlanTraceData, error) {
 	inputs := make([]services.AIReplyTurnTaskInput, 0, len(plans))
 	plannedByKey := make(map[string]callbacks.ReplyTaskPlanTraceData, len(plans))
-	usedSourceMessageIDs := make(map[int64]struct{}, len(sourceMessages))
-	plannedBySourceMessageID := make(map[int64][]callbacks.ReplyTaskPlanTraceData, len(sourceMessages))
+	sources := buildRuntimeTaskSources(sourceMessages)
+	usedSourceMessageIDs := make(map[int64]struct{}, len(sources))
+	plannedBySourceMessageID := make(map[int64][]callbacks.ReplyTaskPlanTraceData, len(sources))
 	for index, plan := range plans {
 		// 纯标点/空白消息：归一化后无实质文本，不创建无意义任务，直接跳过。
 		if normalizeRuntimeTaskText(plan.Text) == "" {
 			continue
 		}
-		sourceMessageID, spanStart, spanEnd := matchRuntimeTaskSourceMessageWithSpan(plan, fallbackMessageID, sourceMessages, usedSourceMessageIDs)
-		if sourceMessageID <= 0 {
+		source, spanStart, spanEnd, preciseSpan := matchRuntimeTaskSourceWithSpan(plan, fallbackMessageID, sources, usedSourceMessageIDs)
+		if source.Message.ID <= 0 || strings.TrimSpace(source.Text) == "" {
 			return nil, nil, fmt.Errorf("AI reply task source message unavailable")
 		}
-		usedSourceMessageIDs[sourceMessageID] = struct{}{}
+		sourceEvidence, err := buildRuntimeTaskSourceEvidence(plan, source, spanStart, spanEnd, preciseSpan)
+		if err != nil {
+			return nil, nil, err
+		}
+		usedSourceMessageIDs[source.Message.ID] = struct{}{}
 		input := services.AIReplyTurnTaskInput{
-			TenantID:        tenantID,
-			TurnID:          turnID,
-			SourceMessageID: sourceMessageID,
-			SequenceNo:      index + 1,
-			TaskType:        runtimeTaskTypeForPlan(plan),
-			Intent:          plan.Intent,
-			SubIntent:       plan.SubIntent,
-			RequestMode:     plan.RequestMode,
-			RelationType:    plan.RelationType,
-			ResourceAction:  plan.ResourceAction,
-			QuestionText:    plan.Text,
-			// 契约 10.2：来源片段确定性绑定，防止正文与意图跨消息串线。
-			SourceSpanStart: spanStart,
-			SourceSpanEnd:   spanEnd,
+			TenantID:              tenantID,
+			TurnID:                turnID,
+			SourceMessageID:       source.Message.ID,
+			SequenceNo:            index + 1,
+			TaskType:              runtimeTaskTypeForPlan(plan),
+			Intent:                plan.Intent,
+			SubIntent:             plan.SubIntent,
+			RequestMode:           plan.RequestMode,
+			RelationType:          plan.RelationType,
+			ResourceAction:        plan.ResourceAction,
+			QuestionText:          plan.Text,
+			AnalysisRevision:      source.AnalysisRevision,
+			SourceSpanStart:       spanStart,
+			SourceSpanEnd:         spanEnd,
+			SourceBindingsJSON:    sourceEvidence.BindingsJSON,
+			SourceSetFingerprint:  sourceEvidence.SourceSetFingerprint,
+			CanonicalQuestionHash: sourceEvidence.CanonicalQuestionHash,
 		}
 		// 契约 10.8：把 Intent 建议的答案义务固化为 answer_requirement_set.v1。
 		if requirementsJSON := buildAnswerRequirementsJSON(plan, spanStart, spanEnd); requirementsJSON != "" {
@@ -238,23 +300,23 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 		plan.TaskKey = taskKey
 		inputs = append(inputs, input)
 		plannedByKey[taskKey] = plan
-		plannedBySourceMessageID[sourceMessageID] = append(plannedBySourceMessageID[sourceMessageID], plan)
+		plannedBySourceMessageID[source.Message.ID] = append(plannedBySourceMessageID[source.Message.ID], plan)
 	}
-	for _, source := range sourceMessages {
-		if _, represented := usedSourceMessageIDs[source.ID]; represented {
+	for _, source := range sources {
+		if _, represented := usedSourceMessageIDs[source.Message.ID]; represented {
 			continue
 		}
-		sourceText := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(source.MessageType, source.Content, source.Payload))
+		sourceText := strings.TrimSpace(source.Text)
 		sourceFingerprint := normalizeRuntimeTaskText(sourceText)
 		if sourceFingerprint == "" {
 			continue
 		}
 		var duplicatePlans []callbacks.ReplyTaskPlanTraceData
-		for _, candidate := range sourceMessages {
-			if candidate.ID == source.ID || normalizeRuntimeTaskText(utils.BuildRuntimeMessageTextWithPayload(candidate.MessageType, candidate.Content, candidate.Payload)) != sourceFingerprint {
+		for _, candidate := range sources {
+			if candidate.Message.ID == source.Message.ID || normalizeRuntimeTaskText(candidate.Text) != sourceFingerprint {
 				continue
 			}
-			if planned := plannedBySourceMessageID[candidate.ID]; len(planned) > 0 {
+			if planned := plannedBySourceMessageID[candidate.Message.ID]; len(planned) > 0 {
 				duplicatePlans = append([]callbacks.ReplyTaskPlanTraceData(nil), planned...)
 				break
 			}
@@ -269,21 +331,29 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			if questionText == "" {
 				questionText = sourceText
 			}
-			spanStart, spanEnd := runtimeTaskSpanWithinSource(questionText, sourceText)
+			spanStart, spanEnd, preciseSpan := runtimeTaskSpanWithinSource(questionText, sourceText)
+			sourceEvidence, err := buildRuntimeTaskSourceEvidence(duplicatePlan, source, spanStart, spanEnd, preciseSpan)
+			if err != nil {
+				return nil, nil, err
+			}
 			input := services.AIReplyTurnTaskInput{
-				TenantID:        tenantID,
-				TurnID:          turnID,
-				SourceMessageID: source.ID,
-				SequenceNo:      len(inputs) + 1,
-				TaskType:        runtimeTaskTypeForPlan(duplicatePlan),
-				Intent:          duplicatePlan.Intent,
-				SubIntent:       duplicatePlan.SubIntent,
-				RequestMode:     duplicatePlan.RequestMode,
-				RelationType:    duplicatePlan.RelationType,
-				ResourceAction:  duplicatePlan.ResourceAction,
-				QuestionText:    questionText,
-				SourceSpanStart: spanStart,
-				SourceSpanEnd:   spanEnd,
+				TenantID:              tenantID,
+				TurnID:                turnID,
+				SourceMessageID:       source.Message.ID,
+				SequenceNo:            len(inputs) + 1,
+				TaskType:              runtimeTaskTypeForPlan(duplicatePlan),
+				Intent:                duplicatePlan.Intent,
+				SubIntent:             duplicatePlan.SubIntent,
+				RequestMode:           duplicatePlan.RequestMode,
+				RelationType:          duplicatePlan.RelationType,
+				ResourceAction:        duplicatePlan.ResourceAction,
+				QuestionText:          questionText,
+				AnalysisRevision:      source.AnalysisRevision,
+				SourceSpanStart:       spanStart,
+				SourceSpanEnd:         spanEnd,
+				SourceBindingsJSON:    sourceEvidence.BindingsJSON,
+				SourceSetFingerprint:  sourceEvidence.SourceSetFingerprint,
+				CanonicalQuestionHash: sourceEvidence.CanonicalQuestionHash,
 			}
 			if requirementsJSON := buildAnswerRequirementsJSON(duplicatePlan, spanStart, spanEnd); requirementsJSON != "" {
 				input.AnswerRequirementsJSON = requirementsJSON
@@ -294,95 +364,177 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			plannedByKey[taskKey] = duplicatePlan
 			duplicatedForSource = append(duplicatedForSource, duplicatePlan)
 		}
-		usedSourceMessageIDs[source.ID] = struct{}{}
-		plannedBySourceMessageID[source.ID] = duplicatedForSource
+		usedSourceMessageIDs[source.Message.ID] = struct{}{}
+		plannedBySourceMessageID[source.Message.ID] = duplicatedForSource
 	}
 	return inputs, plannedByKey, nil
 }
 
-func runtimeTaskSpanWithinSource(questionText, sourceText string) (int, int) {
-	if normalizeRuntimeTaskText(questionText) == "" || !strings.Contains(normalizeRuntimeTaskText(sourceText), normalizeRuntimeTaskText(questionText)) {
-		return 0, 0
-	}
-	return 0, len([]rune(sourceText))
+type runtimeTaskSourceEvidence struct {
+	BindingsJSON          string
+	SourceSetFingerprint  string
+	CanonicalQuestionHash string
 }
 
-// matchRuntimeTaskSourceMessageWithSpan 契约 10.2/4.14：来源绑定按
-// 1) 归一化全文相等；2) 归一化包含（正文片段真实存在于该消息，返回 rune span）；
-// 3) sequence/最后消息兜底（span 为 0，视为无证明）。
-// 包含式绑定取代纯 sequence 优先级，修复 U1 正文配 U2 意图的串线。
-func matchRuntimeTaskSourceMessageWithSpan(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) (int64, int, int) {
+func buildRuntimeTaskSourceEvidence(plan callbacks.ReplyTaskPlanTraceData, source runtimeTaskSource, spanStart, spanEnd int, preciseSpan bool) (runtimeTaskSourceEvidence, error) {
+	ret := runtimeTaskSourceEvidence{}
+	sourceRunes := []rune(source.Text)
+	if len(sourceRunes) == 0 {
+		return ret, fmt.Errorf("AI reply task source text unavailable")
+	}
+	if spanStart < 0 || spanEnd <= spanStart || spanEnd > len(sourceRunes) {
+		spanStart, spanEnd, preciseSpan = 0, len(sourceRunes), false
+	}
+	bindings := contracts.TaskSourceBindingsV1{
+		SchemaVersion:    contracts.TaskSourceBindingsV1SchemaVersion,
+		PrimaryMessageID: source.Message.ID,
+		Bindings: []contracts.TaskSourceBindingItemV1{{
+			MessageID:             source.Message.ID,
+			AnalysisRevision:      source.AnalysisRevision,
+			Start:                 spanStart,
+			End:                   spanEnd,
+			ObservationMessageIDs: []int64{},
+		}},
+	}
+	raw, err := json.Marshal(bindings)
+	if err != nil {
+		return ret, err
+	}
+	if _, err := strictjson.DecodeObject[contracts.TaskSourceBindingsV1](raw, strictjson.DecodeOptions{
+		MaxBytes: 8 * 1024,
+		Schema:   contracts.MustSchema(contracts.SchemaTaskSourceBindingsV1),
+	}); err != nil {
+		return ret, fmt.Errorf("AI reply task source binding invalid: %w", err)
+	}
+	sourceSetSum := sha256.Sum256(raw)
+	boundQuote := string(sourceRunes[spanStart:spanEnd])
+	canonicalQuotes := []string{boundQuote}
+	if !preciseSpan && normalizeRuntimeTaskText(plan.Text) != normalizeRuntimeTaskText(boundQuote) {
+		// Stable V2 only returns task.text, not model-provided source refs. When a
+		// rewrite cannot be located exactly, the whole authoritative ASR remains
+		// the evidence boundary and the normalized task text only disambiguates
+		// multiple questions from the same long utterance inside the hash.
+		canonicalQuotes = append(canonicalQuotes, strings.TrimSpace(plan.Text))
+	}
+	ret.BindingsJSON = string(raw)
+	ret.SourceSetFingerprint = hex.EncodeToString(sourceSetSum[:])
+	ret.CanonicalQuestionHash = CanonicalQuestionHash(plan.Intent, plan.SubIntent, canonicalQuotes, plan.RequestMode)
+	return ret, nil
+}
+
+func runtimeTaskSpanWithinSource(questionText, sourceText string) (int, int, bool) {
+	sourceRunes := []rune(sourceText)
+	if len(sourceRunes) == 0 || normalizeRuntimeTaskText(questionText) == "" {
+		return 0, len(sourceRunes), false
+	}
+	questionRunes := []rune(strings.TrimSpace(questionText))
+	if index := indexRuneSlice(sourceRunes, questionRunes); index >= 0 {
+		return index, index + len(questionRunes), true
+	}
+	normalizedSource, sourceOffsets := normalizedRuntimeTaskRunes(sourceText)
+	normalizedQuestion, _ := normalizedRuntimeTaskRunes(questionText)
+	if index := indexRuneSlice(normalizedSource, normalizedQuestion); index >= 0 && len(normalizedQuestion) > 0 {
+		start := sourceOffsets[index]
+		end := sourceOffsets[index+len(normalizedQuestion)-1] + 1
+		return start, end, true
+	}
+	return 0, len(sourceRunes), false
+}
+
+func matchRuntimeTaskSourceWithSpan(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, sources []runtimeTaskSource, used map[int64]struct{}) (runtimeTaskSource, int, int, bool) {
 	needle := normalizeRuntimeTaskText(plan.Text)
 	if needle != "" {
-		for _, message := range messages {
-			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			candidate := normalizeRuntimeTaskText(raw)
-			if _, alreadyUsed := used[message.ID]; alreadyUsed || candidate == "" {
+		for _, source := range sources {
+			candidate := normalizeRuntimeTaskText(source.Text)
+			if _, alreadyUsed := used[source.Message.ID]; alreadyUsed || candidate == "" {
 				continue
 			}
 			if candidate == needle {
-				return message.ID, 0, len([]rune(raw))
+				return source, 0, len([]rune(source.Text)), true
 			}
 		}
-		// 一条客户消息可以拆成多个独立任务；没有未使用的精确来源时，
-		// 允许后续任务继续绑定同一条消息，而不是错误落到下一条消息。
-		for _, message := range messages {
-			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			if normalizeRuntimeTaskText(raw) == needle {
-				return message.ID, 0, len([]rune(raw))
+		for _, source := range sources {
+			if normalizeRuntimeTaskText(source.Text) == needle {
+				return source, 0, len([]rune(source.Text)), true
 			}
 		}
-		// 包含式：fragment 必须真实存在于该消息原文（去运输包装后）。
-		for _, message := range messages {
-			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			candidate := normalizeRuntimeTaskText(raw)
-			if _, alreadyUsed := used[message.ID]; alreadyUsed || candidate == "" || len(candidate) < len(needle) {
+		for _, source := range sources {
+			if _, alreadyUsed := used[source.Message.ID]; alreadyUsed {
 				continue
 			}
-			if strings.Contains(candidate, needle) {
-				runes := []rune(raw)
-				return message.ID, 0, len(runes)
+			if start, end, precise := runtimeTaskSpanWithinSource(plan.Text, source.Text); precise {
+				return source, start, end, true
 			}
 		}
-		for _, message := range messages {
-			raw := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			candidate := normalizeRuntimeTaskText(raw)
-			if candidate != "" && len(candidate) >= len(needle) && strings.Contains(candidate, needle) {
-				return message.ID, 0, len([]rune(raw))
+		for _, source := range sources {
+			if start, end, precise := runtimeTaskSpanWithinSource(plan.Text, source.Text); precise {
+				return source, start, end, true
 			}
 		}
 	}
-	messageID := matchRuntimeTaskSourceMessage(plan, fallbackMessageID, messages, used)
-	return messageID, 0, 0
+	for _, source := range sources {
+		if source.Message.ID == fallbackMessageID {
+			return source, 0, len([]rune(source.Text)), false
+		}
+	}
+	if len(sources) > 0 {
+		source := sources[len(sources)-1]
+		return source, 0, len([]rune(source.Text)), false
+	}
+	return runtimeTaskSource{Message: models.Message{ID: fallbackMessageID}}, 0, 0, false
+}
+
+func matchRuntimeTaskSourceMessageWithSpan(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) (int64, int, int) {
+	source, start, end, _ := matchRuntimeTaskSourceWithSpan(plan, fallbackMessageID, buildRuntimeTaskSources(messages), used)
+	return source.Message.ID, start, end
 }
 
 func matchRuntimeTaskSourceMessage(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, messages []models.Message, used map[int64]struct{}) int64 {
-	// 严格文本哈希优先。模型改写后的 task.text 没有原文证据时，必须绑定
-	// 当前触发消息；sequence 是任务顺序，不是 Turn 内消息序号，不能拿它猜来源。
-	needle := normalizeRuntimeTaskText(plan.Text)
-	if needle != "" {
-		for _, message := range messages {
-			candidate := normalizeRuntimeTaskText(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			if _, alreadyUsed := used[message.ID]; !alreadyUsed && candidate != "" && candidate == needle {
-				return message.ID
+	source, _, _, _ := matchRuntimeTaskSourceWithSpan(plan, fallbackMessageID, buildRuntimeTaskSources(messages), used)
+	return source.Message.ID
+}
+
+func normalizedRuntimeTaskRunes(value string) ([]rune, []int) {
+	runes := []rune(strings.TrimSpace(currentTurnDisplayText(value)))
+	normalized := make([]rune, 0, len(runes))
+	offsets := make([]int, 0, len(runes))
+	for index, current := range runes {
+		current = unicode.ToLower(current)
+		if runtimeTaskIgnoredRune(current) {
+			continue
+		}
+		normalized = append(normalized, current)
+		offsets = append(offsets, index)
+	}
+	return normalized, offsets
+}
+
+func runtimeTaskIgnoredRune(value rune) bool {
+	switch value {
+	case ' ', '\t', '\r', '\n', '，', '。', '！', '!', '？', '?', '：', ':', '；', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+func indexRuneSlice(haystack, needle []rune) int {
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return -1
+	}
+	for index := 0; index <= len(haystack)-len(needle); index++ {
+		matched := true
+		for offset := range needle {
+			if haystack[index+offset] != needle[offset] {
+				matched = false
+				break
 			}
 		}
-		for _, message := range messages {
-			candidate := normalizeRuntimeTaskText(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
-			if candidate != "" && candidate == needle {
-				return message.ID
-			}
+		if matched {
+			return index
 		}
 	}
-	for _, message := range messages {
-		if message.ID == fallbackMessageID {
-			return message.ID
-		}
-	}
-	if len(messages) > 0 {
-		return messages[len(messages)-1].ID
-	}
-	return fallbackMessageID
+	return -1
 }
 
 func normalizeRuntimeTaskText(value string) string {

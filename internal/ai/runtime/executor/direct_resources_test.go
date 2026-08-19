@@ -18,18 +18,18 @@ func directResourcesConfigs() []models.ReplyIntentConfig {
 	}
 }
 
-func normalizeForDirectResources(text string, primary string) callbacks.IntentTraceData {
+func normalizeForDirectResources(text string, primary string, subIntent string) callbacks.IntentTraceData {
 	return normalizeModelIntentTrace(callbacks.IntentTraceData{
-		PrimaryIntent: primary, IntentConfidence: 0.9, ShouldReply: true,
+		PrimaryIntent: primary, SubIntent: subIntent, IntentConfidence: 0.9, ShouldReply: true,
 		IntentTasks: []callbacks.IntentTaskTraceData{{
-			Sequence: 1, Intent: primary, Text: text, RequestMode: "request_action", Confidence: 0.9,
+			Sequence: 1, Intent: primary, SubIntent: subIntent, Text: text, RequestMode: "request_action", Confidence: 0.9,
 		}},
 	}, RunInput{UserMessage: models.Message{Content: text}}, adapter.HistoryBuildResult{}, directResourcesConfigs())
 }
 
 func TestHotelLocationRequestRoutesToLocationCard(t *testing.T) {
 	for _, text := range []string{"酒店地址发我", "发个定位", "定位发我", "发我定位", "发一下酒店定位"} {
-		intent := normalizeForDirectResources(text, "hotel_info")
+		intent := normalizeForDirectResources(text, "hotel_variable", "location")
 		if intent.PrimaryIntent != "hotel_variable" || intent.SubIntent != "location" ||
 			!intent.NeedsResource || intent.NeedsKnowledge {
 			t.Fatalf("%s must route to location card direct: %#v", text, intent)
@@ -42,7 +42,7 @@ func TestHotelLocationRequestRoutesToLocationCard(t *testing.T) {
 
 func TestExternalLocationAndAddressQuestionsStayKnowledge(t *testing.T) {
 	for _, text := range []string{"附近有什么商场", "外卖地址填哪里", "地铁站怎么去", "周边有什么好玩的", "酒店在哪", "酒店在哪里", "定位发我，小程序也发一下，停车在哪"} {
-		intent := normalizeForDirectResources(text, "hotel_info")
+		intent := normalizeForDirectResources(text, "hotel_info", "surrounding_facilities")
 		if intent.PrimaryIntent == "hotel_variable" && intent.SubIntent == "location" {
 			t.Fatalf("%s must not send hotel location card: %#v", text, intent)
 		}

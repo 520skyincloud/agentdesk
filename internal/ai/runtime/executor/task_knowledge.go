@@ -295,7 +295,7 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			ref := fmt.Sprintf("S%d", storeFactSeq)
 			bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
 				Ref: ref, SourceType: "store_fact", TaskKeys: storeIdentityTaskKeys,
-				Title: "当前门店名称（系统权威）", Content: name, Score: 1,
+				Title: authoritativeStoreNameEvidenceTitle, Content: name, Score: 1,
 				Answerability: "supporting", ResourceRefs: []string{},
 			})
 			for _, taskKey := range storeIdentityTaskKeys {
@@ -317,7 +317,7 @@ func buildRuntimeEvidenceBundle(req RunInput, items []runtimeTaskKnowledgeItem, 
 			ref := fmt.Sprintf("S%d", storeFactSeq)
 			bundle.Items = append(bundle.Items, contracts.EvidenceItemV1{
 				Ref: ref, SourceType: "store_fact", TaskKeys: append([]string(nil), addressTaskKeys...),
-				Title: "当前门店地址（系统权威）", Content: address, Score: 1,
+				Title: authoritativeStoreAddressEvidenceTitle, Content: address, Score: 1,
 				Answerability: "supporting", ResourceRefs: []string{},
 			})
 			for _, taskKey := range addressTaskKeys {

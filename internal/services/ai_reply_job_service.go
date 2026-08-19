@@ -563,6 +563,11 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 	if state == nil {
 		return AIReplyExecutionResult{}, fmt.Errorf("AI reply execution state unavailable")
 	}
+	if retryAt, held := WxWorkKFMessageRefService.ActiveOutboundReconciliationHold(job.TenantID, job.ConversationID, time.Now()); held {
+		return AIReplyExecutionResult{
+			Status: AIReplyExecutionStatusDeferred, ReasonCode: "unknown_outbound_reconciliation_hold", RetryAt: retryAt,
+		}, nil
+	}
 	if strings.TrimSpace(job.ResultCode) == "human_dispatch_retry" {
 		if decision := s.inspectFreshness(state); decision != nil {
 			if decision.Status != enums.AIReplyJobStatusCompleted ||
@@ -1185,12 +1190,6 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled || message.SendStatus == enums.IMMessageStatusFailed {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "message_unavailable"}
 	}
-	if conversation.Status == enums.IMConversationStatusClosed {
-		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "conversation_closed"}
-	}
-	if conversation.CurrentAssigneeID > 0 {
-		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_serving"}
-	}
 	if job.StoreID <= 0 || job.StoreStaffBindingID <= 0 {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "scope_invalid"}
 	}
@@ -1202,8 +1201,8 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 	if route.SessionNo != message.SessionNo {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "session_changed"}
 	}
-	if routeStatusBlocksAIReply(route.RouteStatus) || route.RouteStatus == enums.ConversationRouteStatusClosed {
-		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "manual_or_closed_route"}
+	if decision := ConversationRuntimeModeService.ResolveDB(db, conversation, route); !decision.AIReplyAllowed {
+		return nil, aiReplyJobDecisionForRuntimeMode(decision)
 	}
 	session := repositories.ConversationChannelSessionRepository.TakeByConversationSession(db, conversation.TenantID, conversation.ID, message.SessionNo)
 	if session == nil || session.TenantID != conversation.TenantID || session.StoreID != conversation.StoreID ||
@@ -1231,6 +1230,31 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 		}
 	}
 	return state, nil
+}
+
+func aiReplyJobDecisionForRuntimeMode(decision ConversationRuntimeModeDecision) *aiReplyJobDecision {
+	switch decision.Mode {
+	case enums.ConversationRuntimeModeClosed:
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "conversation_closed"}
+	case enums.ConversationRuntimeModeHumanActive:
+		if decision.ReasonCode == "human_assignee_active" {
+			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "human_agent_serving"}
+		}
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "manual_or_closed_route"}
+	case enums.ConversationRuntimeModeHumanPending, enums.ConversationRuntimeModeResumePending:
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "manual_or_closed_route"}
+	case enums.ConversationRuntimeModeAIDegraded:
+		if decision.ReasonCode == "ai_reply_disabled" || decision.ReasonCode == "ai_service_mode_disabled" {
+			return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSkipped, Code: "ai_reply_disabled"}
+		}
+		code := strings.TrimSpace(decision.ReasonCode)
+		if code == "" {
+			code = "runtime_mode_invalid"
+		}
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: code}
+	default:
+		return &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "runtime_mode_invalid"}
+	}
 }
 
 func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *aiReplyJobDecision {
@@ -1368,6 +1392,9 @@ func (s *aiReplyJobService) ValidateRuntimeCheckpoint(ctx context.Context, conve
 	if job == nil || job.Status != enums.AIReplyJobStatusProcessing || job.LeaseOwner != lease.Owner ||
 		job.ConversationID != conversation.ID || job.MessageID != message.ID || job.LeaseExpiresAt == nil || !job.LeaseExpiresAt.After(time.Now()) {
 		return AIReplyExecutionResult{Status: AIReplyExecutionStatusDeferred, ReasonCode: "lease_lost"}, context.Canceled
+	}
+	if retryAt, held := WxWorkKFMessageRefService.ActiveOutboundReconciliationHold(job.TenantID, job.ConversationID, time.Now()); held {
+		return AIReplyExecutionResult{Status: AIReplyExecutionStatusDeferred, ReasonCode: "unknown_outbound_reconciliation_hold", RetryAt: retryAt}, nil
 	}
 	_, decision := s.inspectExecutionState(job, true)
 	if decision == nil {

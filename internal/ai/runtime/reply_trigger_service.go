@@ -78,6 +78,9 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
+		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "runtime_not_eligible"}, nil
+	}
 	settleStartedAt := time.Now()
 	settled, waitReason := s.waitForConversationToSettle(ctx, conversation.ID, message.ID)
 	if !settled {
@@ -97,9 +100,6 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		}
 	}
 	trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
-	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
-		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSkipped, ReasonCode: "runtime_not_eligible"}, nil
-	}
 	defer func() {
 		s.runlog.Write(replyRunLogInput{
 			StartedAt:    startedAt,
@@ -436,7 +436,11 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
 		}
 		replyCtx.Trace.ReplySent = len(replyMessages) > 0
-		result := executionResultWithTaskSummary(completedInterruptResult("runtime_completed", replyMessages, 0), summary)
+		reasonCode := "runtime_completed"
+		if summary.GenerationOutcome == string(runtimeexecutor.GenerationOutcomeSafeDegraded) {
+			reasonCode = "runtime_safe_degraded"
+		}
+		result := executionResultWithTaskSummary(completedInterruptResult(reasonCode, replyMessages, 0), summary)
 		if err := s.requestDeferredTaskHandoff(replyCtx, summary); err != nil {
 			// 成功答案已经提交，人工确认失败只续跑未完成的人工 Task，不能让
 			// 已回答任务重新生成，也不能把技术故障伪装成已完成 handoff。
@@ -553,7 +557,11 @@ func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Conte
 		summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
 	}
 	replyCtx.Trace.ReplySent = len(replyMessages) > 0
-	return executionResultWithTaskSummary(completedInterruptResult("runtime_completed_after_duplicate_retry", replyMessages, 0), summary), nil
+	reasonCode := "runtime_completed_after_duplicate_retry"
+	if summary.GenerationOutcome == string(runtimeexecutor.GenerationOutcomeSafeDegraded) {
+		reasonCode = "runtime_safe_degraded_after_duplicate_retry"
+	}
+	return executionResultWithTaskSummary(completedInterruptResult(reasonCode, replyMessages, 0), summary), nil
 }
 
 func executionResultWithTaskSummary(result svc.AIReplyExecutionResult, summary *applicationruntime.Summary) svc.AIReplyExecutionResult {

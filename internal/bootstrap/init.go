@@ -15,10 +15,16 @@ import (
 )
 
 func Init(configPath string) error {
-	if err := contracts.ValidateEmbeddedSchemas(); err != nil {
+	contractFingerprint, err := contracts.ValidateProductionRuntimeContracts()
+	if err != nil {
 		slog.Error("validate AI runtime contracts failed", "error", err)
 		return err
 	}
+	slog.Info("AI runtime contracts ready",
+		"contract_set", contractFingerprint.ContractSet,
+		"intent_schema_hash", contractFingerprint.IntentSchemaHash,
+		"reply_schema_hash", contractFingerprint.ReplySchemaHash,
+	)
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		slog.Error("init config failed", "error", err)

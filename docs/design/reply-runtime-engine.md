@@ -336,6 +336,7 @@ Schema。进程启动时必须编译并验证全部 Schema；任一 Schema 无�
 
 ```text
 message_analysis.v1
+message_analysis.v2
 dialogue_state_snapshot.v1
 intent_tasks.v2
 reply_plan.v2
@@ -346,6 +347,7 @@ reply_output.v2
 validation_result.v1
 reply_tag_context.v1
 runtime_trace.v2
+task_source_bindings.v1
 ```
 
 所有模型 JSON 使用 `strictjson.DecodeObject`：只接受唯一 UTF-8 JSON Object，拒绝 Markdown
@@ -363,11 +365,11 @@ Resume 和审计必须复用同一事实范围，不得重新扫描更晚消息�
 `context_mandatory_overflow`。编译失败必须记录为 `context_build`，且未发起 Generate 时不得伪造
 `reply_generate` 用量事件。
 
-V2 迁移使用五个内部模式：`ContextCompiler`、`IntentContract`、`ReplyContract`、`Validator`、
-`ActionLedger`。默认保持 legacy；只有 Tenant/Store/Binding 灰度范围命中，且环境变量组合满足依赖
-约束时才启用 V2。`reply_output.v2` 必须配合 V2 ContextCompiler；完整 Validator 必须配合 V2
-ReplyContract；authoritative ActionLedger 也必须配合 V2 ReplyContract。非法组合启动执行前直接
-失败，不能部分开启。
+生产只运行固定 `stable_v2` Contract Set：`ContextCompiler=v2`、`IntentContract=v2`、
+`ReplyContract=v2`、`Validator=v2`、`ActionLedger=authoritative`。旧 allowlist、legacy/V1 和 V3 strict
+环境变量不能切换在线会话；出现不兼容组合时进程启动失败。启动门禁先编译全部嵌入 Schema，再对
+真实生产 Intent/Reply Schema 执行 Responses 适配器相同的 Normalize 前后 strict lint，并记录
+`contractSet`、Intent/Reply Schema SHA-256、Prompt 版本、模型 Profile 和运行构建号。
 
 当 Runtime V2 命中灰度范围时，`intent_detect_llm` 和 `reply_llm` 对应 Profile 槽必须发布为
 `apiMode=responses`、`modelName=deepseek-v4-flash`。同一 Profile 的其他槽继续按各自用途选择
@@ -377,9 +379,15 @@ Chat Completions 或 Responses；发布新 revision 前必须使用当前门店 
 ### 5.5 MessageAnalysis、DialogueState 与确定性 Validator
 
 `MessageAnalysis` 是按 `TenantID + MessageID + SourceRevision` 保存的派生证据，包含内容
-fingerprint、分析器身份、状态和严格 `message_analysis.v1`，不保存额外客户正文副本。相同 revision
+fingerprint、分析器身份、状态和严格 `message_analysis.v1/v2`，不保存额外客户正文副本。相同 revision
 只有完全相同证据可幂等完成；同 revision 不同 JSON、MessageID、fingerprint 或状态必须拒绝，
 避免恢复任务覆盖已完成分析。
+
+`AIReplyTurnTask` 的来源必须绑定到最新 ready 的 MessageAnalysis：文字使用 revision 0，语音、图片和
+附件优先使用权威分析正文及 SourceRevision。每个 Task 写入 `task_source_bindings.v1`、rune span、
+`SourceSetFingerprint` 和 `CanonicalQuestionHash`。能在原文/ASR 中定位子句时保存精确 span；模型做了
+有限改写无法精确定位时绑定整段权威正文，不拒绝任务、不转人工。长语音拆出的多个 Task 可以共享
+同一 MessageID/Revision，但必须拥有各自的 span 或用于区分问题的 canonical hash。
 
 `ConversationDialogueState` 按 `TenantID + ConversationID + SessionNo` 保存严格
 `dialogue_state_snapshot.v1`。Reducer 只接受显式事件并使用 CAS revision：客户消息只推进
@@ -470,10 +478,10 @@ AI 只输出是否需要人工、原因和客户等待文案。唯一任务入�
 明确人工、退款/赔偿/投诉升级、安全、隐私、严重订单异常和价格争议可进入人工路由。
 普通 FAQ、用品、电视、入住、小程序、定位、轻互动和普通文件咨询不能因为关键词误转。
 
-模型槽与 Job 重试都耗尽、FastGPT 基础设施失败达到任务上限、空输出、结构化资源不变量损坏
-或 Commit 失败才进入同一任务池；确定性 Schema/配置错误可直接进入该池，因为继续发送同一非法
-请求没有恢复价值。该兜底只负责保住客户问题，不改变客服选择、排班和容量算法。范围损坏时继续
-fail closed，不使用不可信 Store/Binding 创建人工任务。
+只有客户明确要求人工、投诉升级、赔付退款、安全风险或已配置的业务政策命中，才能进入人工任务池。
+模型协议、网络、FastGPT、Schema、配置、数据库、租约、Commit 和 Outbox 等技术失败只进入受控技术
+终态、重试/告警和 RunLog，不自动派人工，也不向客户发送“消息没处理成功”等技术话术。范围损坏时
+继续 fail closed，不使用不可信 Store/Binding 创建人工任务。
 
 ## 10. 提交、Outbox 与 WebSocket
 
@@ -503,6 +511,10 @@ Validate
 - 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
 - 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
+- “是否允许 AI 回复”只由 `ConversationRuntimeModeService.ResolveDB` 投影为
+  `ai_active/ai_degraded/human_pending/human_active/resume_pending/closed` 并给出 `AIReplyAllowed`；
+  Trigger、Job Start、Turn Commit、Outbox Claim、Resume 和 Human Takeover 统一消费该结果。各入口仍
+  校验自己的不可变 Tenant/Store/Binding/Session/Turn 范围，但不得重新解释接待状态。
 - Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion 和已提交 Task。带 Task 证据的消息
   只有在 Task 仍为 committed/delivered 时才可发送；已被覆盖、人工接管或范围失效时进入
   `cancelled`。仅对没有 Task 证据的兼容旧消息，更新版本完成 Commit 后才按
@@ -625,6 +637,7 @@ Intent JSON、动作字段、幂等键或模型归因：
 - `internal/services/ai_reply_turn_action_service.go` 与 `internal/repositories/ai_reply_turn_action_repository.go`
 - `internal/services/message_analysis_service.go` 与 `internal/repositories/message_analysis_repository.go`
 - `internal/services/conversation_dialogue_state_service.go`、Reducer 与对应 repository
+- `internal/services/conversation_runtime_mode_service.go` 与 `internal/pkg/enums/conversation_runtime_mode.go`
 - `internal/models/models.go` 中 `AIReplyTurn`、`AIReplyTurnTask` 及 Message/Job/Conversation 的内部关联字段
 - `internal/services/message_service.go` 中的入站消息与任务原子提交边界
 

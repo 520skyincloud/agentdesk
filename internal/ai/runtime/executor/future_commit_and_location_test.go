@@ -4,6 +4,10 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/ai/runtime/internal/impl/adapter"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 )
 
 func TestPromiseAllowlistRejectsOutsideActions(t *testing.T) {
@@ -61,20 +65,15 @@ func TestPromiseAllowlistRejectsUncommittedCompletion(t *testing.T) {
 	}
 }
 
-func TestLooksLikeNonHotelLocation(t *testing.T) {
-	cases := map[string]bool{
-		"菜市场定位呢": true,
-		"银行定位发我": true,
-		"菜市场的定位": true,
-		"酒店定位发我": false,
-		"你们店在哪":  false,
-		"停车场怎么走": false,
-		"定位":     false,
-	}
-	for text, want := range cases {
-		if got := looksLikeNonHotelLocation(text); got != want {
-			t.Fatalf("looksLikeNonHotelLocation(%q) = %v, want %v", text, got, want)
-		}
+func TestLocationResourceFollowsStructuredIntentInsteadOfKeywordRewrite(t *testing.T) {
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "clarify", IntentConfidence: 0.8, ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: "菜市场定位呢", RequestMode: "clarify_previous", Confidence: 0.8,
+		}},
+	}, RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "菜市场定位呢"}}, adapter.HistoryBuildResult{}, nil)
+	if intent.PrimaryIntent != "interaction" || intent.NeedsResource || len(intent.ResourceActions) != 0 {
+		t.Fatalf("structured interaction intent must stay text-only: %+v", intent)
 	}
 }
 

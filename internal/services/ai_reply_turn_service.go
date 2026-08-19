@@ -513,7 +513,7 @@ func (s *aiReplyTurnService) ValidateCommitDB(db *gorm.DB, tenantID, conversatio
 	if version != turn.Version ||
 		turn.Status == enums.AIReplyTurnStatusInterrupted ||
 		turn.Status == enums.AIReplyTurnStatusClosed || turn.Status == enums.AIReplyTurnStatusFailed ||
-		conversation.CurrentAIReplyTurnID != turn.ID || !aiReplyTurnConversationAllowsAI(conversation) {
+		conversation.CurrentAIReplyTurnID != turn.ID {
 		return nil, ErrAIReplyTurnStale
 	}
 	if jobID > 0 {
@@ -538,18 +538,14 @@ func (s *aiReplyTurnService) ValidateCommitDB(db *gorm.DB, tenantID, conversatio
 		route.StoreID != turn.StoreID || route.StoreStaffBindingID != turn.StoreStaffBindingID {
 		return nil, errorsx.InvalidParam("AI 回复轮次提交路由范围不一致")
 	}
-	if route.SessionNo != turn.SessionNo || !aiReplyTurnRouteAllowsAI(route.RouteStatus) {
+	if route.SessionNo != turn.SessionNo {
+		return nil, ErrAIReplyTurnStale
+	}
+	if decision := ConversationRuntimeModeService.ResolveDB(db, conversation, route); !decision.AIReplyAllowed {
 		return nil, ErrAIReplyTurnStale
 	}
 	if err := WxWorkProtocolService.RequireConversationOutboundRoute(db, conversation); err != nil {
 		return nil, err
-	}
-	if route.WxWorkInstanceID > 0 {
-		instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(db, route.WxWorkInstanceID, conversation.TenantID)
-		if instance == nil || !instance.AIReplyEnabled || instance.StoreID != turn.StoreID ||
-			instance.StoreStaffBindingID != turn.StoreStaffBindingID || instance.ChannelID != conversation.ChannelID {
-			return nil, ErrAIReplyTurnStale
-		}
 	}
 	return turn, nil
 }
@@ -725,7 +721,7 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 		}
 		return false, "cancelled_turn_inactive", nil
 	}
-	if conversation.CurrentAIReplyTurnID != turn.ID || !aiReplyTurnConversationAllowsAI(conversation) {
+	if conversation.CurrentAIReplyTurnID != turn.ID {
 		return false, "cancelled_turn_inactive", nil
 	}
 	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(db, conversation.ID, conversation.TenantID)
@@ -733,18 +729,14 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 		route.StoreID != turn.StoreID || route.StoreStaffBindingID != turn.StoreStaffBindingID {
 		return false, "cancelled_turn_scope_invalid", nil
 	}
-	if route.SessionNo != turn.SessionNo || !aiReplyTurnRouteAllowsAI(route.RouteStatus) {
+	if route.SessionNo != turn.SessionNo {
+		return false, "cancelled_turn_inactive", nil
+	}
+	if decision := ConversationRuntimeModeService.ResolveDB(db, conversation, route); !decision.AIReplyAllowed {
 		return false, "cancelled_turn_inactive", nil
 	}
 	if err := WxWorkProtocolService.RequireConversationOutboundRoute(db, conversation); err != nil {
 		return false, "cancelled_turn_scope_invalid", nil
-	}
-	if route.WxWorkInstanceID > 0 {
-		instance := repositories.WxWorkProtocolInstanceRepository.GetActivatedCurrentInTenant(db, route.WxWorkInstanceID, conversation.TenantID)
-		if instance == nil || !instance.AIReplyEnabled || instance.StoreID != turn.StoreID ||
-			instance.StoreStaffBindingID != turn.StoreStaffBindingID || instance.ChannelID != conversation.ChannelID {
-			return false, "cancelled_turn_inactive", nil
-		}
 	}
 	if taskStateKnown {
 		if taskDispatchable {
@@ -753,17 +745,6 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 		return false, "cancelled_stale_task", nil
 	}
 	return true, "", nil
-}
-
-func aiReplyTurnConversationAllowsAI(conversation *models.Conversation) bool {
-	if conversation == nil || conversation.Status != enums.IMConversationStatusAIServing || conversation.CurrentAssigneeID != 0 {
-		return false
-	}
-	return conversation.ServiceMode == enums.IMConversationServiceModeAIOnly || conversation.ServiceMode == enums.IMConversationServiceModeAIFirst
-}
-
-func aiReplyTurnRouteAllowsAI(status enums.ConversationRouteStatus) bool {
-	return status == enums.ConversationRouteStatusAIServing || status == enums.ConversationRouteStatusAIFallback
 }
 
 func aiReplyTurnTerminalStatus(status enums.AIReplyTurnStatus) bool {

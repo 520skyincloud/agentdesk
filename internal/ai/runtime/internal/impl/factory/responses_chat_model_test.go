@@ -16,6 +16,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+const strictBooleanObjectSchema = `{"type":"object","additionalProperties":false,"required":["ok"],"properties":{"ok":{"type":"boolean"}}}`
+
 func TestResponsesChatModelSendsDeepSeekStrictJSONSchema(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +91,7 @@ func TestResponsesChatModelClassifiesSchemaRejectionWithoutRetry(t *testing.T) {
 	config, err := (modelconfig.Config{
 		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
 		ModelName: "deepseek-v4-flash", TimeoutMS: 1000, MaxRetryCount: 2,
-	}).WithJSONSchema("intent_tasks.v2", []byte(`{"type":"object"}`))
+	}).WithJSONSchema("intent_tasks.v2", []byte(strictBooleanObjectSchema))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +160,7 @@ func TestResponsesChatModelDoesNotRetryHTTP200SchemaFailure(t *testing.T) {
 	config, err := (modelconfig.Config{
 		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
 		ModelName: "deepseek-v4-flash", TimeoutMS: 1000, MaxRetryCount: 2,
-	}).WithJSONSchema("intent_tasks.v2", []byte(`{"type":"object"}`))
+	}).WithJSONSchema("intent_tasks.v2", []byte(strictBooleanObjectSchema))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +234,7 @@ func TestResponsesChatModelPreservesFunctionToolLoop(t *testing.T) {
 	config, err := (modelconfig.Config{
 		Provider: enums.AIProviderOpenAI, BaseURL: server.URL + "/v1", APIMode: "responses",
 		ModelName: "deepseek-v4-flash", TimeoutMS: 1000,
-	}).WithJSONSchema("reply_output.v2", []byte(`{"type":"object"}`))
+	}).WithJSONSchema("reply_output.v2", []byte(strictBooleanObjectSchema))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,18 +18,18 @@ func TestResolveRuntimeFeatureModesDefaultsToV2(t *testing.T) {
 
 func TestLegacyMultimodalV3FlagCannotReenableStrictRuntime(t *testing.T) {
 	t.Setenv("AI_RUNTIME_MULTIMODAL_V3", "on")
-	t.Setenv("AI_RUNTIME_MULTIMODAL_V3_STRICT", "off")
+	t.Setenv("AI_RUNTIME_MULTIMODAL_V3_STRICT", "on")
 	resolved := resolveRuntimeFeatureModes(RunInput{})
 	if resolved.IntentContract != runtimeIntentContractV2 || resolved.ReplyContract != runtimeReplyContractV2 || resolved.Validator != runtimeValidatorV2 {
 		t.Fatalf("legacy V3 flag must keep the simplified V2 serving path: %+v", resolved)
 	}
 }
 
-func TestResolveRuntimeFeatureModesScopeMismatchFallsBackToLegacy(t *testing.T) {
+func TestResolveRuntimeFeatureModesIgnoresLegacyScopeAllowlists(t *testing.T) {
 	t.Setenv("AI_RUNTIME_V2_BINDING_IDS", "33")
 	modes := resolveRuntimeFeatureModes(RunInput{Conversation: models.Conversation{TenantID: 11, StoreID: 22, StoreStaffBindingID: 34}})
-	if modes != legacyRuntimeFeatureModes() {
-		t.Fatalf("scope mismatch must fall back to legacy: %+v", modes)
+	if modes.IntentContract != runtimeIntentContractV2 || modes.ReplyContract != runtimeReplyContractV2 {
+		t.Fatalf("legacy allowlists must not split production contract sets: %+v", modes)
 	}
 }
 
@@ -50,8 +50,8 @@ func TestResolveRuntimeFeatureModesHonorsScopedV2(t *testing.T) {
 		t.Fatalf("unexpected enabled modes: %+v", enabled)
 	}
 	disabled := resolveRuntimeFeatureModes(RunInput{Conversation: models.Conversation{TenantID: 11, StoreID: 22, StoreStaffBindingID: 34}})
-	if disabled != legacyRuntimeFeatureModes() {
-		t.Fatalf("scope mismatch must fall back completely: %+v", disabled)
+	if disabled != enabled {
+		t.Fatalf("all production scopes must use the same stable-v2 contract set: %+v", disabled)
 	}
 }
 

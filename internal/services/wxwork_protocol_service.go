@@ -78,8 +78,13 @@ var wxProtocolURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 var WxWorkProtocolService = newWxWorkProtocolService()
 
+const (
+	wxWorkUnknownOutboundReconcileDelay     = 2 * time.Second
+	wxWorkUnknownOutboundReconciliationHold = wxWorkUnknownOutboundReconcileDelay + 500*time.Millisecond
+)
+
 func newWxWorkProtocolService() *wxWorkProtocolService {
-	svc := &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}}
+	svc := &wxWorkProtocolService{httpClient: &http.Client{Timeout: 45 * time.Second}, afterFunc: time.AfterFunc}
 	svc.adapter = newDefaultWxWorkProtocolAdapter(svc)
 	return svc
 }
@@ -87,6 +92,7 @@ func newWxWorkProtocolService() *wxWorkProtocolService {
 type wxWorkProtocolService struct {
 	httpClient *http.Client
 	adapter    WxWorkProtocolAdapter
+	afterFunc  func(time.Duration, func()) *time.Timer
 }
 
 type WxWorkProtocolCallbackError struct {
@@ -3167,11 +3173,11 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 		_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusFailed, rawPayload, err.Error())
 		return true, err
 	}
-	// 契约 5.1/3.9.10：出站回显先做来源对账。能与平台已发送的 AI 消息精确
-	// 匹配时按 ai_outbox_echo 处理：补齐渠道送达证据，不创建 Agent Message、
-	// 不打断 Turn、不切人工路由。只有无法对账的员工出站才走人工语义。
-	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, content, payload, rawPayload); reconciled {
+	if _, reconciled := s.reconcilePlatformOutboxEcho(instance, conversationID, sessionNo, msg, clientMsgID, externalID, messageType, content, payload, rawPayload); reconciled {
 		return true, nil
+	}
+	if !s.confirmedHumanEmployeeOutbound(instance, conversationID, msg) {
+		return true, s.persistUnknownOutbound(instance, conversationID, sessionNo, msg, clientMsgID, externalID, messageType, content, payload, rawPayload)
 	}
 	message, err := MessageService.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo", sessionNo)
 	if err != nil {
@@ -3182,30 +3188,40 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 	if err := s.createMessageRef(conversationID, message.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
 		return true, err
 	}
-	if err := MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "self echo synced"); err != nil {
+	if err := MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, message.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "employee_confirmed_outbound"); err != nil {
 		return true, err
 	}
 	return true, nil
 }
 
-// reconcileAIOutboxEcho 在同会话、同 session 的短时间窗内寻找同一条平台 AI
-// 出站消息。文本按归一化正文匹配，媒体按企微 file_id 或 md5+size 匹配。命中
-// 则把 MessageRef 绑定到原 AI Message 并记录
-// 送达同步日志；未命中返回 false（保持原人工出站语义）。
-func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, content, payload, rawPayload string) bool {
+type wxWorkOutboundClassification string
+
+const (
+	wxWorkOutboundAI      wxWorkOutboundClassification = "ai_self_echo"
+	wxWorkOutboundHuman   wxWorkOutboundClassification = "human_employee_outbound"
+	wxWorkOutboundUnknown wxWorkOutboundClassification = "unknown_outbound"
+)
+
+// reconcilePlatformOutboxEcho requires platform-owned identity or a durable
+// local Outbox before content/media is allowed as an auxiliary match signal.
+func (s *wxWorkProtocolService) reconcilePlatformOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, msg request.WxProtocolChatMsg, clientMsgID, externalID string, messageType enums.IMMessageType, content, payload, rawPayload string) (wxWorkOutboundClassification, bool) {
 	if instance == nil || conversationID <= 0 {
-		return false
+		return wxWorkOutboundUnknown, false
 	}
 	mediaType := isWxWorkProtocolEchoMediaType(messageType)
 	normalized := normalizeEchoCompareText(content)
 	if !mediaType && normalized == "" {
-		return false
+		return wxWorkOutboundUnknown, false
+	}
+	if matched := s.findOutboundMessageByProviderIdentity(instance, conversationID, sessionNo, msg, messageType); matched != nil {
+		classification := outboundClassificationForMessage(*matched)
+		return classification, s.recordReconciledOutboundEcho(instance, matched, clientMsgID, externalID, rawPayload, classification)
 	}
 	windowStart := time.Now().Add(-5 * time.Minute)
 	cnd := sqls.NewCnd().
 		Eq("tenant_id", instance.TenantID).
 		Eq("conversation_id", conversationID).
-		Eq("sender_type", enums.IMSenderTypeAI).
+		In("sender_type", []string{string(enums.IMSenderTypeAI), string(enums.IMSenderTypeAgent)}).
 		Eq("message_type", messageType).
 		Gte("created_at", windowStart).
 		Desc("id").
@@ -3220,19 +3236,166 @@ func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkPro
 		if sessionNo > 0 && candidate.SessionNo > 0 && candidate.SessionNo != sessionNo {
 			continue
 		}
+		outbox := ChannelMessageOutboxService.GetByMessageIDInTenant(enums.ChannelTypeWxWorkProtocol, candidate.ID, instance.TenantID)
+		if outbox == nil || outbox.ConversationID != conversationID ||
+			(outbox.SendStatus != string(enums.ChannelMessageOutboxStatusSending) && outbox.SendStatus != string(enums.ChannelMessageOutboxStatusSent)) {
+			continue
+		}
 		if wxWorkProtocolEchoMatches(messageType, content, payload, *candidate) {
 			matched = candidate
 			break
 		}
 	}
 	if matched == nil {
+		return wxWorkOutboundUnknown, false
+	}
+	classification := outboundClassificationForMessage(*matched)
+	return classification, s.recordReconciledOutboundEcho(instance, matched, clientMsgID, externalID, rawPayload, classification)
+}
+
+func (s *wxWorkProtocolService) findOutboundMessageByProviderIdentity(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, msg request.WxProtocolChatMsg, messageType enums.IMMessageType) *models.Message {
+	if instance == nil || conversationID <= 0 {
+		return nil
+	}
+	callbackIDs := uniqueProtocolIdentityValues(msg.MsgID, msg.ID)
+	callbackSeqs := uniqueProtocolIdentityValues(msg.Seq)
+	if len(callbackIDs) == 0 && len(callbackSeqs) == 0 {
+		return nil
+	}
+	refs := WxWorkKFMessageRefService.Find(sqls.NewCnd().
+		Eq("tenant_id", instance.TenantID).
+		Eq("conversation_id", conversationID).
+		Eq("direction", string(enums.WxWorkKFMessageDirectionOut)).
+		Where("message_id > 0").
+		Gte("created_at", time.Now().Add(-5*time.Minute)).
+		Desc("id").
+		Limit(20))
+	for _, ref := range refs {
+		response := request.WxWorkProtocolSendTextResponse{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(ref.RawPayload)), &response); err != nil {
+			continue
+		}
+		data := response.Data.MsgData
+		if !protocolIdentityIntersects(callbackIDs, uniqueProtocolIdentityValues(data.MsgID, data.ID)) &&
+			!protocolIdentityIntersects(callbackSeqs, uniqueProtocolIdentityValues(data.Seq)) {
+			continue
+		}
+		message := repositories.MessageRepository.GetInTenant(sqls.DB(), ref.MessageID, instance.TenantID)
+		if message == nil || message.ConversationID != conversationID || message.MessageType != messageType ||
+			(message.SenderType != enums.IMSenderTypeAI && message.SenderType != enums.IMSenderTypeAgent) {
+			continue
+		}
+		if sessionNo > 0 && message.SessionNo > 0 && message.SessionNo != sessionNo {
+			continue
+		}
+		return message
+	}
+	return nil
+}
+
+func uniqueProtocolIdentityValues(values ...string) []string {
+	ret := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		ret = append(ret, value)
+	}
+	return ret
+}
+
+func protocolIdentityIntersects(first, second []string) bool {
+	for _, left := range first {
+		for _, right := range second {
+			if left == right {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func outboundClassificationForMessage(message models.Message) wxWorkOutboundClassification {
+	if message.SenderType == enums.IMSenderTypeAgent {
+		return wxWorkOutboundHuman
+	}
+	return wxWorkOutboundAI
+}
+
+func (s *wxWorkProtocolService) recordReconciledOutboundEcho(instance *models.WxWorkProtocolInstance, matched *models.Message, clientMsgID, externalID, rawPayload string, classification wxWorkOutboundClassification) bool {
+	if instance == nil || matched == nil {
 		return false
 	}
-	if err := s.createMessageRef(conversationID, matched.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
+	if err := s.createMessageRef(matched.ConversationID, matched.ID, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
 		return false
 	}
-	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, matched.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "ai_outbox_echo_reconciled")
+	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, matched.ConversationID, matched.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, string(classification)+"_reconciled")
 	return true
+}
+
+func (s *wxWorkProtocolService) confirmedHumanEmployeeOutbound(instance *models.WxWorkProtocolInstance, conversationID int64, msg request.WxProtocolChatMsg) bool {
+	if instance == nil || conversationID <= 0 {
+		return false
+	}
+	route := repositories.ConversationRouteStateRepository.TakeByConversationInTenant(sqls.DB(), conversationID, instance.TenantID)
+	if route == nil || !routeStatusBlocksAIReply(route.RouteStatus) || route.LastManualHandoffAt == nil {
+		return false
+	}
+	sentAt := wxWorkProtocolMessageSentAt(msg)
+	return !sentAt.Before(route.LastManualHandoffAt.Add(-time.Second))
+}
+
+func (s *wxWorkProtocolService) persistUnknownOutbound(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, msg request.WxProtocolChatMsg, clientMsgID, externalID string, messageType enums.IMMessageType, content, payload, rawPayload string) error {
+	if err := s.createMessageRef(conversationID, 0, instance, externalID, clientMsgID, rawPayload, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusPendingReconciliation); err != nil {
+		return err
+	}
+	ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(clientMsgID, instance.TenantID)
+	if ref != nil {
+		_ = WxWorkKFMessageRefService.UpdatesInTenant(ref.ID, instance.TenantID, map[string]any{
+			"fail_reason": "unknown_outbound_pending_reconciliation",
+			"updated_at":  time.Now(),
+		})
+	}
+	if err := MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, 0, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSkipped, rawPayload, "unknown_outbound_pending_reconciliation"); err != nil {
+		return err
+	}
+	s.scheduleUnknownOutboundReconciliation(instance, conversationID, sessionNo, msg, clientMsgID, externalID, messageType, content, payload, rawPayload)
+	return nil
+}
+
+func (s *wxWorkProtocolService) scheduleUnknownOutboundReconciliation(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, msg request.WxProtocolChatMsg, clientMsgID, externalID string, messageType enums.IMMessageType, content, payload, rawPayload string) {
+	if s == nil || s.afterFunc == nil || instance == nil {
+		return
+	}
+	instanceSnapshot := *instance
+	s.afterFunc(wxWorkUnknownOutboundReconcileDelay, func() {
+		ref := WxWorkKFMessageRefService.GetByWxMsgIDInTenant(clientMsgID, instanceSnapshot.TenantID)
+		if ref == nil || ref.MessageID > 0 || ref.SendStatus != string(enums.WxWorkKFMessageSendStatusPendingReconciliation) {
+			return
+		}
+		if _, reconciled := s.reconcilePlatformOutboxEcho(&instanceSnapshot, conversationID, sessionNo, msg, clientMsgID, externalID, messageType, content, payload, rawPayload); reconciled {
+			return
+		}
+		now := time.Now()
+		_ = WxWorkKFMessageRefService.UpdatesInTenant(ref.ID, instanceSnapshot.TenantID, map[string]any{
+			"send_status": string(enums.WxWorkKFMessageSendStatusUnresolvedOutbound),
+			"fail_reason": "unknown_outbound_reconciliation_timeout",
+			"updated_at":  now,
+		})
+		slog.Warn("wxwork outbound identity remained unresolved",
+			"tenant_id", instanceSnapshot.TenantID,
+			"conversation_id", conversationID,
+			"wx_work_instance_id", instanceSnapshot.ID,
+			"external_message_id", clientMsgID,
+			"classification", string(wxWorkOutboundUnknown),
+		)
+	})
 }
 
 func isWxWorkProtocolEchoMediaType(messageType enums.IMMessageType) bool {

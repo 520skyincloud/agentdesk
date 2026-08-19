@@ -14,6 +14,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 )
 
 type multiTopicStubRetriever struct {
@@ -43,17 +44,32 @@ func TestSingleMultiTopicTaskSplitsIntoPerClauseQueries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}, &models.AIReplyTurnTask{}, &models.AIReplyTurn{}); err != nil {
+	if err := db.AutoMigrate(&models.KnowledgeBase{}, &models.KnowledgeRetrieveLog{}, &models.KnowledgeRetrieveHit{}, &models.AIReplyTurnTask{}, &models.AIReplyTurn{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	sqls.SetDB(db)
 	t.Cleanup(func() { sqls.SetDB(nil) })
+	if err := db.Create(&models.KnowledgeBase{ID: 1, TenantID: 2, StoreID: 1, Name: "test knowledge", Status: enums.StatusOk}).Error; err != nil {
+		t.Fatalf("seed knowledge base: %v", err)
+	}
 	stub := &multiTopicStubRetriever{
 		kbIDs: []int64{1},
 		byQuery: map[string]*retrievers.KnowledgeRetrieveResult{
-			"我饿了 有啥吃的推荐没":      {Hits: []rag.RetrieveResult{{Title: "附近有哪些餐饮推荐？", Content: "问题：附近有哪些餐饮推荐？ 答案：罍街小吃街。", Score: 0.8}}, ContextResults: []rag.RetrieveResult{{Title: "附近有哪些餐饮推荐？", Content: "答案：罍街小吃街", Score: 0.8}}},
-			"明天要去附近玩 你知道哪里好玩吗": {Hits: []rag.RetrieveResult{{Title: "酒店周边推荐的景点？", Content: "答案：南七天地、骆岗中央公园。", Score: 0.82}}, ContextResults: []rag.RetrieveResult{{Title: "酒店周边推荐的景点？", Content: "答案：南七天地", Score: 0.82}}},
-			"我怎么把门打开啊":         {Hits: []rag.RetrieveResult{{Title: "怎么开门？", Content: "答案：入住后直接刷脸开门，不需要密码。", Score: 0.86}}, ContextResults: []rag.RetrieveResult{{Title: "怎么开门？", Content: "答案：刷脸开门", Score: 0.86}}},
+			"我饿了 有啥吃的推荐没": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits:             []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "附近有哪些餐饮推荐？", Content: "问题：附近有哪些餐饮推荐？ 答案：罍街小吃街。", Score: 0.8}},
+				ContextResults:   []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "附近有哪些餐饮推荐？", Content: "答案：罍街小吃街", Score: 0.8}},
+			},
+			"明天要去附近玩 你知道哪里好玩吗": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits:             []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "酒店周边推荐的景点？", Content: "答案：南七天地、骆岗中央公园。", Score: 0.82}},
+				ContextResults:   []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "酒店周边推荐的景点？", Content: "答案：南七天地", Score: 0.82}},
+			},
+			"我怎么把门打开啊": {
+				KnowledgeBaseIDs: []int64{1},
+				Hits:             []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "怎么开门？", Content: "答案：入住后直接刷脸开门，不需要密码。", Score: 0.86}},
+				ContextResults:   []rag.RetrieveResult{{KnowledgeBaseID: 1, Title: "怎么开门？", Content: "答案：刷脸开门", Score: 0.86}},
+			},
 		},
 	}
 	plans := []callbacks.ReplyTaskPlanTraceData{{

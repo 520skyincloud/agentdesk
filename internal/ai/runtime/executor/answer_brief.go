@@ -47,7 +47,7 @@ func buildRuntimeAnswerBriefInstruction(plan contracts.ReplyPlanV2, evidence con
 		if len(supporting) > 0 {
 			line += "；补充=" + strings.Join(supporting, ",")
 		}
-		if runtimeFallbackNeedsProcessCoverage(task) {
+		if runtimeTaskNeedsProcessCoverage(task) {
 			line += "；流程类答案要按先后顺序说完整，不能只摘第一条证据"
 		}
 		lines = append(lines, line)
@@ -60,7 +60,7 @@ func buildRuntimeAnswerBriefInstruction(plan contracts.ReplyPlanV2, evidence con
 }
 
 func runtimeProcessEvidenceIsRequired(task contracts.ReplyPlanTaskV2, item contracts.EvidenceItemV1) bool {
-	if !runtimeFallbackNeedsProcessCoverage(task) {
+	if !runtimeTaskNeedsProcessCoverage(task) {
 		return false
 	}
 	mask := runtimeProcessFactMask(item.Content)

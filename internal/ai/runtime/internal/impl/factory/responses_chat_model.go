@@ -135,13 +135,13 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 		if strings.TrimSpace(structured.Name) == "" || !json.Valid(structured.JSONSchema) {
 			return nil, fmt.Errorf("responses structured output contract is invalid")
 		}
-		normalizedSchema, err := modelconfig.NormalizeResponsesJSONSchema(structured.JSONSchema)
+		preparedSchema, err := modelconfig.PrepareResponsesJSONSchema(structured.JSONSchema)
 		if err != nil {
 			return nil, err
 		}
 		body.Text = &responsesText{Format: responsesTextFormat{
 			Type: "json_schema", Name: structured.Name, Strict: structured.Strict,
-			Schema: normalizedSchema,
+			Schema: preparedSchema.Schema,
 		}}
 	}
 	if modelconfig.IsDeepSeekV4Model(m.config.ModelName) {

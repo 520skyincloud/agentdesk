@@ -16,30 +16,38 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 	if original == "" {
 		return
 	}
-	intent := collector.Data.Pipeline.Intent
-	scoped := limitCorrectionReplyToCurrentTurn(original, intent)
-	cleaned := removeStructuredResourceCommitMentions(scoped, intent)
-	cleaned = removeUnsupportedStaffActionMentions(cleaned, intent)
-	cleaned = normalizeReplyTextWhitespace(cleaned)
-	cleaned = normalizeIncompleteReplyEnding(cleaned)
+	cleaned, correctionScoped, actionCleaned := cleanGeneratedReplyText(original, collector.Data.Pipeline.Intent)
 	if cleaned == "" || cleaned == original {
 		return
 	}
 	summary.ReplyText = cleaned
 	collector.Data.Output.ReplyText = cleaned
 	collector.Data.Pipeline.Validate.Status = "passed"
-	if scoped != original {
+	if correctionScoped {
 		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 			collector.Data.Pipeline.Validate.Reason,
 			"correction reply was scoped to the current correction and did not continue an older topic",
 		)
 	}
-	if cleaned != scoped {
+	if actionCleaned {
 		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 			collector.Data.Pipeline.Validate.Reason,
 			"action ledger removed unsupported actions or normalized an incomplete reply ending",
 		)
 	}
+}
+
+func cleanGeneratedReplyText(original string, intent callbacks.IntentTraceData) (cleaned string, correctionScoped bool, actionCleaned bool) {
+	original = strings.TrimSpace(original)
+	if original == "" {
+		return "", false, false
+	}
+	scoped := limitCorrectionReplyToCurrentTurn(original, intent)
+	cleaned = removeStructuredResourceCommitMentions(scoped, intent)
+	cleaned = removeUnsupportedStaffActionMentions(cleaned, intent)
+	cleaned = normalizeReplyTextWhitespace(cleaned)
+	cleaned = normalizeIncompleteReplyEnding(cleaned)
+	return cleaned, scoped != original, cleaned != scoped
 }
 
 func limitCorrectionReplyToCurrentTurn(text string, intent callbacks.IntentTraceData) string {

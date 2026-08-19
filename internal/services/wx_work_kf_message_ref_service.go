@@ -2,8 +2,10 @@ package services
 
 import (
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/repositories"
+	"time"
 
 	"agent-desk/internal/pkg/httpx/params"
 
@@ -95,4 +97,29 @@ func (s *wxWorkKFMessageRefService) GetByWxMsgID(wxMsgID string) *models.WxWorkK
 
 func (s *wxWorkKFMessageRefService) GetByWxMsgIDInTenant(wxMsgID string, tenantID int64) *models.WxWorkKFMessageRef {
 	return repositories.WxWorkKFMessageRefRepository.GetByWxMsgIDInTenant(sqls.DB(), wxMsgID, tenantID)
+}
+
+func (s *wxWorkKFMessageRefService) ActiveOutboundReconciliationHold(tenantID, conversationID int64, now time.Time) (*time.Time, bool) {
+	if tenantID <= 0 || conversationID <= 0 {
+		return nil, false
+	}
+	ref := s.FindOne(sqls.NewCnd().
+		Eq("tenant_id", tenantID).
+		Eq("conversation_id", conversationID).
+		Eq("direction", string(enums.WxWorkKFMessageDirectionOut)).
+		Eq("send_status", string(enums.WxWorkKFMessageSendStatusPendingReconciliation)).
+		Desc("id"))
+	if ref == nil {
+		return nil, false
+	}
+	deadline := ref.CreatedAt.Add(wxWorkUnknownOutboundReconciliationHold)
+	if !now.Before(deadline) {
+		_ = s.UpdatesInTenant(ref.ID, tenantID, map[string]any{
+			"send_status": string(enums.WxWorkKFMessageSendStatusUnresolvedOutbound),
+			"fail_reason": "unknown_outbound_reconciliation_timeout",
+			"updated_at":  now,
+		})
+		return nil, false
+	}
+	return &deadline, true
 }

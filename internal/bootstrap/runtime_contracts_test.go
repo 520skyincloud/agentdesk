@@ -7,7 +7,11 @@ import (
 )
 
 func TestRuntimeContractSchemasValidateBeforeStartup(t *testing.T) {
-	if err := contracts.ValidateEmbeddedSchemas(); err != nil {
-		t.Fatalf("validate embedded AI runtime schemas: %v", err)
+	fingerprint, err := contracts.ValidateProductionRuntimeContracts()
+	if err != nil {
+		t.Fatalf("validate production AI runtime schemas: %v", err)
+	}
+	if fingerprint.ContractSet != contracts.RuntimeContractSetStableV2 || len(fingerprint.IntentSchemaHash) != 64 || len(fingerprint.ReplySchemaHash) != 64 {
+		t.Fatalf("unexpected production contract fingerprint: %+v", fingerprint)
 	}
 }

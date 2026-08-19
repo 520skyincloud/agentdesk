@@ -549,14 +549,20 @@ func (s *conversationTakeoverService) ResumeAI(conversationID int64, operator *d
 		if err != nil {
 			return err
 		}
-		if conversation.Status == enums.IMConversationStatusClosed || route.RouteStatus == enums.ConversationRouteStatusClosed {
+		decision := ConversationRuntimeModeService.ResolveDB(ctx.Tx, conversation, route)
+		if decision.Mode == enums.ConversationRuntimeModeClosed {
 			return errorsx.InvalidParam("会话已关闭")
 		}
 		if conversation.ServiceMode == enums.IMConversationServiceModeHumanOnly {
 			return errorsx.InvalidParam("仅人工服务会话不能交还AI")
 		}
-		if (route.RouteStatus == enums.ConversationRouteStatusAIServing || route.RouteStatus == enums.ConversationRouteStatusAIFallback) && conversation.CurrentAssigneeID == 0 {
+		if decision.AIReplyAllowed {
 			return nil
+		}
+		if decision.Mode != enums.ConversationRuntimeModeHumanActive &&
+			decision.Mode != enums.ConversationRuntimeModeHumanPending &&
+			decision.Mode != enums.ConversationRuntimeModeResumePending {
+			return errorsx.InvalidParam("当前会话状态不能交还AI")
 		}
 		isAssignee := conversation.Status == enums.IMConversationStatusActive && conversation.CurrentAssigneeID == operator.UserID &&
 			s.hasPermission(operator, constants.PermissionConversationSend.Code)
@@ -830,7 +836,13 @@ func (s *conversationTakeoverService) canManageTeamDB(operator *dto.AuthPrincipa
 }
 
 func (s *conversationTakeoverService) canResumeAIDB(db *gorm.DB, conversation *models.Conversation, route *models.ConversationRouteState, operator *dto.AuthPrincipal) bool {
-	if conversation == nil || route == nil || operator == nil || conversation.ServiceMode == enums.IMConversationServiceModeHumanOnly || !s.routeIsManual(route.RouteStatus) || !s.aiReplyEnabledDB(db, route, conversation.TenantID) {
+	if conversation == nil || route == nil || operator == nil || conversation.ServiceMode == enums.IMConversationServiceModeHumanOnly || !s.aiReplyEnabledDB(db, route, conversation.TenantID) {
+		return false
+	}
+	decision := ConversationRuntimeModeService.ResolveDB(db, conversation, route)
+	if decision.Mode != enums.ConversationRuntimeModeHumanActive &&
+		decision.Mode != enums.ConversationRuntimeModeHumanPending &&
+		decision.Mode != enums.ConversationRuntimeModeResumePending {
 		return false
 	}
 	return conversation.Status == enums.IMConversationStatusActive &&
@@ -877,17 +889,11 @@ func (s *conversationTakeoverService) directTakeoverRouteAllowed(conversation *m
 	if conversation == nil || route == nil {
 		return false
 	}
-	switch route.RouteStatus {
-	case enums.ConversationRouteStatusAIServing, enums.ConversationRouteStatusAIFallback:
-		return conversation.Status == enums.IMConversationStatusAIServing ||
-			conversation.Status == enums.IMConversationStatusPending
-	case enums.ConversationRouteStatusHQAgentDeskPending, enums.ConversationRouteStatusStoreWecomManual:
-		return route.NeedHumanFollowUp &&
-			(conversation.Status == enums.IMConversationStatusAIServing ||
-				conversation.Status == enums.IMConversationStatusPending)
-	default:
-		return false
+	decision := ConversationRuntimeModeService.ResolveDB(sqls.DB(), conversation, route)
+	if decision.Mode == enums.ConversationRuntimeModeAIActive || decision.Mode == enums.ConversationRuntimeModeAIDegraded {
+		return true
 	}
+	return decision.Mode == enums.ConversationRuntimeModeHumanPending && route.NeedHumanFollowUp
 }
 
 func (s *conversationTakeoverService) findPendingDB(db *gorm.DB, tenantID, conversationID int64, sessionNo int, forUpdate bool) *models.ConversationTakeoverRequest {

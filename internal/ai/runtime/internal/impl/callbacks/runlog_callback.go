@@ -35,6 +35,12 @@ func (c *RuntimeTraceCollector) SetTooling(staticToolCodes []string, dynamicTool
 	c.Data.Input.ToolSearchEnabled = toolSearchEnabled
 }
 
+func (c *RuntimeTraceCollector) SetContract(data RuntimeContractTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.Contract = data
+}
+
 func (c *RuntimeTraceCollector) SetInstructionSummary(summary InstructionTraceSummary) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

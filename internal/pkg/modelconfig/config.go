@@ -23,6 +23,8 @@ type Config struct {
 	TimeoutMS        int               `json:"-"`
 	MaxRetryCount    int               `json:"-"`
 	Temperature      float64           `json:"-"`
+	ProfileCode      string            `json:"-"`
+	ProfileRevision  int64             `json:"-"`
 	StructuredOutput *StructuredOutput `json:"-"`
 }
 
@@ -40,12 +42,13 @@ func (c Config) WithJSONSchema(name string, schema []byte) (Config, error) {
 	if name == "" {
 		return Config{}, fmt.Errorf("structured output name is required")
 	}
-	if !json.Valid(schema) {
-		return Config{}, fmt.Errorf("structured output JSON Schema is invalid")
+	prepared, err := PrepareResponsesJSONSchema(schema)
+	if err != nil {
+		return Config{}, fmt.Errorf("structured output JSON Schema is invalid: %w", err)
 	}
 	c.StructuredOutput = &StructuredOutput{
 		Name:       name,
-		JSONSchema: append(json.RawMessage(nil), schema...),
+		JSONSchema: append(json.RawMessage(nil), prepared.Schema...),
 		Strict:     true,
 	}
 	return c, nil

@@ -30,6 +30,13 @@ func buildRunMessagesStrict(ctx context.Context, req RunInput, summary *RunResul
 	if err := validateRuntimeFeatureModes(modes); err != nil {
 		return nil, err
 	}
+	contractTrace, err := buildRuntimeContractTrace(req, modes)
+	if err != nil {
+		return nil, fmt.Errorf("prepare stable-v2 runtime contract: %w", err)
+	}
+	if collector != nil {
+		collector.SetContract(contractTrace)
+	}
 	history := adapter.BuildHistoryMessages(req.Conversation.ID, req.UserMessage.ID, req.Conversation.TenantID, 0)
 	if summary != nil {
 		summary.HistoryMessageCount = len(history.Messages)

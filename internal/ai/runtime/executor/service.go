@@ -51,6 +51,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	summary.CheckPointID = checkPointID
 	messages, err := buildRunMessagesStrict(ctx, req, summary, collector, s.answerabilityGate)
 	if err != nil {
+		setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 		summary.Status = "error"
 		summary.ErrorMessage = err.Error()
 		collector.Data.Status = summary.Status
@@ -60,6 +61,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		return summary, err
 	}
 	if summary.SkipReply {
+		setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
@@ -80,6 +82,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
 		if err != nil {
+			setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 			summary.Status = "error"
 			summary.ErrorMessage = err.Error()
 			collector.Data.Status = summary.Status
@@ -88,6 +91,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 			summary.TraceData = collector.Marshal()
 			return summary, err
 		}
+		setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
@@ -100,6 +104,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		return summary, nil
 	}
 	if prepareHotelVariableDirectCommit(req, summary, collector) {
+		setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 		summary.Status = "completed"
 		summary.ModelName = req.ModelConfig.ModelName
 		collector.Data.Status = summary.Status
@@ -234,7 +239,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		}
 	}
 	if err != nil && summary.UseRuntimeV2Generate && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-		if applyControlledRuntimeReplyFallback(summary, collector, req, err) {
+		if applySafeRuntimeDegraded(summary, collector, req, err) {
 			err = completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, generateStartedAt)
 		}
 	}
@@ -252,6 +257,7 @@ func markRuntimePreparationError(summary *RunResult, collector *callbacks.Runtim
 		return nil, err
 	}
 	summary.Status = "error"
+	setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
 	summary.ErrorMessage = err.Error()
 	if collector != nil {
 		collector.Data.Status = summary.Status
@@ -287,6 +293,7 @@ func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *call
 		summary.RawReplyOutput = ""
 		summary.ReplyParts = nil
 		summary.ValidationResult = nil
+		summary.GenerationOutcome = ""
 		summary.ErrorMessage = ""
 		summary.Interrupted = false
 		summary.Interrupts = nil
@@ -470,6 +477,7 @@ func finishRuntimeGeneration(
 	if consumeErr := consumeAgentEvents(events, summary, collector, toolDefsByModelName); consumeErr != nil {
 		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorGenerationFailed, consumeErr)
 		summary.Status = "error"
+		setGenerationOutcome(summary, collector, GenerationOutcomeGenerationFailed)
 		summary.ErrorMessage = err.Error()
 		collector.Data.Status = summary.Status
 		collector.Data.Error.Message = summary.ErrorMessage
@@ -492,11 +500,19 @@ func finishRuntimeGeneration(
 			return markRuntimeGenerationError(summary, collector, startedAt, err)
 		}
 	} else {
-		enforceGeneratedReplyActionLedger(summary, collector)
+		if err := applyCustomerVisibleBoundary(summary, collector); err != nil {
+			return markRuntimeGenerationError(summary, collector, startedAt, err)
+		}
+	}
+	if summary.UseRuntimeV2Generate {
+		if err := applyCustomerVisibleBoundary(summary, collector); err != nil {
+			return markRuntimeGenerationError(summary, collector, startedAt, err)
+		}
 	}
 	if !summary.Interrupted && strings.TrimSpace(summary.ReplyText) == "" && !hasInvokedGraphTool(summary.InvokedToolCodes) {
 		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, fmt.Errorf("runtime produced no reply or action"))
 		summary.Status = "error"
+		setGenerationOutcome(summary, collector, GenerationOutcomeGenerationFailed)
 		summary.ErrorMessage = err.Error()
 		collector.Data.Status = summary.Status
 		collector.Data.Error.Message = summary.ErrorMessage
@@ -509,6 +525,13 @@ func finishRuntimeGeneration(
 	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
+	if summary.Interrupted {
+		setGenerationOutcome(summary, collector, GenerationOutcomeSkipped)
+	} else if collector.Data.Pipeline.Generate.InitialErrorCode != "" {
+		setGenerationOutcome(summary, collector, GenerationOutcomeRepaired)
+	} else {
+		setGenerationOutcome(summary, collector, GenerationOutcomeGenerated)
+	}
 	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
 		collector.Data.Output.FinishReason = summary.Status
 	}

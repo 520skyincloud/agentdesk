@@ -91,10 +91,11 @@ type InstructionTraceSummary struct {
 }
 
 type RuntimeTraceData struct {
-	Version   string         `json:"version"`
-	Status    string         `json:"status"`
-	RunID     string         `json:"runId,omitempty"`
-	Skill     SkillTraceData `json:"skill,omitempty"`
+	Version   string                   `json:"version"`
+	Status    string                   `json:"status"`
+	RunID     string                   `json:"runId,omitempty"`
+	Contract  RuntimeContractTraceData `json:"contract,omitempty"`
+	Skill     SkillTraceData           `json:"skill,omitempty"`
 	Interrupt struct {
 		CheckPointID string                  `json:"checkPointId,omitempty"`
 		Items        []InterruptTraceContext `json:"items,omitempty"`
@@ -166,14 +167,24 @@ type RuntimeTraceData struct {
 		Items []GraphToolTraceItem `json:"items,omitempty"`
 	} `json:"graphTools"`
 	Output struct {
-		ReplyText      string                   `json:"replyText,omitempty"`
-		FinishReason   string                   `json:"finishReason,omitempty"`
-		CommitMessages []CommitMessageTraceData `json:"commitMessages,omitempty"`
+		ReplyText         string                   `json:"replyText,omitempty"`
+		FinishReason      string                   `json:"finishReason,omitempty"`
+		GenerationOutcome string                   `json:"generationOutcome,omitempty"`
+		CommitMessages    []CommitMessageTraceData `json:"commitMessages,omitempty"`
 	} `json:"output"`
 	Error struct {
 		Message string `json:"message,omitempty"`
 		Stage   string `json:"stage,omitempty"`
 	} `json:"error"`
+}
+
+type RuntimeContractTraceData struct {
+	ContractSet      string `json:"contractSet,omitempty"`
+	IntentSchemaHash string `json:"intentSchemaHash,omitempty"`
+	ReplySchemaHash  string `json:"replySchemaHash,omitempty"`
+	PromptVersion    string `json:"promptVersion,omitempty"`
+	ModelProfile     string `json:"modelProfile,omitempty"`
+	RuntimeBuild     string `json:"runtimeBuild,omitempty"`
 }
 
 type NormalizeTraceData struct {

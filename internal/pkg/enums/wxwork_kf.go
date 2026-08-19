@@ -28,10 +28,12 @@ const (
 type WxWorkKFMessageSendStatus string
 
 const (
-	WxWorkKFMessageSendStatusReceived WxWorkKFMessageSendStatus = "received"
-	WxWorkKFMessageSendStatusSent     WxWorkKFMessageSendStatus = "sent"
-	WxWorkKFMessageSendStatusFailed   WxWorkKFMessageSendStatus = "failed"
-	WxWorkKFMessageSendStatusRecalled WxWorkKFMessageSendStatus = "recalled"
+	WxWorkKFMessageSendStatusReceived              WxWorkKFMessageSendStatus = "received"
+	WxWorkKFMessageSendStatusSent                  WxWorkKFMessageSendStatus = "sent"
+	WxWorkKFMessageSendStatusFailed                WxWorkKFMessageSendStatus = "failed"
+	WxWorkKFMessageSendStatusRecalled              WxWorkKFMessageSendStatus = "recalled"
+	WxWorkKFMessageSendStatusPendingReconciliation WxWorkKFMessageSendStatus = "pending_reconciliation"
+	WxWorkKFMessageSendStatusUnresolvedOutbound    WxWorkKFMessageSendStatus = "unresolved_outbound"
 )
 
 type WxWorkKFSessionStatus string
