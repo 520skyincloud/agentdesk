@@ -23,7 +23,7 @@ import (
 
 const (
 	runtimeKnowledgeTaskConcurrency        = 4
-	runtimeNormalCheckinKnowledgeQueryText = "我找不到酒店入口怎么走 登记入住后怎么开门刷脸"
+	runtimeNormalCheckinKnowledgeQueryText = "如何通过入住小程序完成入住登记 登记完成后怎么刷脸开门"
 )
 
 type runtimeTaskKnowledgeOutcome struct {
@@ -587,10 +587,15 @@ func normalizeRuntimeTaskKnowledgeQuery(plan callbacks.ReplyTaskPlanTraceData, t
 }
 
 func isNormalCheckinKnowledgeRequest(subIntent, text string) bool {
-	if !isCheckinProcessSubIntent(subIntent) || knowledgeTextHasExceptionContext(text) {
+	if !isCheckinProcessSubIntent(subIntent) || knowledgeTextHasExceptionContext(text) || runtimeTextRequestsEntranceRoute(text) {
 		return false
 	}
 	return runtimeTextHasCheckinContext(text)
+}
+
+func runtimeTextRequestsEntranceRoute(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	return containsAny(compact, []string{"入口", "怎么走", "怎么去", "怎么上楼", "大楼在哪", "电梯在哪", "路线"})
 }
 
 func runtimeTextHasCheckinContext(text string) bool {

@@ -120,7 +120,7 @@
           },
           "constraints": {
             "type": "array",
-            "maxItems": 8,
+            "maxItems": 12,
             "uniqueItems": true,
             "items": {
               "enum": [
@@ -131,7 +131,9 @@
                 "answer_current_correction_only",
                 "no_internal_terms",
                 "short_wechat_style",
-                "acknowledge_uncertainty"
+                "acknowledge_uncertainty",
+                "state_knowledge_boundary_only",
+                "do_not_ask_known_store_scope"
               ]
             }
           }

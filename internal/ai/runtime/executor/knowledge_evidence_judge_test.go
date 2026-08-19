@@ -33,8 +33,8 @@ func TestKnowledgeEvidenceJudgeSeparatesNormalFlowFromExceptionFAQ(t *testing.T)
 		Title:   "酒店入口路线",
 		Content: "从昭潭路停车场入口右手边大楼进入，大厅左转乘电梯。",
 	}
-	if knowledgeEvidenceMismatchesTask(normal, entryStep) {
-		t.Fatal("the configured hotel entrance and elevator step belongs to the normal check-in procedure")
+	if !knowledgeEvidenceMismatchesTask(normal, entryStep) {
+		t.Fatal("a normal check-in request must not consume an unasked entrance route")
 	}
 	doorStep := rag.RetrieveResult{
 		Title:   "怎么开门",
@@ -42,6 +42,11 @@ func TestKnowledgeEvidenceJudgeSeparatesNormalFlowFromExceptionFAQ(t *testing.T)
 	}
 	if knowledgeEvidenceMismatchesTask(normal, doorStep) {
 		t.Fatal("registration followed by face access belongs to the normal check-in procedure")
+	}
+
+	routeTask := runtimeTaskKnowledgeItem{Query: "酒店入口怎么走", SubIntent: "entrance_navigation"}
+	if knowledgeEvidenceMismatchesTask(routeTask, entryStep) {
+		t.Fatal("an explicit entrance question must retain the matching route")
 	}
 }
 

@@ -179,12 +179,16 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		req.ModelConfig.ModelName,
 		generateStartedAt,
 	)
+	if err != nil && summary.UseRuntimeV2Generate {
+		recordRuntimeGenerationFailure(collector, false, err)
+	}
 	if summary.UseRuntimeV2Generate {
 		var protocolErr *replyOutputProtocolError
 		if errors.As(err, &protocolErr) {
 			resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_output_v2_protocol_repair")
 			repairMessages, compileErr := compileRuntimeReplyOutputRepairMessages(ctx, summary, protocolErr)
 			if compileErr != nil {
+				recordRuntimeGenerationFailure(collector, true, compileErr)
 				err = markRuntimeGenerationError(summary, collector, generateStartedAt, compileErr)
 			} else {
 				err = finishRuntimeGeneration(
@@ -195,6 +199,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 					req.ModelConfig.ModelName,
 					time.Now(),
 				)
+				if err != nil {
+					recordRuntimeGenerationFailure(collector, true, err)
+				}
 				var repeatedProtocolErr *replyOutputProtocolError
 				if errors.As(err, &repeatedProtocolErr) {
 					err = markRuntimeGenerationError(
@@ -224,6 +231,11 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 				time.Now(),
 			)
 			collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
+		}
+	}
+	if err != nil && summary.UseRuntimeV2Generate && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+		if applyControlledRuntimeReplyFallback(summary, collector, req, err) {
+			err = completeRuntimeGeneration(summary, collector, req.ModelConfig.ModelName, generateStartedAt)
 		}
 	}
 	if err != nil {
@@ -291,6 +303,9 @@ func resetRuntimeGenerationForProtocolRepair(summary *RunResult, collector *call
 }
 
 func runtimeErrorStage(err error, fallback string) string {
+	if errors.Is(err, ErrRuntimeReplyPlanInvalid) {
+		return "reply_plan"
+	}
 	if errors.Is(err, contextcompiler.ErrMandatoryContextOverflow) ||
 		errors.Is(err, contextcompiler.ErrRequiredEvidenceOverflow) ||
 		errors.Is(err, contextcompiler.ErrInvalidContextLimit) ||
@@ -499,6 +514,13 @@ func finishRuntimeGeneration(
 	}
 	collector.Data.Pipeline.Generate.Status = summary.Status
 	if strings.TrimSpace(summary.ReplyText) != "" {
+		if summary.UseRuntimeV2Generate && collector.Data.Pipeline.Generate.Mode == "" {
+			if collector.Data.Pipeline.Generate.InitialErrorCode != "" {
+				collector.Data.Pipeline.Generate.Mode = "repaired"
+			} else {
+				collector.Data.Pipeline.Generate.Mode = "generated"
+			}
+		}
 		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
 			collector.Data.Pipeline.Generate.Reason = "model generated reply from staged prompt and layered context"
 		}

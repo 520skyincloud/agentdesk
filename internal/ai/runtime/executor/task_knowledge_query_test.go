@@ -94,6 +94,12 @@ func TestKnowledgeQueryUsesStableNormalCheckinProcedure(t *testing.T) {
 	if exception != "手机不能用怎么办入住 入住流程" {
 		t.Fatalf("exception checkin query must preserve the customer's failure context: %q", exception)
 	}
+	route := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
+		Intent: "hotel_info", SubIntent: "checkin_process", Text: "我到楼下了，入住入口怎么走",
+	})
+	if route == runtimeNormalCheckinKnowledgeQueryText || !strings.Contains(route, "入口怎么走") {
+		t.Fatalf("explicit entrance question must preserve route wording: %q", route)
+	}
 	foreignClause := runtimeTaskKnowledgeQuery(callbacks.ReplyTaskPlanTraceData{
 		Intent: "hotel_info", SubIntent: "checkin_process", Text: "停车场在哪里",
 	})

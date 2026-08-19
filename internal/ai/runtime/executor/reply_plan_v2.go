@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 )
+
+var ErrRuntimeReplyPlanInvalid = errors.New("runtime_reply_plan_invalid")
 
 func buildRuntimeReplyPlanV2(
 	turnVersion int,
@@ -140,34 +143,64 @@ func runtimeReplyPlanOutputMode(plan callbacks.ReplyTaskPlanTraceData) string {
 }
 
 func validateRuntimeReplyPlanContract(plan contracts.ReplyPlanV2, ledger contracts.ActionLedgerV1) error {
-	raw, err := json.Marshal(plan)
-	if err != nil {
-		return err
+	// ReplyPlan is built by trusted Go code, not returned by a model. Validate
+	// business invariants directly so an internal enum addition cannot take the
+	// whole reply chain down because a duplicated JSON Schema was not updated.
+	if plan.SchemaVersion != contracts.ReplyPlanV2SchemaVersion {
+		return invalidRuntimeReplyPlan("$.schemaVersion", "unexpected schema version")
 	}
-	if _, err := strictjson.DecodeObject[contracts.ReplyPlanV2](raw, strictjson.DecodeOptions{
-		MaxBytes: 64 * 1024, Schema: contracts.MustSchema(contracts.SchemaReplyPlanV2),
-	}); err != nil {
-		return err
+	if plan.TurnVersion <= 0 {
+		return invalidRuntimeReplyPlan("$.turnVersion", "turn version must be positive")
+	}
+	if len(plan.Tasks) > 12 {
+		return invalidRuntimeReplyPlan("$.tasks", "too many tasks")
+	}
+	if plan.GlobalConstraints.MaxReplyParts < 1 || plan.GlobalConstraints.MaxReplyParts > 3 {
+		return invalidRuntimeReplyPlan("$.globalConstraints.maxReplyParts", "value must be between 1 and 3")
+	}
+	if plan.GlobalConstraints.MaxQuestionsPerPart < 1 || plan.GlobalConstraints.MaxQuestionsPerPart > 4 {
+		return invalidRuntimeReplyPlan("$.globalConstraints.maxQuestionsPerPart", "value must be between 1 and 4")
 	}
 	actions := make(map[string]contracts.ActionLedgerItemV1, len(ledger.Actions))
 	for _, action := range ledger.Actions {
 		actions[action.ActionKey] = action
 	}
+	seenTaskKeys := make(map[string]struct{}, len(plan.Tasks))
 	for _, task := range plan.Tasks {
+		if strings.TrimSpace(task.TaskKey) == "" {
+			return invalidRuntimeReplyPlan("$.tasks.taskKey", "task key is required")
+		}
+		if _, exists := seenTaskKeys[task.TaskKey]; exists {
+			return invalidRuntimeReplyPlan("$.tasks.taskKey", "task key must be unique")
+		}
+		seenTaskKeys[task.TaskKey] = struct{}{}
+		if task.Sequence < 1 || task.Sequence > 12 {
+			return invalidRuntimeReplyPlan("$.tasks.sequence", "sequence must be between 1 and 12")
+		}
+		if strings.TrimSpace(task.Intent) == "" || strings.TrimSpace(task.Objective) == "" {
+			return invalidRuntimeReplyPlan("$.tasks", "intent and objective are required")
+		}
+		if len(task.Constraints) > 12 || len(task.EvidenceRefs) > 12 || len(task.ActionRefs) > 8 {
+			return invalidRuntimeReplyPlan("$.tasks", "task contract exceeds bounded list size")
+		}
 		if !plan.ShouldGenerate && task.OutputMode != "resource_only" && task.OutputMode != "handoff" && task.OutputMode != "skip" {
-			return &strictjson.ProtocolError{Code: strictjson.ErrorJSONBusinessInvariant, Path: "$.tasks", Message: "non-generating plan contains a text task"}
+			return invalidRuntimeReplyPlan("$.tasks", "non-generating plan contains a text task")
 		}
 		if task.Knowledge.Policy == "required" && task.Knowledge.Status == "has_context" && len(task.EvidenceRefs) == 0 {
-			return &strictjson.ProtocolError{Code: strictjson.ErrorJSONReferenceInvalid, Path: "$.tasks", Message: "knowledge task has no supporting evidence ref"}
+			return invalidRuntimeReplyPlan("$.tasks.evidenceRefs", "knowledge task has no supporting evidence ref")
 		}
 		for _, ref := range task.ActionRefs {
 			action, ok := actions[ref]
 			if !ok || action.TaskKey != task.TaskKey || (action.Status != "requested" && action.Status != "prepared") {
-				return &strictjson.ProtocolError{Code: strictjson.ErrorJSONReferenceInvalid, Path: "$.tasks.actionRefs", Message: "action ref is outside the current task plan"}
+				return invalidRuntimeReplyPlan("$.tasks.actionRefs", "action ref is outside the current task plan")
 			}
 		}
 	}
 	return nil
+}
+
+func invalidRuntimeReplyPlan(path, message string) error {
+	return fmt.Errorf("%w at %s: %s", ErrRuntimeReplyPlanInvalid, path, message)
 }
 
 func ensureRuntimeActionLedger(req RunInput, taskState runtimeTaskBatchState, plans []callbacks.ReplyTaskPlanTraceData, evidence *contracts.EvidenceBundleV1) (contracts.ActionLedgerV1, error) {

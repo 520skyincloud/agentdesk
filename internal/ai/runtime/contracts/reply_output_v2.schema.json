@@ -17,7 +17,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["taskKeys", "content", "evidenceRefs", "actionRefs"],
+        "required": ["taskKeys", "content"],
         "properties": {
           "taskKeys": {
             "type": "array",

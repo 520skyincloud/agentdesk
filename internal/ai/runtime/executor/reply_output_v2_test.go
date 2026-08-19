@@ -3,8 +3,10 @@ package executor
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/runtime/contracts"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/modelconfig"
@@ -65,7 +67,7 @@ func assertRuntimeStructuredOutput(t *testing.T, config modelconfig.Config, name
 }
 
 func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
-	valid := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"酒店提供免费停车。","evidenceRefs":["K1"],"actionRefs":[]}]}`
+	valid := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"酒店提供免费停车。"}]}`
 	if parsed, err := parseRuntimeReplyOutputV2(valid); err != nil || len(parsed.Parts) != 1 {
 		t.Fatalf("parse valid reply output=%+v err=%v", parsed, err)
 	}
@@ -79,6 +81,31 @@ func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
 				t.Fatalf("parseRuntimeReplyOutputV2(%s) error=nil", name)
 			}
 		})
+	}
+}
+
+func TestCompleteRuntimeGenerationPreservesControlledFallbackTrace(t *testing.T) {
+	summary := &RunResult{
+		Status: "fallback", ReplyText: "请先在小程序登记，登记后刷脸开门。",
+		ReplyParts: []contracts.ReplyPartV2{{TaskKeys: []string{"checkin"}, Content: "请先在小程序登记，登记后刷脸开门。"}},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Generate.Status = "fallback"
+	collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
+	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+	collector.Data.Pipeline.Generate.InitialErrorCode = "json_root_not_object"
+	collector.Data.Pipeline.Generate.RepairErrorCode = "missing_required_task"
+	collector.Data.Pipeline.Validate.Status = "passed"
+	collector.Data.Pipeline.Validate.Reason = "controlled fallback passed deterministic validation"
+	if err := completeRuntimeGeneration(summary, collector, "test-model", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Status != "completed" || collector.Data.Pipeline.Generate.Status != "fallback" ||
+		collector.Data.Pipeline.Generate.Mode != "controlled_fallback" || collector.Data.Output.FinishReason != "controlled_fallback" {
+		t.Fatalf("fallback trace was overwritten: summary=%#v generate=%#v finish=%q", summary, collector.Data.Pipeline.Generate, collector.Data.Output.FinishReason)
+	}
+	if collector.Data.Pipeline.Generate.InitialErrorCode == "" || collector.Data.Pipeline.Generate.RepairErrorCode == "" {
+		t.Fatalf("fallback failure evidence was lost: %#v", collector.Data.Pipeline.Generate)
 	}
 }
 

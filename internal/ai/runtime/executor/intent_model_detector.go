@@ -1292,6 +1292,12 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		if task.Intent == "hotel_info" {
 			task.NeedsKnowledge = true
 		}
+		if task.Intent == "interaction" {
+			// The model may copy a knowledge flag from nearby business context.
+			// Interaction tasks start as text-only; the conditional knowledge
+			// router can promote a concrete, unresolved service question later.
+			task.NeedsKnowledge = false
+		}
 		if task.Intent == "hotel_variable" {
 			task.NeedsResource = true
 			_, task.ResourceAction = normalizeHotelVariableResourceAction(task.ResourceAction, "", task.SubIntent)

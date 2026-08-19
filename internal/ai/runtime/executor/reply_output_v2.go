@@ -81,14 +81,21 @@ func (s *Service) executeRuntimeV2DirectGeneration(
 	}
 
 	err = generate(messages)
+	if err != nil {
+		recordRuntimeGenerationFailure(collector, false, err)
+	}
 	var protocolErr *replyOutputProtocolError
 	if errors.As(err, &protocolErr) {
 		resetRuntimeGenerationForProtocolRepair(summary, collector, "reply_output_v2_protocol_repair")
 		repairMessages, compileErr := compileRuntimeReplyOutputRepairMessages(ctx, summary, protocolErr)
 		if compileErr != nil {
 			err = compileErr
+			recordRuntimeGenerationFailure(collector, true, err)
 		} else {
 			err = generate(repairMessages)
+			if err != nil {
+				recordRuntimeGenerationFailure(collector, true, err)
+			}
 		}
 	}
 	if err != nil {
@@ -107,6 +114,9 @@ func finishRuntimeV2GenerationFailure(
 	err error,
 ) error {
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(startedAt).Milliseconds()
+	if collector.Data.Pipeline.Generate.InitialErrorCode == "" {
+		recordRuntimeGenerationFailure(collector, false, err)
+	}
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		collector.Data.Pipeline.Generate.Status = "cancelled"
 		collector.Data.Pipeline.Generate.Reason = "superseded runtime generation cancelled"
@@ -330,7 +340,10 @@ func applyControlledRuntimeReplyFallback(summary *RunResult, collector *callback
 	summary.Status = "fallback"
 	summary.ErrorMessage = ""
 	collector.Data.Status = "fallback"
+	collector.Data.Error.Message = ""
+	collector.Data.Error.Stage = ""
 	collector.Data.Pipeline.Generate.Status = "fallback"
+	collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
 	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
 	collector.Data.Pipeline.Validate.Status = "passed"
 	collector.Data.Pipeline.Validate.Reason = "controlled fallback passed deterministic validation"
@@ -366,6 +379,11 @@ func buildControlledRuntimeFallbackParts(plan contracts.ReplyPlanV2, evidence co
 }
 
 func controlledRuntimeTaskFallbackText(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) string {
+	if runtimeFallbackNeedsProcessCoverage(task) {
+		if content := controlledRuntimeProcessFallbackText(task, evidence); content != "" {
+			return content
+		}
+	}
 	for _, item := range evidence.Items {
 		if !stringInSlice(item.Ref, task.EvidenceRefs) || strings.TrimSpace(item.Content) == "" {
 			continue
@@ -395,14 +413,132 @@ func controlledRuntimeTaskFallbackText(task contracts.ReplyPlanTaskV2, evidence 
 	return "收到，您可以再具体说一下需要了解什么。"
 }
 
-func conciseRuntimeEvidenceSnippet(content string, task contracts.ReplyPlanTaskV2) string {
+func controlledRuntimeProcessFallbackText(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) string {
+	items := make([]contracts.EvidenceItemV1, 0, len(task.EvidenceRefs))
+	hasAuthoritativeCheckinFact := false
+	for _, sourceType := range []string{"store_fact", "fastgpt"} {
+		for _, item := range evidence.Items {
+			if item.SourceType != sourceType || !stringInSlice(item.Ref, task.EvidenceRefs) || strings.TrimSpace(item.Content) == "" {
+				continue
+			}
+			items = append(items, item)
+			if item.SourceType == "store_fact" {
+				facts := runtimeProcessFactMask(item.Content)
+				if facts&runtimeProcessFactRegistration != 0 && facts&runtimeProcessFactAccess != 0 {
+					hasAuthoritativeCheckinFact = true
+				}
+			}
+		}
+	}
+	segments := make([]string, 0, 6)
+	seen := make(map[string]struct{})
+	coveredProcessFacts := uint8(0)
+	for _, item := range items {
+		content := cleanRuntimeEvidenceAnswer(item.Content)
+		for _, segment := range splitRuntimeEvidenceSegments(content) {
+			key := compactRuntimeProtocolText(segment)
+			if key == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			facts := runtimeProcessFactMask(segment)
+			if isCheckinProcessSubIntent(task.SubIntent) && facts == runtimeProcessFactRoute && !runtimeTaskRequestsRoute(task) {
+				continue
+			}
+			if facts != 0 && facts&^coveredProcessFacts == 0 {
+				continue
+			}
+			seen[key] = struct{}{}
+			coveredProcessFacts |= facts
+			segments = append(segments, segment)
+			if len(segments) >= 6 {
+				break
+			}
+		}
+		if len(segments) >= 6 {
+			break
+		}
+	}
+	if len(segments) == 0 {
+		return ""
+	}
+	if isCheckinProcessSubIntent(task.SubIntent) && hasAuthoritativeCheckinFact && coveredProcessFacts&runtimeProcessFactRegistration != 0 && coveredProcessFacts&runtimeProcessFactAccess != 0 {
+		ret := "我们这边是无人值守自助入住，没有传统前台和房卡。请先在下面的入住小程序按提示完成入住登记，登记成功后到店直接刷脸开门，不需要密码。"
+		if runtimeTaskRequestsRoute(task) {
+			for _, segment := range segments {
+				if runtimeProcessFactMask(segment)&runtimeProcessFactRoute != 0 {
+					ret += segment + "。"
+					break
+				}
+			}
+		}
+		return boundedEvidenceText(ret, 600)
+	}
+	return boundedEvidenceText(strings.Join(segments, "。")+"。", 600)
+}
+
+func cleanRuntimeEvidenceAnswer(content string) string {
 	content = strings.TrimSpace(strings.NewReplacer("\r", "\n", "\t", " ").Replace(content))
+	if index := strings.LastIndex(content, "答案："); index >= 0 {
+		content = strings.TrimSpace(content[index+len("答案："):])
+	} else if index := strings.LastIndex(content, "答案:"); index >= 0 {
+		content = strings.TrimSpace(content[index+len("答案:"):])
+	}
+	return strings.TrimLeft(content, "-#*• ")
+}
+
+func splitRuntimeEvidenceSegments(content string) []string {
+	raw := strings.FieldsFunc(content, func(r rune) bool {
+		return r == '。' || r == '！' || r == '!' || r == '\n'
+	})
+	ret := make([]string, 0, len(raw))
+	for _, segment := range raw {
+		segment = strings.TrimSpace(strings.TrimLeft(segment, "-#*•0123456789.、 "))
+		if segment == "" || strings.HasSuffix(segment, "？") || strings.HasSuffix(segment, "?") {
+			continue
+		}
+		ret = append(ret, segment)
+	}
+	return ret
+}
+
+func runtimeProcessFactMask(text string) uint8 {
+	compact := compactRuntimeProtocolText(text)
+	var mask uint8
+	if containsAny(compact, []string{"小程序", "登记", "实名", "证件", "订单", "入住信息"}) {
+		mask |= runtimeProcessFactRegistration
+	}
+	if containsAny(compact, []string{"刷脸", "开门", "门禁", "房卡", "密码"}) {
+		mask |= runtimeProcessFactAccess
+	}
+	if containsAny(compact, []string{"入口", "大楼", "大厅", "电梯", "楼层", "停车场"}) {
+		mask |= runtimeProcessFactRoute
+	}
+	return mask
+}
+
+const (
+	runtimeProcessFactRegistration uint8 = 1 << iota
+	runtimeProcessFactAccess
+	runtimeProcessFactRoute
+)
+
+func runtimeTaskRequestsRoute(task contracts.ReplyPlanTaskV2) bool {
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	if containsAny(subIntent, []string{"entrance", "navigation", "route", "address", "location"}) {
+		return true
+	}
+	return runtimeTextRequestsEntranceRoute(task.Objective)
+}
+
+func conciseRuntimeEvidenceSnippet(content string, task contracts.ReplyPlanTaskV2) string {
+	content = cleanRuntimeEvidenceAnswer(content)
 	if content == "" {
 		return ""
 	}
-	segments := strings.FieldsFunc(content, func(r rune) bool {
-		return r == '。' || r == '！' || r == '!' || r == '\n'
-	})
+	segments := splitRuntimeEvidenceSegments(content)
 	maxSegments := 2
 	maxRunes := 260
 	if runtimeFallbackNeedsProcessCoverage(task) {
@@ -411,10 +547,6 @@ func conciseRuntimeEvidenceSnippet(content string, task contracts.ReplyPlanTaskV
 	}
 	selected := make([]string, 0, maxSegments)
 	for _, segment := range segments {
-		segment = strings.TrimSpace(strings.TrimLeft(segment, "-#*•0123456789.、 "))
-		if segment == "" || strings.HasSuffix(segment, "？") || strings.HasSuffix(segment, "?") {
-			continue
-		}
 		selected = append(selected, segment)
 		if len(selected) == maxSegments {
 			break
@@ -456,6 +588,41 @@ func validationResultReason(result contracts.ValidationResultV1) string {
 		return strings.TrimSpace(result.Status)
 	}
 	return strings.Join(uniqueTrimmedStrings(codes), ",")
+}
+
+func recordRuntimeGenerationFailure(collector *callbacks.RuntimeTraceCollector, repair bool, err error) {
+	if collector == nil || err == nil {
+		return
+	}
+	code := runtimeGenerationFailureCode(collector, err)
+	if repair {
+		if collector.Data.Pipeline.Generate.RepairErrorCode == "" {
+			collector.Data.Pipeline.Generate.RepairErrorCode = code
+		}
+		return
+	}
+	if collector.Data.Pipeline.Generate.InitialErrorCode == "" {
+		collector.Data.Pipeline.Generate.InitialErrorCode = code
+	}
+}
+
+func runtimeGenerationFailureCode(collector *callbacks.RuntimeTraceCollector, err error) string {
+	var protocolErr *replyOutputProtocolError
+	if errors.As(err, &protocolErr) && strings.TrimSpace(protocolErr.Reason) != "" {
+		return strings.TrimSpace(protocolErr.Reason)
+	}
+	if code, ok := strictjson.CodeOf(err); ok {
+		return code
+	}
+	if collector != nil {
+		if reason := strings.TrimSpace(collector.Data.Pipeline.Validate.Reason); reason != "" && reason != "pending" {
+			return boundedEvidenceText(reason, 160)
+		}
+	}
+	if code, ok := svc.AIReplyExecutionErrorCodeOf(err); ok {
+		return string(code)
+	}
+	return "generation_failed"
 }
 
 func joinValidatedReplyParts(parts []contracts.ReplyPartV2) string {
@@ -503,14 +670,30 @@ func completeRuntimeGeneration(summary *RunResult, collector *callbacks.RuntimeT
 		err := svc.NewAIReplyExecutionError(svc.AIReplyExecutionErrorEmptyOutput, fmt.Errorf("runtime produced no reply or action"))
 		return markRuntimeGenerationError(summary, collector, startedAt, err)
 	}
-	if summary.Status == "started" || summary.Status == "fallback" {
+	fallback := summary.Status == "fallback" || collector.Data.Pipeline.Generate.Mode == "controlled_fallback"
+	if summary.Status == "started" || fallback {
 		summary.Status = "completed"
 	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
+	if fallback {
+		collector.Data.Output.FinishReason = "controlled_fallback"
+		collector.Data.Pipeline.Generate.Status = "fallback"
+		collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
+		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
+			collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
+		}
+		return nil
+	}
 	collector.Data.Output.FinishReason = summary.Status
 	collector.Data.Pipeline.Generate.Status = summary.Status
-	collector.Data.Pipeline.Generate.Reason = "reply_output.v2 generated and validated"
+	if collector.Data.Pipeline.Generate.InitialErrorCode != "" {
+		collector.Data.Pipeline.Generate.Mode = "repaired"
+		collector.Data.Pipeline.Generate.Reason = "reply_output.v2 repaired and validated"
+	} else {
+		collector.Data.Pipeline.Generate.Mode = "generated"
+		collector.Data.Pipeline.Generate.Reason = "reply_output.v2 generated and validated"
+	}
 	if strings.TrimSpace(collector.Data.Pipeline.Validate.Status) == "" {
 		collector.Data.Pipeline.Validate.Status = "passed"
 		collector.Data.Pipeline.Validate.Reason = "reply_output.v2 passed deterministic validation"

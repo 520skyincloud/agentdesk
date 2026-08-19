@@ -287,6 +287,7 @@ func buildCompiledGenerationInstruction(ctx context.Context, req RunInput, histo
 	parts := []string{
 		generationGuardInstruction(ctx),
 		plan.Prompt,
+		buildRuntimeAnswerBriefInstruction(plan.ReplyPlanV2, plan.Evidence),
 		buildAutoHandoffDisabledInstruction(req, plan.Intent),
 		buildDisabledActionInstruction(),
 	}

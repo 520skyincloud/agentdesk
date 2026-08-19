@@ -29,6 +29,9 @@ func selectRequiredEvidence(bundle *contracts.EvidenceBundleV1, taskKeys []strin
 	}
 	candidates := append([]contracts.EvidenceItemV1(nil), bundle.Items...)
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].SourceType != candidates[j].SourceType {
+			return evidenceSourceRank(candidates[i].SourceType) > evidenceSourceRank(candidates[j].SourceType)
+		}
 		if candidates[i].Answerability != candidates[j].Answerability {
 			return evidenceAnswerabilityRank(candidates[i].Answerability) > evidenceAnswerabilityRank(candidates[j].Answerability)
 		}
@@ -75,6 +78,9 @@ func optionalEvidenceItems(bundle *contracts.EvidenceBundleV1, selected []contra
 		ret = append(ret, item)
 	}
 	sort.SliceStable(ret, func(i, j int) bool {
+		if ret[i].SourceType != ret[j].SourceType {
+			return evidenceSourceRank(ret[i].SourceType) > evidenceSourceRank(ret[j].SourceType)
+		}
 		if ret[i].Answerability != ret[j].Answerability {
 			return evidenceAnswerabilityRank(ret[i].Answerability) > evidenceAnswerabilityRank(ret[j].Answerability)
 		}
@@ -84,9 +90,13 @@ func optionalEvidenceItems(bundle *contracts.EvidenceBundleV1, selected []contra
 }
 
 func projectEvidence(bundle *contracts.EvidenceBundleV1, items []contracts.EvidenceItemV1) contracts.EvidenceBundleV1 {
+	projectedItems := append([]contracts.EvidenceItemV1(nil), items...)
+	for index := range projectedItems {
+		projectedItems[index].Content = cleanEvidenceContentForModel(projectedItems[index].Content)
+	}
 	projected := contracts.EvidenceBundleV1{
 		SchemaVersion:   contracts.EvidenceBundleV1SchemaVersion,
-		RetrievalStatus: "not_needed", Items: append([]contracts.EvidenceItemV1(nil), items...), Resources: []contracts.EvidenceResourceV1{},
+		RetrievalStatus: "not_needed", Items: projectedItems, Resources: []contracts.EvidenceResourceV1{},
 	}
 	if bundle == nil {
 		return projected
@@ -137,6 +147,30 @@ func evidenceAnswerabilityRank(value string) int {
 	default:
 		return 0
 	}
+}
+
+func evidenceSourceRank(value string) int {
+	switch value {
+	case "store_fact":
+		return 3
+	case "tool_result":
+		return 2
+	case "fastgpt":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func cleanEvidenceContentForModel(content string) string {
+	content = strings.TrimSpace(strings.NewReplacer("\r", "\n", "\t", " ").Replace(content))
+	if index := strings.LastIndex(content, "答案："); index >= 0 {
+		return strings.TrimSpace(content[index+len("答案："):])
+	}
+	if index := strings.LastIndex(content, "答案:"); index >= 0 {
+		return strings.TrimSpace(content[index+len("答案:"):])
+	}
+	return content
 }
 
 func containsString(items []string, value string) bool {

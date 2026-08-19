@@ -90,9 +90,11 @@ func knowledgeEvidenceMismatchesTask(item runtimeTaskKnowledgeItem, result rag.R
 	if knowledgeEvidenceIsExceptionSpecific(result) && !knowledgeTextHasExceptionContext(query) {
 		return true
 	}
-	// 正常入住是一个多步骤程序：入口/电梯路线与登记后刷脸开门可能来自
-	// 两条独立知识。它们不一定都在标题里写“入住”，但只要满足下面的
-	// 确定性程序证据，就属于同一入住 Task，不能被通用主题交集误删。
+	// 正常入住只保留登记和开门步骤。入口/电梯属于独立路线问题；客户
+	// 没有询问路线时不能因为知识库相似度较高而混进入住流程。
+	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceIsEntranceOnly(candidate) {
+		return true
+	}
 	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceSupportsNormalCheckinStep(candidate) {
 		return false
 	}
@@ -122,10 +124,18 @@ func isNormalCheckinKnowledgeItem(item runtimeTaskKnowledgeItem) bool {
 
 func knowledgeEvidenceSupportsNormalCheckinStep(text string) bool {
 	compact := compactRuntimeProtocolText(text)
-	entryStep := containsAny(compact, []string{"酒店入口", "门店入口", "大楼入口", "入口位置"}) && strings.Contains(compact, "电梯")
 	doorStep := containsAny(compact, []string{"入住登记", "登记入住", "完成登记", "办理入住"}) &&
 		strings.Contains(compact, "刷脸") && strings.Contains(compact, "开门")
-	return entryStep || doorStep
+	registrationStep := strings.Contains(compact, "小程序") &&
+		containsAny(compact, []string{"登记", "实名", "住客信息", "订单信息", "办理入住"})
+	return doorStep || registrationStep
+}
+
+func knowledgeEvidenceIsEntranceOnly(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	entry := containsAny(compact, []string{"酒店入口", "门店入口", "大楼入口", "入口位置"}) &&
+		containsAny(compact, []string{"电梯", "大楼", "大厅", "停车场"})
+	return entry && !knowledgeEvidenceSupportsNormalCheckinStep(text)
 }
 
 func knowledgeEvidenceIsExceptionSpecific(result rag.RetrieveResult) bool {

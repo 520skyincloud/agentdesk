@@ -335,11 +335,14 @@ type ToolKnowledgeTraceData struct {
 }
 
 type GenerateTraceData struct {
-	Policy     string                   `json:"policy,omitempty"`
-	Status     string                   `json:"status,omitempty"`
-	Reason     string                   `json:"reason,omitempty"`
-	LatencyMs  int64                    `json:"latencyMs,omitempty"`
-	TagContext ReplyTagContextTraceData `json:"tagContext,omitempty"`
+	Policy           string                   `json:"policy,omitempty"`
+	Status           string                   `json:"status,omitempty"`
+	Mode             string                   `json:"mode,omitempty"`
+	Reason           string                   `json:"reason,omitempty"`
+	InitialErrorCode string                   `json:"initialErrorCode,omitempty"`
+	RepairErrorCode  string                   `json:"repairErrorCode,omitempty"`
+	LatencyMs        int64                    `json:"latencyMs,omitempty"`
+	TagContext       ReplyTagContextTraceData `json:"tagContext,omitempty"`
 }
 
 type ReplyTagContextTraceData struct {

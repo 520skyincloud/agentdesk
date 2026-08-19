@@ -2033,6 +2033,26 @@ func TestConditionalKnowledgeTasksUseFormalPersistedRetrieval(t *testing.T) {
 	}
 }
 
+func TestConditionalKnowledgeSkipsPureSocialInteraction(t *testing.T) {
+	for _, text := range []string{"在？", "你好", "谢谢", "啥玩意"} {
+		t.Run(text, func(t *testing.T) {
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true, NeedsClarification: true, NeedsKnowledge: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: text, NeedsKnowledge: true,
+				}},
+			}
+			normalized := normalizeModelIntentTrace(intent, RunInput{
+				UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: text},
+			}, adapter.HistoryBuildResult{}, nil)
+			marked := markConditionalKnowledgeTasksForFormalRetrieval(normalized, text)
+			if marked.NeedsKnowledge || marked.IntentTasks[0].NeedsKnowledge {
+				t.Fatalf("pure interaction must not become a knowledge task: %#v", marked)
+			}
+		})
+	}
+}
+
 func seedRuntimeIntentModelCallFixture(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	now := time.Now()

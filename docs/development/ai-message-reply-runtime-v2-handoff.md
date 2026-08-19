@@ -473,3 +473,33 @@ Credential/API Key 无需改变。
 影响边界仍为 V2 executor；没有数据库结构、公开 API、WebSocket、企微协议、模型供应商、Token/Usage 或计费变化。与
 `codex/customer-audit`、`codex/ai-billing` 当前改动无同文件冲突。针对性回归和 `go test -tags dev ./internal/ai/runtime/executor -count=1`
 均通过。
+
+### 8.11 2026-08-19 回复生成简化与入住事实边界修复
+
+生产会话 `t_conversation.id=3` 的失败链路确认：Intent 和 FastGPT 均能成功返回，主要断点是 Generate 输出协议过重、协议修复后
+仍可能失败，以及受控兜底只摘第一条知识证据。另有 ReplyPlan 内部新增约束未同步 JSON Schema，导致可信 Go 对象被重复 Schema
+校验拒绝，错误还被误记为 Intent 失败。此次按“模型组织语言，服务器守住事实、任务覆盖和发送资格”的边界简化 V2 运行链路：
+
+- `reply_output.v2` 仅要求模型返回 `taskKeys + content`；Evidence/Action 引用由服务器按 taskKey 自动绑定，未知 taskKey 和事实越界
+  仍由现有 Validator 严格拒绝。没有增加第二次知识查询或第二个模型校验。
+- ReplyPlan 由可信 Go 代码构建，运行时改为校验任务唯一性、数量、输出模式关系、知识引用和 Action 归属等业务不变量；JSON Schema
+  保留为构建期契约测试，内部约束新增不再让整条生产链路因重复枚举漏同步而停止。
+- Generate Prompt 新增通用 AnswerBrief，将 `store_fact` 和流程必要证据标为必答、其他命中标为补充；模型继续负责客户可读的自然语言，
+  不直接复制 FAQ 的“问题/答案”包装，也不把所有检索片段整串发给客户。
+- 正常入住只检索“小程序登记 + 登记后刷脸开门”；入口、停车场、电梯和楼层仅在客户明确询问路线时进入当前 Task。受控兜底只有在
+  当前 Task 存在同时覆盖登记与开门的 `store_fact` 时，才可回答无人值守、无传统前台/房卡、入住小程序和刷脸开门；没有门店权威
+  事实时只组合真实检索步骤，禁止补写门店制度。
+- 纯社交消息会清除模型从历史业务上下文误带的 `NeedsKnowledge`，不会因“在？、你好、谢谢、啥玩意”等再次检索旧酒店知识；未解决的
+  具体服务问题仍走条件知识链。
+- Generate 首次失败、协议修复失败和 controlled fallback 分别写入结构化 Trace；fallback 不再伪装成普通模型成功，便于直接判断链路
+  停在生成、修复还是确定性兜底。
+
+本次没有 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、Token/Usage、计费或前端变化。高风险同文件区域仍是
+`internal/ai/runtime/executor`；`origin/codex/ai-billing` 在 Intent/知识上下文附近存在并行修改，建议本提交独立 review/cherry-pick，
+合并前重新检查同文件语义，不覆盖其计费相关改动。已通过：
+
+```bash
+go test -tags dev ./internal/ai/runtime/contextcompiler ./internal/ai/runtime/executor -count=1
+go test -tags dev ./internal/services -run 'AIReplyJob|AIReplyTurn|TaskLedger|Runtime|Outbox' -count=1
+git diff --check
+```
