@@ -439,6 +439,48 @@ func TestAIReplyTaskLedgerGenerationRecoveryOnlyClaimsUncommittedTask(t *testing
 	}
 }
 
+func TestAIReplyTaskLedgerUnknownTechnicalFailureKeepsUncommittedTaskRetryable(t *testing.T) {
+	fixture := setupAIReplyTaskLedgerJobFixture(t, []enums.AIReplyTurnTaskType{
+		enums.AIReplyTurnTaskTypeKnowledge,
+		enums.AIReplyTurnTaskTypeKnowledge,
+	})
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		call := int(runtimeCalls.Add(1))
+		result, err := commitPartialGenerationTaskLedgerBatch(fixture, call)
+		if call == 1 {
+			return result, errors.New("transient runtime transport failure")
+		}
+		return result, err
+	})
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "turn_tasks_remaining" || runtimeCalls.Load() != 1 {
+		t.Fatalf("retry job=%+v runtimeCalls=%d", current, runtimeCalls.Load())
+	}
+	stored := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
+	if len(stored) != 2 || stored[0].Status != enums.AIReplyTurnTaskStatusDelivered ||
+		stored[1].Status == enums.AIReplyTurnTaskStatusFailed {
+		t.Fatalf("technical failure terminalized unfinished task: %+v", stored)
+	}
+	firstMessageID := stored[0].CommittedMessageID
+
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored = repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(fixture.db, fixture.turn.TenantID, fixture.turn.ID)
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 2 ||
+		len(stored) != 2 || stored[0].CommittedMessageID != firstMessageID || stored[1].Status != enums.AIReplyTurnTaskStatusDelivered {
+		t.Fatalf("recovery job=%+v tasks=%+v runtimeCalls=%d", current, stored, runtimeCalls.Load())
+	}
+}
+
 func TestAIReplyJobPersistsCoveredByTaskEvidence(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "有咖啡吗")
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {

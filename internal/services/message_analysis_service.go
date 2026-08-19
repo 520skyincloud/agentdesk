@@ -12,6 +12,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/repositories"
@@ -44,12 +45,19 @@ func (s *messageAnalysisService) ContentFingerprint(message *models.Message) str
 	if message == nil {
 		return ""
 	}
+	return messageAnalysisFingerprintForPayload(message, messageAnalysisSourcePayload(message.Payload))
+}
+
+func messageAnalysisFingerprintForPayload(message *models.Message, payload string) string {
+	if message == nil {
+		return ""
+	}
 	h := sha256.New()
 	_, _ = h.Write([]byte(string(message.MessageType)))
 	_, _ = h.Write([]byte{'\n'})
 	_, _ = h.Write([]byte(message.Content))
 	_, _ = h.Write([]byte{'\n'})
-	_, _ = h.Write([]byte(messageAnalysisSourcePayload(message.Payload)))
+	_, _ = h.Write([]byte(payload))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -88,6 +96,182 @@ func messageAnalysisSourcePayload(raw string) string {
 	return string(canonical)
 }
 
+// sourceMatches accepts the current source fingerprint and the exact payload
+// encodings used by the preceding media implementations. The 2026-08-15
+// WxWork encoding is reconstructed with its original struct field order, so
+// compatibility never becomes a broad hash bypass.
+func (s *messageAnalysisService) sourceMatches(item *models.MessageAnalysis, message *models.Message) bool {
+	if item == nil || message == nil || strings.TrimSpace(item.ContentFingerprint) == "" {
+		return false
+	}
+	if item.ContentFingerprint == s.ContentFingerprint(message) {
+		return true
+	}
+	if !isMediaMessageAnalyzer(item.AnalyzerKind) {
+		return false
+	}
+	if item.ContentFingerprint == messageAnalysisFingerprintForPayload(message, message.Payload) {
+		return true
+	}
+	legacyPayload, ok := reconstructLegacyWxWorkMediaSourcePayload(message)
+	return ok && item.ContentFingerprint == messageAnalysisFingerprintForPayload(message, legacyPayload)
+}
+
+func (s *messageAnalysisService) exactLegacyMediaSourceMatches(item *models.MessageAnalysis, message *models.Message) bool {
+	if item == nil || message == nil || !isMediaMessageAnalyzer(item.AnalyzerKind) {
+		return false
+	}
+	legacyPayload, ok := reconstructLegacyWxWorkMediaSourcePayload(message)
+	return ok && item.ContentFingerprint == messageAnalysisFingerprintForPayload(message, legacyPayload)
+}
+
+func isMediaMessageAnalyzer(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "vision", "asr", "file_parser":
+		return true
+	default:
+		return false
+	}
+}
+
+type legacyWxWorkMediaSourcePayload struct {
+	AssetID    string                         `json:"assetId"`
+	Provider   enums.AssetProvider            `json:"provider"`
+	StorageKey string                         `json:"storageKey"`
+	Filename   string                         `json:"filename"`
+	FileSize   int64                          `json:"fileSize"`
+	MimeType   string                         `json:"mimeType"`
+	URL        string                         `json:"url,omitempty"`
+	WxMedia    request.WxProtocolMediaPayload `json:"wxMedia"`
+}
+
+func reconstructLegacyWxWorkMediaSourcePayload(message *models.Message) (string, bool) {
+	if message == nil || message.TenantID <= 0 {
+		return "", false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(message.Payload)), &payload); err != nil {
+		return "", false
+	}
+	wxMedia, ok := payload["wxMedia"].(map[string]any)
+	assetID, _ := payload["assetId"].(string)
+	assetID = strings.TrimSpace(assetID)
+	if !ok || len(wxMedia) == 0 || assetID == "" {
+		return "", false
+	}
+	asset := repositories.AssetRepository.GetByAssetIDInTenant(sqls.DB(), assetID, message.TenantID)
+	if asset == nil {
+		return "", false
+	}
+	url, _ := payload["url"].(string)
+	media := request.WxProtocolMediaPayload{}
+	fillMediaPayloadFromMap(&media, wxMedia)
+	if fileMD5, ok := wxMedia["file_md5"]; ok {
+		media.FileMD5 = strings.TrimSpace(fmt.Sprint(fileMD5))
+	}
+	if isHD, ok := wxMedia["is_hd"].(bool); ok {
+		media.IsHD = isHD
+	}
+	legacy := legacyWxWorkMediaSourcePayload{
+		AssetID: asset.AssetID, Provider: asset.Provider, StorageKey: asset.StorageKey,
+		Filename: asset.Filename, FileSize: asset.FileSize, MimeType: asset.MimeType, URL: strings.TrimSpace(url),
+		WxMedia: media,
+	}
+	raw, err := json.Marshal(legacy)
+	return string(raw), err == nil
+}
+
+func (s *messageAnalysisService) migrateLegacyReadyMediaFingerprint(message *models.Message, item *models.MessageAnalysis) (*models.MessageAnalysis, bool, error) {
+	if message == nil || item == nil || enums.NormalizeMessageAnalysisStatus(item.AnalysisStatus) != enums.MessageAnalysisStatusReady || !isMediaMessageAnalyzer(item.AnalyzerKind) {
+		return item, false, nil
+	}
+	var migrated *models.MessageAnalysis
+	matched := false
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		locked, err := repositories.MessageAnalysisRepository.GetForUpdateInTenant(ctx.Tx, item.ID, item.TenantID)
+		if err != nil || locked == nil {
+			return err
+		}
+		latestMessage, err := repositories.MessageRepository.GetForUpdateInTenant(ctx.Tx, locked.MessageID, locked.TenantID)
+		if err != nil || latestMessage == nil {
+			return err
+		}
+		newFingerprint := s.ContentFingerprint(latestMessage)
+		if locked.ContentFingerprint == newFingerprint {
+			migrated = locked
+			matched = true
+			return nil
+		}
+		if !s.exactLegacyMediaSourceMatches(locked, latestMessage) {
+			return nil
+		}
+		raw, schemaVersion, ok, err := rebindReadyMediaAnalysisJSON(locked, latestMessage, newFingerprint)
+		if err != nil || !ok {
+			return err
+		}
+		updatedAt := time.Now().UTC()
+		updated, err := repositories.MessageAnalysisRepository.CASRebindReadyFingerprint(
+			ctx.Tx, locked.ID, locked.TenantID, locked.SourceRevision,
+			locked.ContentFingerprint, locked.AnalysisJSON, newFingerprint, raw, schemaVersion, updatedAt,
+		)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return fmt.Errorf("message analysis fingerprint changed concurrently")
+		}
+		locked.ContentFingerprint = newFingerprint
+		locked.AnalysisJSON = raw
+		locked.SchemaVersion = schemaVersion
+		locked.UpdatedAt = updatedAt
+		locked.UpdateUserName = "message_analysis_fingerprint_migration"
+		migrated = locked
+		matched = true
+		return nil
+	})
+	return migrated, matched, err
+}
+
+func rebindReadyMediaAnalysisJSON(item *models.MessageAnalysis, message *models.Message, newFingerprint string) (string, string, bool, error) {
+	if item == nil || message == nil || strings.TrimSpace(item.AnalysisJSON) == "" || newFingerprint == "" {
+		return "", "", false, nil
+	}
+	analyzedAt := time.Now().UTC()
+	if item.AnalyzedAt != nil {
+		analyzedAt = item.AnalyzedAt.UTC()
+	}
+	if strings.Contains(item.AnalysisJSON, contracts.MessageAnalysisV2SchemaVersion) {
+		parsed, err := strictjson.DecodeObject[contracts.MessageAnalysisV2]([]byte(item.AnalysisJSON), strictjson.DecodeOptions{
+			MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV2),
+		})
+		if err != nil {
+			return "", "", false, err
+		}
+		if parsed.MessageID != message.ID || parsed.SourceRevision != item.SourceRevision || parsed.ContentFingerprint != item.ContentFingerprint ||
+			parsed.Status != messageAnalysisStatusReady || strings.TrimSpace(parsed.NormalizedText) == "" ||
+			parsed.Analyzer.Kind != item.AnalyzerKind || parsed.Analyzer.Name != item.AnalyzerName || parsed.Analyzer.Version != item.AnalyzerVersion {
+			return "", "", false, nil
+		}
+		parsed.ContentFingerprint = newFingerprint
+		raw, err := encodeReadyMessageAnalysisV2(parsed, analyzedAt)
+		return string(raw), contracts.MessageAnalysisV2SchemaVersion, err == nil, err
+	}
+	parsed, err := strictjson.DecodeObject[contracts.MessageAnalysisV1]([]byte(item.AnalysisJSON), strictjson.DecodeOptions{
+		MaxBytes: 32 * 1024, Schema: contracts.MustSchema(contracts.SchemaMessageAnalysisV1),
+	})
+	if err != nil {
+		return "", "", false, err
+	}
+	if parsed.MessageID != message.ID || parsed.SourceRevision != item.SourceRevision || parsed.ContentFingerprint != item.ContentFingerprint ||
+		parsed.Status != messageAnalysisStatusReady || parsed.Result == nil || strings.TrimSpace(parsed.Result.NormalizedText) == "" ||
+		parsed.Analyzer.Kind != item.AnalyzerKind || parsed.Analyzer.Name != item.AnalyzerName || parsed.Analyzer.Version != item.AnalyzerVersion {
+		return "", "", false, nil
+	}
+	parsed.ContentFingerprint = newFingerprint
+	raw, err := encodeReadyMessageAnalysis(parsed, analyzedAt)
+	return string(raw), contracts.MessageAnalysisV1SchemaVersion, err == nil, err
+}
+
 func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRevision int, analyzer MessageAnalyzerIdentity) (*models.MessageAnalysis, error) {
 	if message == nil || message.ID <= 0 || message.TenantID <= 0 || sourceRevision <= 0 {
 		return nil, fmt.Errorf("message analysis scope is invalid")
@@ -95,39 +279,85 @@ func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRe
 	analyzer = MessageAnalyzerIdentity{
 		Kind: strings.TrimSpace(analyzer.Kind), Name: strings.TrimSpace(analyzer.Name), Version: strings.TrimSpace(analyzer.Version),
 	}
-	fingerprint := s.ContentFingerprint(message)
-	now := time.Now()
-	// 生产死锁修复（Error 1213）：MarkStale 的 UPDATE 与并发 INSERT 在唯一
-	// 索引上互取间隙锁。stale 标记是幂等副词操作，移出插入事务，失败仅告警。
-	if err := repositories.MessageAnalysisRepository.MarkStaleByMessageInTenant(sqls.DB(), message.TenantID, message.ID, fingerprint, now); err != nil {
-		slog.Warn("message analysis mark stale failed", "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
-	}
-	var item *models.MessageAnalysis
-	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		item = repositories.MessageAnalysisRepository.GetByRevisionInTenant(ctx.Tx, message.TenantID, message.ID, sourceRevision)
-		if item != nil {
-			if item.ContentFingerprint == fingerprint && item.AnalyzerKind == analyzer.Kind && item.AnalyzerName == analyzer.Name && item.AnalyzerVersion == analyzer.Version {
-				return nil
-			}
-			return fmt.Errorf("message analysis revision %d already belongs to another source", sourceRevision)
+	for attempt := 0; attempt < 4; attempt++ {
+		if persisted := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID); persisted != nil {
+			message = persisted
 		}
-		item = &models.MessageAnalysis{
-			TenantID: message.TenantID, MessageID: message.ID, SourceRevision: sourceRevision,
+		fingerprint := s.ContentFingerprint(message)
+		existing := repositories.MessageAnalysisRepository.GetLatestInTenant(sqls.DB(), message.TenantID, message.ID)
+		if existing != nil && existing.AnalyzerKind == analyzer.Kind && existing.AnalyzerName == analyzer.Name && existing.AnalyzerVersion == analyzer.Version &&
+			enums.NormalizeMessageAnalysisStatus(existing.AnalysisStatus) != enums.MessageAnalysisStatusStale {
+			if existing.ContentFingerprint == fingerprint {
+				if s.ContentFingerprint(repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)) == fingerprint {
+					return existing, nil
+				}
+				continue
+			}
+			if s.sourceMatches(existing, message) {
+				if enums.NormalizeMessageAnalysisStatus(existing.AnalysisStatus) != enums.MessageAnalysisStatusReady {
+					if s.ContentFingerprint(repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)) == fingerprint {
+						return existing, nil
+					}
+					continue
+				}
+				migrated, matched, err := s.migrateLegacyReadyMediaFingerprint(message, existing)
+				if err == nil && matched {
+					return migrated, nil
+				}
+				if err != nil {
+					slog.Warn("legacy ready message analysis cannot be migrated; creating a new revision",
+						"analysis_id", existing.ID, "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
+				}
+			}
+		}
+
+		targetRevision := sourceRevision
+		if existing != nil && existing.SourceRevision >= targetRevision {
+			targetRevision = existing.SourceRevision + 1
+		}
+		confirmed := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
+		if confirmed != nil && s.ContentFingerprint(confirmed) != fingerprint {
+			continue
+		}
+		now := time.Now()
+		candidate := &models.MessageAnalysis{
+			TenantID: message.TenantID, MessageID: message.ID, SourceRevision: targetRevision,
 			ContentFingerprint: fingerprint, AnalysisStatus: messageAnalysisStatusPending,
 			SchemaVersion: messageAnalysisSchemaVersion(analyzer.Kind),
 			AnalyzerKind:  analyzer.Kind, AnalyzerName: analyzer.Name, AnalyzerVersion: analyzer.Version,
 			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now, CreateUserName: "message_analysis", UpdateUserName: "message_analysis"},
 		}
-		created, err := repositories.MessageAnalysisRepository.CreateIfAbsent(ctx.Tx, item)
+		created, err := repositories.MessageAnalysisRepository.CreateIfAbsent(sqls.DB(), candidate)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if !created {
-			item = repositories.MessageAnalysisRepository.GetByRevisionInTenant(ctx.Tx, message.TenantID, message.ID, sourceRevision)
+		if created {
+			latestMessage := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
+			if latestMessage == nil || s.ContentFingerprint(latestMessage) == fingerprint {
+				return candidate, nil
+			}
+			_, staleErr := repositories.MessageAnalysisRepository.CASStatusInTenant(
+				sqls.DB(), candidate.ID, candidate.TenantID, []string{messageAnalysisStatusPending}, map[string]any{
+					"analysis_status": messageAnalysisStatusStale, "updated_at": time.Now(), "update_user_name": "message_analysis_source_stale",
+				},
+			)
+			if staleErr != nil {
+				return nil, staleErr
+			}
+			continue
 		}
-		return nil
-	})
-	return item, err
+		concurrent := repositories.MessageAnalysisRepository.GetByRevisionInTenant(
+			sqls.DB(), message.TenantID, message.ID, targetRevision,
+		)
+		if concurrent != nil && concurrent.AnalyzerKind == analyzer.Kind && concurrent.AnalyzerName == analyzer.Name &&
+			concurrent.AnalyzerVersion == analyzer.Version && enums.NormalizeMessageAnalysisStatus(concurrent.AnalysisStatus) != enums.MessageAnalysisStatusStale &&
+			s.sourceMatches(concurrent, message) {
+			if s.ContentFingerprint(repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)) == fingerprint {
+				return concurrent, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("message analysis revision allocation did not converge")
 }
 
 func messageAnalysisSchemaVersion(analyzerKind string) string {
@@ -276,9 +506,11 @@ func (s *messageAnalysisService) CommitClaimedMediaReady(id, tenantID int64, own
 		if item.AnalysisStatus != messageAnalysisStatusProcessing || strings.TrimSpace(item.ClaimedBy) != owner {
 			return fmt.Errorf("message analysis claim is no longer owned")
 		}
-		if item.ContentFingerprint != s.ContentFingerprint(message) {
+		if !s.sourceMatches(item, message) {
 			return fmt.Errorf("message analysis evidence no longer matches source")
 		}
+		item.ContentFingerprint = s.ContentFingerprint(message)
+		item.SchemaVersion = contracts.MessageAnalysisV2SchemaVersion
 
 		analyzedAt := time.Now().UTC()
 		analysis := mediaReadyAnalysisV2(item, message, normalizedText)
@@ -297,7 +529,9 @@ func (s *messageAnalysisService) CommitClaimedMediaReady(id, tenantID int64, own
 		}); err != nil {
 			return err
 		}
-		updated, err := repositories.MessageAnalysisRepository.CASCompleteReady(ctx.Tx, item.ID, tenantID, owner, string(raw), analyzedAt)
+		updated, err := repositories.MessageAnalysisRepository.CASCompleteReady(
+			ctx.Tx, item.ID, tenantID, owner, string(raw), item.ContentFingerprint, item.SchemaVersion, analyzedAt,
+		)
 		if err != nil {
 			return err
 		}
@@ -330,6 +564,21 @@ func mediaReadyAnalysisV2(item *models.MessageAnalysis, message *models.Message,
 		Observations: []contracts.ObservationV2Item{},
 		Error:        nil,
 	}
+}
+
+func (s *messageAnalysisService) MarkClaimedMediaStale(id, tenantID int64, owner string) error {
+	owner = strings.TrimSpace(owner)
+	if id <= 0 || tenantID <= 0 || owner == "" {
+		return fmt.Errorf("claimed media analysis stale transition is invalid")
+	}
+	updated, err := repositories.MessageAnalysisRepository.CASMarkClaimedStale(sqls.DB(), id, tenantID, owner, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("message analysis claim is no longer owned")
+	}
+	return nil
 }
 
 // CommitClaimedMediaFailure is the failure-side CAS companion. A stale worker
@@ -455,8 +704,18 @@ func (s *messageAnalysisService) ReadyForMessage(message *models.Message) (*cont
 		return nil, nil
 	}
 	item := repositories.MessageAnalysisRepository.GetLatestInTenant(sqls.DB(), message.TenantID, message.ID)
-	if item == nil || item.AnalysisStatus != messageAnalysisStatusReady || item.ContentFingerprint != s.ContentFingerprint(message) || strings.TrimSpace(item.AnalysisJSON) == "" {
+	if item == nil || item.AnalysisStatus != messageAnalysisStatusReady || strings.TrimSpace(item.AnalysisJSON) == "" {
 		return nil, nil
+	}
+	if item.ContentFingerprint != s.ContentFingerprint(message) {
+		migrated, matched, err := s.migrateLegacyReadyMediaFingerprint(message, item)
+		if err != nil {
+			return nil, err
+		}
+		if !matched || migrated == nil {
+			return nil, nil
+		}
+		item = migrated
 	}
 	var decoded contracts.MessageAnalysisV1
 	var decodedV2 *contracts.MessageAnalysisV2

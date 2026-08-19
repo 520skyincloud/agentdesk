@@ -215,6 +215,12 @@ func (s *mediaUnderstandingService) executeClaimedAnalysis(ctx context.Context, 
 	if message == nil || message.SenderType != enums.IMSenderTypeCustomer || !isUnderstandableMessageType(message.MessageType) {
 		return s.failClaimedAnalysis(item, owner, fmt.Errorf("media analysis source is invalid"), false, true)
 	}
+	if !MessageAnalysisService.sourceMatches(item, message) {
+		if err := MessageAnalysisService.MarkClaimedMediaStale(item.ID, item.TenantID, owner); err != nil {
+			return err
+		}
+		return fmt.Errorf("media analysis source changed before execution")
+	}
 	payload, err := parseMessageMediaPayload(message.Payload)
 	if err != nil {
 		return s.failClaimedAnalysis(item, owner, fmt.Errorf("媒体 payload 解析失败: %w", err), false, true)

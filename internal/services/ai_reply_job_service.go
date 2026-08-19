@@ -442,7 +442,11 @@ func (s *aiReplyJobService) ProcessMessageNow(messageID int64) (*models.AIReplyJ
 	if err != nil || !claimed {
 		return repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID), err
 	}
-	s.processClaimed(job, owner)
+	current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID)
+	if current == nil {
+		return nil, fmt.Errorf("claimed AI reply job disappeared")
+	}
+	s.processClaimed(current, owner)
 	return repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID), nil
 }
 
@@ -768,7 +772,7 @@ func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, 
 		switch result.Status {
 		case AIReplyExecutionStatusCompleted:
 			if err := s.validateCompletionEvidence(job, result); err != nil {
-				s.dispatchControlledFailure(job, owner, string(AIReplyExecutionErrorCommitFailed), now)
+				s.retryOrDispatch(job, owner, string(AIReplyExecutionErrorCommitFailed), now)
 				return
 			}
 			s.markTerminal(job, owner, enums.AIReplyJobStatusCompleted, controlledResultCode(result.ReasonCode, "runtime_completed"), "", now)
@@ -828,9 +832,10 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 		retryLimit = aiReplyJobRetryAttemptLimit(classifyTaskFailure(runErr))
 	}
 	if hasActiveTasks && !hasFailureHandoff {
-		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr)
+		failureClass := classifyTaskFailure(runErr)
+		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr) ||
+			!failureClassAllowsHumanHandoff(failureClass)
 		if runErr != nil && (!retryable || attemptCount >= retryLimit) {
-			failureClass := classifyTaskFailure(runErr)
 			if failureClassAllowsHumanHandoff(failureClass) {
 				if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 					if len(result.TaskKeys) > 0 {
@@ -846,7 +851,8 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				}
 				hasFailureHandoff = AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 			} else {
-				// 契约 22.16：技术失败走 Task 技术终态，不进入 handoff_pending。
+				// 防御性兜底：技术失败始终保留为可恢复 Task，不进入
+				// handoff_pending，也不能因为一次未知错误永久封死。
 				if err := s.markUnfinishedTasksTechnicalFailure(job, result.TaskKeys, failureClass, now); err != nil {
 					return false
 				}
@@ -1008,6 +1014,13 @@ func aiReplyJobPersistentTechnicalRetry(job *models.AIReplyJob) bool {
 			return false
 		}
 	}
+	// 服务停机或队列拥塞可能让文本 Job 在首次领取前超过旧的 15 分钟窗口。
+	// 只要它从未执行过，就至少运行一次；更新消息、人工回复和 Turn 终态仍由
+	// inspectFreshness/inspectExecutionState 精确拦截。媒体 Job 则以上面的
+	// Analysis 权威状态为准。
+	if job.AttemptCount == 1 {
+		return true
+	}
 	if strings.TrimSpace(job.LastErrorClass) == "" {
 		return false
 	}
@@ -1113,8 +1126,8 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 	s.markTerminal(current, owner, enums.AIReplyJobStatusFailed, "retry_exhausted_human_dispatch", errorClass, now)
 }
 
-// markUnfinishedTasksTechnicalFailure 把未完成 Task 逐个标记为技术终态
-// failed（FailureClass=technical），不创建 handoff_pending。
+// markUnfinishedTasksTechnicalFailure 把未完成 Task 逐个释放为技术退避状态，
+// 不创建 handoff_pending，也不把可恢复问题写成永久 failed。
 func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIReplyJob, taskKeys []string, failureClass string, now time.Time) error {
 	selected := make(map[string]struct{}, len(taskKeys))
 	for _, taskKey := range taskKeys {
@@ -1140,7 +1153,7 @@ func (s *aiReplyJobService) markUnfinishedTasksTechnicalFailure(job *models.AIRe
 		}
 		if err := AIReplyTurnTaskService.MarkTechnicalFailureDB(sqls.DB(), &models.AIReplyTurn{
 			ID: job.TurnID, TenantID: job.TenantID, ConversationID: job.ConversationID, SessionNo: job.SessionNo,
-		}, task.TaskKey, failureClass, 1, now); err != nil {
+		}, task.TaskKey, failureClass, int(^uint(0)>>1), now); err != nil {
 			return err
 		}
 	}

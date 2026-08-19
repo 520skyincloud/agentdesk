@@ -661,9 +661,13 @@ func TestAIReplyJobProtocolFailureRemainsRecoverable(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) {
+func TestAIReplyJobCompletedWithoutDurableEvidenceRetriesThenSucceeds(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		if runtimeCalls.Add(1) == 2 {
+			return createAIReplyJobTestCompletion(fixture.db, fixture.conversation, fixture.message)
+		}
 		return AIReplyExecutionResult{Status: AIReplyExecutionStatusCompleted, ReasonCode: "runtime_completed"}, nil
 	})
 	var dispatchCalls atomic.Int32
@@ -676,10 +680,17 @@ func TestAIReplyJobCompletedWithoutDurableEvidenceDispatchesHuman(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 契约 22.16：commit_failed 属技术失败，不触发人工派单。
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" || dispatchCalls.Load() != 0 {
-		t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "runtime_retry" ||
+		current.LastErrorClass != "commit_failed" || current.NextRetryAt == nil || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		t.Fatalf("retry job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 2 || dispatchCalls.Load() != 0 {
+		t.Fatalf("recovered job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 
@@ -769,9 +780,9 @@ func TestAIReplyJobRejectsInvalidTurnHashCompletionEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-				current.ResultCode != "technical_failure_no_handoff" || current.LastErrorClass != "commit_failed" ||
-				dispatchCalls.Load() != 0 {
+			if current == nil || current.Status != enums.AIReplyJobStatusRetry ||
+				current.ResultCode != "runtime_retry" || current.LastErrorClass != "commit_failed" ||
+				current.NextRetryAt == nil || dispatchCalls.Load() != 0 {
 				t.Fatalf("job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
 			}
 		})
@@ -840,8 +851,13 @@ func TestAIReplyJobAgentMessageStopsAI(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobExpiryStaysTechnical(t *testing.T) {
+func TestAIReplyJobExpiredBeforeFirstAttemptStillExecutes(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "还在吗")
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(_ context.Context, conversation models.Conversation, message models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return createAIReplyJobTestCompletion(fixture.db, &conversation, &message)
+	})
 	var dispatchCalls atomic.Int32
 	fixture.service.humanDispatch = func(*aiReplyJobExecutionState, *models.AIReplyJob, string) error {
 		dispatchCalls.Add(1)
@@ -852,12 +868,12 @@ func TestAIReplyJobExpiryStaysTechnical(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
-	if err != nil {
-		t.Fatal(err)
+	if claimed := fixture.service.ProcessDue(1); claimed != 1 {
+		t.Fatalf("claimed jobs=%d want 1", claimed)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusExpired || current.ResultCode != "expired_technical_terminal" || dispatchCalls.Load() != 0 {
-		t.Fatalf("expired job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	current := waitForAIReplyJobStatus(t, fixture.db, fixture.job, enums.AIReplyJobStatusCompleted)
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		t.Fatalf("job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 

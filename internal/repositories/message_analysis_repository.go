@@ -150,23 +150,73 @@ func (r *messageAnalysisRepository) RenewLease(db *gorm.DB, id, tenantID int64, 
 }
 
 // CASCompleteReady 原子完成：processing -> ready + AnalysisJSON + analyzedAt。
-func (r *messageAnalysisRepository) CASCompleteReady(db *gorm.DB, id, tenantID int64, owner string, analysisJSON string, now time.Time) (bool, error) {
+func (r *messageAnalysisRepository) CASCompleteReady(
+	db *gorm.DB,
+	id, tenantID int64,
+	owner, analysisJSON, contentFingerprint, schemaVersion string,
+	now time.Time,
+) (bool, error) {
 	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
 		return false, nil
 	}
 	result := db.Model(&models.MessageAnalysis{}).
 		Where("id = ? AND tenant_id = ? AND claimed_by = ? AND analysis_status = ?", id, tenantID, owner, "processing").
 		Updates(map[string]any{
-			"analysis_status":  "ready",
-			"analysis_json":    analysisJSON,
-			"error_code":       "",
-			"last_error_class": "",
+			"analysis_status":     "ready",
+			"analysis_json":       analysisJSON,
+			"content_fingerprint": contentFingerprint,
+			"schema_version":      schemaVersion,
+			"error_code":          "",
+			"last_error_class":    "",
+			"claimed_by":          "",
+			"lease_expires_at":    nil,
+			"next_retry_at":       nil,
+			"analyzed_at":         now,
+			"updated_at":          now,
+			"update_user_name":    "message_analysis_ready",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *messageAnalysisRepository) CASRebindReadyFingerprint(
+	db *gorm.DB,
+	id, tenantID int64,
+	sourceRevision int,
+	oldFingerprint, oldAnalysisJSON, newFingerprint, analysisJSON, schemaVersion string,
+	now time.Time,
+) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || sourceRevision <= 0 || oldFingerprint == "" ||
+		oldAnalysisJSON == "" || newFingerprint == "" || analysisJSON == "" {
+		return false, nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where(
+			"id = ? AND tenant_id = ? AND source_revision = ? AND analysis_status = ? AND content_fingerprint = ? AND analysis_json = ?",
+			id, tenantID, sourceRevision, "ready", oldFingerprint, oldAnalysisJSON,
+		).
+		Updates(map[string]any{
+			"content_fingerprint": newFingerprint,
+			"analysis_json":       analysisJSON,
+			"schema_version":      schemaVersion,
+			"updated_at":          now,
+			"update_user_name":    "message_analysis_fingerprint_migration",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *messageAnalysisRepository) CASMarkClaimedStale(db *gorm.DB, id, tenantID int64, owner string, now time.Time) (bool, error) {
+	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
+		return false, nil
+	}
+	result := db.Model(&models.MessageAnalysis{}).
+		Where("id = ? AND tenant_id = ? AND analysis_status = ? AND claimed_by = ?", id, tenantID, "processing", owner).
+		Updates(map[string]any{
+			"analysis_status":  "stale",
 			"claimed_by":       "",
 			"lease_expires_at": nil,
 			"next_retry_at":    nil,
-			"analyzed_at":      now,
 			"updated_at":       now,
-			"update_user_name": "message_analysis_ready",
+			"update_user_name": "message_analysis_source_stale",
 		})
 	return result.RowsAffected == 1, result.Error
 }

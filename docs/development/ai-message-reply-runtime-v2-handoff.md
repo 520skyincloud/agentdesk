@@ -680,3 +680,36 @@ git diff --check
 ```
 
 回滚边界为本次提交及对应不可变 release；没有数据库结构变更，切回上一 release 并重启 `agentdesk.service` 即可。
+
+### 8.18 2026-08-19 历史媒体指纹迁移与技术失败持续恢复
+
+`135d745` 首次部署后，历史语音 Analysis `1-5` 被 cron 重新领取，但提交时持续报
+`message analysis evidence no longer matches source`，因此已先切回 `6646f7b`。生产 MySQL row binlog 证明，
+这些行的旧指纹来自 2026-08-15 版 `imMessageAssetPayload` 与 `WxProtocolMediaPayload` 的 struct 字段顺序及
+`omitempty` 输出；当前 Payload 已被媒体理解投影重写，而新算法又只对来源字段做 canonical JSON，旧、新指纹
+因此都正确但不能直接相等。
+
+- 兼容层只重建可验证的历史企微媒体 Payload：顶层资产字段、空 URL 省略和完整 WxWork 媒体字段均沿用历史
+  struct 顺序。只有旧指纹与重建结果精确相等时才认定同源，不做全表盲迁移或宽松哈希绕过。
+- 历史 `pending/processing` 行若 Message 已持久化 `understood + mediaText`，直接复用该结果完成 V2 Analysis，
+  同一事务写入新指纹、V2 Schema、AnalysisJSON 和 Payload，不再次调用 ASR/视觉模型。
+- 历史 `ready` 行严格校验 MessageID、revision、旧指纹、状态和截断后的 normalizedText，再原子同步更新
+  `content_fingerprint` 与 AnalysisJSON 内 `contentFingerprint`；原识别文本、置信度、观察项和时间保留。
+- 真正媒体来源变化会在任何模型调用前按 claim owner CAS 为 `stale`，清除 claim/lease/retry 时间；cron 不会
+  再次领取，也不会改写新来源的 Message.Payload。
+- 完成结果缺少持久证据时，`commit_failed` 改走持久重试，不再立即技术终态。超过旧排队窗口但尚未执行的
+  Job 至少运行一次；未知技术错误只释放未完成 Task 进入退避重试，已 delivered/committed 的 sibling 保持不变。
+
+本次没有 model/migration、DTO/enum、HTTP API、WebSocket、企微协议字段、模型供应商、Token/Usage、计费或
+前端变化。`origin/codex/customer-audit` 无同文件修改；`origin/codex/ai-billing` 仅与
+`media_understanding_service.go` 存在历史重叠，后续必须按语义 cherry-pick，不能整文件覆盖。验证通过：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/contextcompiler ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/repositories ./internal/services/cronx -count=1
+go test ./internal/services -run 'Test(AIReplyJob|AIReplyTaskLedger|AIReplyTurnCommittedDuplicateHasNoRunnableTask|AIReplyTurnCommittedOutboxSurvivesIndependentTurnAdvance|AIReplyTurnCorrectionSupersedesOnlyReferencedTask|WxWorkProtocolFinalDispatchCheck|MessageAnalysis|Legacy|ClaimedMedia|TransientMedia|EmptyMedia|MediaReplyJob|VisionPrompt|VoiceTranscriptionRetry)' -count=1
+go build ./cmd/server
+git diff --check
+```
+
+回滚边界仍是代码与不可变 release；无数据库结构变化。切回上一 release 并重启 `agentdesk.service` 即可，
+已经迁移为新指纹的 ready 行仍与新旧消息 Payload 兼容，无需数据回滚。
