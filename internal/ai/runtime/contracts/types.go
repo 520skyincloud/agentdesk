@@ -123,6 +123,11 @@ type IntentTaskV2 struct {
 	Text        string  `json:"text"`
 	RequestMode string  `json:"requestMode"`
 	Confidence  float64 `json:"confidence"`
+	// SourceRefs binds this semantic task to the current turn envelope. The first
+	// ref is the primary utterance; later refs are context consumed by the same
+	// task. SourceMessageIDs is resolved locally and never enters the model JSON.
+	SourceRefs       []string `json:"sourceRefs,omitempty"`
+	SourceMessageIDs []int64  `json:"-"`
 }
 
 type ReplyPlanV2 struct {

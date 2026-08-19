@@ -226,18 +226,20 @@ type IntentTraceData struct {
 }
 
 type IntentTaskTraceData struct {
-	Sequence        int     `json:"sequence,omitempty"`
-	Intent          string  `json:"intent,omitempty"`
-	SubIntent       string  `json:"subIntent,omitempty"`
-	Text            string  `json:"text,omitempty"`
-	RequestMode     string  `json:"requestMode,omitempty"`
-	Confidence      float64 `json:"confidence,omitempty"`
-	NeedsKnowledge  bool    `json:"needsKnowledge,omitempty"`
-	NeedsResource   bool    `json:"needsResource,omitempty"`
-	NeedsTool       bool    `json:"needsTool,omitempty"`
-	NeedsHumanRoute bool    `json:"needsHumanRoute,omitempty"`
-	ResourceAction  string  `json:"resourceAction,omitempty"`
-	MatchedConfigID int64   `json:"matchedConfigId,omitempty"`
+	Sequence         int      `json:"sequence,omitempty"`
+	Intent           string   `json:"intent,omitempty"`
+	SubIntent        string   `json:"subIntent,omitempty"`
+	Text             string   `json:"text,omitempty"`
+	RequestMode      string   `json:"requestMode,omitempty"`
+	Confidence       float64  `json:"confidence,omitempty"`
+	NeedsKnowledge   bool     `json:"needsKnowledge,omitempty"`
+	NeedsResource    bool     `json:"needsResource,omitempty"`
+	NeedsTool        bool     `json:"needsTool,omitempty"`
+	NeedsHumanRoute  bool     `json:"needsHumanRoute,omitempty"`
+	ResourceAction   string   `json:"resourceAction,omitempty"`
+	MatchedConfigID  int64    `json:"matchedConfigId,omitempty"`
+	SourceRefs       []string `json:"sourceRefs,omitempty"`
+	SourceMessageIDs []int64  `json:"sourceMessageIds,omitempty"`
 	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
 	Requirements []string `json:"requirements,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
@@ -320,16 +322,18 @@ type ReplyPlanTraceData struct {
 }
 
 type ReplyTaskPlanTraceData struct {
-	TaskKey        string `json:"taskKey,omitempty"`
-	Sequence       int    `json:"sequence,omitempty"`
-	AnswerGroup    string `json:"answerGroup,omitempty"`
-	Intent         string `json:"intent,omitempty"`
-	SubIntent      string `json:"subIntent,omitempty"`
-	Text           string `json:"text,omitempty"`
-	RequestMode    string `json:"requestMode,omitempty"`
-	RelationType   string `json:"relationType,omitempty"`
-	Output         string `json:"output,omitempty"`
-	ResourceAction string `json:"resourceAction,omitempty"`
+	TaskKey          string   `json:"taskKey,omitempty"`
+	Sequence         int      `json:"sequence,omitempty"`
+	AnswerGroup      string   `json:"answerGroup,omitempty"`
+	Intent           string   `json:"intent,omitempty"`
+	SubIntent        string   `json:"subIntent,omitempty"`
+	Text             string   `json:"text,omitempty"`
+	RequestMode      string   `json:"requestMode,omitempty"`
+	RelationType     string   `json:"relationType,omitempty"`
+	Output           string   `json:"output,omitempty"`
+	ResourceAction   string   `json:"resourceAction,omitempty"`
+	SourceRefs       []string `json:"sourceRefs,omitempty"`
+	SourceMessageIDs []int64  `json:"sourceMessageIds,omitempty"`
 	// Requirements 是契约 10.8 的模型建议答案义务（"kind|required"）。
 	Requirements []string `json:"requirements,omitempty"`
 }

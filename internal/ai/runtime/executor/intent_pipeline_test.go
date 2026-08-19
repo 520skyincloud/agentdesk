@@ -375,7 +375,7 @@ func TestParseRuntimeIntentDetectJSONRejectsLegacyLooseFields(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"schemaVersion":"intent_tasks.v2",
 		"dialogueAct":"new_topic",
-		"tasks":[{"sequence":1,"intent":"hotel_variable","subIntent":"location","text":"发酒店定位","requestMode":"request_action","confidence":0.91}]
+		"tasks":[{"sequence":1,"intent":"hotel_variable","subIntent":"location","text":"发酒店定位","requestMode":"request_action","confidence":0.91,"sourceRefs":["U1"]}]
 	}`)
 	if err != nil {
 		t.Fatalf("expected strict intent_tasks.v2 payload, got %v", err)
@@ -1792,7 +1792,8 @@ func TestRuntimeIntentDetectGoldenCallCountAndMessageOrder(t *testing.T) {
 			result, err := (llmRuntimeIntentDetector{}).DetectRuntimeIntent(context.Background(), RunInput{
 				Conversation: models.Conversation{ID: 7, TenantID: 1},
 				UserMessage: models.Message{
-					ConversationID: 7, TenantID: 1, SessionNo: 1, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
+					ID: 501, ConversationID: 7, TenantID: 1, SessionNo: 1, SenderType: enums.IMSenderTypeCustomer,
+					MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少",
 				},
 				AIAgent: models.AIAgent{SystemPrompt: generateOnlyPersona},
 			}, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{
@@ -1863,7 +1864,7 @@ func TestRuntimeIntentModelInvocationTimeoutClampsRetryCount(t *testing.T) {
 }
 
 func validIntentDetectGoldenJSON() string {
-	return `{"schemaVersion":"intent_tasks.v2","dialogueAct":"new_topic","tasks":[{"sequence":1,"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","requestMode":"answer","confidence":0.95}]}`
+	return `{"schemaVersion":"intent_tasks.v2","dialogueAct":"new_topic","tasks":[{"sequence":1,"intent":"hotel_info","subIntent":"network_wifi","text":"WiFi 密码多少","requestMode":"answer","confidence":0.95,"sourceRefs":["U1"]}]}`
 }
 
 func seedRuntimeIntentConfig(t *testing.T, item models.ReplyIntentConfig) {

@@ -1,18 +1,17 @@
 package services
 
 import (
-	"encoding/json"
-
-	"agent-desk/internal/ai/runtime/contracts"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
@@ -51,6 +50,7 @@ type AIReplyTurnTaskInput struct {
 	SourceBindingsJSON     string
 	SourceSetFingerprint   string
 	CanonicalQuestionHash  string
+	ReferenceFingerprint   string
 	CapabilityCode         string
 	CapabilityRoute        string
 	CapabilityFingerprint  string
@@ -76,21 +76,20 @@ func (s *aiReplyTurnTaskService) Enabled() bool {
 }
 
 func (s *aiReplyTurnTaskService) StableTaskKey(input AIReplyTurnTaskInput) string {
-	// 契约 3.2.3：稳定键不再包含 OccurrenceIndex。优先使用 QuestionUnit 的
-	// canonical hash + 来源集合 fingerprint；旧输入缺这些字段时回退到语义
-	// fingerprint（同样不带 occurrence）。
+	// Task identity is semantic. Source message IDs and ASR revisions are evidence,
+	// not identity; otherwise the same text and voice question create two tasks.
+	// Only an explicit referent fingerprint (for "this image/that file") scopes an
+	// otherwise identical short follow-up to its referenced object.
 	canonicalHash := strings.TrimSpace(input.CanonicalQuestionHash)
-	sourceSetFingerprint := strings.TrimSpace(input.SourceSetFingerprint)
-	if input.TenantID > 0 && input.TurnID > 0 && input.SourceMessageID > 0 && input.AnalysisRevision > 0 &&
-		canonicalHash != "" && sourceSetFingerprint != "" {
+	if input.TenantID > 0 && input.TurnID > 0 && canonicalHash != "" {
 		taskType := strings.TrimSpace(string(input.TaskType))
 		if taskType == "" {
 			taskType = string(enums.AIReplyTurnTaskTypeText)
 		}
 		raw := fmt.Sprintf(
-			"%d/%d/%d/%d/%s/%s/%s",
-			input.TenantID, input.TurnID, input.SourceMessageID, input.AnalysisRevision,
-			sourceSetFingerprint, taskType, canonicalHash,
+			"%d/%d/%s/%s/%s",
+			input.TenantID, input.TurnID, taskType, canonicalHash,
+			strings.TrimSpace(input.ReferenceFingerprint),
 		)
 		sum := sha256.Sum256([]byte(raw))
 		return "turn_task_" + hex.EncodeToString(sum[:16])
@@ -123,6 +122,7 @@ func (s *aiReplyTurnTaskService) SemanticQuestionFingerprint(input AIReplyTurnTa
 		normalizeTaskFingerprintPart(input.SubIntent),
 		questionFingerprint,
 		normalizeTaskFingerprintPart(input.RequestMode),
+		normalizeTaskFingerprintPart(input.ReferenceFingerprint),
 	}
 	if strings.Join(parts, "") == "" {
 		return ""
@@ -279,14 +279,12 @@ func (s *aiReplyTurnTaskService) EnsureTasksDB(db *gorm.DB, turn *models.AIReply
 					"updated_at":              now,
 					"update_user_name":        "ai_reply_task",
 				}
-				if input.AnalysisRevision > 0 {
+				if strings.TrimSpace(input.SourceBindingsJSON) != "" {
 					updates["analysis_revision"] = input.AnalysisRevision
 					updates["source_span_start"] = input.SourceSpanStart
 					updates["source_span_end"] = input.SourceSpanEnd
 					updates["source_set_fingerprint"] = limitText(strings.TrimSpace(input.SourceSetFingerprint), 64)
-					if strings.TrimSpace(input.SourceBindingsJSON) != "" {
-						updates["source_bindings_json"] = strings.TrimSpace(input.SourceBindingsJSON)
-					}
+					updates["source_bindings_json"] = strings.TrimSpace(input.SourceBindingsJSON)
 				}
 				if strings.TrimSpace(input.CapabilityRoute) != "" {
 					updates["capability_code"] = limitText(strings.TrimSpace(input.CapabilityCode), 120)
@@ -366,22 +364,54 @@ func (s *aiReplyTurnTaskService) findCanonicalDuplicate(db *gorm.DB, turn *model
 	items := repositories.AIReplyTurnTaskRepository.FindByFingerprintInTurn(
 		db, turn.TenantID, turn.ID, current.QuestionFingerprint, current.TaskType,
 	)
+	allTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	byID := make(map[int64]*models.AIReplyTurnTask, len(allTasks))
+	for index := range allTasks {
+		byID[allTasks[index].ID] = &allTasks[index]
+	}
 	canonicalHash := strings.TrimSpace(current.CanonicalQuestionHash)
 	for index := range items {
 		candidate := &items[index]
-		if candidate.ID == current.ID ||
-			candidate.Status == enums.AIReplyTurnTaskStatusSuperseded || candidate.Status == enums.AIReplyTurnTaskStatusSkipped ||
-			candidate.Status == enums.AIReplyTurnTaskStatusFailed {
+		canonical := resolveAIReplyTurnTaskCanonical(candidate, byID)
+		if canonical == nil || canonical.ID == current.ID {
 			continue
 		}
 		// 同 canonical hash 时同源重复也覆盖；hash 缺失时保守只合并跨源重复。
-		if candidate.SourceMessageID == current.SourceMessageID &&
-			(canonicalHash == "" || strings.TrimSpace(candidate.CanonicalQuestionHash) != canonicalHash) {
+		if canonical.SourceMessageID == current.SourceMessageID &&
+			(canonicalHash == "" || strings.TrimSpace(canonical.CanonicalQuestionHash) != canonicalHash) {
 			continue
 		}
-		return candidate
+		return canonical
 	}
 	return nil
+}
+
+func resolveAIReplyTurnTaskCanonical(candidate *models.AIReplyTurnTask, byID map[int64]*models.AIReplyTurnTask) *models.AIReplyTurnTask {
+	if candidate == nil || candidate.ID <= 0 {
+		return nil
+	}
+	current := candidate
+	seen := make(map[int64]struct{}, 4)
+	for current.Status == enums.AIReplyTurnTaskStatusCovered {
+		if current.CoveredByTaskID <= 0 {
+			return nil
+		}
+		if _, exists := seen[current.ID]; exists {
+			return nil
+		}
+		seen[current.ID] = struct{}{}
+		next := byID[current.CoveredByTaskID]
+		if next == nil {
+			return nil
+		}
+		current = next
+	}
+	switch current.Status {
+	case enums.AIReplyTurnTaskStatusSuperseded, enums.AIReplyTurnTaskStatusSkipped, enums.AIReplyTurnTaskStatusFailed:
+		return nil
+	default:
+		return current
+	}
 }
 
 func (s *aiReplyTurnTaskService) ClaimBatchDB(db *gorm.DB, turn *models.AIReplyTurn, jobID int64) ([]models.AIReplyTurnTask, bool, error) {
@@ -1331,6 +1361,7 @@ func (s *aiReplyTurnTaskService) RecordResolvedCoverageDB(
 		TurnID:        turn.ID, TurnVersion: turn.Version,
 	}
 	hashes := make([]string, 0, len(tasks))
+	seenCoverage := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
 		hash := task.CanonicalQuestionHash
 		if hash == "" {
@@ -1343,12 +1374,19 @@ func (s *aiReplyTurnTaskService) RecordResolvedCoverageDB(
 			status = "ignored"
 			reason = string(task.Status)
 		}
-		coverage.Items = append(coverage.Items, contracts.ResolvedCoverageItemV1{
-			MessageID: task.SourceMessageID, CanonicalHash: hash, TaskID: task.ID, TaskKey: task.TaskKey,
-			Status: status, CoveredByTaskID: task.CoveredByTaskID, ReasonCode: reason,
-		})
-		if hash != "" {
-			hashes = append(hashes, fmt.Sprintf("%d:%s", task.SourceMessageID, hash))
+		for _, messageID := range taskSourceMessageIDs(task) {
+			coverageKey := fmt.Sprintf("%d:%d:%s", messageID, task.ID, hash)
+			if _, exists := seenCoverage[coverageKey]; exists {
+				continue
+			}
+			seenCoverage[coverageKey] = struct{}{}
+			coverage.Items = append(coverage.Items, contracts.ResolvedCoverageItemV1{
+				MessageID: messageID, CanonicalHash: hash, TaskID: task.ID, TaskKey: task.TaskKey,
+				Status: status, CoveredByTaskID: task.CoveredByTaskID, ReasonCode: reason,
+			})
+			if hash != "" {
+				hashes = append(hashes, fmt.Sprintf("%d:%s", messageID, hash))
+			}
 		}
 	}
 	sort.Strings(hashes)
@@ -1362,4 +1400,163 @@ func (s *aiReplyTurnTaskService) RecordResolvedCoverageDB(
 		"resolved_coverage_fingerprint": hex.EncodeToString(sum[:16]),
 		"updated_at":                    now, "update_user_name": "ai_reply_coverage",
 	}).Error
+}
+
+func taskSourceMessageIDs(task models.AIReplyTurnTask) []int64 {
+	ret := make([]int64, 0, 4)
+	seen := make(map[int64]struct{}, 4)
+	appendID := func(id int64) {
+		if id <= 0 {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		ret = append(ret, id)
+	}
+	appendID(task.SourceMessageID)
+	if strings.TrimSpace(task.SourceBindingsJSON) == "" {
+		return ret
+	}
+	var bindings contracts.TaskSourceBindingsV1
+	if err := json.Unmarshal([]byte(task.SourceBindingsJSON), &bindings); err != nil {
+		return ret
+	}
+	for _, binding := range bindings.Bindings {
+		appendID(binding.MessageID)
+		for _, observationID := range binding.ObservationMessageIDs {
+			appendID(observationID)
+		}
+	}
+	return ret
+}
+
+func (s *aiReplyTurnTaskService) SupersedePriorTasksForDialogueActDB(db *gorm.DB, turn *models.AIReplyTurn, dialogueAct string, currentTasks []models.AIReplyTurnTask, now time.Time) error {
+	if db == nil || turn == nil || turn.ID <= 0 {
+		return nil
+	}
+	dialogueAct = strings.TrimSpace(dialogueAct)
+	switch dialogueAct {
+	case "correction", "cancellation":
+	default:
+		return nil
+	}
+	keep := make(map[string]struct{}, len(currentTasks))
+	requestedTaskIDs := make(map[int64]struct{}, len(currentTasks))
+	for _, task := range currentTasks {
+		if taskKey := strings.TrimSpace(task.TaskKey); taskKey != "" {
+			keep[taskKey] = struct{}{}
+		}
+		if task.RelatedTaskID > 0 {
+			requestedTaskIDs[task.RelatedTaskID] = struct{}{}
+		}
+	}
+	if len(requestedTaskIDs) == 0 {
+		return nil
+	}
+	priorTasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	priorByID := make(map[int64]*models.AIReplyTurnTask, len(priorTasks))
+	for index := range priorTasks {
+		priorByID[priorTasks[index].ID] = &priorTasks[index]
+	}
+	targetable := func(task *models.AIReplyTurnTask) bool {
+		if task == nil {
+			return false
+		}
+		if _, preserved := keep[task.TaskKey]; preserved || task.IntroducedVersion >= turn.Version {
+			return false
+		}
+		switch task.Status {
+		case enums.AIReplyTurnTaskStatusPending, enums.AIReplyTurnTaskStatusReady,
+			enums.AIReplyTurnTaskStatusRunning, enums.AIReplyTurnTaskStatusCommitted,
+			enums.AIReplyTurnTaskStatusHandoffPending:
+			return true
+		default:
+			return false
+		}
+	}
+	targetTaskIDs := make(map[int64]struct{}, len(requestedTaskIDs))
+	for requestedTaskID := range requestedTaskIDs {
+		canonical := resolveAIReplyTurnTaskCanonical(priorByID[requestedTaskID], priorByID)
+		if targetable(canonical) {
+			targetTaskIDs[canonical.ID] = struct{}{}
+		}
+	}
+	committedMessageIDs := make(map[int64]struct{}, len(targetTaskIDs))
+	for taskID := range targetTaskIDs {
+		task := priorByID[taskID]
+		if !targetable(task) {
+			continue
+		}
+		if task.Status == enums.AIReplyTurnTaskStatusCommitted && task.CommittedMessageID > 0 {
+			committedMessageIDs[task.CommittedMessageID] = struct{}{}
+		}
+		if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, task.ID, task.TenantID, map[string]any{
+			"stage": enums.AIReplyTurnTaskStageComplete, "status": enums.AIReplyTurnTaskStatusSuperseded,
+			"result_code":       "superseded_by_customer_" + dialogueAct,
+			"claimed_by_job_id": 0, "claimed_version": 0, "next_retry_at": nil,
+			"completed_at": now, "updated_at": now, "update_user_name": "ai_reply_task_relation",
+		}); err != nil {
+			return err
+		}
+	}
+	for messageID := range committedMessageIDs {
+		cancellableStatuses := []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusSending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}
+		outboxes := repositories.ChannelMessageOutboxRepository.Find(db,
+			sqls.NewCnd().Eq("tenant_id", turn.TenantID).Eq("message_id", messageID).In("send_status", cancellableStatuses),
+		)
+		cancelledAny := false
+		for index := range outboxes {
+			outbox := &outboxes[index]
+			cancelled := db.Model(&models.ChannelMessageOutbox{}).
+				Where("id = ? AND tenant_id = ? AND send_status IN ?", outbox.ID, outbox.TenantID, cancellableStatuses).
+				Updates(map[string]any{
+					"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+					"last_error":    "cancelled_stale_task",
+					"next_retry_at": nil,
+					"updated_at":    now,
+				})
+			if cancelled.Error != nil {
+				return cancelled.Error
+			}
+			if cancelled.RowsAffected == 0 {
+				continue
+			}
+			cancelledAny = true
+			if err := AIReplyTurnActionService.SupersedeByOutboxDB(db, outbox.TenantID, outbox.ID, "cancelled_stale_task", now); err != nil {
+				return err
+			}
+		}
+		if !cancelledAny {
+			continue
+		}
+		for _, sharedTask := range repositories.AIReplyTurnTaskRepository.FindByCommittedMessageInTenant(db, turn.TenantID, messageID) {
+			if sharedTask.TurnID != turn.ID || sharedTask.Status != enums.AIReplyTurnTaskStatusCommitted {
+				continue
+			}
+			if _, targeted := targetTaskIDs[sharedTask.ID]; targeted {
+				continue
+			}
+			if err := repositories.AIReplyTurnTaskRepository.UpdatesInTenant(db, sharedTask.ID, sharedTask.TenantID, map[string]any{
+				"stage":                enums.AIReplyTurnTaskStageGenerate,
+				"status":               enums.AIReplyTurnTaskStatusReady,
+				"result_code":          "requeued_after_shared_reply_superseded",
+				"committed_message_id": 0,
+				"claimed_by_job_id":    0,
+				"claimed_version":      0,
+				"completed_at":         nil,
+				"next_retry_at":        nil,
+				"updated_at":           now,
+				"update_user_name":     "ai_reply_task_relation",
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

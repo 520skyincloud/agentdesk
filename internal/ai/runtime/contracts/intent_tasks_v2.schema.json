@@ -38,7 +38,8 @@
           "subIntent",
           "text",
           "requestMode",
-          "confidence"
+          "confidence",
+          "sourceRefs"
         ],
         "properties": {
           "sequence": {
@@ -76,6 +77,16 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "sourceRefs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^U[1-9][0-9]*$"
+            }
           }
         }
       }

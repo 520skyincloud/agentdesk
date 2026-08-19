@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
@@ -131,6 +132,201 @@ func TestBuildRuntimeTaskInputsKeepsMultipleQuestionsOnSameMessage(t *testing.T)
 		if _, ok := plannedByKey[key]; !ok {
 			t.Fatalf("persisted task key %q lost its original plan", key)
 		}
+	}
+}
+
+func TestBuildRuntimeTaskInputsBindsContextAndPrimaryToOneTask(t *testing.T) {
+	messages := []models.Message{
+		{ID: 61, MessageType: enums.IMMessageTypeText, Content: "好困啊"},
+		{ID: 62, MessageType: enums.IMMessageTypeText, Content: "有没有咖啡"},
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "coffee", RequestMode: "answer",
+		Text: "有没有咖啡", Output: "knowledge_text_reply",
+		SourceRefs: []string{"U2", "U1"}, SourceMessageIDs: []int64{62, 61},
+	}}
+	inputs, plannedByKey, err := buildRuntimeTaskInputs(plans, 62, messages, 9, 10)
+	if err != nil {
+		t.Fatalf("build runtime task inputs: %v", err)
+	}
+	if len(inputs) != 1 || inputs[0].SourceMessageID != 62 {
+		t.Fatalf("coffee request must create one primary task: %#v", inputs)
+	}
+	var bindings contracts.TaskSourceBindingsV1
+	if err := json.Unmarshal([]byte(inputs[0].SourceBindingsJSON), &bindings); err != nil {
+		t.Fatalf("decode source bindings: %v", err)
+	}
+	if bindings.PrimaryMessageID != 62 || len(bindings.Bindings) != 2 ||
+		bindings.Bindings[0].MessageID != 62 || bindings.Bindings[1].MessageID != 61 {
+		t.Fatalf("context and primary bindings were not preserved: %#v", bindings)
+	}
+	taskKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[0])
+	if planned, ok := plannedByKey[taskKey]; !ok || len(planned.SourceMessageIDs) != 2 {
+		t.Fatalf("planned task lost source bindings: %#v", plannedByKey)
+	}
+	if !runtimeTaskSourcesCovered(messages, []models.AIReplyTurnTask{{
+		SourceMessageID: inputs[0].SourceMessageID, SourceBindingsJSON: inputs[0].SourceBindingsJSON,
+	}}) {
+		t.Fatal("one coffee task must cover both the primary request and its context")
+	}
+	if !runtimeTaskCoversMessage(models.AIReplyTurnTask{
+		SourceMessageID: inputs[0].SourceMessageID, SourceBindingsJSON: inputs[0].SourceBindingsJSON,
+	}, 61) {
+		t.Fatal("context message recovery must converge on the existing coffee task")
+	}
+}
+
+func TestResolveIntentV2TaskSourcesPromotesMatchingPrimary(t *testing.T) {
+	messages := []models.Message{
+		{ID: 61, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "好困啊"},
+		{ID: 62, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "有没有咖啡"},
+	}
+	scope := intentV2SourceScope{
+		Envelope: contextcompiler.BuildTurnInputEnvelope(contextcompiler.EnvelopeScope{}, messages),
+		RequiredRefs: map[string]struct{}{
+			"U1": {}, "U2": {},
+		},
+	}
+	parsed := contracts.IntentTasksV2{Tasks: []contracts.IntentTaskV2{{
+		Text: "有没有咖啡", SourceRefs: []string{"U1", "U2"},
+	}}}
+	if err := resolveIntentV2TaskSources(&parsed, scope); err != nil {
+		t.Fatalf("resolve source refs: %v", err)
+	}
+	if len(parsed.Tasks[0].SourceMessageIDs) != 2 || parsed.Tasks[0].SourceMessageIDs[0] != 62 || parsed.Tasks[0].SourceMessageIDs[1] != 61 {
+		t.Fatalf("matching coffee message was not promoted to primary: %#v", parsed.Tasks[0])
+	}
+}
+
+func TestResolveIntentV2TaskSourcesRejectsCorrectionWithoutPriorContext(t *testing.T) {
+	messages := []models.Message{
+		{ID: 63, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "有咖啡吗"},
+		{ID: 64, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "不是咖啡，我问的是早餐"},
+	}
+	scope := intentV2SourceScope{
+		Envelope:     contextcompiler.BuildTurnInputEnvelope(contextcompiler.EnvelopeScope{}, messages),
+		RequiredRefs: map[string]struct{}{"U2": {}},
+	}
+	parsed := contracts.IntentTasksV2{DialogueAct: "correction", Tasks: []contracts.IntentTaskV2{{
+		Text: "早餐几点", SourceRefs: []string{"U2"},
+	}}}
+	err := resolveIntentV2TaskSources(&parsed, scope)
+	if err == nil || !strings.Contains(err.Error(), "source_context_ref_missing") {
+		t.Fatalf("correction without prior context must trigger protocol repair, got %v", err)
+	}
+}
+
+func TestIntentV2ReadyMediaIsRequiredButPendingMediaIsNot(t *testing.T) {
+	base := RunInput{
+		Conversation: models.Conversation{ID: 70, TenantID: 1},
+		UserMessage: models.Message{
+			ID: 72, ConversationID: 70, SessionNo: 1, SenderType: enums.IMSenderTypeCustomer,
+			MessageType: enums.IMMessageTypeText, Content: "这是什么",
+		},
+	}
+	ready := models.Message{
+		ID: 71, ConversationID: 70, SessionNo: 1, SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeImage, Content: "a.jpg",
+		Payload: `{"mediaText":"图片 A 的内容","mediaUnderstandingStatus":"understood"}`,
+	}
+	readyScope := buildIntentV2SourceScope(base, []models.Message{ready})
+	if _, ok := readyScope.RequiredRefs["U1"]; !ok {
+		t.Fatalf("ready image URef must be required: %#v", readyScope.RequiredRefs)
+	}
+	if _, ok := readyScope.RequiredRefs["U2"]; !ok {
+		t.Fatalf("current text URef must be required: %#v", readyScope.RequiredRefs)
+	}
+
+	pending := ready
+	pending.Payload = `{"mediaUnderstandingStatus":"retrying"}`
+	pendingScope := buildIntentV2SourceScope(base, []models.Message{pending})
+	if _, ok := pendingScope.RequiredRefs["U1"]; ok {
+		t.Fatalf("pending image URef must not be required as fact: %#v", pendingScope.RequiredRefs)
+	}
+}
+
+func TestImageReferentsProduceDistinctRuntimeTaskKeys(t *testing.T) {
+	messages := []models.Message{
+		{ID: 91, MessageType: enums.IMMessageTypeImage, Content: "a.jpg", Payload: `{"mediaText":"图片 A 的内容","mediaUnderstandingStatus":"understood"}`},
+		{ID: 92, MessageType: enums.IMMessageTypeText, Content: "这是什么"},
+		{ID: 93, MessageType: enums.IMMessageTypeImage, Content: "b.jpg", Payload: `{"mediaText":"图片 B 的内容","mediaUnderstandingStatus":"understood"}`},
+		{ID: 94, MessageType: enums.IMMessageTypeText, Content: "这是什么"},
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{
+		{Sequence: 1, Intent: "interaction", SubIntent: "media_context_follow_up", RequestMode: "answer", Text: "这是什么", Output: "text_reply", SourceMessageIDs: []int64{92, 91}},
+		{Sequence: 2, Intent: "interaction", SubIntent: "media_context_follow_up", RequestMode: "answer", Text: "这是什么", Output: "text_reply", SourceMessageIDs: []int64{94, 93}},
+	}
+	inputs, _, err := buildRuntimeTaskInputs(plans, 94, messages, 1, 2)
+	if err != nil {
+		t.Fatalf("build image reference tasks: %v", err)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("expected two image reference tasks, got %#v", inputs)
+	}
+	if inputs[0].ReferenceFingerprint == "" || inputs[1].ReferenceFingerprint == "" ||
+		inputs[0].ReferenceFingerprint == inputs[1].ReferenceFingerprint {
+		t.Fatalf("distinct images must keep distinct reference fingerprints: %#v", inputs)
+	}
+	firstKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[0])
+	secondKey := services.AIReplyTurnTaskService.StableTaskKey(inputs[1])
+	if firstKey == secondKey {
+		t.Fatalf("distinct images reused task key %q", firstKey)
+	}
+}
+
+func TestIntentV2AdjacentContextKeepsTwoPriorMessages(t *testing.T) {
+	messages := []models.Message{
+		{ID: 71, Content: "有咖啡吗"},
+		{ID: 72, Content: "停车场在哪"},
+		{ID: 73, Content: "不是咖啡，我问的是早餐"},
+	}
+	selected := withIntentV2AdjacentContext(messages, map[int64]struct{}{73: {}}, 2)
+	if len(selected) != 3 || selected[0].ID != 71 || selected[1].ID != 72 || selected[2].ID != 73 {
+		t.Fatalf("correction envelope lost adjacent context: %#v", selected)
+	}
+}
+
+func TestResolveRuntimeTaskRelationTargetsUsesSharedSourceSpan(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.AIReplyTurnTask{}); err != nil {
+		t.Fatal(err)
+	}
+	turn := &models.AIReplyTurn{ID: 90, TenantID: 1, Version: 2}
+	coffee := models.AIReplyTurnTask{
+		ID: 91, TenantID: 1, TurnID: turn.ID, IntroducedVersion: 1, SourceMessageID: 81,
+		TaskKey: "task-coffee-shared-source", TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		SourceSpanStart: 0, SourceSpanEnd: 4, Status: enums.AIReplyTurnTaskStatusCommitted,
+	}
+	parking := models.AIReplyTurnTask{
+		ID: 92, TenantID: 1, TurnID: turn.ID, IntroducedVersion: 1, SourceMessageID: 81,
+		TaskKey: "task-parking-shared-source", TaskType: enums.AIReplyTurnTaskTypeKnowledge,
+		SourceSpanStart: 5, SourceSpanEnd: 10, Status: enums.AIReplyTurnTaskStatusCommitted,
+	}
+	if err := db.Create(&coffee).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&parking).Error; err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := json.Marshal(contracts.TaskSourceBindingsV1{
+		SchemaVersion: contracts.TaskSourceBindingsV1SchemaVersion, PrimaryMessageID: 82,
+		Bindings: []contracts.TaskSourceBindingItemV1{{MessageID: 82}, {MessageID: 81}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := []services.AIReplyTurnTaskInput{{
+		SourceMessageID: 82, RelationType: "correction", SourceBindingsJSON: string(bindings),
+	}}
+	inputs = resolveRuntimeTaskRelationTargetsDB(db, turn, []models.Message{
+		{ID: 81, MessageType: enums.IMMessageTypeText, Content: "有咖啡吗，停车场在哪"},
+		{ID: 82, MessageType: enums.IMMessageTypeText, Content: "不是咖啡，我问的是早餐"},
+	}, inputs)
+	if inputs[0].RelatedTaskID != coffee.ID {
+		t.Fatalf("correction target=%d want coffee task=%d", inputs[0].RelatedTaskID, coffee.ID)
 	}
 }
 

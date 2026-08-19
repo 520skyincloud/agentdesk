@@ -25,18 +25,29 @@ func TestAuthoritativeActionLedgerNeverFallsBackToTraceResources(t *testing.T) {
 	}
 }
 
-func TestStableTurnClientMsgIDIsOrderIndependentAndVersionScoped(t *testing.T) {
+func TestStableTurnClientMsgIDUsesTurnAndTaskIdentity(t *testing.T) {
 	input := replyCommitInput{
 		Conversation: models.Conversation{ID: 22, TenantID: 11},
 		Message:      models.Message{AIReplyTurnID: 44, AIReplyTurnVersion: 2},
 	}
-	first := stableTurnClientMsgID(input, "text", []string{"task_b", "task_a"})
-	second := stableTurnClientMsgID(input, "text", []string{"task_a", "task_b", "task_a"})
+	first := stableTurnClientMsgID(input, "text", 1, []string{"task_b", "task_a"})
+	second := stableTurnClientMsgID(input, "text", 1, []string{"task_a", "task_b", "task_a"})
 	if first == "" || first != second {
 		t.Fatalf("stable client id first=%q second=%q", first, second)
 	}
 	input.Message.AIReplyTurnVersion++
-	if changed := stableTurnClientMsgID(input, "text", []string{"task_a", "task_b"}); changed == first {
-		t.Fatalf("different turn version reused client id %q", changed)
+	if same := stableTurnClientMsgID(input, "text", 1, []string{"task_a", "task_b"}); same != first {
+		t.Fatalf("turn version advance changed stable client id first=%q same=%q", first, same)
+	}
+	input.Message.AIReplyTurnID++
+	if changed := stableTurnClientMsgID(input, "text", 1, []string{"task_a", "task_b"}); changed == first {
+		t.Fatalf("different turn reused client id %q", changed)
+	}
+	input.Message.AIReplyTurnID--
+	if changed := stableTurnClientMsgID(input, "text", 1, []string{"task_a", "task_c"}); changed == first {
+		t.Fatalf("different task identity reused client id %q", changed)
+	}
+	if changed := stableTurnClientMsgID(input, "text", 2, []string{"task_a", "task_b"}); changed == first {
+		t.Fatalf("different reply part reused client id %q", changed)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"agent-desk/internal/services"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 type runtimeTaskBatchState struct {
@@ -85,7 +86,7 @@ func loadPersistedRuntimeTaskBatch(req RunInput) (callbacks.IntentTraceData, cal
 		covered := false
 		for index := range allTasks {
 			task := allTasks[index]
-			if task.SourceMessageID == req.UserMessage.ID && aiReplyTurnTaskLedgerTerminal(task.Status) {
+			if runtimeTaskCoversMessage(task, req.UserMessage.ID) && aiReplyTurnTaskLedgerTerminal(task.Status) {
 				covered = true
 				if task.CoveredByTaskID > 0 {
 					state.CoveredByTaskID = task.CoveredByTaskID
@@ -138,9 +139,15 @@ func persistAndSelectRuntimeTaskBatch(req RunInput, intent callbacks.IntentTrace
 			lockedTurn.SessionNo != turn.SessionNo {
 			return services.ErrAIReplyTurnStale
 		}
+		inputs = resolveRuntimeTaskRelationTargetsDB(ctx.Tx, lockedTurn, sourceMessages, inputs)
 		ensured, lockErr = services.AIReplyTurnTaskService.EnsureTasksDB(ctx.Tx, lockedTurn, inputs)
 		if lockErr != nil {
 			return lockErr
+		}
+		if relationErr := services.AIReplyTurnTaskService.SupersedePriorTasksForDialogueActDB(
+			ctx.Tx, lockedTurn, intent.DialogueAct, ensured, time.Now(),
+		); relationErr != nil {
+			return relationErr
 		}
 		// 契约 10.7：覆盖标签与 Task 创建同事务持久化。
 		if coverErr := services.AIReplyTurnTaskService.RecordResolvedCoverageDB(ctx.Tx, req.ToJobRef(), lockedTurn, ensured, time.Now()); coverErr != nil {
@@ -194,13 +201,47 @@ func runtimeTaskScope(req RunInput) (*models.AIReplyTurn, []models.Message, bool
 	return turn, messages, true
 }
 
+func runtimeTaskMessagesForPlans(req RunInput, plans []callbacks.ReplyTaskPlanTraceData) []models.Message {
+	turn, messages, ok := runtimeTaskScope(req)
+	if !ok || turn == nil || len(messages) == 0 || len(plans) == 0 {
+		return nil
+	}
+	taskKeys := make(map[string]struct{}, len(plans))
+	for _, plan := range plans {
+		if key := strings.TrimSpace(plan.TaskKey); key != "" {
+			taskKeys[key] = struct{}{}
+		}
+	}
+	if len(taskKeys) == 0 {
+		return nil
+	}
+	messageIDs := make(map[int64]struct{})
+	for _, task := range repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), turn.TenantID, turn.ID) {
+		if _, selected := taskKeys[task.TaskKey]; !selected {
+			continue
+		}
+		for _, messageID := range taskBoundMessageIDs(task) {
+			messageIDs[messageID] = struct{}{}
+		}
+	}
+	ret := make([]models.Message, 0, len(messageIDs))
+	for _, message := range messages {
+		if _, selected := messageIDs[message.ID]; selected {
+			ret = append(ret, message)
+		}
+	}
+	return ret
+}
+
 func runtimeTaskSourcesCovered(messages []models.Message, tasks []models.AIReplyTurnTask) bool {
 	if len(messages) == 0 || len(tasks) == 0 {
 		return false
 	}
 	represented := make(map[int64]struct{}, len(tasks))
 	for _, task := range tasks {
-		represented[task.SourceMessageID] = struct{}{}
+		for _, messageID := range taskBoundMessageIDs(task) {
+			represented[messageID] = struct{}{}
+		}
 	}
 	for _, message := range messages {
 		if _, ok := represented[message.ID]; !ok {
@@ -208,6 +249,185 @@ func runtimeTaskSourcesCovered(messages []models.Message, tasks []models.AIReply
 		}
 	}
 	return true
+}
+
+func runtimeTaskCoversMessage(task models.AIReplyTurnTask, messageID int64) bool {
+	if messageID <= 0 {
+		return false
+	}
+	for _, boundMessageID := range taskBoundMessageIDs(task) {
+		if boundMessageID == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveRuntimeTaskRelationTargetsDB(
+	db *gorm.DB,
+	turn *models.AIReplyTurn,
+	sourceMessages []models.Message,
+	inputs []services.AIReplyTurnTaskInput,
+) []services.AIReplyTurnTaskInput {
+	if db == nil || turn == nil || len(inputs) == 0 {
+		return inputs
+	}
+	existing := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(db, turn.TenantID, turn.ID)
+	if len(existing) == 0 {
+		return inputs
+	}
+	byID := make(map[int64]models.AIReplyTurnTask, len(existing))
+	for _, task := range existing {
+		byID[task.ID] = task
+	}
+	sources := make(map[int64]runtimeTaskSource, len(sourceMessages))
+	for _, source := range buildRuntimeTaskSources(sourceMessages) {
+		sources[source.Message.ID] = source
+	}
+	for index := range inputs {
+		input := &inputs[index]
+		switch strings.TrimSpace(input.RelationType) {
+		case "correction", "cancellation":
+		default:
+			continue
+		}
+		contextMessageIDs := runtimeTaskInputContextMessageIDs(*input)
+		if len(contextMessageIDs) == 0 {
+			continue
+		}
+		candidates := make(map[int64]models.AIReplyTurnTask)
+		for _, task := range existing {
+			if task.IntroducedVersion >= turn.Version || !runtimeTaskBindsAnyMessage(task, contextMessageIDs) {
+				continue
+			}
+			candidate := task
+			if task.Status == enums.AIReplyTurnTaskStatusCovered && task.CoveredByTaskID > 0 {
+				canonical, ok := byID[task.CoveredByTaskID]
+				if !ok {
+					continue
+				}
+				candidate = canonical
+			}
+			if !runtimeTaskRelationTargetable(candidate.Status) {
+				continue
+			}
+			candidates[candidate.ID] = candidate
+		}
+		if len(candidates) == 1 {
+			for taskID := range candidates {
+				input.RelatedTaskID = taskID
+			}
+			continue
+		}
+		currentSource := sources[input.SourceMessageID]
+		bestTaskID, bestScore, tied := int64(0), 0, false
+		for taskID, candidate := range candidates {
+			score := runtimeTaskRelationReferenceScore(currentSource.Text, runtimeTaskRelationSourceText(candidate, sources))
+			switch {
+			case score > bestScore:
+				bestTaskID, bestScore, tied = taskID, score, false
+			case score > 0 && score == bestScore:
+				tied = true
+			}
+		}
+		if bestScore > 0 && !tied {
+			input.RelatedTaskID = bestTaskID
+		}
+	}
+	return inputs
+}
+
+func runtimeTaskInputContextMessageIDs(input services.AIReplyTurnTaskInput) map[int64]struct{} {
+	ret := make(map[int64]struct{}, 3)
+	if strings.TrimSpace(input.SourceBindingsJSON) == "" {
+		return ret
+	}
+	var bindings contracts.TaskSourceBindingsV1
+	if err := json.Unmarshal([]byte(input.SourceBindingsJSON), &bindings); err != nil {
+		return ret
+	}
+	primaryMessageID := bindings.PrimaryMessageID
+	if primaryMessageID <= 0 {
+		primaryMessageID = input.SourceMessageID
+	}
+	for _, binding := range bindings.Bindings {
+		if binding.MessageID > 0 && binding.MessageID != primaryMessageID {
+			ret[binding.MessageID] = struct{}{}
+		}
+	}
+	return ret
+}
+
+func runtimeTaskBindsAnyMessage(task models.AIReplyTurnTask, messageIDs map[int64]struct{}) bool {
+	for _, messageID := range taskBoundMessageIDs(task) {
+		if _, ok := messageIDs[messageID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeTaskRelationTargetable(status enums.AIReplyTurnTaskStatus) bool {
+	switch status {
+	case enums.AIReplyTurnTaskStatusPending, enums.AIReplyTurnTaskStatusReady,
+		enums.AIReplyTurnTaskStatusRunning, enums.AIReplyTurnTaskStatusCommitted,
+		enums.AIReplyTurnTaskStatusHandoffPending:
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeTaskRelationSourceText(task models.AIReplyTurnTask, sources map[int64]runtimeTaskSource) string {
+	source, ok := sources[task.SourceMessageID]
+	if !ok {
+		return ""
+	}
+	runes := []rune(source.Text)
+	if task.SourceSpanStart >= 0 && task.SourceSpanEnd > task.SourceSpanStart && task.SourceSpanEnd <= len(runes) {
+		return string(runes[task.SourceSpanStart:task.SourceSpanEnd])
+	}
+	return source.Text
+}
+
+func runtimeTaskRelationReferenceScore(currentText, candidateText string) int {
+	current := []rune(runtimeTaskRelationCoreText(currentText))
+	candidate := []rune(runtimeTaskRelationCoreText(candidateText))
+	if len(current) < 2 || len(candidate) < 2 {
+		return 0
+	}
+	currentString, candidateString := string(current), string(candidate)
+	if strings.Contains(currentString, candidateString) {
+		return 100 + len(candidate)
+	}
+	previous := make([]int, len(candidate)+1)
+	best := 0
+	for _, currentRune := range current {
+		next := make([]int, len(candidate)+1)
+		for index, candidateRune := range candidate {
+			if currentRune == candidateRune {
+				next[index+1] = previous[index] + 1
+				best = max(best, next[index+1])
+			}
+		}
+		previous = next
+	}
+	if best < 2 {
+		return 0
+	}
+	return best
+}
+
+func runtimeTaskRelationCoreText(text string) string {
+	text = compactRuntimeProtocolText(text)
+	for _, filler := range []string{
+		"我想问的是", "我问的是", "问的是", "有没有", "能不能", "可不可以", "可以吗",
+		"请问", "麻烦", "帮我", "一下", "怎么", "如何", "在哪里", "在哪儿", "在哪", "哪里",
+		"多少", "什么", "这个", "那个", "吗", "呢", "啊", "呀", "吧", "了",
+	} {
+		text = strings.ReplaceAll(text, filler, "")
+	}
+	return text
 }
 
 func buildRuntimeTaskSources(messages []models.Message) []runtimeTaskSource {
@@ -264,15 +484,17 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 		if normalizeRuntimeTaskText(plan.Text) == "" {
 			continue
 		}
-		source, spanStart, spanEnd, preciseSpan := matchRuntimeTaskSourceWithSpan(plan, fallbackMessageID, sources, usedSourceMessageIDs)
+		source, boundSources, spanStart, spanEnd, preciseSpan := selectRuntimeTaskSources(plan, fallbackMessageID, sources, usedSourceMessageIDs)
 		if source.Message.ID <= 0 || strings.TrimSpace(source.Text) == "" {
 			return nil, nil, fmt.Errorf("AI reply task source message unavailable")
 		}
-		sourceEvidence, err := buildRuntimeTaskSourceEvidence(plan, source, spanStart, spanEnd, preciseSpan)
+		sourceEvidence, err := buildRuntimeTaskSourceEvidence(plan, source, boundSources, spanStart, spanEnd, preciseSpan)
 		if err != nil {
 			return nil, nil, err
 		}
-		usedSourceMessageIDs[source.Message.ID] = struct{}{}
+		for _, bound := range boundSources {
+			usedSourceMessageIDs[bound.Message.ID] = struct{}{}
+		}
 		input := services.AIReplyTurnTaskInput{
 			TenantID:              tenantID,
 			TurnID:                turnID,
@@ -291,6 +513,7 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 			SourceBindingsJSON:    sourceEvidence.BindingsJSON,
 			SourceSetFingerprint:  sourceEvidence.SourceSetFingerprint,
 			CanonicalQuestionHash: sourceEvidence.CanonicalQuestionHash,
+			ReferenceFingerprint:  sourceEvidence.ReferenceFingerprint,
 		}
 		// 契约 10.8：把 Intent 建议的答案义务固化为 answer_requirement_set.v1。
 		if requirementsJSON := buildAnswerRequirementsJSON(plan, spanStart, spanEnd); requirementsJSON != "" {
@@ -300,7 +523,9 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 		plan.TaskKey = taskKey
 		inputs = append(inputs, input)
 		plannedByKey[taskKey] = plan
-		plannedBySourceMessageID[source.Message.ID] = append(plannedBySourceMessageID[source.Message.ID], plan)
+		for _, bound := range boundSources {
+			plannedBySourceMessageID[bound.Message.ID] = append(plannedBySourceMessageID[bound.Message.ID], plan)
+		}
 	}
 	for _, source := range sources {
 		if _, represented := usedSourceMessageIDs[source.Message.ID]; represented {
@@ -332,7 +557,7 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 				questionText = sourceText
 			}
 			spanStart, spanEnd, preciseSpan := runtimeTaskSpanWithinSource(questionText, sourceText)
-			sourceEvidence, err := buildRuntimeTaskSourceEvidence(duplicatePlan, source, spanStart, spanEnd, preciseSpan)
+			sourceEvidence, err := buildRuntimeTaskSourceEvidence(duplicatePlan, source, []runtimeTaskSource{source}, spanStart, spanEnd, preciseSpan)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -354,6 +579,7 @@ func buildRuntimeTaskInputs(plans []callbacks.ReplyTaskPlanTraceData, fallbackMe
 				SourceBindingsJSON:    sourceEvidence.BindingsJSON,
 				SourceSetFingerprint:  sourceEvidence.SourceSetFingerprint,
 				CanonicalQuestionHash: sourceEvidence.CanonicalQuestionHash,
+				ReferenceFingerprint:  sourceEvidence.ReferenceFingerprint,
 			}
 			if requirementsJSON := buildAnswerRequirementsJSON(duplicatePlan, spanStart, spanEnd); requirementsJSON != "" {
 				input.AnswerRequirementsJSON = requirementsJSON
@@ -374,9 +600,10 @@ type runtimeTaskSourceEvidence struct {
 	BindingsJSON          string
 	SourceSetFingerprint  string
 	CanonicalQuestionHash string
+	ReferenceFingerprint  string
 }
 
-func buildRuntimeTaskSourceEvidence(plan callbacks.ReplyTaskPlanTraceData, source runtimeTaskSource, spanStart, spanEnd int, preciseSpan bool) (runtimeTaskSourceEvidence, error) {
+func buildRuntimeTaskSourceEvidence(plan callbacks.ReplyTaskPlanTraceData, source runtimeTaskSource, boundSources []runtimeTaskSource, spanStart, spanEnd int, preciseSpan bool) (runtimeTaskSourceEvidence, error) {
 	ret := runtimeTaskSourceEvidence{}
 	sourceRunes := []rune(source.Text)
 	if len(sourceRunes) == 0 {
@@ -385,16 +612,33 @@ func buildRuntimeTaskSourceEvidence(plan callbacks.ReplyTaskPlanTraceData, sourc
 	if spanStart < 0 || spanEnd <= spanStart || spanEnd > len(sourceRunes) {
 		spanStart, spanEnd, preciseSpan = 0, len(sourceRunes), false
 	}
-	bindings := contracts.TaskSourceBindingsV1{
-		SchemaVersion:    contracts.TaskSourceBindingsV1SchemaVersion,
-		PrimaryMessageID: source.Message.ID,
-		Bindings: []contracts.TaskSourceBindingItemV1{{
-			MessageID:             source.Message.ID,
-			AnalysisRevision:      source.AnalysisRevision,
-			Start:                 spanStart,
-			End:                   spanEnd,
-			ObservationMessageIDs: []int64{},
-		}},
+	if len(boundSources) == 0 {
+		boundSources = []runtimeTaskSource{source}
+	}
+	bindings := contracts.TaskSourceBindingsV1{SchemaVersion: contracts.TaskSourceBindingsV1SchemaVersion, PrimaryMessageID: source.Message.ID}
+	seen := make(map[int64]struct{}, len(boundSources))
+	for _, bound := range boundSources {
+		if bound.Message.ID <= 0 {
+			continue
+		}
+		if _, exists := seen[bound.Message.ID]; exists {
+			continue
+		}
+		seen[bound.Message.ID] = struct{}{}
+		start, end := 0, len([]rune(bound.Text))
+		if bound.Message.ID == source.Message.ID {
+			start, end = spanStart, spanEnd
+		}
+		if end <= start {
+			continue
+		}
+		bindings.Bindings = append(bindings.Bindings, contracts.TaskSourceBindingItemV1{
+			MessageID: bound.Message.ID, AnalysisRevision: bound.AnalysisRevision,
+			Start: start, End: end, ObservationMessageIDs: []int64{},
+		})
+	}
+	if len(bindings.Bindings) == 0 {
+		return ret, fmt.Errorf("AI reply task source binding is empty")
 	}
 	raw, err := json.Marshal(bindings)
 	if err != nil {
@@ -410,16 +654,76 @@ func buildRuntimeTaskSourceEvidence(plan callbacks.ReplyTaskPlanTraceData, sourc
 	boundQuote := string(sourceRunes[spanStart:spanEnd])
 	canonicalQuotes := []string{boundQuote}
 	if !preciseSpan && normalizeRuntimeTaskText(plan.Text) != normalizeRuntimeTaskText(boundQuote) {
-		// Stable V2 only returns task.text, not model-provided source refs. When a
-		// rewrite cannot be located exactly, the whole authoritative ASR remains
-		// the evidence boundary and the normalized task text only disambiguates
-		// multiple questions from the same long utterance inside the hash.
+		// When a rewrite cannot be located exactly in the primary source, the whole
+		// authoritative ASR remains the evidence boundary and normalized task text
+		// only disambiguates multiple questions from the same long utterance.
 		canonicalQuotes = append(canonicalQuotes, strings.TrimSpace(plan.Text))
 	}
 	ret.BindingsJSON = string(raw)
 	ret.SourceSetFingerprint = hex.EncodeToString(sourceSetSum[:])
 	ret.CanonicalQuestionHash = CanonicalQuestionHash(plan.Intent, plan.SubIntent, canonicalQuotes, plan.RequestMode)
+	ret.ReferenceFingerprint = runtimeTaskReferenceFingerprint(plan, source, boundSources)
 	return ret, nil
+}
+
+func selectRuntimeTaskSources(plan callbacks.ReplyTaskPlanTraceData, fallbackMessageID int64, sources []runtimeTaskSource, used map[int64]struct{}) (runtimeTaskSource, []runtimeTaskSource, int, int, bool) {
+	if len(plan.SourceMessageIDs) > 0 {
+		byID := make(map[int64]runtimeTaskSource, len(sources))
+		for _, source := range sources {
+			byID[source.Message.ID] = source
+		}
+		bound := make([]runtimeTaskSource, 0, len(plan.SourceMessageIDs))
+		seen := make(map[int64]struct{}, len(plan.SourceMessageIDs))
+		for _, messageID := range plan.SourceMessageIDs {
+			source, ok := byID[messageID]
+			if !ok || strings.TrimSpace(source.Text) == "" {
+				continue
+			}
+			if _, exists := seen[messageID]; exists {
+				continue
+			}
+			seen[messageID] = struct{}{}
+			bound = append(bound, source)
+		}
+		if len(bound) > 0 {
+			primary := bound[0]
+			start, end, precise := runtimeTaskSpanWithinSource(plan.Text, primary.Text)
+			return primary, bound, start, end, precise
+		}
+	}
+	primary, start, end, precise := matchRuntimeTaskSourceWithSpan(plan, fallbackMessageID, sources, used)
+	return primary, []runtimeTaskSource{primary}, start, end, precise
+}
+
+func runtimeTaskReferenceFingerprint(plan callbacks.ReplyTaskPlanTraceData, primary runtimeTaskSource, sources []runtimeTaskSource) string {
+	anchorIDs := make([]string, 0, len(sources))
+	primaryNeedsAnchor := primary.Message.MessageType == enums.IMMessageTypeImage ||
+		primary.Message.MessageType == enums.IMMessageTypeVideo || primary.Message.MessageType == enums.IMMessageTypeGIF ||
+		primary.Message.MessageType == enums.IMMessageTypeAttachment
+	needsContextAnchor := runtimeTaskTextNeedsReference(plan.Text)
+	for _, source := range sources {
+		anchor := source.Message.ID == primary.Message.ID && primaryNeedsAnchor
+		if source.Message.ID != primary.Message.ID && needsContextAnchor {
+			anchor = true
+		}
+		if anchor {
+			anchorIDs = append(anchorIDs, fmt.Sprintf("%d:%d", source.Message.ID, source.AnalysisRevision))
+		}
+	}
+	if len(anchorIDs) == 0 {
+		return ""
+	}
+	sort.Strings(anchorIDs)
+	sum := sha256.Sum256([]byte(strings.Join(anchorIDs, ",")))
+	return hex.EncodeToString(sum[:16])
+}
+
+func runtimeTaskTextNeedsReference(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	if compact == "" || len([]rune(compact)) > 32 {
+		return false
+	}
+	return containsAny(compact, []string{"这个", "那个", "这张", "那张", "这个东西", "上面", "前面", "刚才", "它", "这里", "那里", "这是什么", "这是啥", "什么意思"})
 }
 
 func runtimeTaskSpanWithinSource(questionText, sourceText string) (int, int, bool) {
@@ -598,9 +902,13 @@ func replyTaskPlansFromLedger(tasks []models.AIReplyTurnTask, messages []models.
 
 func replyTaskPlanFromLedgerTask(task models.AIReplyTurnTask, messages []models.Message) callbacks.ReplyTaskPlanTraceData {
 	text := ""
-	for _, message := range messages {
-		if message.ID == task.SourceMessageID {
-			text = strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+	for _, source := range buildRuntimeTaskSources(messages) {
+		if source.Message.ID == task.SourceMessageID {
+			text = strings.TrimSpace(source.Text)
+			runes := []rune(text)
+			if task.SourceSpanStart >= 0 && task.SourceSpanEnd > task.SourceSpanStart && task.SourceSpanEnd <= len(runes) {
+				text = strings.TrimSpace(string(runes[task.SourceSpanStart:task.SourceSpanEnd]))
+			}
 			break
 		}
 	}
@@ -617,6 +925,7 @@ func replyTaskPlanFromLedgerTask(task models.AIReplyTurnTask, messages []models.
 		TaskKey: task.TaskKey, Sequence: task.SequenceNo, Intent: task.Intent, SubIntent: task.SubIntent, Text: text,
 		RelationType: task.RelationType,
 		Output:       output, ResourceAction: task.ResourceAction,
+		SourceMessageIDs: taskBoundMessageIDs(task),
 	}
 }
 
@@ -626,6 +935,7 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 		item := callbacks.IntentTaskTraceData{
 			Sequence: plan.Sequence, Intent: plan.Intent, SubIntent: plan.SubIntent, Text: plan.Text,
 			RequestMode: plan.RequestMode, ResourceAction: plan.ResourceAction,
+			SourceRefs: append([]string(nil), plan.SourceRefs...), SourceMessageIDs: append([]int64(nil), plan.SourceMessageIDs...),
 		}
 		switch runtimeTaskTypeForPlan(plan) {
 		case enums.AIReplyTurnTaskTypeKnowledge:

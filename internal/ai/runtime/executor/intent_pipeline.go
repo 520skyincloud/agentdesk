@@ -619,14 +619,16 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
-		Sequence:       task.Sequence,
-		Intent:         task.Intent,
-		SubIntent:      task.SubIntent,
-		Text:           task.Text,
-		RequestMode:    task.RequestMode,
-		Requirements:   task.Requirements,
-		Output:         output,
-		ResourceAction: task.ResourceAction,
+		Sequence:         task.Sequence,
+		Intent:           task.Intent,
+		SubIntent:        task.SubIntent,
+		Text:             task.Text,
+		RequestMode:      task.RequestMode,
+		SourceRefs:       append([]string(nil), task.SourceRefs...),
+		SourceMessageIDs: append([]int64(nil), task.SourceMessageIDs...),
+		Requirements:     task.Requirements,
+		Output:           output,
+		ResourceAction:   task.ResourceAction,
 	}
 }
 

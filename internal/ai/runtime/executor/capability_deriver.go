@@ -181,6 +181,7 @@ func AdaptIntentV2ToLegacyTrace(v2 contracts.IntentTasksV2, derived []DerivedTas
 		trace.IntentTasks = append(trace.IntentTasks, callbacks.IntentTaskTraceData{
 			Sequence: task.Sequence, Intent: task.Intent, SubIntent: task.SubIntent, Text: task.Text,
 			RequestMode: task.RequestMode, Confidence: task.Confidence,
+			SourceRefs: append([]string(nil), task.SourceRefs...), SourceMessageIDs: append([]int64(nil), task.SourceMessageIDs...),
 			NeedsKnowledge: item.NeedsKnowledge, NeedsResource: item.NeedsResource,
 			NeedsTool: item.NeedsTool, NeedsHumanRoute: item.NeedsHumanRoute,
 			ResourceAction: item.ResourceAction, MatchedConfigID: item.ConfigID,

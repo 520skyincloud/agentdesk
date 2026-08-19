@@ -658,26 +658,27 @@ func (s *aiReplyTurnService) MarkDeliveredDB(db *gorm.DB, message *models.Messag
 		return err
 	}
 	if turn.ConversationID != message.ConversationID || turn.SessionNo != message.SessionNo ||
-		turn.StoreID != conversation.StoreID || turn.StoreStaffBindingID != conversation.StoreStaffBindingID ||
-		message.AIReplyTurnVersion < turn.LastDeliveredVersion {
+		turn.StoreID != conversation.StoreID || turn.StoreStaffBindingID != conversation.StoreStaffBindingID {
 		return nil
 	}
-	if message.AIReplyTurnVersion == turn.LastDeliveredVersion && turn.LastDeliveredAt != nil && !deliveredAt.After(*turn.LastDeliveredAt) {
-		return nil
-	}
-	updates := map[string]any{
-		"last_delivered_version":    message.AIReplyTurnVersion,
-		"last_delivered_request_id": strings.TrimSpace(message.RequestID),
-		"last_delivered_at":         deliveredAt,
-		"updated_at":                deliveredAt,
-		"update_user_name":          "outbox_delivery",
-	}
-	if !aiReplyTurnTerminalStatus(turn.Status) && message.AIReplyTurnVersion == turn.Version &&
-		message.AIReplyTurnVersion >= turn.LastCommittedVersion {
-		updates["status"] = enums.AIReplyTurnStatusDelivered
-	}
-	if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, updates); err != nil {
-		return err
+	advanceTurnCursor := message.AIReplyTurnVersion > turn.LastDeliveredVersion ||
+		(message.AIReplyTurnVersion == turn.LastDeliveredVersion &&
+			(turn.LastDeliveredAt == nil || deliveredAt.After(*turn.LastDeliveredAt)))
+	if advanceTurnCursor {
+		updates := map[string]any{
+			"last_delivered_version":    message.AIReplyTurnVersion,
+			"last_delivered_request_id": strings.TrimSpace(message.RequestID),
+			"last_delivered_at":         deliveredAt,
+			"updated_at":                deliveredAt,
+			"update_user_name":          "outbox_delivery",
+		}
+		if !aiReplyTurnTerminalStatus(turn.Status) && message.AIReplyTurnVersion == turn.Version &&
+			message.AIReplyTurnVersion >= turn.LastCommittedVersion {
+			updates["status"] = enums.AIReplyTurnStatusDelivered
+		}
+		if err := repositories.AIReplyTurnRepository.UpdatesInTenant(db, turn.ID, turn.TenantID, updates); err != nil {
+			return err
+		}
 	}
 	return AIReplyTurnTaskService.MarkDeliveredByMessageDB(db, message, deliveredAt)
 }
@@ -694,7 +695,7 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 	if turn == nil || turn.ConversationID != message.ConversationID || turn.SessionNo != message.SessionNo {
 		return false, "cancelled_turn_scope_invalid", nil
 	}
-	if message.AIReplyTurnVersion != turn.Version {
+	if message.AIReplyTurnVersion > turn.Version {
 		return false, "cancelled_stale_turn", nil
 	}
 	conversation := repositories.ConversationRepository.GetInTenant(db, message.ConversationID, message.TenantID)
@@ -707,13 +708,21 @@ func (s *aiReplyTurnService) CanDispatchOutboxDB(db *gorm.DB, message *models.Me
 		tasks := repositories.AIReplyTurnTaskRepository.FindByCommittedMessageInTenant(db, message.TenantID, message.ID)
 		if len(tasks) > 0 {
 			taskStateKnown = true
+			taskDispatchable = true
 			for _, task := range tasks {
-				if task.TurnID == turn.ID && (task.Status == enums.AIReplyTurnTaskStatusCommitted || task.Status == enums.AIReplyTurnTaskStatusDelivered) {
-					taskDispatchable = true
+				if task.TurnID != turn.ID ||
+					(task.Status != enums.AIReplyTurnTaskStatusCommitted && task.Status != enums.AIReplyTurnTaskStatusDelivered) {
+					taskDispatchable = false
 					break
 				}
 			}
 		}
+	}
+	// A newer customer message may advance the Turn after this reply has already
+	// committed. Delivery remains valid when its bound Task is still committed;
+	// corrections/cancellations supersede that Task and are rejected below.
+	if message.AIReplyTurnVersion < turn.Version && !taskStateKnown {
+		return false, "cancelled_stale_turn", nil
 	}
 	if aiReplyTurnTerminalStatus(turn.Status) {
 		if aiReplyTurnAIHandoffReason(turn.TerminalReason) && taskStateKnown && taskDispatchable {

@@ -1838,7 +1838,10 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if err != nil {
 		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(dispatchMessage, err.Error()))
 	}
-	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, dispatchMessage)
+	resp, attempted, err := s.sendClaimedOutboxMessage(outbox, cfg, instance, protocolConversationID, dispatchMessage)
+	if !attempted {
+		return err
+	}
 	if err != nil {
 		return s.markOutboxFailed(outbox, redactArrivalBindingTicketError(dispatchMessage, err.Error()))
 	}
@@ -1869,6 +1872,21 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 		go s.reportConversationReadAfterAIReply(instance.ID, protocolConversationID, conversation.ID, message.ID)
 	}
 	return nil
+}
+
+func (s *wxWorkProtocolService) sendClaimedOutboxMessage(
+	outbox models.ChannelMessageOutbox,
+	cfg *dto.WxWorkProtocolChannelConfig,
+	instance *models.WxWorkProtocolInstance,
+	protocolConversationID string,
+	message *models.Message,
+) (string, bool, error) {
+	allowed, err := ChannelMessageOutboxService.CanContinueSending(outbox.ID, outbox.TenantID)
+	if err != nil || !allowed {
+		return "", false, err
+	}
+	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
+	return resp, true, err
 }
 
 func (s *wxWorkProtocolService) reportConversationReadAfterAIReply(instanceID int64, protocolConversationID string, conversationID int64, messageID int64) {

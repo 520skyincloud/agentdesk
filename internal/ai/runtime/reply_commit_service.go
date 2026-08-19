@@ -127,7 +127,7 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 			if index < len(textTaskGroups) {
 				taskKeys = append([]string(nil), textTaskGroups[index]...)
 				if len(taskKeys) > 0 {
-					clientMessageID = stableTurnClientMsgID(input, "text", taskKeys)
+					clientMessageID = stableTurnClientMsgID(input, "text", index+1, taskKeys)
 				}
 			}
 			taskIndex := index
@@ -151,9 +151,9 @@ func (s *replyCommitService) SendAIReplyBatch(input replyCommitInput) ([]models.
 		}
 		clientMessageID := fmt.Sprintf("%s_%s_%d_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), index+1, input.Message.ID)
 		if strings.TrimSpace(structured.ActionKey) != "" {
-			clientMessageID = stableTurnClientMsgID(input, "action", []string{structured.ActionKey})
+			clientMessageID = stableTurnClientMsgID(input, "action", index+1, []string{structured.ActionKey})
 		} else if len(taskKeys) > 0 {
-			clientMessageID = stableTurnClientMsgID(input, structured.ResourceType, taskKeys)
+			clientMessageID = stableTurnClientMsgID(input, structured.ResourceType, index+1, taskKeys)
 		}
 		drafts = append(drafts, svc.AIOutboundMessageDraft{
 			ClientMsgID: clientMessageID,
@@ -665,17 +665,16 @@ func uniqueCommitStrings(items []string) []string {
 	return ret
 }
 
-func stableTurnClientMsgID(input replyCommitInput, kind string, stableKeys []string) string {
+func stableTurnClientMsgID(input replyCommitInput, kind string, partIndex int, stableKeys []string) string {
 	turnID := input.Message.AIReplyTurnID
-	turnVersion := input.Message.AIReplyTurnVersion
 	keys := uniqueCommitStrings(stableKeys)
 	sort.Strings(keys)
-	payload := fmt.Sprintf("%d/%d/%d/%d/%s/%s",
+	payload := fmt.Sprintf("%d/%d/%d/%s/%d/%s",
 		input.Conversation.TenantID,
 		input.Conversation.ID,
 		turnID,
-		turnVersion,
 		strings.TrimSpace(kind),
+		partIndex,
 		strings.Join(keys, ","),
 	)
 	sum := sha256.Sum256([]byte(payload))

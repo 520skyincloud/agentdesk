@@ -209,7 +209,7 @@ func compileRuntimeGenerateMessages(
 		return nil, err
 	}
 	currentMessages := []models.Message{req.UserMessage}
-	if _, sourceMessages, ok := runtimeTaskScope(req); ok && len(sourceMessages) > 0 {
+	if sourceMessages := runtimeTaskMessagesForPlans(req, plan.ReplyPlan.TaskPlans); len(sourceMessages) > 0 {
 		currentMessages = sourceMessages
 	}
 	answerabilityStatus := plan.Evidence.RetrievalStatus

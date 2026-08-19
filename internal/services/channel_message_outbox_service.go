@@ -104,22 +104,57 @@ func (s *channelMessageOutboxService) TryMarkSending(id, tenantID int64) (bool, 
 			return err
 		}
 		if !allowed {
-			now := time.Now()
-			cancelReason := controlledOutboxCancelReason(reason)
-			if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(ctx.Tx, outbox.ID, tenantID, map[string]any{
-				"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
-				"next_retry_at": nil,
-				"last_error":    cancelReason,
-				"updated_at":    now,
-			}); err != nil {
-				return err
-			}
-			return AIReplyTurnActionService.SupersedeByOutboxDB(ctx.Tx, tenantID, outbox.ID, cancelReason, now)
+			return s.cancelInvalidDispatchDB(ctx.Tx, outbox, reason, time.Now())
 		}
 		claimed, err = repositories.ChannelMessageOutboxRepository.TryMarkSending(ctx.Tx, id, tenantID, time.Now())
 		return err
 	})
 	return claimed, err
+}
+
+// CanContinueSending closes the claim-to-send race by rechecking both the
+// outbox state and its AI Task bindings immediately before protocol dispatch.
+func (s *channelMessageOutboxService) CanContinueSending(id, tenantID int64) (bool, error) {
+	var allowed bool
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		outbox, err := repositories.ChannelMessageOutboxRepository.GetForUpdateInTenant(ctx.Tx, id, tenantID)
+		if err != nil || outbox == nil {
+			return err
+		}
+		if outbox.SendStatus != string(enums.ChannelMessageOutboxStatusSending) {
+			return nil
+		}
+		message := repositories.MessageRepository.GetInTenant(ctx.Tx, outbox.MessageID, tenantID)
+		if message == nil || message.ConversationID != outbox.ConversationID {
+			return s.cancelInvalidDispatchDB(ctx.Tx, outbox, "cancelled_turn_scope_invalid", time.Now())
+		}
+		dispatchable, reason, err := AIReplyTurnService.CanDispatchOutboxDB(ctx.Tx, message)
+		if err != nil {
+			return err
+		}
+		if !dispatchable {
+			return s.cancelInvalidDispatchDB(ctx.Tx, outbox, reason, time.Now())
+		}
+		allowed = true
+		return nil
+	})
+	return allowed, err
+}
+
+func (s *channelMessageOutboxService) cancelInvalidDispatchDB(db *gorm.DB, outbox *models.ChannelMessageOutbox, reason string, now time.Time) error {
+	if db == nil || outbox == nil {
+		return nil
+	}
+	cancelReason := controlledOutboxCancelReason(reason)
+	if err := repositories.ChannelMessageOutboxRepository.UpdatesInTenant(db, outbox.ID, outbox.TenantID, map[string]any{
+		"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+		"next_retry_at": nil,
+		"last_error":    cancelReason,
+		"updated_at":    now,
+	}); err != nil {
+		return err
+	}
+	return AIReplyTurnActionService.SupersedeByOutboxDB(db, outbox.TenantID, outbox.ID, cancelReason, now)
 }
 
 func controlledOutboxCancelReason(reason string) string {

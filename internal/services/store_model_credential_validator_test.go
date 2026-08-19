@@ -15,7 +15,7 @@ import (
 
 func TestValidateStructuredResponsesPayload(t *testing.T) {
 	schema := contracts.MustSchema(contracts.SchemaIntentTasksV2)
-	valid := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1}]}`
+	valid := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1,"sourceRefs":["U1"]}]}`
 	for _, test := range []struct {
 		name string
 		raw  string
@@ -42,7 +42,7 @@ func TestValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots(t *testi
 	} {
 		t.Run(string(usageCode), func(t *testing.T) {
 			var captured map[string]any
-			responseText := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1}]}`
+			responseText := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1,"sourceRefs":["U1"]}]}`
 			expectedSchemaName := "intent_tasks_v2"
 			if usageCode == enums.ModelUsageSlotReplyLLM {
 				responseText = `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"您好，请问有什么可以帮您？"}]}`

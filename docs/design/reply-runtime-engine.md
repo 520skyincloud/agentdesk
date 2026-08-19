@@ -255,11 +255,14 @@ open -> running -> committed -> delivered
                   \-> interrupted | closed | failed
 ```
 
-`AIReplyTurnTask` 是轮次内的逐题账本。一条客户消息可以绑定多个独立问题、资源动作或人工动作；
-TaskKey 使用 Tenant、Turn 和确定性语义/来源指纹生成，内存 ReplyPlan 与持久 Task 必须使用同一个
-范围化 key。禁止把“一个 SourceMessage 只能有一个 Task”作为绑定条件，否则复合文字和语音会在
-恢复时退化成整句检索。Task 只保存范围、意图标签、确定性问题指纹、阶段、结果码和提交证据，
-不保存问题正文、知识正文或模型输出。状态为：
+`AIReplyTurnTask` 是轮次内的逐题账本。一条客户消息可以绑定多个独立问题，一个 Task 也可以通过
+`source_bindings_json` 同时绑定 primary 和相邻 context 消息。Intent V2 使用轻量 `sourceRefs`
+引用当前 `TurnInputEnvelope` 中的 URef；`sourceRefs[0]` 是主问题，后续 ref 是被同一 Task 消化的
+上下文。TaskKey 使用 Tenant、Turn、TaskType、规范化语义问题、RequestMode 和必要的媒体/附件
+指代对象生成，不包含 SourceMessageID、TurnVersion 或 ASR revision。禁止把“一个 SourceMessage
+只能有一个 Task”作为绑定条件，否则复合文字和语音会在恢复时退化成整句检索；也禁止把来源消息
+本身当作 Task 身份，否则相同文字/语音问题会创建重复 Task。Task 只保存范围、意图标签、确定性
+问题指纹、来源绑定、阶段、结果码和提交证据，不保存问题正文、知识正文或模型输出。状态为：
 
 ```text
 pending -> running -> ready -> committed -> delivered
@@ -308,9 +311,18 @@ customer Message(sendtime)
   Message/Outbox，不创建第二条回复。
 - 精确规范化后相同的迟到问题复用本轮既有 Message/Outbox：pending、sending 直接复用，failed
   提前原任务重试，sent 视为已覆盖，不再调用模型。
-- 不同迟到问题从 `LastDeliveredVersion` 后开始构建输入，只回答新增问题。若最终批次与上一答案
-  完全相同，允许一次带“只回答新增问题”生成约束的受控 Runtime 重跑；相关模型和知识调用继续
-  按本轮 RequestID 正常记录 Usage，仍相同则按 `generation_failed` 转人工。
+- Intent 的活跃语义输入由“尚未被 Task 来源绑定覆盖的当前消息 + 未完成 Task + 最多两条必要相邻
+  上下文”构成，不能由 Outbox 的 `LastDeliveredVersion` 决定。`好困啊 + 有没有咖啡` 应只创建一个
+  咖啡 Task，后一句为 primary、前一句为 context，两条消息一次性记录为已覆盖。
+- Generate 只读取当前领取的活跃未完成 Task、这些 Task 自己的来源消息和证据；committed、delivered、
+  covered、superseded Task 不重新进入候选。答案文本重复不能触发第二次 Intent、知识检索或 Generate；
+  Commit 只按稳定 Task/Message 证据收敛或返回受控失败。
+- correction/cancellation 必须通过当前 Envelope 的旧 context URef 和本地解析出的 `RelatedTaskID`
+  定向 supersede；缺少旧 context URef 时使用 Intent 现有单次协议修复预算，仍不能唯一识别时不得猜测
+  最近消息或扩大为整批取消。同一来源消息拆出多个 Task 时使用已持久化 source span 做确定性匹配。
+- ready 图片/附件的 URef 也是必须覆盖的语义来源，pending 媒体仍不作事实；收集全部未覆盖消息后不得
+  再按固定条数截断，避免较早未覆盖消息永久饥饿。指代同文案但媒体对象不同必须得到不同 reference
+  fingerprint 和 TaskKey。
 - 文本只做 Unicode NFKC、大小写、空格和结尾标点标准化后哈希；图片、定位、小程序沿用资源
   指纹。禁止模糊语义去重，避免吞掉真实不同问题。
 
@@ -509,16 +521,26 @@ Validate
   完整的 `PreparedAction`。Trace 中的旧 `resourceActions`、知识资源或文本描述只能用于诊断，
   绝不能反推动作或补建资源消息。
 - 事务后仍按 `(channel_type, message_id)` 幂等补偿 Outbox。
-- 相同 ClientMsgID 重试只补建 Outbox，不重复模型、运营事实或标签演化。
+- Task 回复的稳定 ClientMsgID 由 Tenant、Conversation、TurnID、ResourceType、PartIndex 和排序后的
+  TaskKeys/ActionKey 生成，不包含 TurnVersion；相同 ClientMsgID 重试只补建 Outbox，不重复模型、
+  Message、运营事实或标签演化，多段文本也不会因共享 TaskKeys 发生 ID 碰撞。
 - AIReplyJob 在模型执行前和 Commit 前重新读取 Session、Route、Binding、实例、AI 开关和接待状态。
 - “是否允许 AI 回复”只由 `ConversationRuntimeModeService.ResolveDB` 投影为
   `ai_active/ai_degraded/human_pending/human_active/resume_pending/closed` 并给出 `AIReplyAllowed`；
   Trigger、Job Start、Turn Commit、Outbox Claim、Resume 和 Human Takeover 统一消费该结果。各入口仍
   校验自己的不可变 Tenant/Store/Binding/Session/Turn 范围，但不得重新解释接待状态。
-- Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion 和已提交 Task。带 Task 证据的消息
-  只有在 Task 仍为 committed/delivered 时才可发送；已被覆盖、人工接管或范围失效时进入
-  `cancelled`。仅对没有 Task 证据的兼容旧消息，更新版本完成 Commit 后才按
-  `cancelled_stale_turn` 取消；这样既不重复发送，也不会丢弃已经完成的独立问题答案。
+- Outbox Claim 前再次读取关联 AI Message 的 TurnID/TurnVersion 和全部已绑定 Task。带 Task 证据的
+  消息只有在每个绑定 Task 仍为 committed/delivered 时才可发送；任一 Task 已 superseded、covered、
+  skipped 或 failed 时整条不可分割 Message 进入 `cancelled_stale_task`。Turn Version 单纯增长不取消
+  仍有效的 committed Message；仅对没有 Task 证据的兼容旧消息按 `cancelled_stale_turn` 处理。
+- correction 使共享 Message 中一个 Task 失效时，在同一事务取消旧 Outbox 和关联 Action；同一 Message
+  内其他仍有效的 committed Task 清除旧提交绑定并回到 `generate/ready`，由当前 Job 重新生成，不得让
+  它们停留在“Task committed、唯一 Message cancelled”的漏答状态。
+- Outbox 从 claim 到协议调用之间可能发生 correction；真正调用渠道 adapter 前必须锁定重读 Outbox，
+  确认状态仍为 sending 且全部 Task 仍可投递，否则取消并禁止进入外部发送。
+- 同一 Turn 的新版本回复先送达后，仍有效的旧版本 Outbox 依然可以发送；Turn 的 delivery cursor
+  保持单调，但每条 Message 绑定的 Task 都必须独立从 committed 更新为 delivered，不能因版本较旧
+  永久停留在 pending-delivery 语义。
 - 后台补偿只扫描明确有持久投递意图且缺 Outbox 的新消息。
 - Outbox 待投递查询和 CAS Claim 都要求 `next_retry_at IS NULL OR next_retry_at <= now`；未到期
   不能抢占，到期后只重试协议投递。
@@ -581,6 +603,11 @@ Binding、知识库或会话数据。旧 AIConfig、本地知识和兼容 Resolv
 - 两个 Worker 同时竞争同一 Turn 时只有精确匹配最新 Turn Version 且持有租约的 Job 可执行。新客户
   消息升级 Version 后，旧 Job 必须被取消并收敛为 `stale_turn_version`；最新 Job 依据稳定 TaskKey
   接管全部未完成任务。Outbox 以已原子提交的 Task 终态作为最终门禁，未提交旧批次不能继续发送。
+- `好困啊 + 有没有咖啡` 必须形成一个咖啡 Task 和两条来源绑定；回复 committed 但未 delivered 时
+  重复同一问题只覆盖原 Task，不再次 Generate；追加独立问题不取消旧有效 Outbox，只处理新 Task。
+- 明确 correction 只 supersede 被 `RelatedTaskID`/来源绑定定向的旧 Task；对应旧 Message 若包含该
+  Task 则取消，其他独立 Message 继续发送。共享 Message 中未被纠正的 Task 必须重新进入 Generate，
+  同一来源拆出多个 Task 时不得整批误取消；claim 后发生 correction 也必须在协议发送前被最终门禁阻止。
 - 两个相关知识问题命中同一排名第一知识记录时只提交一条 Message，并把同一 Message ID 写入全部
   对应 Task；命中不同知识记录的问题仍逐题回答。
 - 每槽 `MaxRetryCount=2` 时超时、5xx 或空模型结果恰好执行三次 provider 调用，耗尽后只创建

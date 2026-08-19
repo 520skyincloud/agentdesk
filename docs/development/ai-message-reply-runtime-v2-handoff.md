@@ -503,3 +503,40 @@ go test -tags dev ./internal/ai/runtime/contextcompiler ./internal/ai/runtime/ex
 go test -tags dev ./internal/services -run 'AIReplyJob|AIReplyTurn|TaskLedger|Runtime|Outbox' -count=1
 git diff --check
 ```
+
+### 8.12 2026-08-19 连续消息来源、Task 幂等与 Outbox 结构修复
+
+本次继续沿用 Intent/Generate V2，不增加模型调用、固定等待或事实核验阶段。正常链路保持
+`120ms 收敛 -> 1 次 Intent -> 并行知识检索 -> 1 次 Generate -> Commit -> Outbox`，修复点集中在
+语义输入、Task 来源、幂等身份和投递资格：
+
+- Intent V2 增加必填 `sourceRefs`，URef 只引用当前 `TurnInputEnvelope`；第一项为 primary，后续项为
+  同一 Task 消化的 context。`好困啊 + 有没有咖啡` 形成一个咖啡 Task，两条 Message 都写入
+  `source_bindings_json` 和 resolved coverage，不再为“好困啊”补建第二个 Task。
+- 活跃语义输入不再按 `LastDeliveredVersion` 截断；Intent 只看尚未覆盖消息、未完成 Task 和最多两条
+  相邻上下文。Generate 只读取本批活跃 Task 的来源与证据，已 committed/delivered/covered 的旧题
+  不再进入生成候选。ready 图片/附件 URef 同样属于必须覆盖来源，pending 媒体不作事实；required
+  消息收集后不再做固定 12 条尾截断。
+- TaskKey 改为 Turn 内语义身份，不包含 SourceMessageID、TurnVersion 或 ASR revision；仅图片、附件等
+  明确指代对象加入 reference fingerprint。回复 committed 但尚未 delivered 时，相同问题创建 covered
+  记录并复用原 Message/Outbox，不再次进入 Generate。
+- correction/cancellation 使用来源绑定和现有 `RelatedTaskID` 精确 supersede。上一条复合消息包含多个
+  Task 时，使用既有 source span 做本地确定性目标匹配；缺少旧 context URef 时走既有一次协议修复，
+  仍不能唯一判断则不猜最近消息。Outbox 对一条 Message 的全部绑定 Task 做门禁；任一 Task 已失效则
+  取消该不可分割 Message，并把同 Message 内其他有效 Task 回到 `generate/ready`，避免永久漏答。
+- Turn Version 增长不再单独取消已 committed 且仍有效的旧回复；稳定 ClientMsgID 不含 TurnVersion，
+  同时包含资源类型和分段序号，Worker/Outbox 重试复用同一 Message 且多段文本不会碰撞。较新版本先
+  送达时，较旧但仍有效的 Message 发送后仍会独立把绑定 Task 标为 delivered。
+- correction 事务会同步取消旧 Outbox 与其 Action 账本；Outbox 已 claim 后，企微协议真正调用 adapter
+  前再次锁定重读发送状态和 Task 有效性，失效回复不会进入外部发送。
+- 单任务被确定性拆成多个知识子查询时与其他知识 Task 共用并发上限 4，不再在 Task 内部串行；删除
+  “答案重复后重新运行整个 Executor”的路径，因此不会额外增加 Intent、知识检索或 Generate。
+
+本次没有 model/migration、公开 DTO/enum、HTTP API、WebSocket、企微协议、模型供应商、Token/Usage、
+计费或前端变化。聚焦验证通过：
+
+```bash
+go test -tags dev ./internal/ai/runtime/contracts ./internal/ai/runtime/executor ./internal/ai/runtime -count=1
+go test -tags dev ./internal/services -run 'AIReplyTurn|ChannelMessageOutbox|WxWorkProtocolFinalDispatchCheck|ValidateStructuredResponsesPayload|ValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots' -count=1
+go test -race -tags dev ./internal/ai/runtime/executor -run '^(TestRetrieveRuntimeTaskKnowledgeRunsIndependentQueriesConcurrently|TestSingleMultiTopicTaskSplitsIntoPerClauseQueries)$' -count=1
+```

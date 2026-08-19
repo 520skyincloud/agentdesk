@@ -24,8 +24,6 @@ const aiReplyMediaSettleWindow = 900 * time.Millisecond
 const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 
-const duplicateAnswerRetryInstruction = "【本轮纠错重试】上一版候选回复与本轮上一已发送批次完全相同，但客户当前问题不同。只回答当前新增问题；不得复述上一问题的答案，不得用旧答案占位。若当前知识不足，明确追问一个关键点。"
-
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {
 		return time.Duration(defaultAIReplyAsyncTimeoutSeconds) * time.Second
@@ -297,9 +295,6 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 		Limit(12)
 	if message.AIReplyTurnID > 0 {
 		cnd.Eq("ai_reply_turn_id", message.AIReplyTurnID)
-		if floorVersion := svc.AIReplyTurnService.InputFloorVersion(message); floorVersion > 0 {
-			cnd.Gt("ai_reply_turn_version", floorVersion)
-		}
 	} else if latestOutbound := s.latestOutboundMessageBefore(conversationID, message.SessionNo, message.ID); latestOutbound != nil {
 		cnd.Gt("id", latestOutbound.ID)
 	}
@@ -424,9 +419,6 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 					CoveredByMessageID: covered.CoveredByMessageID,
 				}, nil
 			}
-			if errors.Is(err, svc.ErrAIReplyTurnDuplicateAnswer) {
-				return s.retryDifferentQuestionDuplicateAnswer(ctx, replyCtx)
-			}
 			if errors.Is(err, svc.ErrAIReplyTurnStale) {
 				return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "stale_turn_version"}, nil
 			}
@@ -488,80 +480,6 @@ func (s *aiReplyService) requestDeferredTaskHandoff(replyCtx aiReplyContext, sum
 		summary.HumanTaskKeys,
 	)
 	return err
-}
-
-func (s *aiReplyService) retryDifferentQuestionDuplicateAnswer(ctx context.Context, replyCtx aiReplyContext) (svc.AIReplyExecutionResult, error) {
-	retryCtx := runtimeexecutor.WithGenerationGuardInstruction(ctx, duplicateAnswerRetryInstruction)
-	summary, err := s.executor.Run(retryCtx, runtimeReplyRunInput{
-		Conversation: replyCtx.Conversation,
-		Message:      replyCtx.Message,
-		AIAgent:      replyCtx.AIAgent,
-		Trace:        replyCtx.Trace,
-	})
-	replyCtx.setSummary(summary)
-	if err != nil {
-		return svc.AIReplyExecutionResult{}, err
-	}
-	if summary == nil || summary.PolicySkipped || (!summary.Interrupted && strings.TrimSpace(summary.ReplyText) == "" && !s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
-		return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
-			svc.AIReplyExecutionErrorGenerationFailed,
-			fmt.Errorf("duplicate-answer retry produced no usable reply"),
-		)
-	}
-	if summary.Interrupted {
-		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
-	}
-	checkpoint, checkpointErr := svc.AIReplyJobService.ValidateRuntimeCheckpoint(retryCtx, replyCtx.Conversation, replyCtx.Message)
-	if checkpointErr != nil {
-		return svc.AIReplyExecutionResult{}, checkpointErr
-	}
-	if checkpoint.Status != svc.AIReplyExecutionStatusCompleted || checkpoint.ReasonCode != "checkpoint_valid" {
-		return checkpoint, nil
-	}
-	if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
-		return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "newer_customer_message"}, nil
-	}
-	replyMessages, commitErr := s.commit.CommitAIReplyBatch(replyCommitInput{
-		Conversation:              replyCtx.Conversation,
-		Message:                   replyCtx.Message,
-		AIAgent:                   replyCtx.AIAgent,
-		ReplyText:                 summary.ReplyText,
-		ReplyParts:                summary.ReplyParts,
-		PreparedActions:           summary.PreparedActions,
-		ActionLedgerV2:            summary.ActionLedgerV2,
-		ActionLedgerAuthoritative: summary.ActionLedgerAuthoritative,
-		Trace:                     replyCtx.Trace,
-		ClientPrefix:              "ai_reply",
-		JobID:                     svc.AIReplyJobService.CurrentJobID(retryCtx, replyCtx.Conversation.TenantID, replyCtx.Conversation.ID),
-	})
-	if commitErr != nil {
-		var covered *svc.AIReplyTurnCoveredError
-		switch {
-		case errors.As(commitErr, &covered):
-			return svc.AIReplyExecutionResult{
-				Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: covered.ReasonCode,
-				CoveredByMessageID: covered.CoveredByMessageID,
-			}, nil
-		case errors.Is(commitErr, svc.ErrAIReplyTurnStale):
-			return svc.AIReplyExecutionResult{Status: svc.AIReplyExecutionStatusSuperseded, ReasonCode: "stale_turn_version"}, nil
-		case errors.Is(commitErr, svc.ErrAIReplyTurnDuplicateAnswer):
-			return svc.AIReplyExecutionResult{}, svc.NewAIReplyExecutionError(
-				svc.AIReplyExecutionErrorGenerationFailed,
-				fmt.Errorf("duplicate-answer retry repeated the previous answer"),
-			)
-		default:
-			return svc.AIReplyExecutionResult{}, commitErr
-		}
-	}
-	if len(replyMessages) > 0 && strings.TrimSpace(summary.ReplyText) == "" {
-		summary.ReplyText = committedReplyText(replyMessages[len(replyMessages)-1])
-	}
-	replyCtx.Trace.ReplySent = len(replyMessages) > 0
-	reasonCode := "runtime_completed_after_duplicate_retry"
-	if summary.GenerationOutcome == string(runtimeexecutor.GenerationOutcomeSafeDegraded) {
-		reasonCode = "runtime_safe_degraded_after_duplicate_retry"
-	}
-	return executionResultWithTaskSummary(completedInterruptResult(reasonCode, replyMessages, 0), summary), nil
 }
 
 func executionResultWithTaskSummary(result svc.AIReplyExecutionResult, summary *applicationruntime.Summary) svc.AIReplyExecutionResult {

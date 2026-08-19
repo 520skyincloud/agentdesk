@@ -85,6 +85,17 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 	items := make([]runtimeTaskKnowledgeItem, len(knowledgePlans))
 	semaphore := make(chan struct{}, runtimeKnowledgeTaskConcurrency)
 	var wg sync.WaitGroup
+	executeQuery := func(itemIndex int, query string, options retrievers.KnowledgeRetrieveOptions) (*retrievers.KnowledgeRetrieveResult, error) {
+		select {
+		case semaphore <- struct{}{}:
+			defer func() { <-semaphore }()
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
+			query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
+		return ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
+	}
 	// 生产回归 2026-08-18：模型把多主题整句压成单个任务时（吃的+玩的+开门），
 	// 单条整句检索只命中其中一两个主题，其余主题零证据被模型自由发挥
 	// （编造“刷卡还是密码锁”）。对单任务多主题按连接词确定性拆成多路检索，
@@ -113,14 +124,6 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 		wg.Add(1)
 		go func(itemIndex int) {
 			defer wg.Done()
-			select {
-			case semaphore <- struct{}{}:
-				defer func() { <-semaphore }()
-			case <-ctx.Done():
-				items[itemIndex].Err = ctx.Err()
-				items[itemIndex].Status = enums.AIReplyTurnTaskKnowledgeStatusFailed
-				return
-			}
 			queries := []string{items[itemIndex].Query}
 			if itemIndex == 0 && len(singleTaskClauses) > 0 {
 				queries = singleTaskClauses
@@ -140,25 +143,26 @@ func retrieveRuntimeTaskKnowledgeWithRetriever(ctx context.Context, req RunInput
 			}
 			// 契约 4.18/22.12：统一执行器——checkpoint 复用 + 租约 + 有界并发。
 			if len(queries) == 1 {
-				plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
-					queries[0], "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
-				result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
+				result, err := executeQuery(itemIndex, queries[0], options)
 				items[itemIndex].Result = result
 				items[itemIndex].Err = err
 				items[itemIndex].Status = runtimeKnowledgeStatus(result, err)
 				items[itemIndex].AnswerGroup = runtimeKnowledgeAnswerGroup(result)
 				return
 			}
-			subItems := make([]runtimeTaskKnowledgeItem, 0, len(queries))
-			for _, query := range queries {
-				plan := BuildKnowledgeQueryPlan(req.Conversation.TenantID, req.Conversation.StoreID, req.Conversation.ID, req.UserMessage.SessionNo,
-					query, "answer", taskState.TurnID, options.TaskID, items[itemIndex].TaskKey)
-				result, err := ExecuteKnowledgeQuery(ctx, sqls.DB(), plan, retriever, options, nil)
-				sub := runtimeTaskKnowledgeItem{TaskKey: items[itemIndex].TaskKey, Query: query,
-					Intent: items[itemIndex].Intent, SubIntent: items[itemIndex].SubIntent,
-					Result: result, Err: err, Status: runtimeKnowledgeStatus(result, err)}
-				subItems = append(subItems, sub)
+			subItems := make([]runtimeTaskKnowledgeItem, len(queries))
+			var subWG sync.WaitGroup
+			for queryIndex, query := range queries {
+				subWG.Add(1)
+				go func(index int, subQuery string) {
+					defer subWG.Done()
+					result, err := executeQuery(itemIndex, subQuery, options)
+					subItems[index] = runtimeTaskKnowledgeItem{TaskKey: items[itemIndex].TaskKey, Query: subQuery,
+						Intent: items[itemIndex].Intent, SubIntent: items[itemIndex].SubIntent,
+						Result: result, Err: err, Status: runtimeKnowledgeStatus(result, err)}
+				}(queryIndex, query)
 			}
+			subWG.Wait()
 			merged := mergeRuntimeTaskKnowledge(subItems, retriever.KnowledgeBaseIDs())
 			items[itemIndex].Result = merged
 			items[itemIndex].Err = nil
