@@ -165,6 +165,17 @@ func TestExpandRuntimeAtomicReplyTaskPlansSplitsAddressAndTakeawayComma(t *testi
 	}
 }
 
+func TestExpandRuntimeAtomicReplyTaskPlansSplitsFoodRecommendationAndTakeawayFlow(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "surrounding_facilities", Output: "knowledge_text_reply",
+		Text: "附近有什么好吃的，怎么点外卖",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 2 || got[0].SubIntent != "surrounding_facilities" || got[1].SubIntent != "order_food_delivery" {
+		t.Fatalf("food recommendation and takeaway flow must remain separate tasks: %#v", got)
+	}
+}
+
 func TestExpandRuntimeAtomicReplyTaskPlansKeepsSingleEventAcrossComma(t *testing.T) {
 	plans := []callbacks.ReplyTaskPlanTraceData{{
 		Sequence: 1, Intent: "hotel_info", SubIntent: "order_food_delivery", Output: "knowledge_text_reply",

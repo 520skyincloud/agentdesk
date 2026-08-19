@@ -137,7 +137,7 @@ func extractAssertedPlaceNames(content string) []string {
 				startByte -= size
 			}
 			name := strings.TrimSpace(content[startByte:endByte])
-			if utf8.RuneCountInString(name) >= 3 {
+			if utf8.RuneCountInString(name) >= 3 && !isGenericStorePlaceName(name) {
 				if _, dup := seen[name]; !dup {
 					seen[name] = struct{}{}
 					found = append(found, name)
@@ -147,6 +147,32 @@ func extractAssertedPlaceNames(content string) []string {
 		}
 	}
 	return found
+}
+
+// isGenericStorePlaceName filters pronoun-based hotel references that describe
+// the current store without asserting a proper place name. Proper names such as
+// "丽斯酒店" or "壹间公寓" must continue through the protected-fact check.
+func isGenericStorePlaceName(name string) bool {
+	compact := compactRuntimeProtocolText(name)
+	for {
+		trimmed := false
+		for _, connector := range []string{"以及", "还有", "和", "与", "及"} {
+			if strings.HasPrefix(compact, connector) {
+				compact = strings.TrimPrefix(compact, connector)
+				trimmed = true
+				break
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	switch compact {
+	case "我们酒店", "本酒店", "咱们酒店", "这家酒店", "这个酒店", "该酒店", "当前酒店":
+		return true
+	default:
+		return false
+	}
 }
 
 // decodeLastRune 返回 s 中最后一个 rune 及其字节长度。

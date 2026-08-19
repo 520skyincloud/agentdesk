@@ -12,6 +12,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/strictjson"
 	"agent-desk/internal/repositories"
 
 	"gorm.io/gorm"
@@ -543,11 +544,13 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobControlledModelFailureStopsWithoutJobRetry(t *testing.T) {
+func TestAIReplyJobControlledModelFailureRetriesOnceThenSucceeds(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
-		runtimeCalls.Add(1)
+		if runtimeCalls.Add(1) == 2 {
+			return createAIReplyJobTestCompletion(fixture.db, fixture.conversation, fixture.message)
+		}
 		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
 			AIReplyExecutionErrorGenerationFailed,
 			errors.New("upstream retries exhausted"),
@@ -563,13 +566,22 @@ func TestAIReplyJobControlledModelFailureStopsWithoutJobRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "runtime_retry" ||
+		current.AttemptCount != 1 || current.NextRetryAt == nil || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		t.Fatalf("retry job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || current.AttemptCount != 2 ||
+		runtimeCalls.Load() != 2 || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 
-func TestAIReplyJobRetryableModelTimeoutStillStopsAfterSlotRetries(t *testing.T) {
+func TestAIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
@@ -589,9 +601,38 @@ func TestAIReplyJobRetryableModelTimeoutStillStopsAfterSlotRetries(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != 1 || runtimeCalls.Load() != 1 {
+		t.Fatalf("retry job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != 1 || runtimeCalls.Load() != 1 || dispatchCalls.Load() != 0 {
+		current.AttemptCount != aiReplyJobModelRecoveryMaxAttempts || runtimeCalls.Load() != 2 || dispatchCalls.Load() != 0 {
 		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+}
+
+func TestAIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery(t *testing.T) {
+	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
+	var runtimeCalls atomic.Int32
+	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
+		runtimeCalls.Add(1)
+		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
+			AIReplyExecutionErrorGenerationFailed,
+			&strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.replies"},
+		)
+	})
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
+		current.ResultCode != "technical_failure_no_handoff" || current.AttemptCount != 1 || runtimeCalls.Load() != 1 {
+		t.Fatalf("job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
 	}
 }
 

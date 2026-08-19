@@ -26,13 +26,14 @@ import (
 )
 
 const (
-	aiReplyJobLifetime          = 15 * time.Minute
-	aiReplyJobInitialDelay      = 250 * time.Millisecond
-	aiReplyJobLeaseDuration     = 90 * time.Second
-	aiReplyJobRenewInterval     = 30 * time.Second
-	aiReplyJobContinuationDelay = 250 * time.Millisecond
-	aiReplyJobMaxAttempts       = 4
-	aiReplyJobMaxConcurrency    = 4
+	aiReplyJobLifetime                 = 15 * time.Minute
+	aiReplyJobInitialDelay             = 250 * time.Millisecond
+	aiReplyJobLeaseDuration            = 90 * time.Second
+	aiReplyJobRenewInterval            = 30 * time.Second
+	aiReplyJobContinuationDelay        = 250 * time.Millisecond
+	aiReplyJobMaxAttempts              = 4
+	aiReplyJobModelRecoveryMaxAttempts = 2
+	aiReplyJobMaxConcurrency           = 4
 )
 
 var aiReplyJobRetryDelays = []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
@@ -783,9 +784,17 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 	hasActiveTasks := AIReplyTurnTaskService.HasUnfinished(job.TenantID, job.TurnID) &&
 		!AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
 	hasFailureHandoff := AIReplyTurnTaskService.HasFailureHandoffs(job.TenantID, job.TurnID)
+	attemptCount := job.AttemptCount
+	retryLimit := aiReplyJobMaxAttempts
+	if runErr != nil {
+		if current := repositories.AIReplyJobRepository.GetInTenant(sqls.DB(), job.ID, job.TenantID); current != nil {
+			attemptCount = current.AttemptCount
+		}
+		retryLimit = aiReplyJobRetryAttemptLimit(classifyTaskFailure(runErr))
+	}
 	if hasActiveTasks && !hasFailureHandoff {
 		retryable := runErr == nil || controlledExecutionErrorShouldRetry(runErr)
-		if runErr != nil && (!retryable || job.AttemptCount >= aiReplyJobMaxAttempts) {
+		if runErr != nil && (!retryable || attemptCount >= retryLimit) {
 			failureClass := classifyTaskFailure(runErr)
 			if failureClassAllowsHumanHandoff(failureClass) {
 				if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -823,8 +832,8 @@ func (s *aiReplyJobService) finishTaskLedgerOutcome(job *models.AIReplyJob, owne
 				nextRetryAt = *taskRetryAt
 			}
 			consumeAttempt := runErr != nil
-			if consumeAttempt && job.AttemptCount < aiReplyJobMaxAttempts {
-				modelRetryAt := now.Add(aiReplyJobRetryDelayFor(classifyTaskFailure(runErr), job.AttemptCount-1))
+			if consumeAttempt && attemptCount < retryLimit {
+				modelRetryAt := now.Add(aiReplyJobRetryDelayFor(classifyTaskFailure(runErr), attemptCount-1))
 				if modelRetryAt.After(nextRetryAt) {
 					nextRetryAt = modelRetryAt
 				}
@@ -913,24 +922,39 @@ func controlledExecutionErrorShouldRetry(err error) bool {
 	if !ok {
 		return false
 	}
-	// Intent、Generate 和 Knowledge 的网络重试已经由九槽客户端或
-	// FastGPT Gateway 完成；协议修复也在 Runtime 内完成。Job 再跑会把
-	// 一次上游故障放大成多轮模型调用，并可能重复处理同一客户问题。
+	details, detailsOK := AIReplyExecutionErrorDetailsOf(err)
+	if detailsOK && details.RetryabilityKnown && !details.Retryable {
+		return false
+	}
+	// Intent/Generate 的槽内网络重试和协议修复耗尽后，Job 仍允许一次
+	// 短恢复。Intent 尚未落 Task 时只重跑 Intent；Generate 已有持久 Task
+	// 和知识 checkpoint 时只重跑未完成 Generate，不放大正常链路。
 	switch code {
 	case AIReplyExecutionErrorIntentDetectFailed,
 		AIReplyExecutionErrorGenerationFailed,
-		AIReplyExecutionErrorKnowledgeUnavailable,
-		AIReplyExecutionErrorEmptyOutput,
+		AIReplyExecutionErrorEmptyOutput:
+		return true
+	case AIReplyExecutionErrorKnowledgeUnavailable,
 		AIReplyExecutionErrorResourceInvariantBroken:
 		return false
 	case AIReplyExecutionErrorCommitFailed:
-		details, detailsOK := AIReplyExecutionErrorDetailsOf(err)
 		if detailsOK && details.RetryabilityKnown {
 			return details.Retryable
 		}
 		return true
 	default:
 		return false
+	}
+}
+
+func aiReplyJobRetryAttemptLimit(errorClass string) int {
+	switch strings.TrimSpace(errorClass) {
+	case string(AIReplyExecutionErrorIntentDetectFailed),
+		string(AIReplyExecutionErrorGenerationFailed),
+		string(AIReplyExecutionErrorEmptyOutput):
+		return aiReplyJobModelRecoveryMaxAttempts
+	default:
+		return aiReplyJobMaxAttempts
 	}
 }
 
@@ -1001,7 +1025,7 @@ func (s *aiReplyJobService) retryOrDispatch(job *models.AIReplyJob, owner, error
 	if current == nil || current.Status != enums.AIReplyJobStatusProcessing || current.LeaseOwner != owner {
 		return
 	}
-	if current.AttemptCount < aiReplyJobMaxAttempts {
+	if current.AttemptCount < aiReplyJobRetryAttemptLimit(errorClass) {
 		delay := aiReplyJobRetryDelayFor(errorClass, current.AttemptCount-1)
 		_, _ = repositories.AIReplyJobRepository.MarkRetry(sqls.DB(), current.ID, current.TenantID, owner,
 			"runtime_retry", errorClass, now.Add(delay), now, true)

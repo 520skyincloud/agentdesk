@@ -48,11 +48,28 @@ func TestPromiseAllowlistAllowsInfoAndGuidance(t *testing.T) {
 		"退房后在小程序里申请发票。",         // 引导自助
 		"这个功能可以帮你自助办理入住。",       // 引导自助（含"帮你"但无动作动词，不应误判）
 		"我看看有没有别的选择，具体以门店实际为准。", // 中性短语，不含承诺语态
+		"不能帮你换房，也无法确认实时房态。",     // 明确能力否定，不是动作承诺
+		"我无法直接帮你换房，订单信息先不用发。",   // 带第一人称的明确否定仍应放行
+		"这边没法帮你换房。",             // 口语否定仍应放行
 	}
 	for _, content := range cases {
 		if issues := validateReplyFutureCommitClaims(promiseInput(content)); len(issues) != 0 {
 			t.Fatalf("unexpected issues for info/guidance %q: %+v", content, issues)
 		}
+	}
+}
+
+func TestPromiseAllowlistChecksEachSentenceIndependently(t *testing.T) {
+	content := "我帮你换成大床房。之后可以转人工确认。"
+	if issues := validateReplyFutureCommitClaims(promiseInput(content)); len(issues) == 0 {
+		t.Fatalf("allowlisted action in another sentence must not mask an unsupported promise")
+	}
+}
+
+func TestPromiseAllowlistStillRejectsPositivePromiseAfterNegation(t *testing.T) {
+	content := "不能直接帮你换房，但我帮你查一下有没有其他房型。"
+	if issues := validateReplyFutureCommitClaims(promiseInput(content)); len(issues) == 0 {
+		t.Fatalf("a later positive promise must remain rejected")
 	}
 }
 

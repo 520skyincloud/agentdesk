@@ -295,6 +295,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"【文字与语音一致】已转写成功的语音就是客户原文，必须和普通文字使用完全相同的拆题规则。语音中的停顿、逗号、问号如果分隔了不同主题，就分别生成任务，不能因为消息类型是 voice 而只保留其中一题。",
 		"【逗号多题金标】不同主题即使只用逗号连接也必须拆开。例如“酒店地址发我，我想点外卖怎么办”必须拆成 hotel_info/address 与 hotel_info/order_food_delivery 两个任务；“早餐时间和地点”仍是同一早餐任务。",
 		"【并列对象也要拆】同一句里出现多个可独立回答的对象时也必须逐项拆分，例如“咖啡和草稿纸有没有”要拆成咖啡、草稿纸两个任务；时间+地点等属于同一对象的不同维度可以保留为一个任务。",
+		"【餐饮推荐 vs 外卖流程·金标】“附近有什么好吃的/推荐吃什么”是在问周边餐饮，归 hotel_info/surrounding_facilities；“怎么点外卖/外卖怎么下单”是在问外卖流程，归 hotel_info/order_food_delivery。同一段同时出现两题时必须拆成两个任务并分别回答，不能把餐饮推荐并入外卖流程。",
 		"【task.text 纪律】intentTasks[].text 必须只写该任务对应的原话子句（如“怎么把门打开”“附近有什么好玩的”），禁止把整句原文复制到每个任务；整句包含多个主题时，必须按主题拆成多个 text，每个 text 只承载一个主题，否则知识检索会错配到别的主题。",
 		"【subIntent 纪律】subIntent 写具体业务子意图，不要空泛写 store_knowledge。hotel_info 常用：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、surrounding_facilities、discount。human_complaint_risk 常用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。",
 		"【办入住·金标】客户说“我要办入住/我想办入住/怎么入住/入住怎么弄/给我办入住”时，只输出 hotel_info/checkin_process，完整回答办理流程。服务器会按当前门店真实配置决定是否另发入住小程序，模型不得默认补出资源任务。只有客户明确只索要“入住小程序/办理入住入口”且没有询问步骤时，才输出 hotel_variable/mini_program。禁止把办入住整体归 service_request 或 human_complaint_risk。",

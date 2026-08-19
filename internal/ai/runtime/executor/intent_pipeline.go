@@ -443,7 +443,7 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 			goal = "按当前门店账号变量满足用户请求"
 		}
 	case "service_request":
-		goal = "给出自助路径或按策略引导人工，不承诺执行"
+		goal = "优先给出知识库明确的自助路径；没有真实能力时直接说明边界，不索要客户资料、不虚构人工处理或后续承诺"
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
 			goal = "处理突发安全/受伤风险并进入接待路由"

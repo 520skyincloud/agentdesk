@@ -73,6 +73,7 @@ func sanitizeConfiguredReplyInstruction(intentCode, value string) string {
 		{"知识不足时只说当前资料没写明并追问一个关键点", "知识不足时只说当前资料没写明"},
 		{"如果知识不足，只追问一个关键字段或说明当前资料没写明", "如果知识不足，只说明当前资料没写明"},
 		{"先给自助路径或追问一个必要字段", "先给知识库明确的自助路径；没有路径时直接说明当前能力边界"},
+		{"需要人工时走流程", "仅在已有真实接待路由时按路由处理"},
 	}
 	for _, replacement := range replacements {
 		value = strings.ReplaceAll(value, replacement[0], replacement[1])
@@ -84,7 +85,9 @@ func sanitizeConfiguredReplyInstruction(intentCode, value string) string {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		compact := normalizeConfiguredIntentText(part)
-		if part == "" || ((strings.Contains(compact, "追问") || strings.Contains(compact, "收集")) && strings.Contains(compact, "字段")) {
+		genericFieldCollection := (strings.Contains(compact, "追问") || strings.Contains(compact, "收集")) &&
+			(strings.Contains(compact, "字段") || strings.Contains(compact, "必要信息"))
+		if part == "" || genericFieldCollection {
 			continue
 		}
 		ret = append(ret, part)

@@ -76,6 +76,18 @@ func TestFactSourceBoundaryAllowsQuestionAndNegativeCorrection(t *testing.T) {
 	}
 }
 
+func TestExtractAssertedPlaceNamesSkipsGenericHotelReferences(t *testing.T) {
+	content := "我们酒店、本酒店、咱们酒店、这家酒店、这个酒店、该酒店和当前酒店都是泛称。"
+	if names := extractAssertedPlaceNames(content); len(names) != 0 {
+		t.Fatalf("generic hotel references must not be treated as protected place names: %#v", names)
+	}
+
+	names := extractAssertedPlaceNames("我们酒店，丽斯酒店，壹间公寓是两个真实场所名。")
+	if !stringInSlice("丽斯酒店", names) || !stringInSlice("壹间公寓", names) {
+		t.Fatalf("proper foreign place names must remain protected: %#v", names)
+	}
+}
+
 func TestFactSourceBoundaryPassesCorrectAddress(t *testing.T) {
 	input := addressBoundaryInput("address", "地址是包河区水阳江路392号职工之家12至15层。", "合肥市包河区水阳江路392号职工之家12-15整层")
 	if issues := validateReplyFactSourceBoundary(input); len(issues) != 0 {

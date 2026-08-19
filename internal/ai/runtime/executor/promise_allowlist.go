@@ -62,6 +62,68 @@ func hasPromiseSignal(compact string) bool {
 	return containsAny(compact, promiseCommitmentSignals())
 }
 
+// hasUnnegatedPromiseSignal keeps capability-boundary replies such as
+// "不能帮你换房" from being mistaken for promises. Every matching signal is
+// checked independently so a later positive promise in the same sentence still
+// fails validation.
+func hasUnnegatedPromiseSignal(compact string) bool {
+	if !hasPromiseSignal(compact) {
+		return false
+	}
+	for _, signal := range promiseCommitmentSignals() {
+		from := 0
+		for from <= len(compact) {
+			index := strings.Index(compact[from:], signal)
+			if index < 0 {
+				break
+			}
+			index += from
+			if !promiseSignalIsExplicitlyNegated(compact[:index]) {
+				return true
+			}
+			from = index + len(signal)
+		}
+	}
+	return false
+}
+
+func promiseSignalIsExplicitlyNegated(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	for {
+		trimmed := false
+		for _, modifier := range []string{"直接"} {
+			if strings.HasSuffix(prefix, modifier) {
+				prefix = strings.TrimSuffix(prefix, modifier)
+				trimmed = true
+			}
+		}
+		if !trimmed {
+			break
+		}
+	}
+	for _, negation := range []string{"不能", "无法", "没法", "不会", "不可以"} {
+		if strings.HasSuffix(prefix, negation) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitPromiseClauses(content string) []string {
+	clauses := strings.FieldsFunc(content, func(r rune) bool {
+		switch r {
+		case '。', '！', '!', '？', '?', '；', ';', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	if len(clauses) == 0 && strings.TrimSpace(content) != "" {
+		return []string{content}
+	}
+	return clauses
+}
+
 // hasPromiseAllowlistedSurface 判断承诺对象是否落在白名单动作上。
 func hasPromiseAllowlistedSurface(compact string) bool {
 	return containsAny(compact, promiseActionSurface())
@@ -75,16 +137,17 @@ func validateReplyPromiseAllowlist(input ReplyValidationInput) []contracts.Valid
 		if content == "" {
 			continue
 		}
-		compact := compactReplyText(content)
-		if !hasPromiseSignal(compact) {
-			continue
-		}
-		if !hasPromiseAllowlistedSurface(compact) {
+		for _, clause := range splitPromiseClauses(content) {
+			compact := compactReplyText(clause)
+			if !hasUnnegatedPromiseSignal(compact) || hasPromiseAllowlistedSurface(compact) {
+				continue
+			}
 			issues = append(issues, validationIssue(
 				"promise_outside_allowlist",
 				"$.parts",
 				"reply promises or claims an action outside the allowlist without committed evidence",
 			))
+			break
 		}
 	}
 	return issues

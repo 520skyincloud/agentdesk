@@ -567,3 +567,28 @@ go test ./internal/ai/runtime/contracts ./internal/ai/runtime/contextcompiler ./
 go test ./internal/services -run 'Test(AppendWxWorkReceptionContext|BuildRuntimeAIAgentUsesNeutralReceptionIdentity|DefaultWxWorkPersonaDoesNotCollectFieldsWithoutCapability)' -count=1
 git diff --check
 ```
+
+### 8.14 2026-08-19 生成异常恢复与回复误杀修复
+
+生产会话确认，入住、大床房、草稿纸及长文字/语音中的剩余子题并非未识别，而是在 Generate 或发送前校验失败后，
+Job 被立即写成技术终态且没有 Message/Outbox，因此客户侧表现为静默。此次保持正常路径一次 Intent、并行知识检索和
+一次 Generate，只为异常路径增加一次短恢复：
+
+- `intent_detect_failed`、`generation_failed`、`empty_output` 的可恢复故障首次失败后约 800ms 重试一次；第二次仍失败才进入原技术终态。
+  严格 JSON/Schema 错误或上游已明确标记不可重试的错误直接终止，不额外调用模型。
+  Intent 尚未持久 Task 时只恢复 Intent；Generate 已有 Task 时复用任务账本和知识 checkpoint，已 committed/delivered 的兄弟
+  Task 不会重跑。
+- Promise 校验按句处理，并识别“不能、无法、没法、不可以帮你换房”等明确否定；同句或后句仍出现正向越权承诺时继续拒绝。
+- 门店事实边界忽略“我们酒店、本酒店、咱们酒店、这家酒店”等泛称，真实陌生酒店或公寓名称仍按原规则拦截。
+- Intent 金标明确区分周边餐饮推荐与外卖下单流程，同一段同时询问时必须拆成两个 Task；语音转写继续与文字共用相同拆题规则。
+- 房型升级/换房的 ReplyPlan 直接说明当前能力边界、不可确认实时房态且无需客户提供订单资料，不再写泛化人工引导；持久配置中的
+  泛化字段收集语句在进入 Prompt 前删除。
+
+本次没有 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、模型供应商、Token/Usage、计费或前端变化。回复链聚焦包
+通过；`internal/services` 全包仍有既存的主管直接接管测试失败，与本次改动文件和状态机无关，未扩大修改范围：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/executor ./internal/ai/runtime -count=1
+go test ./internal/services -run 'TestAIReplyJobControlledModelFailureRetriesOnceThenSucceeds|TestAIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery|TestAIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery|TestAIReplyTaskLedgerGenerationFailureIncludesTasksThatPassedKnowledge|TestAIReplyTaskLedgerGenerationRecoveryOnlyClaimsUncommittedTask' -count=1
+git diff --check
+```

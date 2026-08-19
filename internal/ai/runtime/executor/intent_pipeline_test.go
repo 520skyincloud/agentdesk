@@ -920,13 +920,13 @@ func TestRuntimePipelineDoesNotNormalizeDeviceServiceRequestByKeyword(t *testing
 func TestConfiguredServicePromptDropsGenericFieldCollection(t *testing.T) {
 	config := models.ReplyIntentConfig{
 		Code:              "service_request",
-		PromptPack:        "服务请求先看自助路径。缺资料时追问一个必要字段。",
+		PromptPack:        "服务请求先看自助路径。服务请求缺少资料时，追问一个必要字段。缺少资料时收集必要信息。",
 		ReplyPlanTemplate: "先给自助路径或追问一个必要字段；需要人工时走流程。",
 		ValidationRules:   "缺少关键字段时收集一个必要字段。",
 	}
 	trace := promptTraceFromConfig(config, callbacks.IntentTraceData{PrimaryIntent: "service_request"})
 	text := strings.Join(trace.Instructions, "\n")
-	for _, forbidden := range []string{"追问一个必要字段", "收集一个必要字段"} {
+	for _, forbidden := range []string{"追问一个必要字段", "收集一个必要字段", "收集必要信息", "需要人工时走流程"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("persisted service prompt leaked generic field collection %q: %s", forbidden, text)
 		}
@@ -934,6 +934,21 @@ func TestConfiguredServicePromptDropsGenericFieldCollection(t *testing.T) {
 	for _, required := range []string{"不索要房号、订单、姓名或手机号", "当前不能改房型", "不引导联系不存在的前台"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("configured service prompt missing boundary %q: %s", required, text)
+		}
+	}
+}
+
+func TestIntentPromptSeparatesNearbyFoodFromTakeawayFlow(t *testing.T) {
+	prompt := runtimeIntentDetectV2Instruction(nil, nil)
+	for _, required := range []string{
+		"附近有什么好吃的/推荐吃什么",
+		"hotel_info/surrounding_facilities",
+		"怎么点外卖/外卖怎么下单",
+		"hotel_info/order_food_delivery",
+		"必须拆成两个任务并分别回答",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("intent prompt missing food/takeaway boundary %q: %s", required, prompt)
 		}
 	}
 }
