@@ -883,8 +883,8 @@ func (s *wxWorkProtocolService) logInboundMessageLatency(instance *models.WxWork
 	)
 }
 
-// triggerRouteIndependentMediaUnderstanding 异步启动媒体理解，不依赖 AI 回复
-// 路由；失败只告警不阻塞入站。UnderstandInboundMessage 幂等（understood 跳过）。
+// triggerRouteIndependentMediaUnderstanding 先同步登记持久分析工作，再异步
+// 唤醒 worker。即使进程在 goroutine 运行前退出，cron 也能从 pending row 恢复。
 func (s *wxWorkProtocolService) triggerRouteIndependentMediaUnderstanding(message *models.Message) {
 	if message == nil || message.SenderType != enums.IMSenderTypeCustomer {
 		return
@@ -892,6 +892,10 @@ func (s *wxWorkProtocolService) triggerRouteIndependentMediaUnderstanding(messag
 	switch message.MessageType {
 	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
 	default:
+		return
+	}
+	if _, err := MediaUnderstandingService.EnsureInboundMessageAnalysis(message.ID); err != nil {
+		slog.Warn("ensure route independent media analysis failed", "message_id", message.ID, "error", err)
 		return
 	}
 	go func(messageID int64) {

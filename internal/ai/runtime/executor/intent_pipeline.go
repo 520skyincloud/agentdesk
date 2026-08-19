@@ -435,7 +435,7 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 			goal = "先完成当前澄清任务的门店知识检索，再逐题回答；未命中时说明当前资料未写明"
 		} else if intent.SubIntent == "media_context_follow_up" {
 			goal = "结合最近图片/文件解析文本回答用户追问"
-			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题")
+			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题", "不要明明已有媒体观察还只说不知道、没法猜或反问是不是图里的东西")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
 			goal = "接住客户对上一轮误会的纠正"
 			useContext = []string{"currentTurn", "immediatelyPreviousAssistantMessage"}
@@ -536,7 +536,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 		b.WriteString("必须按上面列出的知识/信息任务生成文本回答；结构化变量任务只由 Commit 阶段发送，文本里不要承诺“发你/已经发/后续发”。\n")
 	}
 	if plan.Intent == "interaction" && strings.Contains(plan.AnswerGoal, "图片/文件") {
-		b.WriteString("图片/文件上下文追问：如果当前问题是‘这是啥/这是干嘛的/什么意思/怎么样/你看’这类短指代，默认衔接最近一条已解析的图片或文件文本；直接结合上下文回答用户问法，不要把它当成无上下文问题。语音仍按既有语转文文本链路处理。\n")
+		b.WriteString("图片/文件上下文追问：如果当前问题是‘这是啥/这是干嘛的/什么意思/怎么样/你看’这类短指代，默认衔接最近一条已解析的图片或文件文本；直接结合上下文回答用户问法，至少说出一个观察到的具体特征或合理候选。低置信度时用‘看起来像/可能是’，不要装作确定；禁止只说不知道、没法猜、看不出来，也禁止反问‘你说的是图里吗’。语音仍按既有语转文文本链路处理。\n")
 	}
 	if plan.Intent == "interaction" && strings.Contains(plan.AnswerGoal, "纠正") {
 		b.WriteString("纠错输出范围：完整上下文继续保留，但本次生成只用当前纠正和紧邻的上一条客服消息识别误会；只输出一句完整回应，不续答、更换或追问任何旧业务主题。\n")

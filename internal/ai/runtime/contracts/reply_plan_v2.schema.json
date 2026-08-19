@@ -135,7 +135,8 @@
                 "state_knowledge_boundary_only",
                 "do_not_collect_customer_fields",
                 "clarify_ambiguous_expression_only",
-                "do_not_ask_known_store_scope"
+                "do_not_ask_known_store_scope",
+                "must_use_media_observation"
               ]
             }
           }

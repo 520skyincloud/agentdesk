@@ -27,7 +27,7 @@ func applyCustomerVisibleBoundary(summary *RunResult, collector *callbacks.Runti
 		parts := make([]contracts.ReplyPartV2, 0, len(summary.ReplyParts))
 		for _, part := range summary.ReplyParts {
 			original := strings.TrimSpace(part.Content)
-			part.Content, _, _ = cleanGeneratedReplyText(original, intent)
+			part.Content, _, _ = cleanGeneratedReplyTextForTasks(original, intent, summary.ReplyPlanV2, part.TaskKeys)
 			part.TaskKeys = uniqueTrimmedStrings(part.TaskKeys)
 			part.EvidenceRefs = uniqueTrimmedStrings(part.EvidenceRefs)
 			part.ActionRefs = uniqueTrimmedStrings(part.ActionRefs)
@@ -59,7 +59,7 @@ func applyCustomerVisibleBoundary(summary *RunResult, collector *callbacks.Runti
 		}
 	} else {
 		original := strings.TrimSpace(summary.ReplyText)
-		cleaned, _, _ := cleanGeneratedReplyText(original, intent)
+		cleaned, _, _ := cleanGeneratedReplyTextForTasks(original, intent, summary.ReplyPlanV2, nil)
 		if cleaned != original {
 			changed = true
 		}

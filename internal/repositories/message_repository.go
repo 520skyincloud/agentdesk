@@ -10,6 +10,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var MessageRepository = newMessageRepository()
@@ -52,6 +53,18 @@ func (r *messageRepository) GetInTenant(db *gorm.DB, id, tenantID int64) *models
 		return nil
 	}
 	return ret
+}
+
+func (r *messageRepository) GetForUpdateInTenant(db *gorm.DB, id, tenantID int64) (*models.Message, error) {
+	if db == nil || id <= 0 || tenantID <= 0 {
+		return nil, nil
+	}
+	ret := &models.Message{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Take(ret, "id = ? AND tenant_id = ?", id, tenantID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	return ret, err
 }
 
 func (r *messageRepository) Take(db *gorm.DB, where ...interface{}) *models.Message {

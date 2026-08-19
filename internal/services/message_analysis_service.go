@@ -21,10 +21,13 @@ import (
 )
 
 const (
-	messageAnalysisStatusPending = "pending"
-	messageAnalysisStatusReady   = "ready"
-	messageAnalysisStatusFailed  = "failed"
-	messageAnalysisStatusStale   = "stale"
+	messageAnalysisStatusPending         = "pending"
+	messageAnalysisStatusProcessing      = "processing"
+	messageAnalysisStatusReady           = "ready"
+	messageAnalysisStatusFailed          = "failed"
+	messageAnalysisStatusFailedRetryable = "failed_retryable"
+	messageAnalysisStatusFailedTerminal  = "failed_terminal"
+	messageAnalysisStatusStale           = "stale"
 )
 
 var MessageAnalysisService = &messageAnalysisService{}
@@ -46,13 +49,51 @@ func (s *messageAnalysisService) ContentFingerprint(message *models.Message) str
 	_, _ = h.Write([]byte{'\n'})
 	_, _ = h.Write([]byte(message.Content))
 	_, _ = h.Write([]byte{'\n'})
-	_, _ = h.Write([]byte(message.Payload))
+	_, _ = h.Write([]byte(messageAnalysisSourcePayload(message.Payload)))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// messageAnalysisSourcePayload removes fields produced by media analysis itself.
+// Those fields change after a successful run and therefore cannot be part of the
+// source identity used to validate that same result.
+func messageAnalysisSourcePayload(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return raw
+	}
+	for _, key := range []string{
+		"mediaText",
+		"mediaSummary",
+		"mediaUnderstandingStatus",
+		"mediaUnderstandingError",
+	} {
+		delete(payload, key)
+	}
+	// WxWork media recovery can add a local asset projection after the source
+	// row has been created. When immutable channel media metadata is present,
+	// those local download fields are derived rather than source identity.
+	if wxMedia, ok := payload["wxMedia"].(map[string]any); ok && len(wxMedia) > 0 {
+		for _, key := range []string{"assetId", "filename", "mimeType", "url"} {
+			delete(payload, key)
+		}
+	}
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return string(canonical)
 }
 
 func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRevision int, analyzer MessageAnalyzerIdentity) (*models.MessageAnalysis, error) {
 	if message == nil || message.ID <= 0 || message.TenantID <= 0 || sourceRevision <= 0 {
 		return nil, fmt.Errorf("message analysis scope is invalid")
+	}
+	analyzer = MessageAnalyzerIdentity{
+		Kind: strings.TrimSpace(analyzer.Kind), Name: strings.TrimSpace(analyzer.Name), Version: strings.TrimSpace(analyzer.Version),
 	}
 	fingerprint := s.ContentFingerprint(message)
 	now := time.Now()
@@ -73,8 +114,8 @@ func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRe
 		item = &models.MessageAnalysis{
 			TenantID: message.TenantID, MessageID: message.ID, SourceRevision: sourceRevision,
 			ContentFingerprint: fingerprint, AnalysisStatus: messageAnalysisStatusPending,
-			SchemaVersion: contracts.MessageAnalysisV1SchemaVersion,
-			AnalyzerKind:  strings.TrimSpace(analyzer.Kind), AnalyzerName: strings.TrimSpace(analyzer.Name), AnalyzerVersion: strings.TrimSpace(analyzer.Version),
+			SchemaVersion: messageAnalysisSchemaVersion(analyzer.Kind),
+			AnalyzerKind:  analyzer.Kind, AnalyzerName: analyzer.Name, AnalyzerVersion: analyzer.Version,
 			AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now, CreateUserName: "message_analysis", UpdateUserName: "message_analysis"},
 		}
 		created, err := repositories.MessageAnalysisRepository.CreateIfAbsent(ctx.Tx, item)
@@ -87,6 +128,15 @@ func (s *messageAnalysisService) EnsurePending(message *models.Message, sourceRe
 		return nil
 	})
 	return item, err
+}
+
+func messageAnalysisSchemaVersion(analyzerKind string) string {
+	switch strings.TrimSpace(analyzerKind) {
+	case "vision", "asr", "file_parser":
+		return contracts.MessageAnalysisV2SchemaVersion
+	default:
+		return contracts.MessageAnalysisV1SchemaVersion
+	}
 }
 
 // CompleteReadyV1 兼容入口：按 message_analysis.v1 编码并完成。
@@ -191,6 +241,194 @@ func encodeReadyMessageAnalysisV2(analysis contracts.MessageAnalysisV2, analyzed
 		return nil, err
 	}
 	return raw, nil
+}
+
+// CommitClaimedMediaReady atomically commits the authoritative Analysis row and
+// the backward-compatible Message.Payload projection. It always reloads and
+// locks the latest Message snapshot so asset recovery or channel metadata added
+// while the model was running is preserved.
+func (s *messageAnalysisService) CommitClaimedMediaReady(id, tenantID int64, owner, normalizedText string) (*models.Message, error) {
+	owner = strings.TrimSpace(owner)
+	normalizedText = strings.TrimSpace(normalizedText)
+	if id <= 0 || tenantID <= 0 || owner == "" || normalizedText == "" {
+		return nil, fmt.Errorf("claimed media analysis completion is invalid")
+	}
+	var committed *models.Message
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.MessageAnalysisRepository.GetForUpdateInTenant(ctx.Tx, id, tenantID)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			return fmt.Errorf("message analysis row unavailable")
+		}
+		message, err := repositories.MessageRepository.GetForUpdateInTenant(ctx.Tx, item.MessageID, tenantID)
+		if err != nil {
+			return err
+		}
+		if message == nil {
+			return fmt.Errorf("message analysis source disappeared")
+		}
+		if item.AnalysisStatus == messageAnalysisStatusReady {
+			committed = message
+			return nil
+		}
+		if item.AnalysisStatus != messageAnalysisStatusProcessing || strings.TrimSpace(item.ClaimedBy) != owner {
+			return fmt.Errorf("message analysis claim is no longer owned")
+		}
+		if item.ContentFingerprint != s.ContentFingerprint(message) {
+			return fmt.Errorf("message analysis evidence no longer matches source")
+		}
+
+		analyzedAt := time.Now().UTC()
+		analysis := mediaReadyAnalysisV2(item, message, normalizedText)
+		raw, err := encodeReadyMessageAnalysisV2(analysis, analyzedAt)
+		if err != nil {
+			return err
+		}
+		payload, err := projectMediaUnderstandingPayload(message.Payload, normalizedText, "understood", "")
+		if err != nil {
+			return err
+		}
+		if err := repositories.MessageRepository.UpdatesInTenant(ctx.Tx, message.ID, tenantID, map[string]any{
+			"payload":          payload,
+			"updated_at":       analyzedAt,
+			"update_user_name": "media_understanding",
+		}); err != nil {
+			return err
+		}
+		updated, err := repositories.MessageAnalysisRepository.CASCompleteReady(ctx.Tx, item.ID, tenantID, owner, string(raw), analyzedAt)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return fmt.Errorf("message analysis state changed concurrently")
+		}
+		message.Payload = payload
+		message.UpdatedAt = analyzedAt
+		message.UpdateUserName = "media_understanding"
+		committed = message
+		return nil
+	})
+	return committed, err
+}
+
+func mediaReadyAnalysisV2(item *models.MessageAnalysis, message *models.Message, normalizedText string) contracts.MessageAnalysisV2 {
+	return contracts.MessageAnalysisV2{
+		SchemaVersion: contracts.MessageAnalysisV2SchemaVersion,
+		MessageID:     message.ID, SourceRevision: item.SourceRevision,
+		ContentFingerprint: item.ContentFingerprint, Status: messageAnalysisStatusReady,
+		MediaType: messageAnalysisMediaType(message.MessageType),
+		Analyzer: contracts.MessageAnalysisAnalyzerV2{
+			Kind: item.AnalyzerKind, Name: item.AnalyzerName, Version: item.AnalyzerVersion,
+		},
+		NormalizedText: limitText(normalizedText, 4000),
+		Quality: contracts.MessageAnalysisQualityV2{
+			OverallConfidence: 0.9, Completeness: "complete", FallbackUsed: false,
+			Warnings: []string{}, UncertainRanges: []contracts.MessageAnalysisUncertainV2{},
+		},
+		Observations: []contracts.ObservationV2Item{},
+		Error:        nil,
+	}
+}
+
+// CommitClaimedMediaFailure is the failure-side CAS companion. A stale worker
+// cannot overwrite a ready result because both the Analysis status and owner
+// must still match its processing claim.
+func (s *messageAnalysisService) CommitClaimedMediaFailure(
+	id, tenantID int64,
+	owner string,
+	status enums.MessageAnalysisStatus,
+	errorClass, errorCode, payloadStatus string,
+	nextRetryAt *time.Time,
+) (*models.Message, error) {
+	owner = strings.TrimSpace(owner)
+	if id <= 0 || tenantID <= 0 || owner == "" ||
+		(status != enums.MessageAnalysisStatusFailedRetryable && status != enums.MessageAnalysisStatusFailedTerminal) {
+		return nil, fmt.Errorf("claimed media analysis failure is invalid")
+	}
+	var committed *models.Message
+	now := time.Now().UTC()
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		item, err := repositories.MessageAnalysisRepository.GetForUpdateInTenant(ctx.Tx, id, tenantID)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			return fmt.Errorf("message analysis row unavailable")
+		}
+		message, err := repositories.MessageRepository.GetForUpdateInTenant(ctx.Tx, item.MessageID, tenantID)
+		if err != nil {
+			return err
+		}
+		if message == nil {
+			return fmt.Errorf("message analysis source disappeared")
+		}
+		if item.AnalysisStatus == messageAnalysisStatusReady {
+			committed = message
+			return nil
+		}
+		if item.AnalysisStatus != messageAnalysisStatusProcessing || strings.TrimSpace(item.ClaimedBy) != owner {
+			return fmt.Errorf("message analysis claim is no longer owned")
+		}
+		payload, err := projectMediaUnderstandingPayload(message.Payload, "", payloadStatus, errorCode)
+		if err != nil {
+			return err
+		}
+		if err := repositories.MessageRepository.UpdatesInTenant(ctx.Tx, message.ID, tenantID, map[string]any{
+			"payload":          payload,
+			"updated_at":       now,
+			"update_user_name": "media_understanding",
+		}); err != nil {
+			return err
+		}
+		updated, err := repositories.MessageAnalysisRepository.CASMarkFailed(
+			ctx.Tx, item.ID, tenantID, owner, string(status), strings.TrimSpace(errorClass),
+			limitText(strings.TrimSpace(errorCode), 80), nextRetryAt, now,
+		)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return fmt.Errorf("message analysis state changed concurrently")
+		}
+		message.Payload = payload
+		message.UpdatedAt = now
+		message.UpdateUserName = "media_understanding"
+		committed = message
+		return nil
+	})
+	return committed, err
+}
+
+func projectMediaUnderstandingPayload(raw, normalizedText, status, errorText string) (string, error) {
+	payload := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return "", err
+		}
+	}
+	status = strings.TrimSpace(status)
+	if status == "understood" {
+		text := strings.TrimSpace(normalizedText)
+		payload["mediaText"] = text
+		payload["mediaSummary"] = limitText(text, 500)
+		delete(payload, "mediaUnderstandingError")
+	} else {
+		delete(payload, "mediaText")
+		delete(payload, "mediaSummary")
+		if errorText = strings.TrimSpace(errorText); errorText != "" {
+			payload["mediaUnderstandingError"] = limitText(errorText, 500)
+		} else {
+			delete(payload, "mediaUnderstandingError")
+		}
+	}
+	payload["mediaUnderstandingStatus"] = status
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (s *messageAnalysisService) MarkFailed(id, tenantID int64, errorCode string) error {

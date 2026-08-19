@@ -38,10 +38,18 @@ const (
 
 var aiReplyJobRetryDelays = []time.Duration{15 * time.Second, time.Minute, 3 * time.Minute}
 
-// aiReplyJobProtocolRetryDelays 契约 14.3：协议/验证类失败（Intent JSON、
-// Generate JSON、Validator 拒绝）不再使用 15s/1m/3m 通用退避；改用短预算，
-// 耗尽后确定性终态。长退避只保留给上游网络/知识不可用类。
-var aiReplyJobProtocolRetryDelays = []time.Duration{800 * time.Millisecond, 1500 * time.Millisecond}
+// aiReplyJobProtocolRetryDelays keeps the first abnormal recovery fast, then
+// backs off to a five-minute ceiling. Technical failures remain durable rather
+// than becoming a false customer-visible answer or a silent terminal Job.
+var aiReplyJobProtocolRetryDelays = []time.Duration{
+	800 * time.Millisecond,
+	1500 * time.Millisecond,
+	5 * time.Second,
+	15 * time.Second,
+	time.Minute,
+	3 * time.Minute,
+	5 * time.Minute,
+}
 
 // aiReplyJobRetryDelayFor 按失败类别选择退避表。
 func aiReplyJobRetryDelayFor(errorClass string, attempt int) time.Duration {
@@ -600,15 +608,21 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 		}
 		return AIReplyExecutionResult{}, &aiReplyJobDispatchCompleted{errorClass: controlledErrorClass(job.LastErrorClass)}
 	}
-	if time.Now().After(job.ExpiresAt) {
+	if time.Now().After(job.ExpiresAt) && !aiReplyJobPersistentTechnicalRetry(job) {
 		if decision := s.inspectFreshness(state); decision != nil {
 			return executionResultForDecision(*decision), nil
 		}
 		return AIReplyExecutionResult{}, errAIReplyJobExpired
 	}
 	if job.TriggerKind == enums.AIReplyJobTriggerKindMedia {
-		if err := s.prepareMedia(ctx, state); err != nil {
+		retryAt, err := s.prepareMedia(ctx, state)
+		if err != nil {
 			return AIReplyExecutionResult{}, err
+		}
+		if retryAt != nil {
+			return AIReplyExecutionResult{
+				Status: AIReplyExecutionStatusDeferred, ReasonCode: "media_analysis_pending", RetryAt: retryAt,
+			}, nil
 		}
 		state.Message = repositories.MessageRepository.GetInTenant(sqls.DB(), job.MessageID, job.TenantID)
 		if state.Message == nil {
@@ -638,13 +652,9 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 
 var errAIReplyJobExpired = errors.New("AI reply job expired")
 
-func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobExecutionState) error {
+func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobExecutionState) (*time.Time, error) {
 	if state == nil || state.Message == nil {
-		return fmt.Errorf("media execution state unavailable")
-	}
-	_, _, status := utils.RuntimeMediaUnderstandingFromPayload(state.Message.Payload)
-	if strings.TrimSpace(status) == "understood" {
-		return nil
+		return nil, fmt.Errorf("media execution state unavailable")
 	}
 	// 媒体理解必须独立于当前 job 的生命周期：客户常常发图后紧跟文字追问，
 	// 文字消息会把本 media job supersede 并 cancel ctx；若媒体理解继承该 ctx，
@@ -652,7 +662,32 @@ func (s *aiReplyJobService) prepareMedia(ctx context.Context, state *aiReplyJobE
 	// 这里剥离 cancel 但保留 values（requestID 等），再套独立超时。
 	mediaCtx, mediaCancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer mediaCancel()
-	return MediaUnderstandingService.UnderstandInboundMessage(mediaCtx, state.Message.ID)
+	runErr := MediaUnderstandingService.UnderstandInboundMessage(mediaCtx, state.Message.ID)
+	analysis := repositories.MessageAnalysisRepository.GetLatestInTenant(sqls.DB(), state.Message.TenantID, state.Message.ID)
+	if analysis == nil {
+		if runErr != nil {
+			return nil, runErr
+		}
+		return nil, fmt.Errorf("media analysis state unavailable")
+	}
+	now := time.Now()
+	switch enums.NormalizeMessageAnalysisStatus(analysis.AnalysisStatus) {
+	case enums.MessageAnalysisStatusReady:
+		return nil, nil
+	case enums.MessageAnalysisStatusPending, enums.MessageAnalysisStatusProcessing, enums.MessageAnalysisStatusFailedRetryable:
+		retryAt := now.Add(aiReplyJobContinuationDelay)
+		if analysis.NextRetryAt != nil && analysis.NextRetryAt.After(retryAt) {
+			retryAt = *analysis.NextRetryAt
+		}
+		return &retryAt, nil
+	case enums.MessageAnalysisStatusFailedTerminal, enums.MessageAnalysisStatusStale:
+		return nil, errAIReplyMediaUnderstandingFailed
+	default:
+		if runErr != nil {
+			return nil, runErr
+		}
+		return nil, errAIReplyMediaUnderstandingFailed
+	}
 }
 
 func (s *aiReplyJobService) finishClaimed(job *models.AIReplyJob, owner string, result AIReplyExecutionResult, runErr error) {
@@ -922,25 +957,18 @@ func controlledExecutionErrorShouldRetry(err error) bool {
 	if !ok {
 		return false
 	}
-	details, detailsOK := AIReplyExecutionErrorDetailsOf(err)
-	if detailsOK && details.RetryabilityKnown && !details.Retryable {
-		return false
-	}
-	// Intent/Generate 的槽内网络重试和协议修复耗尽后，Job 仍允许一次
-	// 短恢复。Intent 尚未落 Task 时只重跑 Intent；Generate 已有持久 Task
-	// 和知识 checkpoint 时只重跑未完成 Generate，不放大正常链路。
+	// All controlled runtime errors are technical execution failures. Even when
+	// an individual provider response is marked non-retryable (for example an
+	// invalid JSON response), a later durable Job attempt can succeed after the
+	// model, configuration, or application is repaired. The Task remains the
+	// source of truth, so retries do not repeat committed answers.
 	switch code {
 	case AIReplyExecutionErrorIntentDetectFailed,
 		AIReplyExecutionErrorGenerationFailed,
-		AIReplyExecutionErrorEmptyOutput:
-		return true
-	case AIReplyExecutionErrorKnowledgeUnavailable,
-		AIReplyExecutionErrorResourceInvariantBroken:
-		return false
-	case AIReplyExecutionErrorCommitFailed:
-		if detailsOK && details.RetryabilityKnown {
-			return details.Retryable
-		}
+		AIReplyExecutionErrorEmptyOutput,
+		AIReplyExecutionErrorKnowledgeUnavailable,
+		AIReplyExecutionErrorResourceInvariantBroken,
+		AIReplyExecutionErrorCommitFailed:
 		return true
 	default:
 		return false
@@ -948,6 +976,9 @@ func controlledExecutionErrorShouldRetry(err error) bool {
 }
 
 func aiReplyJobRetryAttemptLimit(errorClass string) int {
+	if !failureClassAllowsHumanHandoff(errorClass) {
+		return int(^uint(0) >> 1)
+	}
 	switch strings.TrimSpace(errorClass) {
 	case string(AIReplyExecutionErrorIntentDetectFailed),
 		string(AIReplyExecutionErrorGenerationFailed),
@@ -956,6 +987,31 @@ func aiReplyJobRetryAttemptLimit(errorClass string) int {
 	default:
 		return aiReplyJobMaxAttempts
 	}
+}
+
+func aiReplyJobPersistentTechnicalRetry(job *models.AIReplyJob) bool {
+	if job == nil {
+		return false
+	}
+	if job.TriggerKind == enums.AIReplyJobTriggerKindMedia {
+		analysis := repositories.MessageAnalysisRepository.GetLatestInTenant(sqls.DB(), job.TenantID, job.MessageID)
+		if analysis == nil {
+			return true
+		}
+		switch enums.NormalizeMessageAnalysisStatus(analysis.AnalysisStatus) {
+		case enums.MessageAnalysisStatusPending,
+			enums.MessageAnalysisStatusProcessing,
+			enums.MessageAnalysisStatusFailedRetryable,
+			enums.MessageAnalysisStatusReady:
+			return true
+		default:
+			return false
+		}
+	}
+	if strings.TrimSpace(job.LastErrorClass) == "" {
+		return false
+	}
+	return !failureClassAllowsHumanHandoff(job.LastErrorClass)
 }
 
 // failureClassAllowsHumanHandoff 契约 22.16：技术失败（协议/网络/数据库/

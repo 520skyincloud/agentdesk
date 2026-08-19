@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/contextcompiler"
 	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/models"
@@ -190,6 +191,7 @@ func resolveIntentV2TaskSources(parsed *contracts.IntentTasksV2, scope intentV2S
 			return intentV2SourceProtocolError(index, "source_context_ref_missing", "correction or cancellation requires a usable prior context URef after the primary source")
 		}
 	}
+	normalizeIntentV2ReadyMediaFollowUps(parsed, utteranceByRef, observationByRef)
 	missing := make([]string, 0)
 	for ref := range scope.RequiredRefs {
 		if _, covered := coveredRequired[ref]; !covered {
@@ -204,6 +206,63 @@ func resolveIntentV2TaskSources(parsed *contracts.IntentTasksV2, scope intentV2S
 		}
 	}
 	return nil
+}
+
+func normalizeIntentV2ReadyMediaFollowUps(
+	parsed *contracts.IntentTasksV2,
+	utteranceByRef map[string]contextcompiler.EnvelopeUtterance,
+	observationByRef map[string]contextcompiler.EnvelopeObservation,
+) {
+	if parsed == nil {
+		return
+	}
+	for index := range parsed.Tasks {
+		task := &parsed.Tasks[index]
+		if strings.TrimSpace(task.Intent) != "interaction" ||
+			!intentV2TaskLooksLikeMediaFollowUp(*task, utteranceByRef) ||
+			!intentV2TaskHasReadyMediaObservation(task.SourceRefs, utteranceByRef, observationByRef) {
+			continue
+		}
+		task.SubIntent = "media_context_follow_up"
+		task.RequestMode = "answer"
+		if parsed.DialogueAct == "unknown" || parsed.DialogueAct == "new_topic" {
+			parsed.DialogueAct = "follow_up"
+		}
+	}
+}
+
+func intentV2TaskLooksLikeMediaFollowUp(task contracts.IntentTaskV2, utteranceByRef map[string]contextcompiler.EnvelopeUtterance) bool {
+	if replyengine.LooksLikeMediaFollowUp(task.Text) {
+		return true
+	}
+	if len(task.SourceRefs) == 0 {
+		return false
+	}
+	return replyengine.LooksLikeMediaFollowUp(utteranceByRef[task.SourceRefs[0]].Text)
+}
+
+func intentV2TaskHasReadyMediaObservation(
+	refs []string,
+	utteranceByRef map[string]contextcompiler.EnvelopeUtterance,
+	observationByRef map[string]contextcompiler.EnvelopeObservation,
+) bool {
+	for _, ref := range refs {
+		utterance, ok := utteranceByRef[ref]
+		if !ok {
+			continue
+		}
+		for _, observationRef := range utterance.ObservationRefs {
+			observation, ok := observationByRef[observationRef]
+			if !ok || observation.Status != "ready" || strings.TrimSpace(observation.Text) == "" {
+				continue
+			}
+			switch observation.SourceType {
+			case "image", "video", "gif", "attachment":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func intentV2ObservationByRef(envelope contextcompiler.TurnInputEnvelope) map[string]contextcompiler.EnvelopeObservation {

@@ -421,7 +421,7 @@ func TestApplyRuntimeReplyOutputV2IsolatesTasksInsideMergedPart(t *testing.T) {
 	}
 }
 
-func TestApplyRuntimeReplyOutputV2UsesExplicitSafeResultForUnrecoverableTask(t *testing.T) {
+func TestApplyRuntimeReplyOutputV2KeepsUnrecoverableTaskPending(t *testing.T) {
 	input := multiTaskReplyValidationInputForTest()
 	input.Plan.Tasks[1] = contracts.ReplyPlanTaskV2{
 		TaskKey: "wifi", Sequence: 2, Intent: "hotel_info", SubIntent: "network_wifi", Objective: "WiFi密码是多少", OutputMode: "text",
@@ -443,15 +443,15 @@ func TestApplyRuntimeReplyOutputV2UsesExplicitSafeResultForUnrecoverableTask(t *
 	}
 	failedRepair := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["wifi"],"content":"我已经通知前台处理了。"}]}`
 	if err := applyRuntimeReplyOutputV2(failedRepair, summary, collector, RunInput{}); err != nil {
-		t.Fatalf("repair exhaustion should receive a deterministic safe result: %v", err)
+		t.Fatalf("repair exhaustion should preserve the valid sibling: %v", err)
 	}
-	if len(summary.ReplyParts) != 2 || summary.ReplyParts[1].Content != "关于WiFi，当前无法确认，不能乱答。" ||
-		!reflect.DeepEqual(summary.ReplyParts[1].TaskKeys, []string{"wifi"}) {
-		t.Fatalf("safe task result mismatch: %#v", summary.ReplyParts)
+	if len(summary.ReplyParts) != 1 || !reflect.DeepEqual(summary.ReplyParts[0].TaskKeys, []string{"parking"}) ||
+		!summary.HasRemainingTasks || strings.Contains(summary.ReplyText, "当前无法确认") {
+		t.Fatalf("failed task must remain retryable without a fabricated answer: parts=%#v remaining=%t text=%q", summary.ReplyParts, summary.HasRemainingTasks, summary.ReplyText)
 	}
 }
 
-func TestSafeRuntimeDegradedPacksSixTaskBoundariesDeterministically(t *testing.T) {
+func TestSafeRuntimeDegradedPreservesValidAnswerAndRetriesFiveTasks(t *testing.T) {
 	tasks := []contracts.ReplyPlanTaskV2{
 		{TaskKey: "food", Sequence: 1, Intent: "hotel_info", SubIntent: "nearby_food", Objective: "附近有什么吃饭的地方", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K1"}},
 		{TaskKey: "play", Sequence: 2, Intent: "hotel_info", SubIntent: "nearby_play", Objective: "附近有什么玩的地方", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K2"}},
@@ -488,27 +488,14 @@ func TestSafeRuntimeDegradedPacksSixTaskBoundariesDeterministically(t *testing.T
 	}
 	collector := callbacks.NewRuntimeTraceCollector()
 	if !applySafeRuntimeDegraded(summary, collector, RunInput{}, &runtimeTaskValidationFailure{Reason: "task_answer_obligation_missing"}) {
-		t.Fatal("six task boundaries must settle into a sendable reply")
+		t.Fatal("the already-valid sibling should remain sendable")
 	}
-	if len(summary.ReplyParts) == 0 || len(summary.ReplyParts) > 3 {
-		t.Fatalf("six task boundaries were not packed to the configured limit: %#v", summary.ReplyParts)
+	if len(summary.ReplyParts) != 1 || !reflect.DeepEqual(summary.ReplyParts[0].TaskKeys, []string{"food"}) {
+		t.Fatalf("only the valid sibling may be committed: %#v", summary.ReplyParts)
 	}
-	seen := make(map[string]int, len(tasks))
-	for _, part := range summary.ReplyParts {
-		for _, taskKey := range part.TaskKeys {
-			seen[taskKey]++
-		}
-		if !strings.Contains(part.Content, "当前无法确认") {
-			t.Fatalf("unexpected task boundary wording: %q", part.Content)
-		}
-	}
-	for _, task := range tasks {
-		if seen[task.TaskKey] != 1 {
-			t.Fatalf("task %s coverage = %d, want 1; parts=%#v", task.TaskKey, seen[task.TaskKey], summary.ReplyParts)
-		}
-	}
-	if !strings.Contains(summary.ReplyText, "附近吃饭可以参考商圈餐饮列表") {
-		t.Fatalf("already-valid sibling was lost while packing pending task boundaries: %q", summary.ReplyText)
+	if !summary.HasRemainingTasks || !strings.Contains(summary.ReplyText, "附近吃饭可以参考商圈餐饮列表") ||
+		strings.Contains(summary.ReplyText, "当前无法确认") {
+		t.Fatalf("pending tasks were fabricated or the valid sibling was lost: remaining=%t text=%q", summary.HasRemainingTasks, summary.ReplyText)
 	}
 }
 

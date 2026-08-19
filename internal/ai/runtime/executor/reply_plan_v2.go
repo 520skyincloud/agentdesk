@@ -97,6 +97,9 @@ func buildRuntimeReplyPlanV2(
 		if outputMode == "clarification" {
 			constraints = appendUniqueStrings(constraints, "clarify_ambiguous_expression_only", "acknowledge_uncertainty")
 		}
+		if strings.TrimSpace(plan.SubIntent) == "media_context_follow_up" {
+			constraints = appendUniqueStrings(constraints, "must_use_media_observation")
+		}
 		objective := strings.TrimSpace(plan.Text)
 		if objective == "" {
 			objective = runtimeTaskDisplayLabel(plan.SubIntent)

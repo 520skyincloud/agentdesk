@@ -64,6 +64,20 @@ func TestReplyPlanV2KeepsGenuineAmbiguityAsClarification(t *testing.T) {
 	}
 }
 
+func TestReplyPlanV2RequiresReadyMediaObservationUse(t *testing.T) {
+	plan, err := buildRuntimeReplyPlanV2(1, []callbacks.ReplyTaskPlanTraceData{{
+		TaskKey: "media-follow-up", Sequence: 1, Intent: "interaction", SubIntent: "media_context_follow_up",
+		Text: "这啥你知道不", RequestMode: "answer", Output: "text_reply",
+	}}, nil, contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: 1, Actions: []contracts.ActionLedgerItemV1{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stringInSlice("must_use_media_observation", plan.Tasks[0].Constraints) {
+		t.Fatalf("media evidence obligation missing: %#v", plan.Tasks[0])
+	}
+	assertReplyPlanV2SchemaAccepts(t, plan)
+}
+
 func TestReplyPlanV2AcceptsMaximumRuntimeConstraintCombination(t *testing.T) {
 	plan, err := buildRuntimeReplyPlanV2(1, []callbacks.ReplyTaskPlanTraceData{{
 		TaskKey: "repeat-no-hit", Sequence: 1, Intent: "hotel_info", SubIntent: "parking",

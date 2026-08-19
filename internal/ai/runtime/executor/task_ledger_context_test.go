@@ -245,6 +245,93 @@ func TestIntentV2ReadyMediaIsRequiredButPendingMediaIsNot(t *testing.T) {
 	}
 }
 
+func TestResolveValidateAndDeriveIntentV2TasksKeepsReadyMediaBinding(t *testing.T) {
+	messages := []models.Message{
+		{
+			ID: 81, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage,
+			Content: "image.jpg", Payload: `{"mediaText":"像素风浅棕黄色圆形食物，疑似鸡蛋或面包","mediaUnderstandingStatus":"understood"}`,
+		},
+		{ID: 82, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "这啥你知道不"},
+	}
+	scope := intentV2SourceScope{
+		Envelope:     contextcompiler.BuildTurnInputEnvelope(contextcompiler.EnvelopeScope{}, messages),
+		Messages:     messages,
+		RequiredRefs: map[string]struct{}{"U1": {}, "U2": {}},
+	}
+	parsed := contracts.IntentTasksV2{
+		SchemaVersion: contracts.IntentTasksV2SchemaVersion,
+		DialogueAct:   "follow_up",
+		Tasks: []contracts.IntentTaskV2{{
+			Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: "这啥你知道不",
+			RequestMode: "social", Confidence: 0.6, SourceRefs: []string{"U1", "U2"},
+		}},
+	}
+	derived, err := resolveValidateAndDeriveIntentV2Tasks(&parsed, scope, []models.ReplyIntentConfig{{
+		ID: 1, Code: "interaction", Name: "互动", Status: enums.StatusOk,
+	}})
+	if err != nil {
+		t.Fatalf("resolve and derive ready media follow-up: %v", err)
+	}
+	trace := AdaptIntentV2ToLegacyTrace(parsed, derived)
+	if len(trace.IntentTasks) != 1 {
+		t.Fatalf("unexpected intent tasks: %#v", trace.IntentTasks)
+	}
+	task := trace.IntentTasks[0]
+	if task.SubIntent != "media_context_follow_up" || task.RequestMode != "answer" {
+		t.Fatalf("ready media follow-up was not normalized to a direct answer: %#v", task)
+	}
+	if len(task.SourceMessageIDs) != 2 || task.SourceMessageIDs[0] != 82 || task.SourceMessageIDs[1] != 81 {
+		t.Fatalf("resolved message bindings were lost after capability derivation: %#v", task)
+	}
+}
+
+func TestBuildRuntimeTaskInputsKeepsImageObservationRevisionOnContextBinding(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.MessageAnalysis{}); err != nil {
+		t.Fatal(err)
+	}
+	sqls.SetDB(db)
+	t.Cleanup(func() { sqls.SetDB(nil) })
+
+	observation := "像素风浅棕黄色圆形食物，疑似鸡蛋或面包"
+	image := models.Message{
+		ID: 83, TenantID: 1, ConversationID: 9, SessionNo: 1,
+		MessageType: enums.IMMessageTypeImage, Content: "image.jpg", Payload: `{"resourceId":"asset-83"}`,
+	}
+	if err := services.MessageAnalysisService.RecordMediaReady(&image, observation, services.MessageAnalyzerIdentity{
+		Kind: "vision", Name: "vision-model", Version: "v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	question := models.Message{
+		ID: 84, TenantID: 1, ConversationID: 9, SessionNo: 1,
+		MessageType: enums.IMMessageTypeText, Content: "这啥你知道不",
+	}
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "interaction", SubIntent: "media_context_follow_up", RequestMode: "answer",
+		Text: "这啥你知道不", Output: "text_reply", SourceRefs: []string{"U2", "U1"}, SourceMessageIDs: []int64{84, 83},
+	}}
+	inputs, _, err := buildRuntimeTaskInputs(plans, question.ID, []models.Message{image, question}, 1, 10)
+	if err != nil {
+		t.Fatalf("build image follow-up task: %v", err)
+	}
+	if len(inputs) != 1 || inputs[0].SourceMessageID != question.ID {
+		t.Fatalf("image follow-up must keep the text question as primary: %#v", inputs)
+	}
+	var bindings contracts.TaskSourceBindingsV1
+	if err := json.Unmarshal([]byte(inputs[0].SourceBindingsJSON), &bindings); err != nil {
+		t.Fatalf("decode source bindings: %v", err)
+	}
+	if bindings.PrimaryMessageID != question.ID || len(bindings.Bindings) != 2 ||
+		bindings.Bindings[0].MessageID != question.ID || bindings.Bindings[1].MessageID != image.ID ||
+		bindings.Bindings[1].AnalysisRevision != 1 || bindings.Bindings[1].End != len([]rune(observation)) {
+		t.Fatalf("ready image observation binding was not preserved: %#v", bindings)
+	}
+}
+
 func TestImageReferentsProduceDistinctRuntimeTaskKeys(t *testing.T) {
 	messages := []models.Message{
 		{ID: 91, MessageType: enums.IMMessageTypeImage, Content: "a.jpg", Payload: `{"mediaText":"图片 A 的内容","mediaUnderstandingStatus":"understood"}`},

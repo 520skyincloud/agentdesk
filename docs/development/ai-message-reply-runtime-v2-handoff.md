@@ -643,3 +643,40 @@ git diff --check
 ```
 
 回滚边界为本次提交及对应 release；没有数据库变更，切回上一 release 并重启 `agentdesk.service` 即可。
+
+### 8.17 2026-08-19 媒体持久恢复、识图绑定与技术失败续答修复
+
+生产会话中的静默漏答分成两类：一类是 Generate、知识网关或严格协议失败后，Job 过早进入技术终态；另一类是图片、语音理解依赖
+短命 goroutine 和当前 Job context，失败或进程退出后没有统一的持久恢复入口。图片已经得到观察文本时，Intent 还可能把“这啥”判成
+普通澄清，并在来源解析后丢掉媒体 context binding。此次继续使用现有 Intent/Generate V2，不增加正常链路模型调用或固定等待：
+
+- `MessageAnalysis` 作为 vision、ASR 和文件解析的唯一 claim/lease/CAS 账本；企微入站先同步登记 pending，再异步唤醒。cron 每秒恢复
+  pending、到期 processing 和 failed_retryable，所有入口共用并发上限 4，同一 revision 只能有一个 Worker 调用模型。
+- Analysis ready/failed 与最新 `Message.Payload` 兼容投影在同一事务提交；内容指纹排除媒体识别结果和可恢复的本地资产字段。迟到失败不能
+  覆盖 ready，临时错误和空结果按 `1s -> 3s -> 10s -> 30s -> 1m -> 3m -> 5m` 退避并持续可恢复；只有无效消息来源或非法 payload
+  进入 terminal。语音识别失败不再旁路发送固定失败话术。
+- 视觉提示改为描述图片中所有清晰可见的主体、数量、颜色、形状、位置、场景、动作、界面和文字，不再只提取酒店相关内容。低置信度时
+  先描述特征，再用“看起来像/可能是”给出候选。
+- Intent 在来源解析后再派生能力，避免使用旧 task copy 丢失 `sourceRefs`。ready 图片/文件加“这啥/你看”等短追问固定收敛为一个
+  `interaction/media_context_follow_up` Task：文字问题为 primary，媒体为 context，并保留 AnalysisRevision。ReplyPlan 增加
+  `must_use_media_observation`，Validator 拒绝“收到图片了”“不知道/没法猜”或反问是否指图片等空泛回复。
+- 无真实工具或已发布接待路由的优惠、升房、换房及服务问题，最终客户可见边界会删除房号、订单号、姓名、手机号等无意义追问，并删除
+  虚构前台、同事处理和后续联系承诺；直接能力边界、真实工具必填字段、真正歧义澄清和小程序自助填写说明继续保留。
+- Intent、Generate、空输出、知识网关、资源不变量和 Commit 的技术失败不再因两次恢复预算耗尽而静默终止。Job 使用封顶 5 分钟的持久
+  退避；成功 sibling 保持 committed/delivered，只有未完成 Task 回到 pending 并在后续批次继续。Generate 修复失败时不再伪造
+  “当前无法确认”作为成功答案。真实业务 `knowledge no_hit` 仍提交知识边界回复并 completed，不进入技术重试。
+- 回复 committed 但未 delivered 的重复问题、普通新问题下旧 Outbox 的有效性、correction 精确 supersede、稳定 ClientMsgID，以及文字/语音
+  六问题逐题覆盖均沿用 8.12 的 Task/Outbox 结构，并由本轮聚焦测试再次验证。
+
+本次没有 model/migration、公开 DTO/enum、HTTP API、WebSocket、企微协议、模型供应商、Token/Usage、计费或前端变化。与
+`origin/codex/ai-billing` 当前存在四个同文件历史重叠：`intent_model_detector.go`、`cron.go`、
+`media_understanding_service.go`、`wxwork_protocol_service.go`；后续合并必须按语义 cherry-pick，不能整文件覆盖。本轮聚焦验证：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/contextcompiler ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/repositories ./internal/services/cronx -count=1
+go test ./internal/services -run 'Test(AIReplyJob|AIReplyTaskLedger|AIReplyTurnCommittedDuplicateHasNoRunnableTask|AIReplyTurnCommittedOutboxSurvivesIndependentTurnAdvance|AIReplyTurnCorrectionSupersedesOnlyReferencedTask|WxWorkProtocolFinalDispatchCheck|MessageAnalysis|ClaimedMedia|TransientMedia|EmptyMedia|MediaReplyJob|VisionPrompt|VoiceTranscriptionRetry)' -count=1
+go build ./cmd/server
+git diff --check
+```
+
+回滚边界为本次提交及对应不可变 release；没有数据库结构变更，切回上一 release 并重启 `agentdesk.service` 即可。

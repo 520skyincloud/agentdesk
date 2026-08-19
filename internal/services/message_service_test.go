@@ -87,6 +87,7 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationEventLog{},
 		&models.ConversationAssignment{},
 		&models.Message{},
+		&models.MessageAnalysis{},
 		&models.AIReplyTurn{},
 		&models.AIReplyTurnTask{},
 		&models.AIReplyJob{},

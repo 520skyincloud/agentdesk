@@ -137,10 +137,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	recordIntentModelUsage(req, intentConfig, resolved, result, gatewayReceiptsSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, derived, err := parseRuntimeIntentTasksV2(result.Content, runtimeSchema, configs)
 	if err == nil {
-		err = resolveIntentV2TaskSources(&parsed, sourceScope)
-	}
-	if err == nil {
-		err = validateIntentV2ClauseCoverage(parsed, sourceScope)
+		derived, err = resolveValidateAndDeriveIntentV2Tasks(&parsed, sourceScope, configs)
 	}
 	if err != nil && runtimeProtocolRepairAllowed(err) {
 		firstProtocolErr := err
@@ -176,10 +173,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		recordIntentModelUsage(req, intentConfig, resolved, retry, gatewayReceiptsSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, derived, err = parseRuntimeIntentTasksV2(retry.Content, runtimeSchema, configs)
 		if err == nil {
-			err = resolveIntentV2TaskSources(&parsed, sourceScope)
-		}
-		if err == nil {
-			err = validateIntentV2ClauseCoverage(parsed, sourceScope)
+			derived, err = resolveValidateAndDeriveIntentV2Tasks(&parsed, sourceScope, configs)
 		}
 		if invariant, coverageMissing := runtimeIntentInvariantDetails(err); coverageMissing && invariant.Code == intentInvariantSourceClauseMissing {
 			parsed, derived, err = completeIntentV2ClauseCoverage(parsed, sourceScope, configs)
@@ -198,6 +192,24 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		return callbacks.IntentTraceData{}, err
 	}
 	return AdaptIntentV2ToLegacyTrace(parsed, derived), nil
+}
+
+// resolveValidateAndDeriveIntentV2Tasks keeps locally resolved source bindings
+// on the same task value that is later adapted into the runtime trace. Deriving
+// capabilities before SourceRefs become SourceMessageIDs leaves a stale task
+// copy and silently drops media/context bindings from the persisted ledger.
+func resolveValidateAndDeriveIntentV2Tasks(
+	parsed *contracts.IntentTasksV2,
+	scope intentV2SourceScope,
+	configs []models.ReplyIntentConfig,
+) ([]DerivedTaskCapabilities, error) {
+	if err := resolveIntentV2TaskSources(parsed, scope); err != nil {
+		return nil, err
+	}
+	if err := validateIntentV2ClauseCoverage(*parsed, scope); err != nil {
+		return nil, err
+	}
+	return DeriveRuntimeIntentCapabilities(*parsed, configs)
 }
 
 func runtimeIntentConfigEnabled(configs []models.ReplyIntentConfig, code string) bool {
@@ -306,6 +318,7 @@ func runtimeIntentDetectV2Instruction(profile *models.ReplyIntentProfile, config
 		"连续短句共同组成一个完整诉求时只建一个任务，并把相关 URef 放进同一 sourceRefs。例如先表达困倦、紧接着询问有没有咖啡，应作为咖啡问题统一理解，不能之后再把困倦补成第二次回复。",
 		"【背景陈述纪律】“我是老客户/我好困/明天要出门/和女朋友一起”等只表达身份、状态或场景、但没有明确问题或动作的句子，不得自行推导成优惠、升房、服务或其他知识任务；单独出现时归 interaction。若它与相邻的明确问题共同组成一个诉求，则只作为该主问题的 context sourceRef，不再单独建任务。",
 		"【闲聊与普通对话·金标】问候、情绪、玩笑、生活闲聊、身份问答（如“你是谁呀/我是谁呀”）以及与酒店无关的普通常识（如“你知道李白吗”）都归 interaction，subIntent 用 social/identity/general_knowledge 等直接表达语义，requestMode 用 social 或 answer。它们不是酒店资料问题，禁止输出 clarify_previous，禁止走知识库，也禁止回答“当前资料没写明”。",
+		"【图片/文件追问·金标】当前 [CURRENT_TURN_ENVELOPE] 已有 ready 的图片/文件观察，客户紧接着问“这啥/这是什么/什么意思/你看”等明显指代时，只建一个 interaction/media_context_follow_up 任务，requestMode=answer；文字问题 URef 放 sourceRefs[0]，被追问的媒体 URef 放后面作为 context。不得归 interaction/clarify 或 social，也不得把图片另建成第二个任务。",
 		"历史只用于解析紧邻指代、追问、重复、纠正、确认和取消。新主题必须与旧主题分开。",
 		"只允许 5 个顶层 intent：hotel_info、hotel_variable、service_request、human_complaint_risk、interaction。",
 		"【人工/投诉/风险边界·最关键】只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格严重争议、安全事件，才能归 human_complaint_risk。单纯骂人、吐槽、说你不满、说“来点优惠/续住能便宜点/床单能换不/空调不制冷怎么办/你们客服几点上班”，只要没有明确人工/投诉/赔付/安全诉求，一律不得归 human_complaint_risk：优惠/续住/权益归 hotel_info（subIntent=discount 或续住），设备/用品/流程问题归 hotel_info，单纯不满归 interaction。",

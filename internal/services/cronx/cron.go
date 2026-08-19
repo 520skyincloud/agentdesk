@@ -75,6 +75,13 @@ func Init() {
 	})
 
 	addFunc(c, "@every 1s", func() {
+		count := services.MediaUnderstandingService.ProcessDue(4)
+		if count > 0 {
+			slog.Debug("media analyses dispatched", "count", count)
+		}
+	})
+
+	addFunc(c, "@every 1s", func() {
 		count := services.AIReplyJobService.ProcessDue(4)
 		if count > 0 {
 			slog.Info("AI reply jobs dispatched", "count", count)

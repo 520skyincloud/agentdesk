@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"agent-desk/internal/ai/replyengine"
@@ -26,17 +27,22 @@ import (
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/repositories"
 
+	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
 )
 
 var MediaUnderstandingService = newMediaUnderstandingService()
 
 func newMediaUnderstandingService() *mediaUnderstandingService {
-	return &mediaUnderstandingService{httpClient: usagex.NewHTTPClient(60 * time.Second)}
+	return &mediaUnderstandingService{
+		httpClient:          usagex.NewHTTPClient(60 * time.Second),
+		analysisWorkerSlots: make(chan struct{}, mediaAnalysisMaxConcurrency),
+	}
 }
 
 type mediaUnderstandingService struct {
-	httpClient *http.Client
+	httpClient          *http.Client
+	analysisWorkerSlots chan struct{}
 }
 
 type upstreamModelUsage struct {
@@ -48,6 +54,29 @@ type upstreamModelUsage struct {
 }
 
 const visionConnectionTestImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAB0klEQVR4nAXBoQ6AIBRAUT/HbCabyWay+SWDMzGD6SUCMzkCiWRwJnYDyS/ynK4XBsEIo2CFSXDCLIiwCrugQhSSUIRH6PqFYcEsjAt2YVpwC/OCLKwL+4IuxIW0UBaeha7fGDbMxrhhN6YNtzFvyMa6sW/oRtxIG2Xj2eh6z+AxntFjPZPHeWaPeFbP7lFP9CRP8Tyerj8YDszBeGAPpgN3MB/IwXqwH+hBPEgH5eA56HplUIwyKlaZFKfMiiirsiuqRCUpRXmUrg8MARMYAzYwBVxgDkhgDewBDcRACpTAE+j6k+HEnIwn9mQ6cSfziZysJ/uJnsSTdFJOnpOuvxguzMV4YS+mC3cxX8jFerFf6EW8SBfl4rno+syQMZkxYzNTxmXmjGTWzJ7RTMykTMk8ma4vDAVTGAu2MBVcYS5IYS3sBS3EQiqUwlPo+pvhxtyMN/ZmunE3843crDf7jd7Em3RTbp6brn8ZXszL+GJfphf3Mr/Iy/qyv+hLfEkv5eV56frKUDGVsWIrU8VV5opU1spe0UqspEqpPJWubwwN0xgbtjE1XGNuSGNt7A1txEZqlMbT6PqP4cN8jB/2Y/pwH/OHfKwf+4d+xI/0UT6ejx/yfeAQHkqo/AAAAABJRU5ErkJggg=="
+
+const (
+	visionUnderstandingSystemPrompt = "你是图片内容识别助手。请描述图片中所有清晰可见的关键内容，不因内容与酒店无关而省略。优先说明主体、数量、颜色、形状、位置、场景、动作、界面和清晰文字；报错、问题、求助或操作诉求必须完整保留。只陈述画面证据，不猜测图片外事实，不写客服处理建议。无法确定具体物品时，先描述可见特征，再用“看起来像”或“可能是”给出候选。输出一段简洁但信息完整的中文。"
+	visionUnderstandingUserPrompt   = "请识别这张图片并描述所有可见关键内容；如有文字请准确保留，不要只提取酒店服务相关信息。"
+)
+
+const (
+	mediaAnalysisMaxConcurrency = 4
+	mediaAnalysisLeaseDuration  = 2 * time.Minute
+	mediaAnalysisRenewInterval  = 30 * time.Second
+	mediaAnalysisPollInterval   = 50 * time.Millisecond
+	mediaAnalysisAlertAttempt   = 4
+)
+
+var mediaAnalysisRetryDelays = []time.Duration{
+	time.Second,
+	3 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+	time.Minute,
+	3 * time.Minute,
+	5 * time.Minute,
+}
 
 type messageMediaPayload struct {
 	AssetID      string         `json:"assetId"`
@@ -61,68 +90,285 @@ type messageMediaPayload struct {
 	WxMedia      map[string]any `json:"wxMedia,omitempty"`
 }
 
-func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context, messageID int64) error {
+func (s *mediaUnderstandingService) EnsureInboundMessageAnalysis(messageID int64) (*models.MessageAnalysis, error) {
 	message := repositories.MessageRepository.Get(sqls.DB(), messageID)
-	if message == nil || message.SenderType != enums.IMSenderTypeCustomer {
-		return nil
+	if message == nil || message.SenderType != enums.IMSenderTypeCustomer || !isUnderstandableMessageType(message.MessageType) {
+		return nil, nil
 	}
-	if !isUnderstandableMessageType(message.MessageType) {
-		return nil
+	return MessageAnalysisService.EnsurePending(message, 1, s.analyzerIdentityFor(message))
+}
+
+// UnderstandInboundMessage is the synchronous wake-up API used by both the
+// inbound channel and the AI reply worker. The durable MessageAnalysis row is
+// the only execution ledger; concurrent callers wait for or reuse its result.
+func (s *mediaUnderstandingService) UnderstandInboundMessage(ctx context.Context, messageID int64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	item, err := s.EnsureInboundMessageAnalysis(messageID)
+	if err != nil || item == nil {
+		return err
+	}
+	for {
+		current := repositories.MessageAnalysisRepository.GetByRevisionInTenant(sqls.DB(), item.TenantID, item.MessageID, item.SourceRevision)
+		if current == nil {
+			return fmt.Errorf("message analysis row disappeared")
+		}
+		now := time.Now()
+		switch enums.NormalizeMessageAnalysisStatus(current.AnalysisStatus) {
+		case enums.MessageAnalysisStatusReady:
+			return nil
+		case enums.MessageAnalysisStatusFailedTerminal:
+			return fmt.Errorf("media analysis failed terminally: %s", strings.TrimSpace(current.ErrorCode))
+		case enums.MessageAnalysisStatusStale:
+			return fmt.Errorf("media analysis source became stale")
+		case enums.MessageAnalysisStatusFailedRetryable:
+			if current.NextRetryAt != nil && current.NextRetryAt.After(now) {
+				return fmt.Errorf("media analysis retry scheduled at %s", current.NextRetryAt.UTC().Format(time.RFC3339Nano))
+			}
+		case enums.MessageAnalysisStatusProcessing:
+			if current.LeaseExpiresAt != nil && current.LeaseExpiresAt.After(now) {
+				if !sleepContext(ctx, mediaAnalysisPollInterval) {
+					return ctx.Err()
+				}
+				continue
+			}
+		}
+
+		if !s.acquireAnalysisWorker(ctx) {
+			return ctx.Err()
+		}
+		owner := "media-analysis-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		claimed, claimErr := repositories.MessageAnalysisRepository.TryClaim(
+			sqls.DB(), current.ID, current.TenantID, owner, now, now.Add(mediaAnalysisLeaseDuration),
+		)
+		if claimErr != nil || !claimed {
+			s.releaseAnalysisWorker()
+			if claimErr != nil {
+				return claimErr
+			}
+			if !sleepContext(ctx, mediaAnalysisPollInterval) {
+				return ctx.Err()
+			}
+			continue
+		}
+		claimedItem := repositories.MessageAnalysisRepository.GetByRevisionInTenant(sqls.DB(), current.TenantID, current.MessageID, current.SourceRevision)
+		if claimedItem == nil {
+			s.releaseAnalysisWorker()
+			return fmt.Errorf("claimed message analysis row disappeared")
+		}
+		runErr := s.executeClaimedAnalysis(ctx, claimedItem, owner)
+		s.releaseAnalysisWorker()
+		return runErr
+	}
+}
+
+// ProcessDue resumes pending, retryable, or lease-expired media analyses after
+// a process restart. It shares the same claim/CAS path as immediate wake-ups.
+func (s *mediaUnderstandingService) ProcessDue(limit int) int {
+	if limit <= 0 || limit > mediaAnalysisMaxConcurrency {
+		limit = mediaAnalysisMaxConcurrency
+	}
+	now := time.Now()
+	candidates := repositories.MessageAnalysisRepository.FindClaimableMedia(sqls.DB(), now, limit)
+	claimedCount := 0
+	for i := range candidates {
+		if !s.tryAcquireAnalysisWorker() {
+			break
+		}
+		owner := "media-analysis-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		claimed, claimErr := repositories.MessageAnalysisRepository.TryClaim(
+			sqls.DB(), candidates[i].ID, candidates[i].TenantID, owner, now, now.Add(mediaAnalysisLeaseDuration),
+		)
+		if claimErr != nil || !claimed {
+			s.releaseAnalysisWorker()
+			if claimErr != nil {
+				slog.Warn("claim media analysis failed", "analysis_id", candidates[i].ID, "error", claimErr)
+			}
+			continue
+		}
+		current := repositories.MessageAnalysisRepository.GetByRevisionInTenant(
+			sqls.DB(), candidates[i].TenantID, candidates[i].MessageID, candidates[i].SourceRevision,
+		)
+		if current == nil {
+			s.releaseAnalysisWorker()
+			continue
+		}
+		claimedCount++
+		go func(item models.MessageAnalysis, leaseOwner string) {
+			defer s.releaseAnalysisWorker()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := s.executeClaimedAnalysis(ctx, &item, leaseOwner); err != nil {
+				slog.Warn("process media analysis failed", "analysis_id", item.ID, "message_id", item.MessageID, "error", err)
+			}
+		}(*current, owner)
+	}
+	return claimedCount
+}
+
+func (s *mediaUnderstandingService) executeClaimedAnalysis(ctx context.Context, item *models.MessageAnalysis, owner string) error {
+	if item == nil {
+		return fmt.Errorf("claimed media analysis is unavailable")
+	}
+	message := repositories.MessageRepository.GetInTenant(sqls.DB(), item.MessageID, item.TenantID)
+	if message == nil || message.SenderType != enums.IMSenderTypeCustomer || !isUnderstandableMessageType(message.MessageType) {
+		return s.failClaimedAnalysis(item, owner, fmt.Errorf("media analysis source is invalid"), false, true)
 	}
 	payload, err := parseMessageMediaPayload(message.Payload)
 	if err != nil {
-		return s.markMediaUnderstanding(message, nil, "failed", "媒体 payload 解析失败: "+err.Error())
+		return s.failClaimedAnalysis(item, owner, fmt.Errorf("媒体 payload 解析失败: %w", err), false, true)
 	}
-	if strings.TrimSpace(payload.MediaText) != "" || payload.MediaStatus == "understood" {
-		return nil
-	}
-	if payload.MediaStatus == "failed" || payload.MediaStatus == "empty" {
-		payload.MediaStatus = "retrying"
-		payload.MediaError = ""
-		if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
-			return err
+	if text := strings.TrimSpace(payload.MediaText); text != "" && strings.TrimSpace(payload.MediaStatus) == "understood" {
+		updated, commitErr := MessageAnalysisService.CommitClaimedMediaReady(item.ID, item.TenantID, owner, text)
+		if commitErr == nil {
+			s.publishMediaMessageUpdated(updated)
 		}
+		return commitErr
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
+	leaseLost := &atomic.Bool{}
+	leaseDone := make(chan struct{})
+	go s.renewAnalysisLease(runCtx, cancel, leaseDone, leaseLost, item, owner)
 	var text string
 	switch message.MessageType {
 	case enums.IMMessageTypeImage:
-		text, err = s.understandImage(ctx, message, payload)
+		text, err = s.understandImage(runCtx, message, payload)
 	case enums.IMMessageTypeVoice:
-		text, err = s.transcribeVoice(ctx, message, payload)
+		text, err = s.transcribeVoice(runCtx, message, payload)
 	case enums.IMMessageTypeAttachment:
-		text, err = s.extractFileText(ctx, message, payload)
-	default:
-		return nil
+		text, err = s.extractFileText(runCtx, message, payload)
+	}
+	cancel()
+	<-leaseDone
+	if leaseLost.Load() {
+		return fmt.Errorf("media analysis lease lost")
 	}
 	if err != nil {
-		return s.markMediaUnderstanding(message, payload, "failed", err.Error())
+		return s.failClaimedAnalysis(item, owner, err, false, false)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return s.markMediaUnderstanding(message, payload, "empty", "媒体理解结果为空")
+		return s.failClaimedAnalysis(item, owner, fmt.Errorf("媒体理解结果为空"), true, false)
 	}
-	payload.MediaText = text
-	payload.MediaSummary = limitText(text, 500)
-	payload.MediaStatus = "understood"
-	payload.MediaError = ""
-	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
-		return err
+	updated, err := MessageAnalysisService.CommitClaimedMediaReady(item.ID, item.TenantID, owner, text)
+	if err == nil {
+		s.publishMediaMessageUpdated(updated)
 	}
-	// 多模态契约 7/22.3：Analysis ready 与 Payload 兼容投影必须在同一事务完成，
-	// 提交成功后才发 WebSocket；Payload 降级为兼容投影，权威状态是 Analysis row。
-	if err := MessageAnalysisService.RecordMediaReady(message, text, s.analyzerIdentityFor(message)); err != nil {
-		// Analysis 落库失败不回滚客户可见的 Payload 理解结果（旧链路仍可工作），
-		// 但必须告警，不允许静默丢失权威状态。
-		slog.Warn("record message analysis ready failed", "message_id", message.ID, "tenant_id", message.TenantID, "error", err)
+	return err
+}
+
+func (s *mediaUnderstandingService) failClaimedAnalysis(item *models.MessageAnalysis, owner string, cause error, empty, terminal bool) error {
+	if item == nil {
+		return cause
 	}
-	updated := repositories.MessageRepository.GetInTenant(sqls.DB(), message.ID, message.TenantID)
+	current := repositories.MessageAnalysisRepository.GetByRevisionInTenant(sqls.DB(), item.TenantID, item.MessageID, item.SourceRevision)
+	attempt := 1
+	if current != nil && current.AttemptCount > 0 {
+		attempt = current.AttemptCount
+	}
+	status := enums.MessageAnalysisStatusFailedTerminal
+	payloadStatus := "failed"
+	errorClass := "media_understanding_failed"
+	errorCode := "media_understanding_failed"
+	var nextRetryAt *time.Time
+	if empty {
+		payloadStatus = "empty"
+		errorClass = "empty_output"
+		errorCode = "media_understanding_empty"
+	}
+	if !terminal {
+		status = enums.MessageAnalysisStatusFailedRetryable
+		payloadStatus = "retrying"
+		if !empty {
+			errorClass = "upstream_error"
+			errorCode = "media_understanding_retryable"
+		}
+		retryAt := time.Now().Add(mediaAnalysisRetryDelay(attempt))
+		nextRetryAt = &retryAt
+		if attempt >= mediaAnalysisAlertAttempt {
+			slog.Warn("media analysis remains retryable after repeated failures",
+				"analysis_id", item.ID,
+				"message_id", item.MessageID,
+				"attempt_count", attempt,
+				"error_class", errorClass,
+				"next_retry_at", retryAt,
+			)
+		}
+	}
+	updated, commitErr := MessageAnalysisService.CommitClaimedMediaFailure(
+		item.ID, item.TenantID, owner, status, errorClass, errorCode, payloadStatus, nextRetryAt,
+	)
+	if commitErr != nil {
+		return commitErr
+	}
+	s.publishMediaMessageUpdated(updated)
+	return cause
+}
+
+func mediaAnalysisRetryDelay(attempt int) time.Duration {
+	index := attempt - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(mediaAnalysisRetryDelays) {
+		index = len(mediaAnalysisRetryDelays) - 1
+	}
+	return mediaAnalysisRetryDelays[index]
+}
+
+func (s *mediaUnderstandingService) renewAnalysisLease(ctx context.Context, cancel context.CancelFunc, done chan<- struct{}, lost *atomic.Bool, item *models.MessageAnalysis, owner string) {
+	defer close(done)
+	ticker := time.NewTicker(mediaAnalysisRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			ok, err := repositories.MessageAnalysisRepository.RenewLease(sqls.DB(), item.ID, item.TenantID, owner, now.Add(mediaAnalysisLeaseDuration))
+			if err != nil || !ok {
+				lost.Store(true)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+func (s *mediaUnderstandingService) acquireAnalysisWorker(ctx context.Context) bool {
+	select {
+	case s.analysisWorkerSlots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *mediaUnderstandingService) tryAcquireAnalysisWorker() bool {
+	select {
+	case s.analysisWorkerSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *mediaUnderstandingService) releaseAnalysisWorker() {
+	<-s.analysisWorkerSlots
+}
+
+func (s *mediaUnderstandingService) publishMediaMessageUpdated(message *models.Message) {
+	if message == nil {
+		return
+	}
 	conversation := repositories.ConversationRepository.GetInTenant(sqls.DB(), message.ConversationID, message.TenantID)
-	if updated != nil && conversation != nil {
-		WsService.PublishMessageUpdated(conversation, updated)
-		WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
+	if conversation == nil {
+		return
 	}
-	return nil
+	WsService.PublishMessageUpdated(conversation, message)
+	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 }
 
 // analyzerIdentityFor 返回当前媒体分析器身份（写入 Analysis row 供审计与过期判断）。
@@ -793,12 +1039,12 @@ func (s *mediaUnderstandingService) callOpenAICompatibleVisionWithUsage(ctx cont
 		"messages": []map[string]any{
 			{
 				"role":    "system",
-				"content": "你是酒店前台同事的图片理解助手。只提取图片中能确定的信息，不猜测图片外事实，不写客服处理建议，不写“需要人工确认”。如果图片里有清晰文字、报错、问题、求助或操作诉求，要把这些内容保留下来；如果只是普通物品/餐食/环境照片，只描述画面。输出一句简洁中文。",
+				"content": visionUnderstandingSystemPrompt,
 			},
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "text", "text": "请识别这张客人发来的图片，提取与酒店服务相关的信息。"},
+					{"type": "text", "text": visionUnderstandingUserPrompt},
 					{"type": "image_url", "image_url": map[string]any{"url": imageURL}},
 				},
 			},
@@ -930,51 +1176,6 @@ func defaultUploadFilename(filename, fallback string) string {
 		return fallback
 	}
 	return filename
-}
-
-func (s *mediaUnderstandingService) markMediaUnderstanding(message *models.Message, payload *messageMediaPayload, status string, errText string) error {
-	if message == nil {
-		return nil
-	}
-	if payload == nil {
-		parsed, _ := parseMessageMediaPayload(message.Payload)
-		payload = parsed
-	}
-	if payload == nil {
-		payload = &messageMediaPayload{}
-	}
-	payload.MediaStatus = strings.TrimSpace(status)
-	payload.MediaError = limitText(errText, 500)
-	if err := s.updateMessagePayload(message.ID, message.TenantID, payload); err != nil {
-		return err
-	}
-	if message.MessageType == enums.IMMessageTypeVoice && (payload.MediaStatus == "failed" || payload.MediaStatus == "empty") {
-		s.sendVoiceTranscriptionFailedReply(message)
-	}
-	return nil
-}
-
-func (s *mediaUnderstandingService) sendVoiceTranscriptionFailedReply(message *models.Message) {
-	if message == nil || !s.canTriggerAIForMedia(message.ConversationID, message.TenantID) {
-		return
-	}
-	conversation := ConversationService.GetByTenantID(message.ConversationID, message.TenantID)
-	if conversation == nil {
-		return
-	}
-	_, err := MessageService.SendAIMessageWithRequestID(
-		conversation.ID,
-		conversation.AIAgentID,
-		fmt.Sprintf("voice_transcription_failed_%d", message.ID),
-		enums.IMMessageTypeText,
-		"这条语音我没听清，方便打字发我一下吗？",
-		"",
-		systemOperator(),
-		message.RequestID,
-	)
-	if err != nil {
-		slog.Warn("send voice transcription failed reply failed", "message_id", message.ID, "error", err)
-	}
 }
 
 func (s *mediaUnderstandingService) updateMessagePayload(messageID, tenantID int64, payload *messageMediaPayload) error {

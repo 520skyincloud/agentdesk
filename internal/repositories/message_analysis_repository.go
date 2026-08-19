@@ -72,8 +72,16 @@ func (r *messageAnalysisRepository) MarkStaleByMessageInTenant(db *gorm.DB, tena
 		return nil
 	}
 	return db.Model(&models.MessageAnalysis{}).
-		Where("tenant_id = ? AND message_id = ? AND content_fingerprint <> ? AND analysis_status IN ?", tenantID, messageID, currentFingerprint, []string{"pending", "ready", "failed"}).
-		Updates(map[string]any{"analysis_status": "stale", "updated_at": now, "update_user_name": "message_analysis"}).Error
+		Where("tenant_id = ? AND message_id = ? AND content_fingerprint <> ? AND analysis_status IN ?", tenantID, messageID, currentFingerprint,
+			[]string{"pending", "processing", "ready", "failed_retryable", "failed_terminal", "failed"}).
+		Updates(map[string]any{
+			"analysis_status":  "stale",
+			"claimed_by":       "",
+			"lease_expires_at": nil,
+			"next_retry_at":    nil,
+			"updated_at":       now,
+			"update_user_name": "message_analysis",
+		}).Error
 }
 
 // FindClaimable 取可领取的分析工作（pending 或到期可重试），按 due 复合索引扫描。
@@ -82,8 +90,25 @@ func (r *messageAnalysisRepository) FindClaimable(db *gorm.DB, now time.Time, li
 		return nil
 	}
 	var list []models.MessageAnalysis
-	err := db.Where("analysis_status IN ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?) AND (next_retry_at IS NULL OR next_retry_at <= ?)",
-		[]string{"pending", "failed_retryable"}, now, now).
+	err := db.Where(
+		"((analysis_status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR (analysis_status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))",
+		[]string{"pending", "failed_retryable"}, now, "processing", now).
+		Order("id ASC").Limit(limit).Find(&list).Error
+	if err != nil {
+		return nil
+	}
+	return list
+}
+
+func (r *messageAnalysisRepository) FindClaimableMedia(db *gorm.DB, now time.Time, limit int) []models.MessageAnalysis {
+	if db == nil || limit <= 0 {
+		return nil
+	}
+	var list []models.MessageAnalysis
+	err := db.Where("analyzer_kind IN ?", []string{"vision", "asr", "file_parser"}).
+		Where(
+			"((analysis_status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR (analysis_status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))",
+			[]string{"pending", "failed_retryable"}, now, "processing", now).
 		Order("id ASC").Limit(limit).Find(&list).Error
 	if err != nil {
 		return nil
@@ -92,19 +117,22 @@ func (r *messageAnalysisRepository) FindClaimable(db *gorm.DB, now time.Time, li
 }
 
 // TryClaim 领取一条分析工作：置 processing + owner + lease。
-func (r *messageAnalysisRepository) TryClaim(db *gorm.DB, id, tenantID int64, owner string, leaseUntil time.Time) (bool, error) {
+func (r *messageAnalysisRepository) TryClaim(db *gorm.DB, id, tenantID int64, owner string, now, leaseUntil time.Time) (bool, error) {
 	if db == nil || id <= 0 || tenantID <= 0 || owner == "" {
 		return false, nil
 	}
 	result := db.Model(&models.MessageAnalysis{}).
-		Where("id = ? AND tenant_id = ? AND analysis_status IN ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
-			id, tenantID, []string{"pending", "failed_retryable"}, leaseUntil).
+		Where("id = ? AND tenant_id = ?", id, tenantID).
+		Where(
+			"((analysis_status IN ? AND (next_retry_at IS NULL OR next_retry_at <= ?)) OR (analysis_status = ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))",
+			[]string{"pending", "failed_retryable"}, now, "processing", now).
 		Updates(map[string]any{
 			"analysis_status":  "processing",
 			"claimed_by":       owner,
 			"lease_expires_at": leaseUntil,
 			"attempt_count":    gorm.Expr("attempt_count + 1"),
-			"updated_at":       time.Now(),
+			"next_retry_at":    nil,
+			"updated_at":       now,
 			"update_user_name": "message_analysis_claim",
 		})
 	return result.RowsAffected == 1, result.Error

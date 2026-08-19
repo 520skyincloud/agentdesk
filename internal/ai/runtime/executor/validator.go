@@ -96,6 +96,13 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 			result.Status = "repairable_protocol_error"
 		}
 	}
+	if issues := validateReplyMediaObservationUse(input); len(issues) > 0 {
+		result.Checks.FactGrounding = "failed"
+		result.Errors = append(result.Errors, issues...)
+		if result.Status != "rejected" {
+			result.Status = "repairable_protocol_error"
+		}
+	}
 	// 领域硬约束（房态/会员）：系统无数据源，任何断言都是编造，一票否决，不修复。
 	if gates.UnsupportedDomain {
 		if issues := validateReplyUnsupportedDomain(input); len(issues) > 0 {

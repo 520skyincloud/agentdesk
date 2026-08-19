@@ -506,7 +506,7 @@ func TestAIReplyJobRecoversCommittedReplyWithoutRepeatingRuntime(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
+func TestAIReplyJobTechnicalFailureKeepsRetryingWithoutHumanFallback(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "空调不制冷")
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
 		return AIReplyExecutionResult{}, errors.New("upstream unavailable")
@@ -534,13 +534,18 @@ func TestAIReplyJobRetryScheduleAndHumanFallback(t *testing.T) {
 		}
 	}
 	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	startedAt := time.Now()
 	current, err := fixture.service.ProcessMessageNow(fixture.message.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.AttemptCount != aiReplyJobMaxAttempts ||
-		current.ResultCode != "technical_failure_no_handoff" || dispatchCalls.Load() != 0 {
-		t.Fatalf("final job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != len(aiReplyJobRetryDelays)+1 ||
+		current.ResultCode != "runtime_retry" || current.NextRetryAt == nil || dispatchCalls.Load() != 0 {
+		t.Fatalf("persistent retry job=%#v dispatchCalls=%d", current, dispatchCalls.Load())
+	}
+	wantDelay := aiReplyJobRetryDelays[len(aiReplyJobRetryDelays)-1]
+	if got := current.NextRetryAt.Sub(startedAt); got < wantDelay-time.Second || got > wantDelay+2*time.Second {
+		t.Fatalf("persistent retry delay=%v want %v", got, wantDelay)
 	}
 }
 
@@ -581,11 +586,13 @@ func TestAIReplyJobControlledModelFailureRetriesOnceThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestAIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery(t *testing.T) {
+func TestAIReplyJobRetryableModelTimeoutSucceedsAfterTwoRecoveries(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
-		runtimeCalls.Add(1)
+		if runtimeCalls.Add(1) == 3 {
+			return createAIReplyJobTestCompletion(fixture.db, fixture.conversation, fixture.message)
+		}
 		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
 			AIReplyExecutionErrorIntentDetectFailed,
 			context.DeadlineExceeded,
@@ -609,17 +616,27 @@ func TestAIReplyJobRetryableModelTimeoutStopsAfterOneJobRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed || current.ResultCode != "technical_failure_no_handoff" ||
-		current.AttemptCount != aiReplyJobModelRecoveryMaxAttempts || runtimeCalls.Load() != 2 || dispatchCalls.Load() != 0 {
-		t.Fatalf("final job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.AttemptCount != 2 || runtimeCalls.Load() != 2 || dispatchCalls.Load() != 0 {
+		t.Fatalf("second retry job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || current.AttemptCount != 3 ||
+		runtimeCalls.Load() != 3 || dispatchCalls.Load() != 0 {
+		t.Fatalf("recovered job=%#v runtimeCalls=%d dispatchCalls=%d", current, runtimeCalls.Load(), dispatchCalls.Load())
 	}
 }
 
-func TestAIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery(t *testing.T) {
+func TestAIReplyJobProtocolFailureRemainsRecoverable(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeText, "早餐几点")
 	var runtimeCalls atomic.Int32
 	setAIReplyJobTestHook(t, func(context.Context, models.Conversation, models.Message) (AIReplyExecutionResult, error) {
-		runtimeCalls.Add(1)
+		if runtimeCalls.Add(1) == 2 {
+			return createAIReplyJobTestCompletion(fixture.db, fixture.conversation, fixture.message)
+		}
 		return AIReplyExecutionResult{}, NewAIReplyExecutionError(
 			AIReplyExecutionErrorGenerationFailed,
 			&strictjson.ProtocolError{Code: strictjson.ErrorJSONSchemaInvalid, Path: "$.replies"},
@@ -630,9 +647,17 @@ func TestAIReplyJobNonRetryableProtocolFailureStopsWithoutJobRecovery(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current == nil || current.Status != enums.AIReplyJobStatusFailed ||
-		current.ResultCode != "technical_failure_no_handoff" || current.AttemptCount != 1 || runtimeCalls.Load() != 1 {
-		t.Fatalf("job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
+	if current == nil || current.Status != enums.AIReplyJobStatusRetry || current.ResultCode != "runtime_retry" ||
+		current.AttemptCount != 1 || runtimeCalls.Load() != 1 {
+		t.Fatalf("retry job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
+	}
+	makeAIReplyJobDue(t, fixture.db, fixture.job.ID)
+	current, err = fixture.service.ProcessMessageNow(fixture.message.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Status != enums.AIReplyJobStatusCompleted || current.AttemptCount != 2 || runtimeCalls.Load() != 2 {
+		t.Fatalf("recovered job=%#v runtimeCalls=%d", current, runtimeCalls.Load())
 	}
 }
 
@@ -877,18 +902,34 @@ func TestAIReplyJobMediaUsesSingleDurableRuntimePath(t *testing.T) {
 	})
 }
 
-func TestVoiceTranscriptionFailureNoticeIsIdempotent(t *testing.T) {
+func TestVoiceTranscriptionRetryDoesNotBypassDurableLedger(t *testing.T) {
 	fixture := setupAIReplyJobFixture(t, enums.IMMessageTypeVoice, "voice.amr")
-	MediaUnderstandingService.sendVoiceTranscriptionFailedReply(fixture.message)
-	MediaUnderstandingService.sendVoiceTranscriptionFailedReply(fixture.message)
+	item, err := MediaUnderstandingService.EnsureInboundMessageAnalysis(fixture.message.ID)
+	if err != nil || item == nil {
+		t.Fatalf("ensure media analysis: item=%#v err=%v", item, err)
+	}
+	now := time.Now()
+	claimed, err := repositories.MessageAnalysisRepository.TryClaim(
+		fixture.db, item.ID, item.TenantID, "voice-test-owner", now, now.Add(time.Minute),
+	)
+	if err != nil || !claimed {
+		t.Fatalf("claim media analysis: claimed=%v err=%v", claimed, err)
+	}
+	retryAt := now.Add(time.Second)
+	if _, err := MessageAnalysisService.CommitClaimedMediaFailure(
+		item.ID, item.TenantID, "voice-test-owner", enums.MessageAnalysisStatusFailedRetryable,
+		"upstream_error", "media_understanding_retryable", "retrying", &retryAt,
+	); err != nil {
+		t.Fatal(err)
+	}
 	var count int64
 	if err := fixture.db.Model(&models.Message{}).
 		Where("conversation_id = ? AND client_msg_id = ?", fixture.conversation.ID, "voice_transcription_failed_"+formatInt64(fixture.message.ID)).
 		Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("voice failure notices=%d want 1", count)
+	if count != 0 {
+		t.Fatalf("retryable voice analysis must not emit a side-channel failure notice, got %d", count)
 	}
 }
 

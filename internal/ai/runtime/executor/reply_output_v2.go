@@ -695,26 +695,23 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	remainingPlan := runtimeReplyPlanWithoutTaskKeys(*summary.ReplyPlanV2, covered)
 	parts = mergeRuntimeReplyParts(parts, buildSafeRuntimeDegradedParts(remainingPlan, *summary.EvidenceBundle), summary.ReplyPlanV2)
 
+	if len(parts) == 0 {
+		return false
+	}
 	covered = covered[:0]
 	for _, part := range parts {
 		covered = appendUniqueStrings(covered, part.TaskKeys...)
 	}
-	usedTaskFailureNotice := false
-	if runtimeTaskFailureNoticeAllowed(cause) {
-		pendingPlan := runtimeReplyPlanWithoutTaskKeys(*summary.ReplyPlanV2, covered)
-		failureParts := buildRuntimeTaskFailureNoticeParts(pendingPlan)
-		if len(failureParts) > 0 {
-			parts = mergeRuntimeReplyParts(parts, failureParts, summary.ReplyPlanV2)
-			usedTaskFailureNotice = true
-		}
-	}
-	if len(parts) == 0 {
-		return false
+	pendingPlan := runtimeReplyPlanWithoutTaskKeys(*summary.ReplyPlanV2, covered)
+	// A generation/protocol failure is not a business answer. Preserve any
+	// already-valid sibling answers and server-owned scalar facts, but leave the
+	// remaining Tasks runnable so the durable Job can retry them. Emitting
+	// "current information cannot be confirmed" here used to convert a technical
+	// failure into a false successful answer and permanently lose the question.
+	if len(pendingPlan.Tasks) > 0 {
+		summary.HasRemainingTasks = true
 	}
 	validationPlan := safeDegradedValidationPlan(*summary.ReplyPlanV2, parts)
-	if usedTaskFailureNotice {
-		validationPlan = *summary.ReplyPlanV2
-	}
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 		Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: parts},
 		Plan: validationPlan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
@@ -735,13 +732,8 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	collector.Data.Error.Stage = "generate_safe_degraded"
 	collector.Data.Pipeline.Generate.Status = string(GenerationOutcomeSafeDegraded)
 	collector.Data.Pipeline.Generate.Mode = string(GenerationOutcomeSafeDegraded)
-	if usedTaskFailureNotice {
-		collector.Data.Pipeline.Generate.Reason = "invalid task answers were isolated; valid answers were preserved and remaining tasks received deterministic safe results"
-		collector.Data.Pipeline.Validate.Reason = "task-isolated reply and deterministic safe results passed final validation"
-	} else {
-		collector.Data.Pipeline.Generate.Reason = "generation failed; only authoritative scalar facts were allowed through safe degraded mode"
-		collector.Data.Pipeline.Validate.Reason = "safe degraded scalar facts passed deterministic validation"
-	}
+	collector.Data.Pipeline.Generate.Reason = "generation failed; valid sibling answers and authoritative scalar facts were preserved while unfinished tasks remained retryable"
+	collector.Data.Pipeline.Validate.Reason = "partial safe degraded output passed deterministic validation without fabricating answers for unfinished tasks"
 	collector.Data.Pipeline.Validate.Status = "passed"
 	return strings.TrimSpace(summary.ReplyText) != ""
 }
