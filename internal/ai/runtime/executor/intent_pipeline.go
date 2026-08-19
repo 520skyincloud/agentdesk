@@ -357,7 +357,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "本轮同时包含酒店信息问题时，Generate 阶段只回答知识问题；变量消息由系统按 resourceActions 另行提交。")
 		}
 	case "service_request":
-		instructions = append(instructions, "服务请求先看知识库是否有自助路径。", "无法解决时追问一个必要字段或按人工意图/接待路由处理；没有工具或路由结果时，不能表达动作已执行、已转告、现场查看或后续有人处理。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
+		instructions = append(instructions, "服务请求先看知识库是否有自助路径。", "没有明确自助路径、工具或接待路由时，直接说明当前资料或能力边界，不索要房号、订单、姓名或手机号，不能表达动作已执行、已转告、现场查看或后续有人处理。", "房型升级或换房无法执行时，直接说明当前不能改房型、不能确认实时房态，先不用客户提供订单信息，不引导联系不存在的前台。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
 			instructions = append(instructions, "突发安全/受伤风险必须按接待路由转人工。", "先安抚、提醒不要移动；如停不下来或流血严重，提示先拨打 120/报警。", "缺房号/位置时追问当前位置，但不要因此阻断人工路由。")
@@ -366,7 +366,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		}
 	case "interaction":
 		if intent.NeedsKnowledge {
-			instructions = append(instructions, "当前任务按正式门店知识检索处理；命中就直接用当前问题对应的知识自然回答，未命中时只追问一个关键点。不要因为分类暂时是互动/澄清就跳过知识，也不要转人工。")
+			instructions = append(instructions, "当前任务按正式门店知识检索处理；命中就直接用当前问题对应的知识自然回答，未命中时只说明当前资料未写明。不要因为分类暂时是互动/澄清就跳过知识，也不要转人工或索要客户资料。")
 		} else if intent.SubIntent == "media_context_follow_up" {
 			instructions = append(instructions, "当前问题是在追问最近图片/文件解析文本；直接结合上下文回答用户问法，不机械复述解析全文，不说系统识别。语音仍按既有语转文文本链路处理。")
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
@@ -422,7 +422,7 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 	switch intent.PrimaryIntent {
 	case "interaction":
 		if intent.NeedsKnowledge {
-			goal = "先完成当前澄清任务的门店知识检索，再逐题回答或追问一个关键点"
+			goal = "先完成当前澄清任务的门店知识检索，再逐题回答；未命中时说明当前资料未写明"
 		} else if intent.SubIntent == "media_context_follow_up" {
 			goal = "结合最近图片/文件解析文本回答用户追问"
 			doNot = append(doNot, "不要复述 OCR", "不要只描述图片不回答问题")

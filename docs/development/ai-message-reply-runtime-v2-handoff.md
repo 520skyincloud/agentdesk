@@ -540,3 +540,30 @@ go test -tags dev ./internal/ai/runtime/contracts ./internal/ai/runtime/executor
 go test -tags dev ./internal/services -run 'AIReplyTurn|ChannelMessageOutbox|WxWorkProtocolFinalDispatchCheck|ValidateStructuredResponsesPayload|ValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots' -count=1
 go test -race -tags dev ./internal/ai/runtime/executor -run '^(TestRetrieveRuntimeTaskKnowledgeRunsIndependentQueriesConcurrently|TestSingleMultiTopicTaskSplitsIntoPerClauseQueries)$' -count=1
 ```
+
+### 8.13 2026-08-19 多问题完整回复与无能力服务边界修复
+
+生产长文字和语音记录确认，Intent、ASR 和知识检索已经识别出多项问题；真实漏答发生在 Generate 后的整批校验：
+一个 `ReplyPart` 触发事实来源错误后，其他合法答案也被丢弃，现有安全降级最终只留下门店地址。另有“酒店地址发我，
+我想点外卖怎么办”被逗号合并为地址 Task，以及无换房工具和接待路由时仍追问客户资料的问题。
+
+- ReplyPart 改为独立验证和局部保留；已有合法答案不再被错误兄弟项拖掉，现有唯一一次协议修复只生成尚未回答的
+  `taskKey`，修复失败时也只提交真实通过校验的 Task。安全、动作和无数据源领域的硬拒绝不会被升级成模型修复。
+- Generate 的逐题义务同时由 Prompt 和 Commit 不变量约束。同一 Part 绑定多个 Task 时，每个 Task 都必须出现明确对象
+  或可归属的独立答案；牙刷/拖鞋等同类问题和未知 subIntent 不能只答一项后整体标记为完成。
+- 文字和语音转写共用相同原子拆题。不同主题且两侧均为独立诉求时允许按逗号拆分；同一事件“外卖到了，地址填错了
+  怎么办”保持一个 Task，早餐时间和地点也继续保持一个 Task。
+- 删除“服务请求缺资料就追问必要字段”的生效规则。没有真实工具、已发布流程或接待路由时，只说明能力边界，不索要
+  房号、订单、姓名或手机号，不引导不存在的前台，也不承诺同事跟进；房型升级和换房同样直接说明无法代办或确认房态。
+- 安全降级继续遵守原 `MaxReplyParts`/`MaxQuestionsPerPart`，不会为了保留答案放宽提交约束。正常路径仍为一次 Intent、
+  并行知识检索和一次 Generate，没有新增固定等待、事实核验模型、Token 统计或计费变化。
+
+本次没有 model/migration、DTO/enum、HTTP API、WebSocket、企微协议、前端或数据库变化。`origin/codex/customer-audit`
+无同文件修改；`origin/codex/ai-billing` 在 9 个 Runtime/提示词文件存在历史重叠，后续合并必须按语义 cherry-pick，禁止
+整文件覆盖。验证通过：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/contextcompiler ./internal/ai/runtime/instruction ./internal/ai/runtime/executor ./internal/ai/runtime -count=1
+go test ./internal/services -run 'Test(AppendWxWorkReceptionContext|BuildRuntimeAIAgentUsesNeutralReceptionIdentity|DefaultWxWorkPersonaDoesNotCollectFieldsWithoutCapability)' -count=1
+git diff --check
+```

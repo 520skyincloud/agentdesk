@@ -226,6 +226,9 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 		}
 		return err
 	}
+	if len(summary.replyRepairState.PreservedParts) > 0 {
+		parsed.Parts = mergeRuntimeReplyParts(summary.replyRepairState.PreservedParts, parsed.Parts, summary.ReplyPlanV2)
+	}
 	validation := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
 		Req: req, Output: parsed, Plan: *summary.ReplyPlanV2, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2,
 		Gates: summary.ValidationGates,
@@ -239,12 +242,142 @@ func applyRuntimeReplyOutputV2(raw string, summary *RunResult, collector *callba
 	case "passed":
 		summary.ReplyParts = append([]contracts.ReplyPartV2(nil), validation.NormalizedParts...)
 		summary.ReplyText = joinValidatedReplyParts(validation.NormalizedParts)
+		summary.replyRepairState = runtimeReplyRepairState{}
 		return nil
 	case "repairable_protocol_error":
+		preserveRuntimeValidReplyParts(summary, parsed, req, true)
+		if summary.ValidationResult != nil && summary.ValidationResult.Status == "passed" && len(summary.ReplyParts) > 0 {
+			if collector != nil {
+				collector.Data.Pipeline.Validate.Status = "passed"
+				collector.Data.Pipeline.Validate.Reason = "valid task answers preserved after dropping invalid extra output"
+			}
+			return nil
+		}
 		return &replyOutputProtocolError{RawResponse: raw, Reason: validationResultReason(validation)}
 	default:
+		// Hard safety, action, evidence, and unsupported-domain rejections never
+		// trigger another model call. Valid sibling parts may still be retained for
+		// deterministic safe degradation below.
+		preserveRuntimeValidReplyParts(summary, parsed, req, false)
 		return fmt.Errorf("reply_output.v2 rejected: %s", validationResultReason(validation))
 	}
+}
+
+func preserveRuntimeValidReplyParts(summary *RunResult, output contracts.ReplyOutputV2, req RunInput, allowComplete bool) bool {
+	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
+		return false
+	}
+	plan := *summary.ReplyPlanV2
+	expected := runtimeTextTaskKeys(plan)
+	preserved := make([]contracts.ReplyPartV2, 0, len(output.Parts))
+	covered := make(map[string]struct{}, len(expected))
+	for _, part := range normalizeReplyParts(output.Parts, &plan) {
+		if len(part.TaskKeys) == 0 || runtimePartHasUnknownOrCoveredTask(part, expected, covered) {
+			continue
+		}
+		partPlan := runtimeReplyPlanForTaskKeys(plan, part.TaskKeys)
+		result := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
+			Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: []contracts.ReplyPartV2{part}},
+			Plan: partPlan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2, Gates: summary.ValidationGates,
+		})
+		if result.Status != "passed" || len(result.NormalizedParts) != 1 {
+			continue
+		}
+		preserved = append(preserved, result.NormalizedParts[0])
+		for _, taskKey := range part.TaskKeys {
+			covered[taskKey] = struct{}{}
+		}
+	}
+	pending := make([]string, 0, len(expected)-len(covered))
+	for _, taskKey := range expected {
+		if _, ok := covered[taskKey]; !ok {
+			pending = append(pending, taskKey)
+		}
+	}
+	if len(preserved) == 0 {
+		return false
+	}
+	if allowComplete && len(pending) == 0 {
+		compacted := mergeRuntimeReplyParts(nil, preserved, &plan)
+		result := NewReplyValidatorForMode(summary.RuntimeValidatorMode).Validate(ReplyValidationInput{
+			Req: req, Output: contracts.ReplyOutputV2{SchemaVersion: contracts.ReplyOutputV2SchemaVersion, Parts: compacted},
+			Plan: plan, Evidence: *summary.EvidenceBundle, ActionLedger: *summary.ActionLedgerV2, Gates: summary.ValidationGates,
+		})
+		if result.Status == "passed" {
+			summary.ValidationResult = &result
+			summary.ReplyParts = append([]contracts.ReplyPartV2(nil), result.NormalizedParts...)
+			summary.ReplyText = joinValidatedReplyParts(result.NormalizedParts)
+			summary.replyRepairState = runtimeReplyRepairState{}
+			return false
+		}
+	}
+	summary.replyRepairState = runtimeReplyRepairState{
+		PreservedParts: append([]contracts.ReplyPartV2(nil), preserved...), PendingTaskKeys: append([]string(nil), pending...),
+	}
+	return len(pending) > 0
+}
+
+func runtimeTextTaskKeys(plan contracts.ReplyPlanV2) []string {
+	ret := make([]string, 0, len(plan.Tasks))
+	for _, task := range plan.Tasks {
+		if task.OutputMode == "text" || task.OutputMode == "text_and_resource" || task.OutputMode == "clarification" {
+			ret = append(ret, task.TaskKey)
+		}
+	}
+	return ret
+}
+
+func runtimePartHasUnknownOrCoveredTask(part contracts.ReplyPartV2, expected []string, covered map[string]struct{}) bool {
+	for _, taskKey := range part.TaskKeys {
+		if !stringInSlice(taskKey, expected) {
+			return true
+		}
+		if _, exists := covered[taskKey]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeReplyPlanForTaskKeys(plan contracts.ReplyPlanV2, taskKeys []string) contracts.ReplyPlanV2 {
+	selected := make(map[string]struct{}, len(taskKeys))
+	for _, taskKey := range taskKeys {
+		selected[strings.TrimSpace(taskKey)] = struct{}{}
+	}
+	tasks := make([]contracts.ReplyPlanTaskV2, 0, len(selected))
+	for _, task := range plan.Tasks {
+		if _, ok := selected[task.TaskKey]; ok {
+			tasks = append(tasks, task)
+		}
+	}
+	plan.Tasks = tasks
+	plan.ShouldGenerate = len(tasks) > 0
+	return plan
+}
+
+func mergeRuntimeReplyParts(preserved, generated []contracts.ReplyPartV2, plan *contracts.ReplyPlanV2) []contracts.ReplyPartV2 {
+	parts := append(append([]contracts.ReplyPartV2(nil), preserved...), generated...)
+	parts = normalizeReplyParts(parts, plan)
+	if plan == nil || len(parts) <= plan.GlobalConstraints.MaxReplyParts || plan.GlobalConstraints.MaxReplyParts <= 0 {
+		return parts
+	}
+	maxQuestions := plan.GlobalConstraints.MaxQuestionsPerPart
+	if maxQuestions <= 0 {
+		maxQuestions = 4
+	}
+	packed := make([]contracts.ReplyPartV2, 0, plan.GlobalConstraints.MaxReplyParts)
+	for _, part := range parts {
+		if len(packed) == 0 || len(packed[len(packed)-1].TaskKeys)+len(part.TaskKeys) > maxQuestions {
+			packed = append(packed, part)
+			continue
+		}
+		last := &packed[len(packed)-1]
+		last.TaskKeys = appendUniqueStrings(last.TaskKeys, part.TaskKeys...)
+		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, part.EvidenceRefs...)
+		last.ActionRefs = appendUniqueStrings(last.ActionRefs, part.ActionRefs...)
+		last.Content = strings.TrimSpace(last.Content + "\n" + part.Content)
+	}
+	return packed
 }
 
 // parseRuntimeReplyOutputV3AsV2 解码 reply_output.v3 并映射到 V2 校验输入；
@@ -280,14 +413,44 @@ func compileRuntimeReplyOutputRepairMessages(ctx context.Context, summary *RunRe
 	}
 	input := *summary.GenerateCompileInput
 	input.RepairInstruction = buildRuntimeReplyOutputRepairInstruction(protocolErr)
+	if len(summary.replyRepairState.PendingTaskKeys) > 0 {
+		pending := append([]string(nil), summary.replyRepairState.PendingTaskKeys...)
+		plan := runtimeReplyPlanForTaskKeys(*summary.ReplyPlanV2, pending)
+		evidence := runtimeEvidenceForTaskKeys(*summary.EvidenceBundle, pending)
+		input.ReplyPlan = &plan
+		input.Evidence = &evidence
+		input.PreparedActions = runtimePreparedActionsForTaskKeys(input.PreparedActions, pending)
+		input.RepairInstruction += "\n已通过校验的其他答案由服务器保留，不得重复。只输出这些仍需修复的 taskKeys：" + strings.Join(pending, ",")
+	}
 	compiled, err := contextcompiler.New(nil).Compile(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	if compiled.Fingerprint != summary.CompiledContext.Fingerprint {
+	if len(summary.replyRepairState.PendingTaskKeys) == 0 && compiled.Fingerprint != summary.CompiledContext.Fingerprint {
 		return nil, fmt.Errorf("reply_output.v2 repair context fingerprint changed")
 	}
 	return compiled.Messages, nil
+}
+
+func runtimeEvidenceForTaskKeys(evidence contracts.EvidenceBundleV1, taskKeys []string) contracts.EvidenceBundleV1 {
+	items := make([]contracts.EvidenceItemV1, 0, len(evidence.Items))
+	for _, item := range evidence.Items {
+		if stringsIntersect(item.TaskKeys, taskKeys) {
+			items = append(items, item)
+		}
+	}
+	evidence.Items = items
+	return evidence
+}
+
+func runtimePreparedActionsForTaskKeys(actions []contracts.ActionLedgerItemV1, taskKeys []string) []contracts.ActionLedgerItemV1 {
+	ret := make([]contracts.ActionLedgerItemV1, 0, len(actions))
+	for _, action := range actions {
+		if stringInSlice(action.TaskKey, taskKeys) {
+			ret = append(ret, action)
+		}
+	}
+	return ret
 }
 
 func buildRuntimeReplyOutputRepairInstruction(protocolErr *replyOutputProtocolError) string {
@@ -315,7 +478,13 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return false
 	}
-	parts := buildSafeRuntimeDegradedParts(*summary.ReplyPlanV2, *summary.EvidenceBundle)
+	parts := append([]contracts.ReplyPartV2(nil), summary.replyRepairState.PreservedParts...)
+	covered := make([]string, 0)
+	for _, part := range parts {
+		covered = appendUniqueStrings(covered, part.TaskKeys...)
+	}
+	remainingPlan := runtimeReplyPlanWithoutTaskKeys(*summary.ReplyPlanV2, covered)
+	parts = mergeRuntimeReplyParts(parts, buildSafeRuntimeDegradedParts(remainingPlan, *summary.EvidenceBundle), summary.ReplyPlanV2)
 	if len(parts) == 0 {
 		return false
 	}
@@ -331,6 +500,7 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	summary.ValidationResult = &validation
 	summary.ReplyParts = append([]contracts.ReplyPartV2(nil), validation.NormalizedParts...)
 	summary.ReplyText = joinValidatedReplyParts(validation.NormalizedParts)
+	summary.replyRepairState = runtimeReplyRepairState{}
 	summary.Status = string(GenerationOutcomeSafeDegraded)
 	summary.ErrorMessage = ""
 	setGenerationOutcome(summary, collector, GenerationOutcomeSafeDegraded)
@@ -343,6 +513,18 @@ func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTr
 	collector.Data.Pipeline.Validate.Status = "passed"
 	collector.Data.Pipeline.Validate.Reason = "safe degraded scalar facts passed deterministic validation"
 	return strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func runtimeReplyPlanWithoutTaskKeys(plan contracts.ReplyPlanV2, excluded []string) contracts.ReplyPlanV2 {
+	tasks := make([]contracts.ReplyPlanTaskV2, 0, len(plan.Tasks))
+	for _, task := range plan.Tasks {
+		if !stringInSlice(task.TaskKey, excluded) {
+			tasks = append(tasks, task)
+		}
+	}
+	plan.Tasks = tasks
+	plan.ShouldGenerate = len(tasks) > 0
+	return plan
 }
 
 func buildSafeRuntimeDegradedParts(plan contracts.ReplyPlanV2, evidence contracts.EvidenceBundleV1) []contracts.ReplyPartV2 {
@@ -386,9 +568,6 @@ func safeDegradedValidationPlan(plan contracts.ReplyPlanV2, parts []contracts.Re
 	}
 	plan.Tasks = filtered
 	plan.ShouldGenerate = len(filtered) > 0
-	if plan.GlobalConstraints.MaxReplyParts < len(parts) {
-		plan.GlobalConstraints.MaxReplyParts = len(parts)
-	}
 	return plan
 }
 

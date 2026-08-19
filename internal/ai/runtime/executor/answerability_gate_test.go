@@ -361,8 +361,8 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
 	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
-	if !strings.Contains(state.Decision.Instructions[0].Content, "WiFi 缺房号就问房号") {
-		t.Fatalf("expected actionable no-context policy, got %q", state.Decision.Instructions[0].Content)
+	if !strings.Contains(state.Decision.Instructions[0].Content, "WiFi 无资料时也不问房号") {
+		t.Fatalf("expected no-context policy to avoid purposeless field collection, got %q", state.Decision.Instructions[0].Content)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
@@ -400,7 +400,7 @@ func TestKnowledgePolicyRetrievesWifiInsteadOfSkippingAsAction(t *testing.T) {
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
 	}
-	if len(state.Decision.Instructions) != 1 || !strings.Contains(state.Decision.Instructions[0].Content, "WiFi") {
+	if len(state.Decision.Instructions) != 1 || !strings.Contains(state.Decision.Instructions[0].Content, "WiFi 无资料时也不问房号") {
 		t.Fatalf("expected wifi-aware no-context instruction, got %#v", state.Decision.Instructions)
 	}
 }

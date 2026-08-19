@@ -40,21 +40,56 @@ func loadEnabledIntentConfigs(scope runtimeIntentScope) []models.ReplyIntentConf
 }
 
 func promptTraceFromConfig(config models.ReplyIntentConfig, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {
+	intentCode := canonicalIntentCode(config.Code)
 	instructions := []string{
 		"先按当前用户问题回答，历史只作辅助。",
 		"不要假承诺任何未执行的真实动作或处理结果。",
 		"回复像微信真人，通常 1-3 句。",
 	}
-	if promptPack := strings.TrimSpace(config.PromptPack); promptPack != "" {
+	if promptPack := sanitizeConfiguredReplyInstruction(intentCode, config.PromptPack); promptPack != "" {
 		instructions = append(instructions, splitIntentLines(promptPack)...)
 	}
-	if template := strings.TrimSpace(config.ReplyPlanTemplate); template != "" {
+	if template := sanitizeConfiguredReplyInstruction(intentCode, config.ReplyPlanTemplate); template != "" {
 		instructions = append(instructions, "回复计划模板："+template)
 	}
-	if validation := strings.TrimSpace(config.ValidationRules); validation != "" {
+	if validation := sanitizeConfiguredReplyInstruction(intentCode, config.ValidationRules); validation != "" {
 		instructions = append(instructions, "发送前校验："+validation)
 	}
+	if intentCode == "service_request" {
+		instructions = append(instructions,
+			"没有真实工具、已发布处理流程或接待路由时，直接说明当前能力边界，不索要房号、订单、姓名或手机号，不引导联系不存在的前台，也不承诺同事后续处理。",
+			"房型升级或换房无法执行时，直接说明当前不能改房型、不能确认实时房态，先不用客户提供订单信息。",
+		)
+	}
 	return callbacks.IntentPromptTraceData{PackName: intent.PrimaryIntent, Instructions: instructions}
+}
+
+func sanitizeConfiguredReplyInstruction(intentCode, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || (intentCode != "hotel_info" && intentCode != "service_request") {
+		return value
+	}
+	replacements := [][2]string{
+		{"知识不足时只说当前资料没写明并追问一个关键点", "知识不足时只说当前资料没写明"},
+		{"如果知识不足，只追问一个关键字段或说明当前资料没写明", "如果知识不足，只说明当前资料没写明"},
+		{"先给自助路径或追问一个必要字段", "先给知识库明确的自助路径；没有路径时直接说明当前能力边界"},
+	}
+	for _, replacement := range replacements {
+		value = strings.ReplaceAll(value, replacement[0], replacement[1])
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '。' || r == '；'
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		compact := normalizeConfiguredIntentText(part)
+		if part == "" || ((strings.Contains(compact, "追问") || strings.Contains(compact, "收集")) && strings.Contains(compact, "字段")) {
+			continue
+		}
+		ret = append(ret, part)
+	}
+	return strings.Join(ret, "；")
 }
 
 func normalizeIntentConfigs(list []models.ReplyIntentConfig) []models.ReplyIntentConfig {

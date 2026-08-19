@@ -150,6 +150,55 @@ func TestExpandRuntimeAtomicReplyTaskPlansKeepsCompoundDimensionsTogether(t *tes
 	}
 }
 
+func TestExpandRuntimeAtomicReplyTaskPlansSplitsAddressAndTakeawayComma(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "address", Output: "knowledge_text_reply",
+		Text: "酒店地址发我，我想点外卖怎么办",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 2 {
+		t.Fatalf("expected address and takeaway as two tasks, got %#v", got)
+	}
+	if got[0].Text != "酒店地址发我" || got[0].SubIntent != "address" ||
+		got[1].Text != "我想点外卖怎么办" || got[1].SubIntent != "order_food_delivery" {
+		t.Fatalf("comma task split or subIntent mismatch: %#v", got)
+	}
+}
+
+func TestExpandRuntimeAtomicReplyTaskPlansKeepsSingleEventAcrossComma(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		Sequence: 1, Intent: "hotel_info", SubIntent: "order_food_delivery", Output: "knowledge_text_reply",
+		Text: "外卖到了，地址填错了怎么办",
+	}}
+	got := expandRuntimeAtomicReplyTaskPlans(plans)
+	if len(got) != 1 || got[0].Text != "外卖到了，地址填错了怎么办" {
+		t.Fatalf("one delivery event must not be split into unrelated tasks: %#v", got)
+	}
+}
+
+func TestExpandRuntimeAtomicReplyTaskPlansTextAndVoiceKeepAllSixQuestions(t *testing.T) {
+	transcript := "早餐时间和地点是什么，停车场怎么走，WiFi密码是多少，洗衣房在哪里，酒店地址发我，我想点外卖怎么办"
+	inputs := map[string]string{
+		"text":  transcript,
+		"voice": "[语音] voice.amr 语音内容是：" + transcript,
+	}
+	wantText := []string{"早餐时间和地点是什么", "停车场怎么走", "WiFi密码是多少", "洗衣房在哪里", "酒店地址发我", "我想点外卖怎么办"}
+	wantSubIntent := []string{"breakfast", "parking", "network_wifi", "laundry", "address", "order_food_delivery"}
+	for label, text := range inputs {
+		got := expandRuntimeAtomicReplyTaskPlans([]callbacks.ReplyTaskPlanTraceData{{
+			Sequence: 1, Intent: "hotel_info", SubIntent: "breakfast", Output: "knowledge_text_reply", Text: text,
+		}})
+		if len(got) != len(wantText) {
+			t.Fatalf("%s expected six tasks, got %#v", label, got)
+		}
+		for index := range got {
+			if got[index].Text != wantText[index] || got[index].SubIntent != wantSubIntent[index] {
+				t.Fatalf("%s task %d mismatch: got=%#v wantText=%q wantSubIntent=%q", label, index, got[index], wantText[index], wantSubIntent[index])
+			}
+		}
+	}
+}
+
 // 契约 3.9.2 回放（语音 1362）：口语重复“都可以”不得拆出重复子句。
 func TestSplitMultiTopicClausesDedupesRepeatedPhrases(t *testing.T) {
 	voice := "我要吃本地菜。都可以，都可以介绍一下呀。还有什么推荐？还有什么推荐？"

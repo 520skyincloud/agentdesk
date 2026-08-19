@@ -228,6 +228,15 @@ func TestBuildGeneratePolicyDoesNotDuplicatePersonaPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildGeneratePolicyRequiresOneAnswerPerTaskKey(t *testing.T) {
+	policy := buildGeneratePolicy(CompileInput{ReplyContract: ReplyContractV2})
+	for _, required := range []string{"taskKey 是逐题回答义务", "N 个对应答案", "实际回答它列出的全部 taskKeys"} {
+		if !strings.Contains(policy, required) {
+			t.Fatalf("generate policy missing per-task answer obligation %q: %s", required, policy)
+		}
+	}
+}
+
 func TestBuildGeneratePolicyFallsBackToPersonaWhenSystemPromptMissing(t *testing.T) {
 	persona := "专属人设：说话简短。"
 	policy := buildGeneratePolicy(CompileInput{

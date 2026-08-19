@@ -337,6 +337,8 @@ func buildGeneratePolicy(input CompileInput) string {
 	if contract == ReplyContractV2 {
 		parts = append(parts,
 			"只输出一个符合 reply_output.v2 的 UTF-8 JSON Object。每个当前文本 taskKey 必须且只能出现一次，最多三段；不得输出 Markdown、解释、注释或额外字段。",
+			"taskKey 是逐题回答义务，不是可挂在任意短句上的 ID 占位符。ReplyPlan 有 N 个当前文本 taskKey，最终 content 就必须有 N 个对应答案，不能只回答其中一题却挂上多题 taskKey。",
+			"可以按关联性把答案自然组织成 1-3 个 parts，也可以分句或分行；但每个 part 的 content 必须实际回答它列出的全部 taskKeys。",
 			`固定结构：{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["..."],"content":"给客户的话"}]}`,
 			"evidenceRefs 和 actionRefs 由服务器根据 taskKey 自动绑定，模型不需要也不应输出。",
 			"Evidence 只是当前任务的参考资料，不是要原样发送的模板；必须由模型用自然语言回答当前问题，只取与当前 task 直接相关的事实，不要逐条复制标题、FAQ 原文或其他问题的内容。",

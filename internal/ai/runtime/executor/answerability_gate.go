@@ -476,7 +476,7 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 		parts = append(parts, "服务请求：按当前分类提示词处理；普通设施/设备/用品问题先使用知识库。没有知识库或工具结果时，不得承诺派人、送物、维修、叫醒或记录完成。")
 	case "interaction":
 		if intent.NeedsKnowledge {
-			parts = append(parts, "互动/澄清服务问题：本轮已升级为正式知识任务，必须使用当前任务的检索结果回答；无命中只追问一个关键点，不得自行转人工。")
+			parts = append(parts, "互动/澄清服务问题：本轮已升级为正式知识任务，必须使用当前任务的检索结果回答；无命中只说明当前资料未写明，不得索要客户资料或自行转人工。")
 		} else if strings.TrimSpace(intent.SubIntent) == "media_context_follow_up" {
 			parts = append(parts, "图片/文件上下文：围绕当前问题使用最近图片/文件解析文本，不机械复述 OCR，不说系统识别。语音仍按既有语转文文本链路处理。")
 		} else if strings.TrimSpace(intent.SubIntent) == "clarify" || intent.NeedsClarification {

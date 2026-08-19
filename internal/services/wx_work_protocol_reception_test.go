@@ -56,3 +56,16 @@ func TestBuildRuntimeAIAgentUsesNeutralReceptionIdentity(t *testing.T) {
 		t.Fatalf("neutral identity missing: %s", agent.SystemPrompt)
 	}
 }
+
+func TestDefaultWxWorkPersonaDoesNotCollectFieldsWithoutCapability(t *testing.T) {
+	for _, forbidden := range []string{"先收集一个最关键字段", "追问一个必要字段", "会安排后续有人处理"} {
+		if strings.Contains(DefaultWxWorkProtocolPersonaPrompt, forbidden) {
+			t.Fatalf("default persona still teaches unsupported field collection %q: %s", forbidden, DefaultWxWorkProtocolPersonaPrompt)
+		}
+	}
+	for _, required := range []string{"客户表达本身含糊或指代不清", "不收集房号、订单、姓名或电话", "直接说明能力边界"} {
+		if !strings.Contains(DefaultWxWorkProtocolPersonaPrompt, required) {
+			t.Fatalf("default persona missing capability boundary %q: %s", required, DefaultWxWorkProtocolPersonaPrompt)
+		}
+	}
+}

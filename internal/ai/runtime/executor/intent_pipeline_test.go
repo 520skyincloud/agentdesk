@@ -917,6 +917,27 @@ func TestRuntimePipelineDoesNotNormalizeDeviceServiceRequestByKeyword(t *testing
 	}
 }
 
+func TestConfiguredServicePromptDropsGenericFieldCollection(t *testing.T) {
+	config := models.ReplyIntentConfig{
+		Code:              "service_request",
+		PromptPack:        "服务请求先看自助路径。缺资料时追问一个必要字段。",
+		ReplyPlanTemplate: "先给自助路径或追问一个必要字段；需要人工时走流程。",
+		ValidationRules:   "缺少关键字段时收集一个必要字段。",
+	}
+	trace := promptTraceFromConfig(config, callbacks.IntentTraceData{PrimaryIntent: "service_request"})
+	text := strings.Join(trace.Instructions, "\n")
+	for _, forbidden := range []string{"追问一个必要字段", "收集一个必要字段"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("persisted service prompt leaked generic field collection %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{"不索要房号、订单、姓名或手机号", "当前不能改房型", "不引导联系不存在的前台"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("configured service prompt missing boundary %q: %s", required, text)
+		}
+	}
+}
+
 func TestRuntimePipelineDoesNotNormalizeAirConditionerRepairByKeyword(t *testing.T) {
 	for _, subIntent := range []string{"air_conditioner_repair", "hvac_issue", "ac_not_cooling"} {
 		req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "空调不制冷怎么办"}}
@@ -1369,6 +1390,9 @@ func TestRuntimePipelineReturningCustomerBoundaryRejectsOldRoom(t *testing.T) {
 	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, intent)
 	if !strings.Contains(instruction, "旧消息或长期记忆里的房号") || !strings.Contains(instruction, "不能沿用旧房号") {
 		t.Fatalf("expected returning customer boundary to reject old room, got %q", instruction)
+	}
+	if strings.Contains(instruction, "缺少当前房号时只能重新询问") || !strings.Contains(instruction, "只有真实工具或接待路由明确要求 roomNo") {
+		t.Fatalf("returning customer boundary must not collect a room number without a real capability, got %q", instruction)
 	}
 }
 

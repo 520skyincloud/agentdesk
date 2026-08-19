@@ -727,6 +727,9 @@ func expandRuntimeAtomicReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData)
 			item.TaskKey = ""
 			item.AnswerGroup = ""
 			item.Text = clause
+			if len(clauses) > 1 {
+				item.SubIntent = runtimeAtomicClauseSubIntent(item.SubIntent, clause)
+			}
 			key := strings.Join([]string{item.Intent, item.SubIntent, item.Output, item.ResourceAction, normalizeRuntimeTaskText(item.Text)}, "|")
 			if _, exists := seen[key]; exists {
 				continue
@@ -749,14 +752,15 @@ func runtimeAtomicKnowledgeClauses(text string) []string {
 	strongParts = splitBySeparators(strongParts, []string{"？", "?", "。", "！", "!", "；", ";", "\n", "……"})
 	strongParts = normalizeRuntimeAtomicClauses(strongParts)
 
-	// 每个强边界子句内再尝试按并列词拆分；只有两侧能识别为不同业务主题
-	// 才拆，避免把“早餐时间以及地点”错误拆成两个问题。
+	// 每个强边界子句内再尝试按并列词和口语逗号拆分；只有各段能识别为
+	// 不同业务主题才拆，避免把“早餐时间以及地点”错误拆成两个问题。
 	parts := make([]string, 0, len(strongParts))
 	for _, strongPart := range strongParts {
 		split := []string{strongPart}
-		for _, separator := range []string{"或者", "或是", "以及", "还有", "和", "跟", "、"} {
+		for _, separator := range []string{"或者", "或是", "以及", "还有", "和", "跟", "、", "，", ","} {
 			candidate := normalizeRuntimeAtomicClauses(splitBySeparators([]string{strongPart}, []string{separator}))
-			if len(candidate) > 1 && runtimeClausesHaveDistinctTopics(candidate) {
+			commaBoundary := separator == "，" || separator == ","
+			if len(candidate) > 1 && runtimeClausesHaveDistinctTopics(candidate) && (!commaBoundary || runtimeClausesHaveIndependentRequests(candidate)) {
 				split = candidate
 				break
 			}
@@ -767,6 +771,42 @@ func runtimeAtomicKnowledgeClauses(text string) []string {
 		return []string{text}
 	}
 	return parts
+}
+
+func runtimeAtomicClauseSubIntent(current, clause string) string {
+	topics := detectKnowledgeTopicClasses(clause)
+	ordered := []struct {
+		topic     string
+		subIntent string
+	}{
+		{"checkin", "checkin_process"},
+		{"checkout", "checkout_process"},
+		{"address", "address"},
+		{"parking", "parking"},
+		{"breakfast", "breakfast"},
+		{"coffee", "coffee"},
+		{"invoice", "invoice"},
+		{"wifi", "network_wifi"},
+		{"laundry", "laundry"},
+		{"luggage", "luggage_storage"},
+		{"housekeeping", "housekeeping"},
+		{"room_change", "room_change"},
+		{"door_access", "door_access"},
+		{"tv", "tv_cast"},
+		{"aircon", "air_conditioner"},
+		{"supplies", "supplies_self_help"},
+		{"discount", "discount"},
+		{"nearby_food", "surrounding_facilities"},
+		{"nearby_fun", "surrounding_facilities"},
+		{"takeaway", "order_food_delivery"},
+		{"store_name", "store_identity"},
+	}
+	for _, item := range ordered {
+		if _, ok := topics[item.topic]; ok {
+			return item.subIntent
+		}
+	}
+	return current
 }
 
 func normalizeRuntimeAtomicClauses(parts []string) []string {
@@ -808,7 +848,7 @@ func runtimeClausesHaveDistinctTopics(clauses []string) bool {
 	seen := make(map[string]struct{})
 	for _, clause := range clauses {
 		topics := detectKnowledgeTopicClasses(clause)
-		if len(topics) == 0 {
+		if len(topics) != 1 {
 			return false
 		}
 		for topic := range topics {
@@ -816,6 +856,21 @@ func runtimeClausesHaveDistinctTopics(clauses []string) bool {
 		}
 	}
 	return len(seen) >= len(clauses)
+}
+
+func runtimeClausesHaveIndependentRequests(clauses []string) bool {
+	for _, clause := range clauses {
+		compact := compactRuntimeProtocolText(clause)
+		if containsAny(compact, []string{
+			"吗", "么", "呢", "什么", "怎么", "怎样", "如何", "哪里", "在哪", "哪儿", "多少", "几点", "是否", "有没有", "能不能", "可不可以",
+			"发我", "给我", "告诉我", "帮我", "想问", "我想", "需要", "介绍一下", "推荐一下",
+			"坏了", "打不开", "进不去", "连不上", "用不了", "无法", "失败", "异常", "漏水", "不制冷", "不制热", "没了", "没有了", "填错了",
+		}) {
+			continue
+		}
+		return false
+	}
+	return len(clauses) > 1
 }
 
 // redistributeMultiTopicClauses 是意图模型没拆好 task.text 时的确定性兜底：

@@ -94,11 +94,10 @@ func buildRuntimeReplyPlanV2(
 		case "correction":
 			constraints = appendUniqueStrings(constraints, "answer_current_correction_only")
 		}
-		if outputMode == "clarification" {
-			constraints = appendUniqueStrings(constraints, "ask_one_missing_field", "acknowledge_uncertainty")
-		}
 		if knowledgeStatus == "no_context" || knowledgeStatus == "unanswerable" || knowledgeStatus == "unavailable" {
-			constraints = appendUniqueStrings(constraints, "state_knowledge_boundary_only", "do_not_ask_known_store_scope")
+			constraints = appendUniqueStrings(constraints, "state_knowledge_boundary_only", "do_not_collect_customer_fields", "do_not_ask_known_store_scope")
+		} else if outputMode == "clarification" {
+			constraints = appendUniqueStrings(constraints, "clarify_ambiguous_expression_only", "acknowledge_uncertainty")
 		}
 		objective := strings.TrimSpace(plan.Text)
 		if objective == "" {

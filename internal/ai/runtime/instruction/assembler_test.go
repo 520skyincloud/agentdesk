@@ -71,3 +71,17 @@ func TestAssemblerBaseInstructionKeepsHumanToneGuardrails(t *testing.T) {
 		}
 	}
 }
+
+func TestAssemblerDoesNotCollectFieldsForUnsupportedRoomChange(t *testing.T) {
+	text := NewAssembler().Assemble(AssemblerInput{}).Text
+	for _, forbidden := range []string{"追问一个必要字段", "只追问一个关键字段", "先收集一个最关键字段", "前台领取方式", "这需要同事处理/走对应流程"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("generic field collection or nonexistent workflow leaked into base prompt %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{"当前不能改房型", "不能确认实时房态", "先不用客户提供房号、订单、姓名或手机号", "不引导联系不存在的前台"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("room-change capability boundary missing %q: %s", required, text)
+		}
+	}
+}

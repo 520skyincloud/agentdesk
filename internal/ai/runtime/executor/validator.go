@@ -131,7 +131,11 @@ func (v deterministicReplyValidator) Validate(input ReplyValidationInput) contra
 		if issues := validateReplyCommitInvariants(input); len(issues) > 0 {
 			result.Checks.CommitInvariants = "failed"
 			result.Errors = append(result.Errors, issues...)
-			result.Status = "rejected"
+			if result.Status != "rejected" && repairableReplyCommitInvariantIssues(issues) {
+				result.Status = "repairable_protocol_error"
+			} else {
+				result.Status = "rejected"
+			}
 		}
 	}
 	return result

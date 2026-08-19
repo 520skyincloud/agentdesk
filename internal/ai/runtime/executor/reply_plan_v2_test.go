@@ -20,7 +20,7 @@ func TestReplyPlanV2AcceptsKnowledgeBoundaryConstraints(t *testing.T) {
 		t.Fatalf("reply plan rejected its own knowledge boundary constraints: %v", err)
 	}
 	got := plan.Tasks[0].Constraints
-	if !stringInSlice("state_knowledge_boundary_only", got) || !stringInSlice("do_not_ask_known_store_scope", got) {
+	if !stringInSlice("state_knowledge_boundary_only", got) || !stringInSlice("do_not_collect_customer_fields", got) || !stringInSlice("do_not_ask_known_store_scope", got) {
 		t.Fatalf("knowledge boundary constraints missing: %#v", got)
 	}
 	assertReplyPlanV2SchemaAccepts(t, plan)
@@ -36,8 +36,8 @@ func TestReplyPlanV2AcceptsMaximumRuntimeConstraintCombination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid runtime constraint combination exceeded schema: %v", err)
 	}
-	if len(plan.Tasks[0].Constraints) != 9 {
-		t.Fatalf("expected all 9 runtime constraints, got %#v", plan.Tasks[0].Constraints)
+	if len(plan.Tasks[0].Constraints) != 8 {
+		t.Fatalf("expected all 8 runtime constraints, got %#v", plan.Tasks[0].Constraints)
 	}
 	assertReplyPlanV2SchemaAccepts(t, plan)
 }

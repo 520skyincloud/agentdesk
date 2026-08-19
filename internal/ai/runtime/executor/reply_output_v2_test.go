@@ -2,7 +2,9 @@ package executor
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +140,97 @@ func TestReplyValidatorV2RejectsInternalIdentifiers(t *testing.T) {
 	}
 }
 
+func TestReplyValidatorV2EnforcesMaxQuestionsPerPart(t *testing.T) {
+	input := validReplyValidationInputForTest("停车场从东侧进。早餐7点开始。WiFi密码见房内提示。")
+	input.Plan.GlobalConstraints.MaxQuestionsPerPart = 2
+	input.Plan.Tasks = append(input.Plan.Tasks,
+		contracts.ReplyPlanTaskV2{TaskKey: "task_2", Sequence: 2, Intent: "hotel_info", SubIntent: "breakfast", Objective: "早餐几点", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{}},
+		contracts.ReplyPlanTaskV2{TaskKey: "task_3", Sequence: 3, Intent: "hotel_info", SubIntent: "network_wifi", Objective: "WiFi密码", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{}},
+	)
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_2", "task_3"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "too_many_questions_in_part") {
+		t.Fatalf("question limit was not enforced: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2RejectsShortAnswerBoundToUnrelatedTasks(t *testing.T) {
+	input := validReplyValidationInputForTest("停车场从东侧进。")
+	input.Plan.Tasks = append(input.Plan.Tasks, contracts.ReplyPlanTaskV2{
+		TaskKey: "task_wifi", Sequence: 2, Intent: "hotel_info", SubIntent: "network_wifi", Objective: "WiFi密码是多少", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{},
+	})
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_wifi"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "task_answer_obligation_missing") {
+		t.Fatalf("unrelated task keys were accepted: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2RejectsMultipleSentencesThatStillMissOneTask(t *testing.T) {
+	input := validReplyValidationInputForTest("停车场从东侧进。入口就在大门旁。")
+	input.Plan.Tasks = append(input.Plan.Tasks, contracts.ReplyPlanTaskV2{
+		TaskKey: "task_wifi", Sequence: 2, Intent: "hotel_info", SubIntent: "network_wifi", Objective: "WiFi密码是多少", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{},
+	})
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_wifi"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "task_answer_obligation_missing") {
+		t.Fatalf("multiple sentences about one topic were accepted as two answers: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2AcceptsOrderedImplicitAnswerUnits(t *testing.T) {
+	input := validReplyValidationInputForTest("7点开始，12点前退房。")
+	input.Plan.Tasks[0].SubIntent = "breakfast"
+	input.Plan.Tasks[0].Objective = "早餐几点开始"
+	input.Plan.Tasks = append(input.Plan.Tasks, contracts.ReplyPlanTaskV2{
+		TaskKey: "task_checkout", Sequence: 2, Intent: "hotel_info", SubIntent: "checkout_process", Objective: "几点退房", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{},
+	})
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_checkout"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "passed" {
+		t.Fatalf("ordered implicit answer units should remain valid: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2ChecksEverySameTopicTask(t *testing.T) {
+	input := validReplyValidationInputForTest("牙刷在自取柜。")
+	input.Plan.Tasks[0].SubIntent = "supplies_self_help"
+	input.Plan.Tasks[0].Objective = "牙刷在哪里"
+	input.Plan.Tasks = append(input.Plan.Tasks, contracts.ReplyPlanTaskV2{
+		TaskKey: "task_slippers", Sequence: 2, Intent: "hotel_info", SubIntent: "supplies_self_help", Objective: "拖鞋在哪里", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{},
+	})
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_slippers"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "task_answer_obligation_missing") {
+		t.Fatalf("same-topic tasks must each have an answer: %+v", result)
+	}
+
+	input.Output.Parts[0].Content = "牙刷和拖鞋都在自取柜。"
+	result = NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "passed" {
+		t.Fatalf("one concise sentence may answer both named objects: %+v", result)
+	}
+}
+
+func TestReplyValidatorV2DoesNotAutoCoverUnknownCombinedTasks(t *testing.T) {
+	input := validReplyValidationInputForTest("第一项可以。")
+	input.Plan.Tasks[0].SubIntent = "custom_alpha"
+	input.Plan.Tasks[0].Objective = "甲项规则"
+	input.Plan.Tasks = append(input.Plan.Tasks, contracts.ReplyPlanTaskV2{
+		TaskKey: "task_beta", Sequence: 2, Intent: "hotel_info", SubIntent: "custom_beta", Objective: "乙项规则", OutputMode: "text",
+		Knowledge: contracts.ReplyPlanKnowledge{Policy: "forbidden", Status: "not_needed"}, EvidenceRefs: []string{}, ActionRefs: []string{}, Constraints: []string{},
+	})
+	input.Output.Parts[0].TaskKeys = []string{"task_1", "task_beta"}
+	result := NewReplyValidatorForMode(runtimeValidatorV2).Validate(input)
+	if result.Status != "repairable_protocol_error" || !validationHasCode(result, "task_answer_obligation_missing") {
+		t.Fatalf("unknown combined tasks must be repaired instead of auto-covered: %+v", result)
+	}
+}
+
 func validReplyValidationInputForTest(content string) ReplyValidationInput {
 	return ReplyValidationInput{
 		Output: contracts.ReplyOutputV2{
@@ -181,5 +274,114 @@ func TestParseRuntimeReplyOutputV2LooseExtraction(t *testing.T) {
 	}
 	if len(parsed.Parts) != 1 || parsed.Parts[0].Content != "行李可以免费寄存在一楼前台寄存柜。" {
 		t.Fatalf("unexpected parsed parts: %#v", parsed.Parts)
+	}
+}
+
+func TestApplyRuntimeReplyOutputV2PreservesValidSiblingAndRepairsOnlyInvalidTask(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	raw := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["parking"],"content":"停车场从酒店东侧入口进。"},{"taskKeys":["address"],"content":"地址是壹间公寓高新社区。"}]}`
+	err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{})
+	var protocolErr *replyOutputProtocolError
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("expected partial protocol repair, got %v", err)
+	}
+	if len(summary.replyRepairState.PreservedParts) != 1 || summary.replyRepairState.PreservedParts[0].TaskKeys[0] != "parking" ||
+		!reflect.DeepEqual(summary.replyRepairState.PendingTaskKeys, []string{"address"}) {
+		t.Fatalf("valid sibling was not preserved: %#v", summary.replyRepairState)
+	}
+	repaired := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["address"],"content":"当前门店地址是合肥市包河区水阳江路392号。"}]}`
+	if err := applyRuntimeReplyOutputV2(repaired, summary, collector, RunInput{}); err != nil {
+		t.Fatalf("repair output did not merge with preserved sibling: %v", err)
+	}
+	if len(summary.ReplyParts) != 2 || !strings.Contains(summary.ReplyText, "停车场") || !strings.Contains(summary.ReplyText, "水阳江路392号") {
+		t.Fatalf("merged reply mismatch: parts=%#v text=%q", summary.ReplyParts, summary.ReplyText)
+	}
+	if len(input.Plan.Tasks) != 2 || len(summary.ReplyPlanV2.Tasks) != 2 {
+		t.Fatalf("authoritative reply plan was mutated: %#v", summary.ReplyPlanV2)
+	}
+}
+
+func TestSafeRuntimeDegradedKeepsPreservedAnswersAndOriginalPlan(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+		replyRepairState: runtimeReplyRepairState{
+			PreservedParts:  []contracts.ReplyPartV2{{TaskKeys: []string{"parking"}, Content: "停车场从酒店东侧入口进。", EvidenceRefs: []string{"K1"}}},
+			PendingTaskKeys: []string{"address"},
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	if !applySafeRuntimeDegraded(summary, collector, RunInput{}, errors.New("repair failed")) {
+		t.Fatal("safe degradation should keep the already-valid answer")
+	}
+	if len(summary.ReplyParts) != 2 || len(summary.ReplyPlanV2.Tasks) != 2 {
+		t.Fatalf("safe degradation lost answers or mutated the plan: parts=%#v plan=%#v", summary.ReplyParts, summary.ReplyPlanV2)
+	}
+	for _, part := range summary.ReplyParts {
+		if len(part.TaskKeys) != 1 || (part.TaskKeys[0] != "parking" && part.TaskKeys[0] != "address") {
+			t.Fatalf("safe degradation committed an unanswered task: %#v", summary.ReplyParts)
+		}
+	}
+}
+
+func TestApplyRuntimeReplyOutputV2DoesNotRepairHardRejectedSibling(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	raw := `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["parking"],"content":"停车场从酒店东侧入口进。"},{"taskKeys":["address"],"content":"我已经通知前台处理了。"}]}`
+	err := applyRuntimeReplyOutputV2(raw, summary, collector, RunInput{})
+	var protocolErr *replyOutputProtocolError
+	if err == nil || errors.As(err, &protocolErr) {
+		t.Fatalf("hard rejection must not enter model protocol repair: %v", err)
+	}
+	if len(summary.replyRepairState.PreservedParts) != 1 || !reflect.DeepEqual(summary.replyRepairState.PendingTaskKeys, []string{"address"}) {
+		t.Fatalf("safe sibling should only be retained for deterministic degradation: %#v", summary.replyRepairState)
+	}
+}
+
+func TestSafeRuntimeDegradedDoesNotRaiseReplyPartLimit(t *testing.T) {
+	input := multiTaskReplyValidationInputForTest()
+	input.Plan.GlobalConstraints.MaxReplyParts = 1
+	input.Plan.GlobalConstraints.MaxQuestionsPerPart = 1
+	summary := &RunResult{
+		ReplyPlanV2: &input.Plan, EvidenceBundle: &input.Evidence, ActionLedgerV2: &input.ActionLedger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+		replyRepairState: runtimeReplyRepairState{PreservedParts: []contracts.ReplyPartV2{
+			{TaskKeys: []string{"parking"}, Content: "停车场从酒店东侧入口进。", EvidenceRefs: []string{"K1"}},
+			{TaskKeys: []string{"address"}, Content: "当前门店地址是合肥市包河区水阳江路392号。", EvidenceRefs: []string{"S1"}},
+		}},
+	}
+	if applySafeRuntimeDegraded(summary, callbacks.NewRuntimeTraceCollector(), RunInput{}, errors.New("hard failure")) {
+		t.Fatalf("safe degradation must not bypass maxReplyParts: %#v", summary.ReplyParts)
+	}
+}
+
+func multiTaskReplyValidationInputForTest() ReplyValidationInput {
+	return ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{
+			SchemaVersion: contracts.ReplyPlanV2SchemaVersion, TurnVersion: 1, ShouldGenerate: true,
+			Tasks: []contracts.ReplyPlanTaskV2{
+				{TaskKey: "parking", Sequence: 1, Intent: "hotel_info", SubIntent: "parking", Objective: "停车场怎么走", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K1"}, ActionRefs: []string{}, Constraints: []string{}},
+				{TaskKey: "address", Sequence: 2, Intent: "hotel_info", SubIntent: "address", Objective: "酒店地址发我", OutputMode: "text", Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"S1"}, ActionRefs: []string{}, Constraints: []string{}},
+			},
+			GlobalConstraints: contracts.ReplyPlanGlobalConstraints{MaxReplyParts: 3, MaxQuestionsPerPart: 4, ForbiddenClaims: []string{}},
+		},
+		Evidence: contracts.EvidenceBundleV1{
+			SchemaVersion: contracts.EvidenceBundleV1SchemaVersion, ScopeFingerprint: "scope-test", RetrievalStatus: "has_context",
+			Items: []contracts.EvidenceItemV1{
+				{Ref: "K1", SourceType: "fastgpt", TaskKeys: []string{"parking"}, Title: "停车", Content: "停车场从酒店东侧入口进入。", Score: 1, Answerability: "supporting", ResourceRefs: []string{}},
+				{Ref: "S1", SourceType: "store_fact", TaskKeys: []string{"address"}, Title: authoritativeStoreAddressEvidenceTitle, Content: "合肥市包河区水阳江路392号", Score: 1, Answerability: "supporting", ResourceRefs: []string{}},
+			}, Resources: []contracts.EvidenceResourceV1{},
+		},
+		ActionLedger: contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: 1, Actions: []contracts.ActionLedgerItemV1{}},
 	}
 }

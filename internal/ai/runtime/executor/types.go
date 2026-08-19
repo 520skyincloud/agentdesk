@@ -87,8 +87,16 @@ type RunResult struct {
 	ReplyModelAttempted        bool
 	RuntimeValidatorMode       string
 	ActionLedgerAuthoritative  bool
+	// replyRepairState preserves already-valid sibling answers while the existing
+	// single protocol repair regenerates only the remaining task keys.
+	replyRepairState runtimeReplyRepairState
 	// ValidationGates 是 P9 门禁开关快照（生成前按 req 计算；零值默认全开）。
 	ValidationGates ReplyValidationGates
+}
+
+type runtimeReplyRepairState struct {
+	PreservedParts  []contracts.ReplyPartV2
+	PendingTaskKeys []string
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally
