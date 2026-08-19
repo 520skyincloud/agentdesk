@@ -154,6 +154,10 @@ func BuildRuntimeMessageText(messageType enums.IMMessageType, content string) st
 	}
 }
 
+func IsStandaloneOneTextControl(messageType enums.IMMessageType, content string, turnID int64, turnVersion int) bool {
+	return messageType == enums.IMMessageTypeText && turnID <= 0 && turnVersion <= 0 && strings.TrimSpace(content) == "1"
+}
+
 func BuildRuntimeMessageTextWithPayload(messageType enums.IMMessageType, content string, payload string) string {
 	base := BuildRuntimeMessageText(messageType, content)
 	mediaText, mediaSummary, mediaStatus := RuntimeMediaUnderstandingFromPayload(payload)

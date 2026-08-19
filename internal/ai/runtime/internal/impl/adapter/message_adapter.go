@@ -32,18 +32,7 @@ func BuildHistoryMessages(conversationID, currentMessageID, tenantID int64, limi
 		limit = configuredHistoryLimit(conversationID, tenantID)
 	}
 	sessionNo := currentSessionNo(currentMessageID, tenantID)
-	cnd := sqls.NewCnd().
-		Eq("conversation_id", conversationID).
-		Eq("session_no", sessionNo).
-		Desc("id").
-		Limit(limit + 1)
-	if currentMessageID > 0 {
-		cnd.Lt("id", currentMessageID)
-	}
-	if tenantID > 0 {
-		cnd.Eq("tenant_id", tenantID)
-	}
-	items := repositories.MessageRepository.Find(sqls.DB(), cnd)
+	items := findHistoryMessages(conversationID, currentMessageID, tenantID, sessionNo, limit+1)
 	oldestKeptMessageID := int64(0)
 	if len(items) > 0 {
 		oldestKeptMessageID = items[len(items)-1].ID
@@ -65,6 +54,55 @@ func BuildHistoryMessages(conversationID, currentMessageID, tenantID int64, limi
 	}
 	ret.MemoryMessage, ret.MemorySource, ret.MemoryItemCount, ret.Memory = buildConversationMemoryMessage(conversationID, tenantID, sessionNo, oldestKeptMessageID)
 	return ret
+}
+
+func findHistoryMessages(conversationID, currentMessageID, tenantID int64, sessionNo, target int) []models.Message {
+	if target <= 0 {
+		return nil
+	}
+	const pageSize = 32
+	items := make([]models.Message, 0, target)
+	beforeID := currentMessageID
+	for len(items) < target {
+		cnd := sqls.NewCnd().
+			Eq("conversation_id", conversationID).
+			Eq("session_no", sessionNo).
+			Desc("id").
+			Limit(pageSize)
+		if beforeID > 0 {
+			cnd.Lt("id", beforeID)
+		}
+		if tenantID > 0 {
+			cnd.Eq("tenant_id", tenantID)
+		}
+		page := repositories.MessageRepository.Find(sqls.DB(), cnd)
+		if len(page) == 0 {
+			break
+		}
+		for _, item := range page {
+			if isStandaloneOneHistoryControl(item) {
+				continue
+			}
+			items = append(items, item)
+			if len(items) == target {
+				break
+			}
+		}
+		if len(page) < pageSize || len(items) == target {
+			break
+		}
+		beforeID = page[len(page)-1].ID
+	}
+	return items
+}
+
+func isStandaloneOneHistoryControl(message models.Message) bool {
+	if message.SenderType == enums.IMSenderTypeCustomer &&
+		utils.IsStandaloneOneTextControl(message.MessageType, message.Content, message.AIReplyTurnID, message.AIReplyTurnVersion) {
+		return true
+	}
+	return message.SenderType == enums.IMSenderTypeAI &&
+		strings.HasPrefix(strings.TrimSpace(message.ClientMsgID), "ai_reply_faq_one_")
 }
 
 func configuredHistoryLimit(conversationID, tenantID int64) int {

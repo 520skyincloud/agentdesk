@@ -956,7 +956,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgIDInTenant(sqls.DB(), conversation.ID, conversation.TenantID, clientMsgID); existing != nil {
 			if senderType == enums.IMSenderTypeCustomer {
-				if existing.AIReplyTurnID <= 0 && AIReplyTurnService.EnabledFor(conversation) {
+				if !isStandaloneOneCustomerMessage(existing) && existing.AIReplyTurnID <= 0 && AIReplyTurnService.EnabledFor(conversation) {
 					if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
 						_, _, assignErr := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, conversation, existing)
 						return assignErr
@@ -1032,6 +1032,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			UpdateUserName: auditUserName,
 		},
 	}
+	standaloneOne := isStandaloneOneCustomerMessage(message)
 
 	switch senderType {
 	case enums.IMSenderTypeAgent:
@@ -1072,8 +1073,10 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			return err
 		}
 		if senderType == enums.IMSenderTypeCustomer {
-			if _, _, err := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, conversation, message); err != nil {
-				return err
+			if !standaloneOne {
+				if _, _, err := AIReplyTurnService.AssignCustomerMessageDB(ctx.Tx, conversation, message); err != nil {
+					return err
+				}
 			}
 			if _, _, err := AIReplyJobService.EnqueueForMessageDB(ctx.Tx, conversation, message); err != nil {
 				return err
@@ -1144,7 +1147,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	if err != nil {
 		return nil, err
 	}
-	if senderType == enums.IMSenderTypeCustomer {
+	if senderType == enums.IMSenderTypeCustomer && !standaloneOne {
 		if _, stateErr := ConversationDialogueStateService.CatchUpCustomerMessage(message); stateErr != nil {
 			slog.Warn("catch up dialogue state after customer message failed", "conversation_id", message.ConversationID, "message_id", message.ID, "error", stateErr)
 		}
@@ -1153,7 +1156,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			slog.Warn("catch up dialogue state after agent message failed", "conversation_id", message.ConversationID, "message_id", message.ID, "error", stateErr)
 		}
 	}
-	if senderType == enums.IMSenderTypeCustomer {
+	if senderType == enums.IMSenderTypeCustomer && !standaloneOne {
 		AIReplyJobService.NotifyNewerMessage(conversation.ID, message.ID)
 	}
 	s.publishCommittedMessage(conversation, message)
@@ -1183,6 +1186,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}
 		if markErr := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); markErr != nil {
 			slog.Warn("mark customer route message failed", "conversation_id", conversation.ID, "error", markErr)
+		}
+		if standaloneOne {
+			return message, err
 		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil {
 			if routeStatusBlocksAIReply(routeState.RouteStatus) {

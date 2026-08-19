@@ -44,6 +44,91 @@ func TestBuildHistoryMessagesOnlyUsesMessagesBeforeCurrent(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesExcludesStandaloneOneExchange(t *testing.T) {
+	setupAdapterHistoryTestDB(t)
+	now := time.Now()
+	conversationID := int64(7002)
+	tenantID := int64(101)
+	items := []models.Message{
+		{ID: 1, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-normal-question", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点", SeqNo: 1, SentAt: ptrAdapterTime(now)},
+		{ID: 2, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-normal-answer", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "早餐七点开始", SeqNo: 2, SentAt: ptrAdapterTime(now.Add(time.Second))},
+		{ID: 3, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-standalone-one", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "1", SeqNo: 3, SentAt: ptrAdapterTime(now.Add(2 * time.Second))},
+		{ID: 4, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "ai_reply_faq_one_3_text", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "入住流程介绍", SeqNo: 4, SentAt: ptrAdapterTime(now.Add(3 * time.Second))},
+		{ID: 5, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "ai_reply_faq_one_3_mini_program", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeMiniProgram, Content: "e秒安心住", SeqNo: 5, SentAt: ptrAdapterTime(now.Add(4 * time.Second))},
+		{ID: 6, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-near-one-punctuation", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "1。", SeqNo: 6, SentAt: ptrAdapterTime(now.Add(5 * time.Second))},
+		{ID: 7, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-near-one-fullwidth", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "１", SeqNo: 7, SentAt: ptrAdapterTime(now.Add(6 * time.Second))},
+		{ID: 8, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-next-question", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "停车场在哪里", SeqNo: 8, SentAt: ptrAdapterTime(now.Add(7 * time.Second))},
+		{ID: 9, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "history-current", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "现在能开发票吗", SeqNo: 9, SentAt: ptrAdapterTime(now.Add(8 * time.Second))},
+	}
+	for _, item := range items {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", item.ID, err)
+		}
+	}
+
+	history := BuildHistoryMessages(conversationID, 9, tenantID, 20)
+	keptIDs := make([]int64, 0, len(history.RawItems))
+	for _, item := range history.RawItems {
+		keptIDs = append(keptIDs, item.ID)
+	}
+	wantIDs := []int64{1, 2, 6, 7, 8}
+	if len(keptIDs) != len(wantIDs) {
+		t.Fatalf("unexpected history ids: got %v want %v", keptIDs, wantIDs)
+	}
+	for index := range wantIDs {
+		if keptIDs[index] != wantIDs[index] {
+			t.Fatalf("unexpected history ids: got %v want %v", keptIDs, wantIDs)
+		}
+	}
+	joined := historyText(history)
+	for _, expected := range []string{"早餐几点", "早餐七点开始", "1。", "１", "停车场在哪里"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("history should keep %q, got %q", expected, joined)
+		}
+	}
+	for _, excluded := range []string{"入住流程介绍", "e秒安心住"} {
+		if strings.Contains(joined, excluded) {
+			t.Fatalf("standalone one exchange should exclude %q, got %q", excluded, joined)
+		}
+	}
+}
+
+func TestBuildHistoryMessagesBackfillsLimitAfterStandaloneOneExchange(t *testing.T) {
+	setupAdapterHistoryTestDB(t)
+	now := time.Now()
+	conversationID := int64(7003)
+	tenantID := int64(101)
+	items := []models.Message{
+		{ID: 1, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "normal-1", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点", SeqNo: 1, SentAt: ptrAdapterTime(now)},
+		{ID: 2, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "normal-2", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "七点开始", SeqNo: 2, SentAt: ptrAdapterTime(now.Add(time.Second))},
+		{ID: 3, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "normal-3", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "停车场在哪", SeqNo: 3, SentAt: ptrAdapterTime(now.Add(2 * time.Second))},
+		{ID: 4, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "standalone-one", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "1", SeqNo: 4, SentAt: ptrAdapterTime(now.Add(3 * time.Second))},
+		{ID: 5, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "ai_reply_faq_one_4_text", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "入住流程", SeqNo: 5, SentAt: ptrAdapterTime(now.Add(4 * time.Second))},
+		{ID: 6, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "ai_reply_faq_one_4_mini_program", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeMiniProgram, Content: "入住小程序", SeqNo: 6, SentAt: ptrAdapterTime(now.Add(5 * time.Second))},
+		{ID: 7, TenantID: tenantID, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "current", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "能开发票吗", SeqNo: 7, SentAt: ptrAdapterTime(now.Add(6 * time.Second))},
+	}
+	for _, item := range items {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", item.ID, err)
+		}
+	}
+
+	history := BuildHistoryMessages(conversationID, 7, tenantID, 2)
+	keptIDs := make([]int64, 0, len(history.RawItems))
+	for _, item := range history.RawItems {
+		keptIDs = append(keptIDs, item.ID)
+	}
+	wantIDs := []int64{1, 2, 3}
+	if len(keptIDs) != len(wantIDs) {
+		t.Fatalf("standalone exchange consumed history limit: got %v want %v", keptIDs, wantIDs)
+	}
+	for index := range wantIDs {
+		if keptIDs[index] != wantIDs[index] {
+			t.Fatalf("standalone exchange consumed history limit: got %v want %v", keptIDs, wantIDs)
+		}
+	}
+}
+
 func TestBuildHistoryMessagesUsesOnlySameStoreCustomerMemory(t *testing.T) {
 	db := setupAdapterHistoryTestDB(t)
 	now := time.Now()

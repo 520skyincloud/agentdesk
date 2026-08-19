@@ -16,6 +16,7 @@ const (
 type AIReplyJobTriggerKind string
 
 const (
-	AIReplyJobTriggerKindText  AIReplyJobTriggerKind = "text"
-	AIReplyJobTriggerKindMedia AIReplyJobTriggerKind = "media"
+	AIReplyJobTriggerKindText          AIReplyJobTriggerKind = "text"
+	AIReplyJobTriggerKindMedia         AIReplyJobTriggerKind = "media"
+	AIReplyJobTriggerKindStandaloneOne AIReplyJobTriggerKind = "standalone_one"
 )

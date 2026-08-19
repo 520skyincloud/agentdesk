@@ -173,10 +173,11 @@ func (s *aiReplyJobService) EnqueueForMessageDB(db *gorm.DB, conversation *model
 		message.TenantID != conversation.TenantID || message.ConversationID != conversation.ID {
 		return nil, false, errorsx.InvalidParam("AI 回复任务消息与会话范围不一致")
 	}
-	// 转人工二次确认是消息的独占消费者。确认窗口内先不创建普通 AI Job，
+	// 转人工二次确认是普通消息的独占消费者。确认窗口内先不创建普通 AI Job，
 	// 由事务后的确认分类决定：confirm/cancel 直接消费；unknown 清除门禁后
-	// 再通过 EnsureForMessage 幂等补建。已消费标记同时阻止补偿扫描复活该消息。
-	if isConsumedHandoffConfirmationMessage(*message) || activeHumanHandoffConfirmationDB(db, conversation.ID, conversation.TenantID, time.Now()) {
+	// 再通过 EnsureForMessage 幂等补建。精确文本 1 是独立入住入口，不表达确认语义。
+	if triggerKind != enums.AIReplyJobTriggerKindStandaloneOne &&
+		(isConsumedHandoffConfirmationMessage(*message) || activeHumanHandoffConfirmationDB(db, conversation.ID, conversation.TenantID, time.Now())) {
 		return nil, false, nil
 	}
 	requestID := tracex.EnsureRequestID(message.RequestID)
@@ -267,6 +268,9 @@ func aiReplyTriggerKind(message *models.Message) (enums.AIReplyJobTriggerKind, b
 	if message == nil {
 		return "", false
 	}
+	if isStandaloneOneCustomerMessage(message) {
+		return enums.AIReplyJobTriggerKindStandaloneOne, true
+	}
 	switch message.MessageType {
 	case enums.IMMessageTypeText, enums.IMMessageTypeHTML:
 		return enums.AIReplyJobTriggerKindText, true
@@ -336,15 +340,21 @@ func (s *aiReplyJobService) NotifyNewerMessage(conversationID, messageID int64) 
 	if conversationID <= 0 || messageID <= 0 {
 		return
 	}
+	newMessage := repositories.MessageRepository.Get(sqls.DB(), messageID)
+	if isStandaloneOneCustomerMessage(newMessage) {
+		return
+	}
 	s.activeMu.Lock()
 	active := s.activeExecutions[conversationID]
 	cancels := make([]context.CancelFunc, 0, len(active))
-	newMessage := repositories.MessageRepository.Get(sqls.DB(), messageID)
 	for activeMessageID, cancel := range active {
 		if activeMessageID >= messageID || cancel == nil {
 			continue
 		}
 		activeMessage := repositories.MessageRepository.Get(sqls.DB(), activeMessageID)
+		if isStandaloneOneCustomerMessage(activeMessage) {
+			continue
+		}
 		if newMessage != nil && activeMessage != nil && newMessage.AIReplyTurnID > 0 &&
 			newMessage.AIReplyTurnID == activeMessage.AIReplyTurnID && newMessage.SessionNo == activeMessage.SessionNo &&
 			newMessage.AIReplyTurnVersion <= activeMessage.AIReplyTurnVersion {
@@ -647,6 +657,9 @@ func (s *aiReplyJobService) executeClaimed(ctx context.Context, job *models.AIRe
 		}
 	} else if decision := s.inspectFreshness(state); decision != nil {
 		return executionResultForDecision(*decision), nil
+	}
+	if job.TriggerKind == enums.AIReplyJobTriggerKindStandaloneOne {
+		return StandaloneOneReplyService.Execute(ctx, state)
 	}
 	if TriggerAIReplySyncHook == nil {
 		return AIReplyExecutionResult{}, fmt.Errorf("synchronous AI reply runtime unavailable")
@@ -1265,6 +1278,10 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 		message.SessionNo != job.SessionNo || strings.TrimSpace(message.RequestID) != strings.TrimSpace(job.RequestID) {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "scope_invalid"}
 	}
+	standaloneOne := job.TriggerKind == enums.AIReplyJobTriggerKindStandaloneOne
+	if standaloneOne && (job.TurnID > 0 || job.TurnVersion > 0 || message.AIReplyTurnID > 0 || message.AIReplyTurnVersion > 0) {
+		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "standalone_one_turn_bound"}
+	}
 	if job.TurnID > 0 || job.TurnVersion > 0 || message.AIReplyTurnID > 0 || message.AIReplyTurnVersion > 0 {
 		turn, turnCode := AIReplyTurnService.GetForJob(job, message)
 		if turn == nil {
@@ -1295,7 +1312,9 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "session_changed"}
 	}
 	if decision := ConversationRuntimeModeService.ResolveDB(db, conversation, route); !decision.AIReplyAllowed {
-		return nil, aiReplyJobDecisionForRuntimeMode(decision)
+		if !standaloneOne || decision.ReasonCode != "human_handoff_pending" {
+			return nil, aiReplyJobDecisionForRuntimeMode(decision)
+		}
 	}
 	session := repositories.ConversationChannelSessionRepository.TakeByConversationSession(db, conversation.TenantID, conversation.ID, message.SessionNo)
 	if session == nil || session.TenantID != conversation.TenantID || session.StoreID != conversation.StoreID ||
@@ -1305,8 +1324,10 @@ func (s *aiReplyJobService) inspectExecutionState(job *models.AIReplyJob, includ
 	if session.Status != enums.StatusOk || session.EndedAt != nil {
 		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "session_inactive"}
 	}
-	if _, err := StoreModelCredentialService.requireStoreStaffCredentialScopeDB(db, conversation.TenantID, conversation.StoreID, conversation.StoreStaffBindingID, true); err != nil {
-		return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "binding_scope_invalid"}
+	if !standaloneOne {
+		if _, err := StoreModelCredentialService.requireStoreStaffCredentialScopeDB(db, conversation.TenantID, conversation.StoreID, conversation.StoreStaffBindingID, true); err != nil {
+			return nil, &aiReplyJobDecision{Status: enums.AIReplyJobStatusFailed, Code: "binding_scope_invalid"}
+		}
 	}
 	instance, err := WxWorkProtocolInstanceService.activeInstanceForBindingDB(db, conversation.TenantID, conversation.StoreStaffBindingID)
 	if err != nil || instance == nil || instance.ID != route.WxWorkInstanceID || instance.TenantID != conversation.TenantID ||
@@ -1393,6 +1414,7 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 			}
 		}
 	}
+	standaloneOne := state.Job.TriggerKind == enums.AIReplyJobTriggerKindStandaloneOne
 	newer := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
 		Eq("tenant_id", state.Job.TenantID).
 		Eq("conversation_id", state.Job.ConversationID).
@@ -1403,6 +1425,9 @@ func (s *aiReplyJobService) inspectFreshness(state *aiReplyJobExecutionState) *a
 	for _, message := range newer {
 		switch message.SenderType {
 		case enums.IMSenderTypeCustomer:
+			if standaloneOne || isStandaloneOneCustomerMessage(&message) {
+				continue
+			}
 			if state.Job.TurnID <= 0 || message.AIReplyTurnID != state.Job.TurnID || message.SessionNo != state.Job.SessionNo {
 				return &aiReplyJobDecision{Status: enums.AIReplyJobStatusSuperseded, Code: "newer_customer_message"}
 			}

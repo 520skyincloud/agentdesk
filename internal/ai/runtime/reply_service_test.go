@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,58 @@ func TestShouldWaitForRecentMediaUnderstanding(t *testing.T) {
 	}
 	if shouldWaitForRecentMediaUnderstanding(models.Message{MessageType: enums.IMMessageTypeImage}) {
 		t.Fatal("media message itself is handled by media understanding worker")
+	}
+}
+
+func TestWaitForConversationToSettleIgnoresStandaloneOne(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	current := models.Message{
+		ID: 1, TenantID: 101, ConversationID: 1000, SessionNo: 1, ClientMsgID: "normal-question",
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点",
+		SeqNo: 1, AIReplyTurnID: 10, AIReplyTurnVersion: 1, SentAt: &now,
+	}
+	standaloneAt := now.Add(time.Millisecond)
+	standalone := models.Message{
+		ID: 2, TenantID: 101, ConversationID: 1000, SessionNo: 1, ClientMsgID: "standalone-one",
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: " \t1\n",
+		SeqNo: 2, SentAt: &standaloneAt,
+	}
+	for _, item := range []models.Message{current, standalone} {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %s: %v", item.ClientMsgID, err)
+		}
+	}
+	settled, reason := service.waitForConversationToSettle(context.Background(), current.ConversationID, current.ID)
+	if !settled || reason != "" {
+		t.Fatalf("standalone one interrupted normal settle: settled=%v reason=%q", settled, reason)
+	}
+}
+
+func TestWaitForConversationToSettleKeepsTurnBoundOneOrdinary(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	current := models.Message{
+		ID: 1, TenantID: 101, ConversationID: 1000, SessionNo: 1, ClientMsgID: "normal-question",
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点",
+		SeqNo: 1, AIReplyTurnID: 10, AIReplyTurnVersion: 1, SentAt: &now,
+	}
+	newerAt := now.Add(time.Millisecond)
+	turnBoundOne := models.Message{
+		ID: 2, TenantID: 101, ConversationID: 1000, SessionNo: 1, ClientMsgID: "turn-bound-one",
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "1",
+		SeqNo: 2, AIReplyTurnID: 11, AIReplyTurnVersion: 1, SentAt: &newerAt,
+	}
+	for _, item := range []models.Message{current, turnBoundOne} {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %s: %v", item.ClientMsgID, err)
+		}
+	}
+	settled, reason := service.waitForConversationToSettle(context.Background(), current.ConversationID, current.ID)
+	if settled || reason != "newer_customer_message" {
+		t.Fatalf("turn-bound one should remain ordinary: settled=%v reason=%q", settled, reason)
 	}
 }
 

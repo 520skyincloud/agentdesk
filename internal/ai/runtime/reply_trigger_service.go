@@ -538,13 +538,7 @@ func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageI
 	if current.AIReplyTurnID > 0 && conversation != nil && svc.AIReplyTurnService.EnabledFor(conversation) {
 		return true
 	}
-	latest := svc.MessageService.FindOne(sqls.NewCnd().
-		Eq("tenant_id", current.TenantID).
-		Eq("conversation_id", conversationID).
-		Eq("session_no", current.SessionNo).
-		Eq("sender_type", enums.IMSenderTypeCustomer).
-		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
-		Desc("id"))
+	latest := s.latestNonStandaloneCustomerMessage(conversationID, current)
 	if latest == nil || latest.ID == messageID {
 		return true
 	}
@@ -597,15 +591,44 @@ func (s *aiReplyService) isStillLatestCustomerMessage(conversationID int64, mess
 	if current == nil {
 		return true
 	}
-	latest := svc.MessageService.FindOne(sqls.NewCnd().
-		Eq("tenant_id", current.TenantID).
-		Eq("conversation_id", conversationID).
-		Eq("session_no", current.SessionNo).
-		Eq("sender_type", enums.IMSenderTypeCustomer).
-		Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
-		Desc("id"))
+	latest := s.latestNonStandaloneCustomerMessage(conversationID, current)
 	if latest == nil || latest.ID == messageID {
 		return true
 	}
 	return current.AIReplyTurnID > 0 && latest.AIReplyTurnID == current.AIReplyTurnID && latest.SessionNo == current.SessionNo
+}
+
+func (s *aiReplyService) latestNonStandaloneCustomerMessage(conversationID int64, current *models.Message) *models.Message {
+	if current == nil || conversationID <= 0 {
+		return nil
+	}
+	const pageSize = 32
+	beforeID := int64(0)
+	for {
+		cnd := sqls.NewCnd().
+			Eq("tenant_id", current.TenantID).
+			Eq("conversation_id", conversationID).
+			Eq("session_no", current.SessionNo).
+			Eq("sender_type", enums.IMSenderTypeCustomer).
+			Where("recalled_at IS NULL AND send_status NOT IN (?, ?)", enums.IMMessageStatusFailed, enums.IMMessageStatusRecalled).
+			Desc("id").
+			Limit(pageSize)
+		if beforeID > 0 {
+			cnd.Lt("id", beforeID)
+		}
+		page := svc.MessageService.Find(cnd)
+		if len(page) == 0 {
+			return nil
+		}
+		for i := range page {
+			if utils.IsStandaloneOneTextControl(page[i].MessageType, page[i].Content, page[i].AIReplyTurnID, page[i].AIReplyTurnVersion) {
+				continue
+			}
+			return &page[i]
+		}
+		if len(page) < pageSize {
+			return nil
+		}
+		beforeID = page[len(page)-1].ID
+	}
 }

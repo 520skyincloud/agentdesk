@@ -713,3 +713,36 @@ git diff --check
 
 回滚边界仍是代码与不可变 release；无数据库结构变化。切回上一 release 并重启 `agentdesk.service` 即可，
 已经迁移为新指纹的 ready 行仍与新旧消息 Payload 兼容，无需数据回滚。
+
+### 8.19 2026-08-19 单独 `1` 入住入口隔离链路
+
+新增一个不经过 Intent、知识检索或 Generate 的独立入住入口。仅客户发送普通文本、去除首尾空白后精确等于 `1`
+时触发；HTML、语音转写、`11`、`1。`、`入住1` 和全角 `１` 均继续进入原回复链路。
+
+- 入站 `1` 不绑定普通 AI Reply Turn，不参与连续消息合并、转人工确认分类或普通新消息取消；它与前后普通 Job
+  互不 supersede、互不 cancel。普通回复的 120ms 收敛和提交检查也会跳过该独立控制消息。
+- 专用持久 Job 固定回复无人值守入住说明，并发送门店配置的默认小程序；两条 Message 与 Outbox 使用
+  `SendAIMessageBatchWithRequestID` 原子提交，任一资源校验失败都不产生半成品并进入持久重试。
+- 稳定 ClientMsgID 使用来源 Message ID：`ai_reply_faq_one_<sourceMessageID>_text` 和
+  `ai_reply_faq_one_<sourceMessageID>_mini_program`。重复回调、Worker 重跑或进程恢复不会重复创建消息或 Outbox。
+- 普通模型历史过滤该控制消息及其两条固定回复，并在过滤后回填到原历史条数，避免入住入口污染或挤掉后续闲聊、
+  知识问答和多问题回复的正常上下文。
+- 专用链路不依赖模型凭据或行业 Intent 配置，也不新增模型调用、固定等待、Task/Action、公开 API、前端、数据库
+  结构、Token/Usage 或计费变化；仍校验门店、会话、企微实例、AI 开关和默认小程序资源有效性。
+
+本次没有 model/migration、公开 DTO、HTTP API、WebSocket、企微协议字段、模型供应商、Token/Usage、计费或前端变化。
+`origin/codex/customer-audit` 无同文件修改；`origin/codex/ai-billing` 仅与 `internal/services/message_service.go`
+存在历史重叠，后续应按语义 cherry-pick，不能整文件覆盖。
+
+本轮聚焦验证：
+
+```bash
+go test ./internal/services -run 'TestStandaloneOne|TestAIReplyJob' -count=1
+go test ./internal/ai/runtime -count=1
+go test ./internal/ai/runtime/internal/impl/adapter -count=1
+go test ./internal/pkg/utils -count=1
+go build ./cmd/server
+git diff --check
+```
+
+回滚边界为本次提交及对应不可变 release；没有数据库变化，切回上一 release 并重启 `agentdesk.service` 即可。
