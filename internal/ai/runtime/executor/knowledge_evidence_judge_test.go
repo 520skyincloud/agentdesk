@@ -66,6 +66,33 @@ func TestKnowledgeEvidenceJudgeRejectsCrossTopicResourceSource(t *testing.T) {
 	}
 }
 
+func TestKnowledgeEvidenceJudgeRejectsUnboundActionMarker(t *testing.T) {
+	item := runtimeTaskKnowledgeItem{Query: "随便问一个门店服务问题", SubIntent: "store_knowledge"}
+	kept, stats := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
+		KnowledgeBaseID: 1, SourceRecordID: "action-only", Content: "转接", Score: 0.9,
+	}})
+	if len(kept) != 0 || stats.droppedAction != 1 {
+		t.Fatalf("unbound action marker must not become customer-visible evidence: kept=%+v stats=%+v", kept, stats)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeRejectsWeakUnrelatedCandidate(t *testing.T) {
+	item := runtimeTaskKnowledgeItem{Query: "老客户可以享受优惠吗", SubIntent: "discount"}
+	kept, stats := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
+		Title: "其他服务", Content: "可以开水单。", Score: 0.58,
+	}})
+	if len(kept) != 0 || stats.droppedWeak != 1 {
+		t.Fatalf("weak unrelated evidence must be rejected: kept=%+v stats=%+v", kept, stats)
+	}
+
+	relevant, _ := filterKnowledgeEvidenceForTask(RunInput{}, item, []rag.RetrieveResult{{
+		Title: "会员优惠", Content: "老客户可按门店当前活动享受对应优惠。", Score: 0.58,
+	}})
+	if len(relevant) != 1 {
+		t.Fatalf("topic-relevant evidence must remain available: %+v", relevant)
+	}
+}
+
 func TestStoreIdentityQuestionNormalizationIsGeneric(t *testing.T) {
 	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这里是壹间公寓吗"}}
 	intent := normalizeStoreIdentityQuestionIntent(callbacks.IntentTraceData{

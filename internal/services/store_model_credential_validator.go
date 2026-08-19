@@ -313,7 +313,7 @@ func runtimeStructuredValidationContract(usageCode enums.ModelUsageSlot) (string
 			"当前客户说：你好。输出一个 greeting/social 任务。"
 	case enums.ModelUsageSlotReplyLLM:
 		return contracts.SchemaReplyOutputV2, contracts.MustSchema(contracts.SchemaReplyOutputV2),
-			"任务 task_1：简短回复客户你好。evidenceRefs 和 actionRefs 为空数组。"
+			"任务 task_1：简短回复客户你好。只输出 taskKeys 和客户可见 content。"
 	default:
 		return "", nil, ""
 	}

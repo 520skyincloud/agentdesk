@@ -2034,22 +2034,42 @@ func TestConditionalKnowledgeTasksUseFormalPersistedRetrieval(t *testing.T) {
 }
 
 func TestConditionalKnowledgeSkipsPureSocialInteraction(t *testing.T) {
-	for _, text := range []string{"在？", "你好", "谢谢", "啥玩意"} {
-		t.Run(text, func(t *testing.T) {
+	for _, test := range []struct {
+		name, subIntent, requestMode string
+	}{
+		{name: "greeting", subIntent: "greeting", requestMode: "social"},
+		{name: "thanks", subIntent: "thanks", requestMode: "social"},
+		{name: "acknowledgment", subIntent: "acknowledgment", requestMode: "social"},
+		{name: "generic social", subIntent: "social", requestMode: "social"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			intent := callbacks.IntentTraceData{
 				PrimaryIntent: "interaction", SubIntent: "clarify", ShouldReply: true, NeedsClarification: true, NeedsKnowledge: true,
 				IntentTasks: []callbacks.IntentTaskTraceData{{
-					Sequence: 1, Intent: "interaction", SubIntent: "clarify", Text: text, NeedsKnowledge: true,
+					Sequence: 1, Intent: "interaction", SubIntent: test.subIntent, RequestMode: test.requestMode, Text: "测试互动", NeedsKnowledge: true,
 				}},
 			}
 			normalized := normalizeModelIntentTrace(intent, RunInput{
-				UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: text},
+				UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "测试互动"},
 			}, adapter.HistoryBuildResult{}, nil)
-			marked := markConditionalKnowledgeTasksForFormalRetrieval(normalized, text)
-			if marked.NeedsKnowledge || marked.IntentTasks[0].NeedsKnowledge {
+			marked := markConditionalKnowledgeTasksForFormalRetrieval(normalized, "测试互动")
+			if marked.NeedsKnowledge || marked.NeedsTool || marked.NeedsResource || marked.NeedsHumanRoute || marked.IntentTasks[0].NeedsKnowledge {
 				t.Fatalf("pure interaction must not become a knowledge task: %#v", marked)
 			}
 		})
+	}
+}
+
+func TestRestoredTaskLedgerUsesBusinessTaskAsPrimary(t *testing.T) {
+	intent := intentFromReplyTaskPlans([]callbacks.ReplyTaskPlanTraceData{
+		{TaskKey: "social", Sequence: 1, Intent: "interaction", SubIntent: "social", RequestMode: "social", Text: "好困啊", Output: "text_reply"},
+		{TaskKey: "coffee", Sequence: 2, Intent: "hotel_info", SubIntent: "coffee", RequestMode: "answer", Text: "有没有咖啡", Output: "knowledge_text_reply"},
+	}, "restored task ledger")
+	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "coffee" || !intent.NeedsKnowledge {
+		t.Fatalf("mixed restored tasks must keep the business question primary: %#v", intent)
+	}
+	if len(intent.IntentTasks) != 2 || intent.IntentTasks[0].Intent != "interaction" || intent.IntentTasks[1].Intent != "hotel_info" {
+		t.Fatalf("task order must remain unchanged: %#v", intent.IntentTasks)
 	}
 }
 

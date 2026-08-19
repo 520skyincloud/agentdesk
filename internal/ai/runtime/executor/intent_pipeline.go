@@ -284,16 +284,11 @@ func probeClarifyKnowledge(ctx context.Context, req RunInput, history adapter.Hi
 }
 
 func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
-	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
+	intent = normalizeStructuredSocialIntent(intent)
+	if isStructuredSocialInteractionIntent(intent) {
 		return intent
 	}
-	if isPureSocialInteractionText(currentText) {
-		intent.NeedsKnowledge = false
-		for index := range intent.IntentTasks {
-			if intent.IntentTasks[index].Intent == "interaction" {
-				intent.IntentTasks[index].NeedsKnowledge = false
-			}
-		}
+	if intent.PrimaryIntent != "interaction" || (strings.TrimSpace(intent.SubIntent) != "clarify" && !intent.NeedsClarification) {
 		return intent
 	}
 	marked := false
@@ -323,21 +318,6 @@ func markConditionalKnowledgeTasksForFormalRetrieval(intent callbacks.IntentTrac
 	intent.ShouldReply = true
 	intent.Reason = appendIntentReason(intent.Reason, "conditional knowledge routed through persisted task ledger")
 	return intent
-}
-
-func isPureSocialInteractionText(text string) bool {
-	compact := compactRuntimeProtocolText(text)
-	if compact == "" {
-		return true
-	}
-	switch compact {
-	case "在", "在吗", "人呢", "有人吗", "你好", "您好", "哈喽", "嗨",
-		"谢谢", "谢谢你", "好的", "好", "行", "可以", "知道了", "收到",
-		"嗯", "哦", "噢", "哈哈", "呵呵", "啥玩意", "什么意思", "没懂":
-		return true
-	default:
-		return false
-	}
 }
 
 func buildToolKnowledgeTrace(intent callbacks.IntentTraceData) callbacks.ToolKnowledgeTraceData {

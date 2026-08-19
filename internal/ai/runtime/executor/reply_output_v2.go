@@ -340,8 +340,8 @@ func applyControlledRuntimeReplyFallback(summary *RunResult, collector *callback
 	summary.Status = "fallback"
 	summary.ErrorMessage = ""
 	collector.Data.Status = "fallback"
-	collector.Data.Error.Message = ""
-	collector.Data.Error.Stage = ""
+	collector.Data.Error.Message = runtimeGenerationFailureCode(collector, cause)
+	collector.Data.Error.Stage = "generate_fallback"
 	collector.Data.Pipeline.Generate.Status = "fallback"
 	collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
 	collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
@@ -680,6 +680,14 @@ func completeRuntimeGeneration(summary *RunResult, collector *callbacks.RuntimeT
 		collector.Data.Output.FinishReason = "controlled_fallback"
 		collector.Data.Pipeline.Generate.Status = "fallback"
 		collector.Data.Pipeline.Generate.Mode = "controlled_fallback"
+		if strings.TrimSpace(collector.Data.Error.Message) == "" {
+			collector.Data.Error.Message = firstNonEmpty(
+				collector.Data.Pipeline.Generate.RepairErrorCode,
+				collector.Data.Pipeline.Generate.InitialErrorCode,
+				"generation_failed",
+			)
+			collector.Data.Error.Stage = "generate_fallback"
+		}
 		if strings.TrimSpace(collector.Data.Pipeline.Generate.Reason) == "" {
 			collector.Data.Pipeline.Generate.Reason = "controlled evidence fallback after generate failure"
 		}

@@ -491,12 +491,8 @@ func intentFromReplyTaskPlans(plans []callbacks.ReplyTaskPlanTraceData, reason s
 		}
 		intent.IntentTasks = append(intent.IntentTasks, item)
 	}
-	if len(plans) > 0 {
-		intent.PrimaryIntent = plans[0].Intent
-		intent.SubIntent = plans[0].SubIntent
-		intent.DetectedIntent = intent.PrimaryIntent
-		intent.MatchedIntentCode = intent.PrimaryIntent
-	}
+	intent = deriveModelIntentFromTasks(intent)
+	intent.DetectedIntent = intent.PrimaryIntent
 	if len(intent.ResourceActions) > 0 {
 		intent.ResourceAction = intent.ResourceActions[0]
 		intent.ResourceType = hotelVariableResourceTypeFromAction(intent.ResourceAction)

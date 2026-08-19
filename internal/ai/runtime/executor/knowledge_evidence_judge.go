@@ -13,7 +13,9 @@ import (
 
 type runtimeKnowledgeEvidenceFilterStats struct {
 	droppedMeta     int
+	droppedAction   int
 	droppedMismatch int
+	droppedWeak     int
 }
 
 // judgeRuntimeTaskKnowledgeEvidence 在知识结果进入 EvidenceBundle、资源绑定和
@@ -54,7 +56,9 @@ func judgeRuntimeTaskKnowledgeEvidence(req RunInput, item *runtimeTaskKnowledgeI
 	item.Result.TraceSummary.ContextCount = len(item.Result.ContextResults)
 	if len(item.Result.Hits) == 0 && len(item.Result.ContextResults) == 0 {
 		item.Status = enums.AIReplyTurnTaskKnowledgeStatusNoHit
-		if stats.droppedMismatch > 0 {
+		if stats.droppedAction > 0 {
+			item.FilterReason = "knowledge_unbound_action_marker"
+		} else if stats.droppedMismatch > 0 || stats.droppedWeak > 0 {
 			item.FilterReason = "knowledge_context_not_relevant"
 		} else if stats.droppedMeta > 0 {
 			item.FilterReason = "knowledge_meta_content"
@@ -66,15 +70,103 @@ func filterKnowledgeEvidenceForTask(req RunInput, item runtimeTaskKnowledgeItem,
 	stats := runtimeKnowledgeEvidenceFilterStats{}
 	kept, droppedMeta := filterKnowledgeMetaEvidence(req, results)
 	stats.droppedMeta = droppedMeta
+	actionBindings := runtimeKnowledgeActionBindings(req, kept)
 	filtered := make([]rag.RetrieveResult, 0, len(kept))
 	for _, result := range kept {
+		if knowledgeEvidenceIsUnboundActionMarker(result, actionBindings) {
+			stats.droppedAction++
+			continue
+		}
 		if knowledgeEvidenceMismatchesTask(item, result) {
 			stats.droppedMismatch++
+			continue
+		}
+		if knowledgeEvidenceIsWeaklyRelated(item, result) {
+			stats.droppedWeak++
 			continue
 		}
 		filtered = append(filtered, result)
 	}
 	return filtered, stats
+}
+
+func runtimeKnowledgeActionBindings(req RunInput, results []rag.RetrieveResult) map[string]struct{} {
+	ret := make(map[string]struct{})
+	if req.Conversation.TenantID <= 0 || req.Conversation.StoreID <= 0 || sqls.DB() == nil {
+		return ret
+	}
+	byKnowledgeBase := make(map[int64][]string)
+	for _, result := range results {
+		recordID := strings.TrimSpace(result.SourceRecordID)
+		if result.KnowledgeBaseID <= 0 || recordID == "" {
+			continue
+		}
+		byKnowledgeBase[result.KnowledgeBaseID] = appendUniqueStrings(byKnowledgeBase[result.KnowledgeBaseID], recordID)
+	}
+	for knowledgeBaseID, recordIDs := range byKnowledgeBase {
+		bindings := repositories.KnowledgeActionBindingRepository.FindEnabledBySourceRecords(
+			sqls.DB(), req.Conversation.TenantID, req.Conversation.StoreID, knowledgeBaseID, recordIDs,
+		)
+		for recordID, actionCode := range bindings {
+			if strings.TrimSpace(actionCode) != "" {
+				ret[runtimeEvidenceSourceKey(knowledgeBaseID, recordID)] = struct{}{}
+			}
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceIsUnboundActionMarker(result rag.RetrieveResult, bindings map[string]struct{}) bool {
+	if _, bound := bindings[runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)]; bound {
+		return false
+	}
+	content := strings.ToLower(compactRuntimeProtocolText(cleanRuntimeEvidenceAnswer(result.Content)))
+	if content == "" || len([]rune(content)) > 24 {
+		return false
+	}
+	switch content {
+	case "转接", "转人工", "人工", "人工客服", "转接人工", "转接客服", "联系客服", "联系人工", "人工处理", "转客服", "human_handoff", "handoff":
+		return true
+	default:
+		return false
+	}
+}
+
+func knowledgeEvidenceIsWeaklyRelated(item runtimeTaskKnowledgeItem, result rag.RetrieveResult) bool {
+	taskTopics := detectKnowledgeTopicClasses(item.Query + " " + item.SubIntent)
+	if len(taskTopics) == 0 || float64(result.Score) >= 0.65 {
+		return false
+	}
+	candidate := strings.TrimSpace(strings.Join([]string{result.Title, result.DocumentTitle, result.SectionPath, result.Content}, "\n"))
+	if candidate == "" {
+		return true
+	}
+	candidateTopics := detectKnowledgeTopicClasses(candidate)
+	if knowledgeTopicSetsIntersect(taskTopics, candidateTopics) {
+		return false
+	}
+	query := strings.TrimSpace(item.Query + " " + runtimeKnowledgeTopicLabel(item.SubIntent))
+	return !knowledgeTextHasMeaningfulOverlap(query, candidate)
+}
+
+func knowledgeTextHasMeaningfulOverlap(query, candidate string) bool {
+	query = compactRuntimeProtocolText(query)
+	candidate = compactRuntimeProtocolText(candidate)
+	for _, noise := range []string{
+		"请问", "麻烦", "帮我", "一下", "有没有", "有吗", "怎么", "如何", "哪里", "什么", "可以", "酒店", "门店", "这个", "那个", "想问", "我想", "我要", "需要",
+	} {
+		query = strings.ReplaceAll(query, noise, "")
+	}
+	queryRunes := []rune(query)
+	if len(queryRunes) < 2 || candidate == "" {
+		return false
+	}
+	for bigram := range bigramSet(queryRunes) {
+		if strings.Contains(candidate, bigram) {
+			return true
+		}
+	}
+	return false
 }
 
 // knowledgeEvidenceMismatchesTask 只拒绝可确定的错配：正常问题命中异常处理 FAQ，

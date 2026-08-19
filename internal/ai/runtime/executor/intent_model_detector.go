@@ -669,6 +669,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 	intent.IntentTasks = normalizeRuntimeIntentTasks(intent.IntentTasks)
 	intent = normalizeStoreIdentityQuestionIntent(intent, req)
 	intent = deriveModelIntentFromTasks(intent)
+	intent = normalizeStructuredSocialIntent(intent)
 	if intentHasHotelVariableTask(intent) {
 		intent.ResourceActions = normalizeHotelVariableResourceActions(intent.ResourceActions, intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
 	}
@@ -1308,6 +1309,70 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		ret = append(ret, task)
 	}
 	return ret
+}
+
+func normalizeStructuredSocialIntent(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	if !isStructuredSocialInteractionIntent(intent) {
+		return intent
+	}
+	intent.PrimaryIntent = "interaction"
+	intent.MatchedIntentCode = "interaction"
+	intent.DetectedIntent = "interaction"
+	intent.ShouldReply = true
+	intent.NeedsKnowledge = false
+	intent.NeedsTool = false
+	intent.NeedsResource = false
+	intent.NeedsHumanRoute = false
+	intent.NeedsClarification = false
+	intent.ToolCodes = nil
+	intent.ResourceActions = nil
+	intent.ResourceAction = ""
+	intent.ResourceType = ""
+	intent.HumanRoutePolicy = ""
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		task.NeedsKnowledge = false
+		task.NeedsTool = false
+		task.NeedsResource = false
+		task.NeedsHumanRoute = false
+		task.ResourceAction = ""
+		if strings.TrimSpace(intent.SubIntent) == "" || intent.SubIntent == "clarify" {
+			intent.SubIntent = strings.TrimSpace(task.SubIntent)
+		}
+	}
+	if strings.TrimSpace(intent.SubIntent) == "" {
+		intent.SubIntent = "social"
+	}
+	return intent
+}
+
+func isStructuredSocialInteractionIntent(intent callbacks.IntentTraceData) bool {
+	if len(intent.IntentTasks) == 0 {
+		return intent.PrimaryIntent == "interaction" && isStructuredSocialSubIntent(intent.SubIntent)
+	}
+	for _, task := range intent.IntentTasks {
+		if canonicalIntentCode(task.Intent) != "interaction" || !isStructuredSocialInteractionTask(task) {
+			return false
+		}
+	}
+	return true
+}
+
+func isStructuredSocialInteractionTask(task callbacks.IntentTaskTraceData) bool {
+	switch strings.TrimSpace(task.RequestMode) {
+	case "social", "ack", "thanks", "greeting":
+		return true
+	}
+	return isStructuredSocialSubIntent(task.SubIntent)
+}
+
+func isStructuredSocialSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "social", "greeting", "thanks", "thank_you", "ack", "acknowledgment", "acknowledgement", "farewell", "goodbye", "emoji", "smalltalk", "small_talk":
+		return true
+	default:
+		return false
+	}
 }
 
 func intentHasHotelVariableTask(intent callbacks.IntentTraceData) bool {

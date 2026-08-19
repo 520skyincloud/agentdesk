@@ -3170,7 +3170,7 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 	// 契约 5.1/3.9.10：出站回显先做来源对账。能与平台已发送的 AI 消息精确
 	// 匹配时按 ai_outbox_echo 处理：补齐渠道送达证据，不创建 Agent Message、
 	// 不打断 Turn、不切人工路由。只有无法对账的员工出站才走人工语义。
-	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, content, rawPayload); reconciled {
+	if reconciled := s.reconcileAIOutboxEcho(instance, conversationID, sessionNo, clientMsgID, externalID, messageType, content, payload, rawPayload); reconciled {
 		return true, nil
 	}
 	message, err := MessageService.CreateExternalAgentMessageWithoutOutboxInSession(conversationID, clientMsgID, messageType, content, payload, "wx_protocol_self_echo", sessionNo)
@@ -3188,34 +3188,39 @@ func (s *wxWorkProtocolService) handleEmployeeOutgoingEcho(instance *models.WxWo
 	return true, nil
 }
 
-// reconcileAIOutboxEcho 在同会话、同 session 的短时间窗内寻找与回显内容完全
-// 一致的平台 AI 出站消息。命中则把 MessageRef 绑定到原 AI Message 并记录
+// reconcileAIOutboxEcho 在同会话、同 session 的短时间窗内寻找同一条平台 AI
+// 出站消息。文本按归一化正文匹配，媒体按企微 file_id 或 md5+size 匹配。命中
+// 则把 MessageRef 绑定到原 AI Message 并记录
 // 送达同步日志；未命中返回 false（保持原人工出站语义）。
-func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, content, rawPayload string) bool {
+func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkProtocolInstance, conversationID int64, sessionNo int, clientMsgID, externalID string, messageType enums.IMMessageType, content, payload, rawPayload string) bool {
 	if instance == nil || conversationID <= 0 {
 		return false
 	}
+	mediaType := isWxWorkProtocolEchoMediaType(messageType)
 	normalized := normalizeEchoCompareText(content)
-	if normalized == "" {
+	if !mediaType && normalized == "" {
 		return false
 	}
 	windowStart := time.Now().Add(-5 * time.Minute)
-	candidates := repositories.MessageRepository.Find(sqls.DB(), sqls.NewCnd().
+	cnd := sqls.NewCnd().
 		Eq("tenant_id", instance.TenantID).
 		Eq("conversation_id", conversationID).
 		Eq("sender_type", enums.IMSenderTypeAI).
 		Eq("message_type", messageType).
-		Eq("content", content).
 		Gte("created_at", windowStart).
 		Desc("id").
-		Limit(5))
+		Limit(10)
+	if !mediaType {
+		cnd.Eq("content", content)
+	}
+	candidates := repositories.MessageRepository.Find(sqls.DB(), cnd)
 	var matched *models.Message
 	for index := range candidates {
 		candidate := &candidates[index]
 		if sessionNo > 0 && candidate.SessionNo > 0 && candidate.SessionNo != sessionNo {
 			continue
 		}
-		if normalizeEchoCompareText(candidate.Content) == normalized {
+		if wxWorkProtocolEchoMatches(messageType, content, payload, *candidate) {
 			matched = candidate
 			break
 		}
@@ -3228,6 +3233,38 @@ func (s *wxWorkProtocolService) reconcileAIOutboxEcho(instance *models.WxWorkPro
 	}
 	_ = MessageSyncLogService.CreateInTenant(instance.TenantID, conversationID, matched.ID, enums.MessageSyncDirectionWecomToAgentDesk, "wxwork_protocol", "agentdesk", clientMsgID, enums.MessageSyncStatusSuccess, rawPayload, "ai_outbox_echo_reconciled")
 	return true
+}
+
+func isWxWorkProtocolEchoMediaType(messageType enums.IMMessageType) bool {
+	switch messageType {
+	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
+		return true
+	default:
+		return false
+	}
+}
+
+func wxWorkProtocolEchoMatches(messageType enums.IMMessageType, content, payload string, candidate models.Message) bool {
+	if !isWxWorkProtocolEchoMediaType(messageType) {
+		return normalizeEchoCompareText(candidate.Content) == normalizeEchoCompareText(content)
+	}
+	inboundMedia, _ := wxProtocolMediaFromPayload(payload)
+	candidateMedia, _ := wxProtocolMediaFromPayload(candidate.Payload)
+	inboundFileID := strings.TrimSpace(inboundMedia.FileID)
+	candidateFileID := strings.TrimSpace(candidateMedia.FileID)
+	if inboundFileID != "" && candidateFileID != "" && inboundFileID == candidateFileID {
+		return true
+	}
+	inboundMD5 := strings.TrimSpace(mediaMD5(inboundMedia))
+	candidateMD5 := strings.TrimSpace(mediaMD5(candidateMedia))
+	inboundSize := mediaSize(inboundMedia)
+	candidateSize := mediaSize(candidateMedia)
+	if inboundMD5 != "" && candidateMD5 != "" && strings.EqualFold(inboundMD5, candidateMD5) &&
+		inboundSize > 0 && inboundSize == candidateSize {
+		return true
+	}
+	return normalizeEchoCompareText(candidate.Content) != "" &&
+		normalizeEchoCompareText(candidate.Content) == normalizeEchoCompareText(content)
 }
 
 // normalizeEchoCompareText 做回显比对的确定性归一（去空白；不改写正文）。

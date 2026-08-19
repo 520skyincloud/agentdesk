@@ -45,7 +45,7 @@ func TestValidateTextModelResponsesExercisesStrictSchemaForRuntimeSlots(t *testi
 			responseText := `{"schemaVersion":"intent_tasks.v2","dialogueAct":"greeting","tasks":[{"sequence":1,"intent":"interaction","subIntent":"greeting","text":"你好","requestMode":"social","confidence":1}]}`
 			expectedSchemaName := "intent_tasks_v2"
 			if usageCode == enums.ModelUsageSlotReplyLLM {
-				responseText = `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"您好，请问有什么可以帮您？","evidenceRefs":[],"actionRefs":[]}]}`
+				responseText = `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"您好，请问有什么可以帮您？"}]}`
 				expectedSchemaName = "reply_output_v2"
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

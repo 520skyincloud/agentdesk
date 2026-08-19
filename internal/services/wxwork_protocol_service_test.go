@@ -1055,6 +1055,38 @@ func TestWxWorkInboundLagMillis(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolEchoMatchesMediaFingerprint(t *testing.T) {
+	candidate := models.Message{
+		MessageType: enums.IMMessageTypeImage,
+		Content:     "原始图片名称.jpg",
+		Payload:     `{"assetId":"asset-1","wxMedia":{"file_id":"same-file-id","md5":"same-md5","size":20810}}`,
+	}
+	if !wxWorkProtocolEchoMatches(
+		enums.IMMessageTypeImage,
+		"回显后的图片名称.png",
+		`{"assetId":"asset-2","wxMedia":{"file_id":"same-file-id","md5":"other-md5","size":1}}`,
+		candidate,
+	) {
+		t.Fatal("same wxwork file_id must reconcile as the same AI media message")
+	}
+	if !wxWorkProtocolEchoMatches(
+		enums.IMMessageTypeImage,
+		"另一个回显名称.png",
+		`{"assetId":"asset-3","wxMedia":{"file_id":"changed-file-id","md5":"SAME-MD5","size":20810}}`,
+		candidate,
+	) {
+		t.Fatal("same media md5 and size must reconcile when file_id changes")
+	}
+	if wxWorkProtocolEchoMatches(
+		enums.IMMessageTypeImage,
+		"完全不同.png",
+		`{"assetId":"asset-4","wxMedia":{"file_id":"other-file-id","md5":"other-md5","size":20810}}`,
+		candidate,
+	) {
+		t.Fatal("different media fingerprints must remain an employee-originated message")
+	}
+}
+
 func TestWxWorkProtocolEmployeeOutgoingEchoRepairsLegacyRef(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	now := time.Now()

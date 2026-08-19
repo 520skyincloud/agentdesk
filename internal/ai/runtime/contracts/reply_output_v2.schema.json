@@ -34,25 +34,6 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 2000
-          },
-          "evidenceRefs": {
-            "type": "array",
-            "maxItems": 12,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "pattern": "^[KST][1-9][0-9]*$"
-            }
-          },
-          "actionRefs": {
-            "type": "array",
-            "maxItems": 8,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
-            }
           }
         }
       }

@@ -346,8 +346,8 @@ func TestAIReplyTurnLateDifferentQuestionIsNotSuppressed(t *testing.T) {
 			Content:     reply.Content,
 		}})
 	})
-	if !errors.Is(err, ErrAIReplyTurnDuplicateAnswer) {
-		t.Fatalf("different question repeated answer error=%v want duplicate-answer", err)
+	if err != nil {
+		t.Fatalf("different question may legitimately share the previous answer: %v", err)
 	}
 	if floor := AIReplyTurnService.InputFloorVersion(*late); floor != 1 {
 		t.Fatalf("input floor=%d want delivered version 1", floor)

@@ -607,7 +607,10 @@ func (s *aiReplyTurnService) ValidatePreparedReplyDB(db *gorm.DB, turn *models.A
 			}
 		}
 	}
-	return ErrAIReplyTurnDuplicateAnswer
+	// 不同问题可能合法共享同一答案，例如多个问法都由同一条门店政策覆盖。
+	// taskKey、Evidence 和当前问题已经在生成与提交门禁中校验；这里只对相同
+	// 问题做 covered，不能因为答案文本相同而让新问题静默失败。
+	return nil
 }
 
 func (s *aiReplyTurnService) MarkCommittedDB(db *gorm.DB, turn *models.AIReplyTurn, version int, requestID string, delivered bool, now time.Time) error {

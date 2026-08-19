@@ -73,8 +73,9 @@ func TestParseRuntimeReplyOutputV2RequiresStrictJSONOnly(t *testing.T) {
 	}
 	for name, raw := range map[string]string{
 		"markdown":           "```json\n" + valid + "\n```",
-		"extra field":        `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"ok","evidenceRefs":[],"actionRefs":[]}],"reason":"extra"}`,
-		"duplicate task key": `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1","task_1"],"content":"ok","evidenceRefs":[],"actionRefs":[]}]}`,
+		"extra field":        `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"ok"}],"reason":"extra"}`,
+		"server-owned refs":  `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1"],"content":"ok","evidenceRefs":[],"actionRefs":[]}]}`,
+		"duplicate task key": `{"schemaVersion":"reply_output.v2","parts":[{"taskKeys":["task_1","task_1"],"content":"ok"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseRuntimeReplyOutputV2(raw); err == nil {
@@ -106,6 +107,9 @@ func TestCompleteRuntimeGenerationPreservesControlledFallbackTrace(t *testing.T)
 	}
 	if collector.Data.Pipeline.Generate.InitialErrorCode == "" || collector.Data.Pipeline.Generate.RepairErrorCode == "" {
 		t.Fatalf("fallback failure evidence was lost: %#v", collector.Data.Pipeline.Generate)
+	}
+	if collector.Data.Error.Message == "" || collector.Data.Error.Stage != "generate_fallback" {
+		t.Fatalf("fallback must preserve a diagnosable generation error: %#v", collector.Data.Error)
 	}
 }
 
