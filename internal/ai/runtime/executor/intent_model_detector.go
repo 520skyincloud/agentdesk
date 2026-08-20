@@ -143,7 +143,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("ai config unavailable")
 	}
-	intentCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	intentCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
