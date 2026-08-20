@@ -7,6 +7,7 @@ import (
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 )
@@ -65,6 +66,50 @@ func TestKnowledgeEvidenceJudgeRejectsCrossTopicResourceSource(t *testing.T) {
 	laundryTask := runtimeTaskKnowledgeItem{Query: "洗衣房在哪里 洗衣", SubIntent: "laundry"}
 	if knowledgeEvidenceMismatchesTask(laundryTask, laundryWithAddress) {
 		t.Fatal("the same location record must remain eligible for its own facility task")
+	}
+}
+
+func TestKnowledgeEvidenceJudgeKeepsSupplyStoredByLaundry(t *testing.T) {
+	item := runtimeTaskKnowledgeItem{Query: "有熨斗吗，在哪里取", SubIntent: "supplies_self_help"}
+	result := rag.RetrieveResult{
+		Title:   "洗衣房客用品取用",
+		Content: "没有传统熨斗时可使用挂烫机，位于12楼洗衣房旁的百宝箱，可自行取用。",
+	}
+	if knowledgeEvidenceMismatchesTask(item, result) {
+		t.Fatal("a matched supply entity must not be rejected because its location is the laundry room")
+	}
+	if !knowledgeEvidenceHasPositiveRelevance(item, result, models.KnowledgeEvidenceMetadata{}, false) {
+		t.Fatal("a matched supply alias must be positive evidence")
+	}
+}
+
+func TestKnowledgeEvidenceJudgeRejectsDifferentSpecificSupply(t *testing.T) {
+	item := runtimeTaskKnowledgeItem{Query: "有熨斗吗", SubIntent: "supplies_self_help"}
+	result := rag.RetrieveResult{Title: "牙具取用", Content: "牙刷在一楼客用品柜自取。"}
+	if !knowledgeEvidenceMismatchesTask(item, result) {
+		t.Fatal("a broad supplies topic must not admit a different explicitly named item")
+	}
+}
+
+func TestKnowledgeEvidenceJudgeRecordsPerCandidateDecision(t *testing.T) {
+	good := rag.RetrieveResult{KnowledgeBaseID: 1, SourceRecordID: "iron", Title: "用品取用", Content: "挂烫机在12楼百宝箱自取。", Score: 0.8}
+	bad := rag.RetrieveResult{KnowledgeBaseID: 1, SourceRecordID: "breakfast", Title: "早餐时间", Content: "早餐七点开始。", Score: 0.9}
+	item := runtimeTaskKnowledgeItem{
+		Query: "熨斗在哪里", SubIntent: "supplies_self_help", Status: enums.AIReplyTurnTaskKnowledgeStatusHit,
+		Result: &retrievers.KnowledgeRetrieveResult{
+			Hits: []rag.RetrieveResult{good, bad}, ContextResults: []rag.RetrieveResult{good, bad},
+			TraceItems: []callbacks.RetrieverTraceItem{
+				{KnowledgeBaseID: 1, SourceRecordID: "iron", UsedInContext: true, ContextRankNo: 1},
+				{KnowledgeBaseID: 1, SourceRecordID: "breakfast", UsedInContext: true, ContextRankNo: 2},
+			},
+		},
+	}
+	judgeRuntimeTaskKnowledgeEvidence(RunInput{}, &item)
+	if len(item.Result.TraceItems) != 2 || item.Result.TraceItems[0].JudgeDecision != "accepted" || item.Result.TraceItems[0].JudgeReason == "" {
+		t.Fatalf("accepted candidate must carry a judge reason: %+v", item.Result.TraceItems)
+	}
+	if item.Result.TraceItems[1].JudgeDecision != "rejected" || item.Result.TraceItems[1].JudgeReason == "" || item.Result.TraceItems[1].UsedInContext {
+		t.Fatalf("rejected candidate must carry its drop reason: %+v", item.Result.TraceItems)
 	}
 }
 

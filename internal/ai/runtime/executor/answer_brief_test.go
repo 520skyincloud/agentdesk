@@ -25,3 +25,19 @@ func TestRuntimeAnswerBriefSeparatesRequiredAndSupportingFacts(t *testing.T) {
 		t.Fatalf("process coverage instruction missing: %q", got)
 	}
 }
+
+func TestRuntimeAnswerBriefMakesSupplyLocationAndAccessMandatory(t *testing.T) {
+	plan := contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+		TaskKey: "iron", SubIntent: "supplies_self_help", Objective: "有熨斗吗，在哪里取", OutputMode: "text",
+		EvidenceRefs: []string{"K1"},
+	}}}
+	evidence := contracts.EvidenceBundleV1{Items: []contracts.EvidenceItemV1{{
+		Ref: "K1", SourceType: "fastgpt", Content: "可使用挂烫机，位于12楼洗衣房旁的百宝箱，可自行取用。", Answerability: "supporting",
+	}}}
+	got := buildRuntimeAnswerBriefInstruction(plan, evidence)
+	for _, expected := range []string{"必答=K1", "是否提供", "等价替代", "具体位置", "取用方式"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("supply answer brief missing %q: %s", expected, got)
+		}
+	}
+}

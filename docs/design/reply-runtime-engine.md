@@ -673,3 +673,43 @@ Intent JSON、动作字段、幂等键或模型归因：
 
 确需变更时，必须先说明字段兼容、模型调用次数、Usage/计费、知识范围、动作提交、人工任务和
 Outbox 的影响，并运行本文第 13 节回归；外围业务优先通过适配器和向后兼容字段扩展。
+
+## 15. 2026-08-20 知识裁决与人工门禁收口
+
+本次收口不改变 Runtime 阶段顺序、模型供应商、Usage/计费或模型调用次数，正常链路仍是
+`IntentDetect -> 并行 Knowledge -> Generate -> Commit -> Outbox`。无 DTO、公开 API、权限、
+WebSocket、Model 或 Migration 变化。
+
+- Evidence Judge 保留 Tenant/Store scope、Metadata 禁用/过期、未绑定动作标记等硬过滤；用品类
+  增加熨斗/挂烫机、针线包、毛巾/压缩毛巾、草稿纸和百宝箱等实体别名。具体物品命中优先于
+  “洗衣房/楼层/柜子”等位置主题，明确不同物品仍拒绝。每个候选在 Retriever Trace 写入
+  `judgeDecision` 和 `judgeReason`，拒绝项同步写入 `discardReason`。
+- Answer Brief 对用品任务把证据中实际存在的“是否提供、等价替代、具体位置、取用方式”列为必答；
+  Room Stock Gate 禁止把百宝箱自取或压缩毛巾证据扩写成“房间标配毛巾”。唯一 Generate/协议修复
+  失败时，只允许从已裁决且绑定当前 Task 的用品证据抽取最多两句、220 字的 Grounded Fallback，
+  不重新检索、不新增模型调用、不输出知识全文。
+- KnowledgeActionBinding 的 `human_handoff` 不再改写 `hotel_info/service_request` Intent。人工确认统一
+  经过确定性 Gate：仅显式人工请求、投诉升级、退款赔付、订单价格争议、安全事件或已发布业务能力
+  可进入；技术失败和知识缺口继续重试/内部告警，不伪装为客户人工意图。安全事件保持现网“先确认”
+  语义。首次及后续人工确认都携带 `TurnID + taskKeys`。
+- “人工客服/工单/地址/电话”等表面词只识别动作类型，不再授予承诺权限。Generate 正文中的
+  “正在、稍后、会联系、会安排、已处理”等动作声明必须有类型匹配且 committed/delivered 的
+  ActionLedger 证据；`NeedsHumanRoute` 不再绕过工作人员动作清理或客户资料收集限制。资源消息和
+  人工确认提示继续由服务器固定提交。
+
+验证：
+
+```bash
+go test ./internal/ai/runtime/contracts ./internal/ai/runtime/executor ./internal/ai/runtime
+go test ./internal/services -run 'AIReply|Handoff|HumanDispatch'
+```
+
+以上聚焦测试通过。`go test ./internal/services` 的两个既有主管接管测试
+`TestConversationManagersCanDirectTakeoverStoreManualFollowUpWithAIServingStatus` 和
+`TestConversationSupervisorTakeoverAllowsAIAndStoreManualFollowUp` 仍失败；目标文件与本次回复链修改
+无交集，本次未扩大到无关派单权限修复。
+
+并行分支影响：`codex/ai-billing` 同文件修改集中在 `intent_human_route.go`、Intent 测试和人工确认
+service 的 Usage/等待人工语义。建议先合并本次确定性 Gate 与 Task scope，再在其上重放计费分支，
+保留 `manual_resume_` 跳过、Usage 统计和等待人工取消逻辑。`codex/customer-audit` 未发现目标文件冲突。
+回滚边界仅为本节列出的 Judge、Answer Brief/Fallback、Handoff Gate、Promise Validator 和 Trace 字段。

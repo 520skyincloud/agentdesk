@@ -680,9 +680,10 @@ func runtimeTaskFailureNoticeAllowed(cause error) bool {
 	return errors.As(cause, &protocolFailure)
 }
 
-// applySafeRuntimeDegraded may only expose server-owned scalar facts. It is not
-// a second answer engine and must never render FastGPT text, process templates,
-// cached answers, generic acknowledgements, or no-hit business replies.
+// applySafeRuntimeDegraded may expose server-owned scalar facts and compact,
+// already-judged supply facts. It is not a second answer engine and must never
+// re-retrieve knowledge, render full documents, process templates, cached
+// answers, generic acknowledgements, or no-hit business replies.
 func applySafeRuntimeDegraded(summary *RunResult, collector *callbacks.RuntimeTraceCollector, req RunInput, cause error) bool {
 	if summary == nil || summary.ReplyPlanV2 == nil || summary.EvidenceBundle == nil || summary.ActionLedgerV2 == nil {
 		return false
@@ -756,13 +757,13 @@ func buildSafeRuntimeDegradedParts(plan contracts.ReplyPlanV2, evidence contract
 		if task.OutputMode != "text" && task.OutputMode != "text_and_resource" && task.OutputMode != "clarification" {
 			continue
 		}
-		content, evidenceRef := safeRuntimeScalarFact(task, evidence)
-		if content == "" || evidenceRef == "" {
+		content, evidenceRefs := safeRuntimeGroundedFact(task, evidence)
+		if content == "" || len(evidenceRefs) == 0 {
 			continue
 		}
 		part := contracts.ReplyPartV2{
 			TaskKeys: []string{task.TaskKey}, Content: content,
-			EvidenceRefs: []string{evidenceRef}, ActionRefs: []string{},
+			EvidenceRefs: evidenceRefs, ActionRefs: []string{},
 		}
 		if len(parts) < 3 {
 			parts = append(parts, part)
@@ -770,10 +771,92 @@ func buildSafeRuntimeDegradedParts(plan contracts.ReplyPlanV2, evidence contract
 		}
 		last := &parts[len(parts)-1]
 		last.TaskKeys = appendUniqueStrings(last.TaskKeys, task.TaskKey)
-		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, evidenceRef)
+		last.EvidenceRefs = appendUniqueStrings(last.EvidenceRefs, evidenceRefs...)
 		last.Content = strings.TrimSpace(last.Content + "\n" + content)
 	}
 	return parts
+}
+
+func safeRuntimeGroundedFact(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) (string, []string) {
+	if content, ref := safeRuntimeScalarFact(task, evidence); content != "" && ref != "" {
+		return content, []string{ref}
+	}
+	return safeRuntimeSupplyFact(task, evidence)
+}
+
+func safeRuntimeSupplyFact(task contracts.ReplyPlanTaskV2, evidence contracts.EvidenceBundleV1) (string, []string) {
+	if !runtimeTaskIsSupplyKnowledge(task) {
+		return "", nil
+	}
+	selected := make([]string, 0, 2)
+	refs := make([]string, 0, 2)
+	for _, item := range evidence.Items {
+		if item.SourceType != "fastgpt" || item.Answerability != "supporting" ||
+			!stringInSlice(item.Ref, task.EvidenceRefs) || !stringInSlice(task.TaskKey, item.TaskKeys) {
+			continue
+		}
+		content := cleanRuntimeEvidenceAnswer(item.Content)
+		if content == "" || runtimeSupplyFactMask(task, content) == 0 {
+			continue
+		}
+		for _, sentence := range splitGroundedSupplyEvidence(content) {
+			if !safeGroundedSupplySentence(task, item.Title, sentence) {
+				continue
+			}
+			selected = appendUniqueStrings(selected, strings.TrimRight(strings.TrimSpace(sentence), "。！!？?；;，,"))
+			refs = appendUniqueStrings(refs, item.Ref)
+			if len(selected) >= 2 {
+				break
+			}
+		}
+		if len(selected) >= 2 {
+			break
+		}
+	}
+	if len(selected) == 0 || len(refs) == 0 {
+		return "", nil
+	}
+	content := boundedEvidenceText(strings.Join(selected, "；"), 220)
+	content = strings.TrimRight(strings.TrimSpace(content), "。！!？?；;，,")
+	if content == "" {
+		return "", nil
+	}
+	return content + "。", refs
+}
+
+func splitGroundedSupplyEvidence(content string) []string {
+	parts := strings.FieldsFunc(content, func(r rune) bool {
+		switch r {
+		case '。', '！', '？', '!', '?', '；', ';', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			ret = append(ret, part)
+		}
+	}
+	return ret
+}
+
+func safeGroundedSupplySentence(task contracts.ReplyPlanTaskV2, title, sentence string) bool {
+	compact := compactRuntimeProtocolText(sentence)
+	if compact == "" || containsAny(compact, []string{
+		"联系前台", "联系客服", "联系人工", "转人工", "工作人员处理", "稍后", "稍等", "正在", "我帮你", "我给你",
+	}) {
+		return false
+	}
+	if runtimeSupplyFactMask(task, sentence) == 0 {
+		return false
+	}
+	if knowledgeEvidenceHasExplicitEntityMatch(task.Objective, title+" "+sentence) {
+		return true
+	}
+	_, genericSupply := detectKnowledgeTopicClasses(title + " " + sentence)["supplies"]
+	return genericSupply
 }
 
 func safeDegradedValidationPlan(plan contracts.ReplyPlanV2, parts []contracts.ReplyPartV2) contracts.ReplyPlanV2 {

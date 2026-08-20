@@ -28,17 +28,28 @@ func TestPromiseAllowlistRejectsOutsideActions(t *testing.T) {
 	}
 }
 
-func TestPromiseAllowlistAllowsWhitelistActions(t *testing.T) {
+func TestPromiseAllowlistRejectsUncommittedAllowlistSurfaces(t *testing.T) {
 	cases := []string{
-		"我帮你转人工，稍等确认下。", // 转人工在白名单
-		"定位发你，地址在酒店楼下。", // 无承诺语态，纯发信息
-		"我发你酒店电话。",      // 发电话在白名单
-		"我发下入住小程序。",     // 发小程序在白名单
+		"我帮你转人工，稍等确认下。",
+		"我发你酒店电话。",
+		"我发下入住小程序。",
 	}
 	for _, content := range cases {
-		if issues := validateReplyFutureCommitClaims(promiseInput(content)); len(issues) != 0 {
-			t.Fatalf("unexpected issues for allowlisted %q: %+v", content, issues)
+		if issues := validateReplyFutureCommitClaims(promiseInput(content)); len(issues) == 0 {
+			t.Fatalf("surface words must not authorize an uncommitted promise %q", content)
 		}
+	}
+	if issues := validateReplyFutureCommitClaims(promiseInput("定位在酒店楼下。")); len(issues) != 0 {
+		t.Fatalf("plain information without a promise must remain valid: %+v", issues)
+	}
+}
+
+func TestPromiseAllowlistAllowsMatchingCommittedAction(t *testing.T) {
+	input := promiseInput("酒店电话已经发给你了。")
+	input.Output.Parts[0].ActionRefs = []string{"a1"}
+	input.ActionLedger.Actions = []contracts.ActionLedgerItemV1{{ActionKey: "a1", TaskKey: "t1", ActionType: "send_phone", Status: "committed"}}
+	if issues := validateReplyFutureCommitClaims(input); len(issues) != 0 {
+		t.Fatalf("a matching committed action may support its completion claim: %+v", issues)
 	}
 }
 

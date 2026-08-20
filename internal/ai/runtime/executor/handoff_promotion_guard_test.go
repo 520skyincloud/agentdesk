@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/pkg/enums"
 )
@@ -26,6 +27,16 @@ func TestNormalCheckinNotPromotedByExceptionFAQ(t *testing.T) {
 	}
 	if byTask["t-checkin"].Status != "has_context" {
 		t.Fatalf("checkin must stay has_context, got %#v", byTask["t-checkin"])
+	}
+}
+
+func TestKnowledgeActionBindingCannotRewriteTaskIntoHandoff(t *testing.T) {
+	plans := []callbacks.ReplyTaskPlanTraceData{{
+		TaskKey: "t-supply", Intent: "hotel_info", SubIntent: "supplies_self_help", Output: "knowledge_text_reply",
+	}}
+	got, hasHandoff := applyKnowledgeActionBindings(plans, map[string]string{"t-supply": "human_handoff"})
+	if hasHandoff || len(got) != 1 || got[0].Intent != "hotel_info" || got[0].Output != "knowledge_text_reply" {
+		t.Fatalf("knowledge bindings are not route authority: %+v handoff=%t", got, hasHandoff)
 	}
 }
 

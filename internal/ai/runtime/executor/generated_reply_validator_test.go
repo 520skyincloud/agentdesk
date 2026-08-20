@@ -328,9 +328,8 @@ func TestGeneratedReplyBoundaryRequiresPublishedHumanRoute(t *testing.T) {
 	}
 
 	intent.HumanRoutePolicy = "managed_mode"
-	original := "我帮你联系前台处理。"
-	got, _, _ = cleanGeneratedReplyText(original, intent)
-	if got != original {
-		t.Fatalf("expected a published human route statement to remain, got %q", got)
+	got, _, _ = cleanGeneratedReplyText("我帮你联系前台处理。", intent)
+	if got != "" {
+		t.Fatalf("a published route authorizes the server confirmation, not a model promise: %q", got)
 	}
 }

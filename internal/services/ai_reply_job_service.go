@@ -1218,12 +1218,28 @@ func (s *aiReplyJobService) dispatchToExistingHumanPool(state *aiReplyJobExecuti
 		return fmt.Errorf("human dispatch AI agent unavailable")
 	}
 	requestID := s.stableHandoffRequestID(job)
-	// 技术失败兜底也必须先向客户二次确认，而不是直接转人工；
-	// 确认后才真正进入人工池，避免“模型一抖就直接转人工”。
-	_, err := ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
-		state.Conversation.ID, aiAgent, reason, requestID, state.Message.ID,
+	// 只有上层 Failure Gate 已授权的业务/安全任务会到这里；仍必须先向
+	// 客户二次确认，并从第一次确认起绑定 TurnID 与完整 TaskSet。
+	_, err := ConversationHandoffConfirmationService.RequestByAIForTasksWithOriginMessage(
+		state.Conversation.ID, aiAgent, reason, requestID, state.Message.ID, job.TurnID, handoffTaskKeysForJob(job),
 	)
 	return err
+}
+
+func handoffTaskKeysForJob(job *models.AIReplyJob) []string {
+	if job == nil || job.TurnID <= 0 || !AIReplyTurnTaskService.Enabled() {
+		return nil
+	}
+	tasks := repositories.AIReplyTurnTaskRepository.FindByTurnInTenant(sqls.DB(), job.TenantID, job.TurnID)
+	keys := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status != enums.AIReplyTurnTaskStatusHandoffPending && task.Status != enums.AIReplyTurnTaskStatusFailed {
+			continue
+		}
+		keys = append(keys, task.TaskKey)
+	}
+	sort.Strings(keys)
+	return uniqueTaskKeys(keys)
 }
 
 // stableHandoffRequestID 生成文档第 10 节要求的稳定派单键：

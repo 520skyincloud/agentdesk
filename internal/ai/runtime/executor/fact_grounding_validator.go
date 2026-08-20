@@ -36,7 +36,66 @@ func validateReplyFactGrounding(input ReplyValidationInput) []contracts.Validati
 		}
 		_ = partIndex
 	}
+	issues = append(issues, validateReplyRoomStockClaims(input)...)
 	return issues
+}
+
+// validateReplyRoomStockClaims prevents a self-service or substitute item from
+// being promoted into a room-standard claim. A room placement claim is allowed
+// only when task-bound evidence explicitly states that the same item is in-room.
+func validateReplyRoomStockClaims(input ReplyValidationInput) []contracts.ValidationIssueV1 {
+	planByTask := make(map[string]contracts.ReplyPlanTaskV2, len(input.Plan.Tasks))
+	for _, task := range input.Plan.Tasks {
+		planByTask[task.TaskKey] = task
+	}
+	issues := make([]contracts.ValidationIssueV1, 0)
+	for _, part := range input.Output.Parts {
+		content := strings.TrimSpace(part.Content)
+		if !assertsRoomStockFact(content) {
+			continue
+		}
+		for _, taskKey := range part.TaskKeys {
+			task, ok := planByTask[taskKey]
+			if !ok || !runtimeTaskIsSupplyKnowledge(task) {
+				continue
+			}
+			if roomStockClaimSupported(task, content, input.Evidence) {
+				continue
+			}
+			issues = append(issues, validationIssue(
+				"room_stock_ungrounded",
+				"$.parts",
+				"reply promotes self-service or substitute supply evidence into an unsupported in-room stock claim",
+			))
+			break
+		}
+	}
+	return issues
+}
+
+func assertsRoomStockFact(content string) bool {
+	compact := compactReplyText(content)
+	if compact == "" || !containsAny(compact, []string{"房间里", "房间内", "房内", "客房内", "客房里", "每间房", "房间标配", "客房标配"}) {
+		return false
+	}
+	_, supplies := detectKnowledgeTopicClasses(content)["supplies"]
+	return supplies && containsAny(compact, []string{"有", "提供", "配有", "配备", "标配", "放着", "放在"})
+}
+
+func roomStockClaimSupported(task contracts.ReplyPlanTaskV2, content string, evidence contracts.EvidenceBundleV1) bool {
+	for _, item := range evidence.Items {
+		if !stringInSlice(item.Ref, task.EvidenceRefs) || !stringInSlice(task.TaskKey, item.TaskKeys) ||
+			item.Answerability == "not_supporting" || strings.TrimSpace(item.Content) == "" {
+			continue
+		}
+		if !knowledgeEvidenceHasExplicitEntityMatch(content, item.Content) {
+			continue
+		}
+		if assertsRoomStockFact(item.Content) {
+			return true
+		}
+	}
+	return false
 }
 
 func replyTaskHasKnowledgeBoundary(task contracts.ReplyPlanTaskV2) bool {

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"agent-desk/internal/ai/runtime/contracts"
@@ -15,6 +16,7 @@ import (
 // HandoffTaskView 是决策所需的 Task 摘要。
 type HandoffTaskView struct {
 	TaskKey              string
+	TaskKeys             []string
 	TurnID               int64
 	TurnVersion          int
 	TenantID             int64
@@ -38,20 +40,24 @@ const (
 
 // DecideHandoff 输出 HandoffDecisionV2。
 func DecideHandoff(task HandoffTaskView, capability CapabilityDecisionV1, failureClass HandoffFailureClass) contracts.HandoffDecisionV2 {
+	taskKeys := uniqueTrimmedStrings(task.TaskKeys)
+	if len(taskKeys) == 0 && strings.TrimSpace(task.TaskKey) != "" {
+		taskKeys = []string{strings.TrimSpace(task.TaskKey)}
+	}
 	decision := contracts.HandoffDecisionV2{
 		SchemaVersion: contracts.HandoffDecisionV2SchemaVersion,
 		TenantID:      task.TenantID, StoreID: task.StoreID,
 		StoreStaffBindingID: task.StoreStaffBindingID, ProtocolInstanceID: task.ProtocolInstanceID,
 		ConversationID: task.ConversationID, SessionNo: task.SessionNo,
 		TurnID: task.TurnID, TurnVersion: task.TurnVersion,
-		TaskKeys:  []string{task.TaskKey},
+		TaskKeys:  taskKeys,
 		DecidedAt: time.Now().UTC(),
 	}
 	switch {
 	case task.SafetyCritical:
 		decision.OriginType = contracts.HandoffOriginSafety
-		decision.Mode = contracts.HandoffModeDispatch
-		decision.ReasonCode = "safety_critical_dispatch"
+		decision.Mode = contracts.HandoffModeConfirm
+		decision.ReasonCode = "safety_critical_confirmation"
 	case failureClass == HandoffFailureTechnical:
 		decision.Mode = contracts.HandoffModeNone
 		decision.FailureClass = string(failureClass)

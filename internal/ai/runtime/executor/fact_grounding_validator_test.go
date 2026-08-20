@@ -192,3 +192,27 @@ func TestValidateReplyFactGroundingSkipsGroundedTask(t *testing.T) {
 		t.Fatalf("unexpected fact_grounding issues for grounded text task: %+v", issues)
 	}
 }
+
+func TestValidateReplyFactGroundingRejectsUnsupportedRoomStockPromotion(t *testing.T) {
+	input := ReplyValidationInput{
+		Plan: contracts.ReplyPlanV2{Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "towel", SubIntent: "supplies_self_help", Objective: "有毛巾吗", OutputMode: "text", EvidenceRefs: []string{"K1"},
+		}}},
+		Evidence: contracts.EvidenceBundleV1{Items: []contracts.EvidenceItemV1{{
+			Ref: "K1", SourceType: "fastgpt", TaskKeys: []string{"towel"}, Answerability: "supporting",
+			Content: "提供压缩毛巾，可在12楼百宝箱自取。",
+		}}},
+		Output: contracts.ReplyOutputV2{Parts: []contracts.ReplyPartV2{{
+			TaskKeys: []string{"towel"}, Content: "房间里标配毛巾。", EvidenceRefs: []string{"K1"},
+		}}},
+	}
+	issues := validateReplyFactGrounding(input)
+	if len(issues) != 1 || issues[0].Code != "room_stock_ungrounded" {
+		t.Fatalf("self-service evidence must not become a room stock claim: %+v", issues)
+	}
+
+	input.Evidence.Items[0].Content = "房间内配有压缩毛巾。"
+	if issues := validateReplyFactGrounding(input); len(issues) != 0 {
+		t.Fatalf("explicit in-room evidence should authorize the same supply group: %+v", issues)
+	}
+}

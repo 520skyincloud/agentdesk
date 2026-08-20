@@ -35,7 +35,10 @@ func validateReplySafety(input ReplyValidationInput) []contracts.ValidationIssue
 				break
 			}
 		}
-		if containsAny(content, []string{"已经发给你", "已经发送", "已发送", "已经通知", "已经安排", "已转人工", "已经转人工", "已经完成", "已完成"}) {
+		if containsAny(content, []string{
+			"已经发给你", "已经发送", "已发送", "已经通知", "已经安排", "已转人工", "已经转人工", "已经完成", "已完成",
+			"已经联系", "已联系", "已经提交", "已提交", "已经登记", "已登记", "已经处理", "已处理", "处理好了", "安排好了", "转过去了",
+		}) {
 			if len(part.ActionRefs) == 0 {
 				issues = append(issues, validationIssue("unsupported_action_claim", "$.parts", "reply claims an action without prepared action evidence"))
 				continue

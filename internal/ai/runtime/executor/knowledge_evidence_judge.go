@@ -2,10 +2,12 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/repositories"
@@ -23,6 +25,11 @@ type runtimeKnowledgeEvidenceFilterStats struct {
 	droppedWeak     int
 }
 
+type runtimeKnowledgeEvidenceDecision struct {
+	Keep   bool
+	Reason string
+}
+
 // judgeRuntimeTaskKnowledgeEvidence 在知识结果进入 EvidenceBundle、资源绑定和
 // AnswerGroup 之前完成一次统一裁决。这样被判定为错题的正文、图片和分组键都会
 // 一起退出链路，不会出现“文字过滤了但洗衣房图片仍跟着地址任务发出”的半过滤。
@@ -35,7 +42,8 @@ func judgeRuntimeTaskKnowledgeEvidence(req RunInput, item *runtimeTaskKnowledgeI
 	if len(combined) == 0 {
 		return
 	}
-	kept, stats := filterKnowledgeEvidenceForTask(req, *item, combined)
+	kept, stats, decisions := filterKnowledgeEvidenceForTaskWithDecisions(req, *item, combined)
+	applyRuntimeKnowledgeEvidenceDecisions(item.Result, decisions)
 	if len(kept) == len(combined) {
 		return
 	}
@@ -76,40 +84,82 @@ func judgeRuntimeTaskKnowledgeEvidence(req RunInput, item *runtimeTaskKnowledgeI
 }
 
 func filterKnowledgeEvidenceForTask(req RunInput, item runtimeTaskKnowledgeItem, results []rag.RetrieveResult) ([]rag.RetrieveResult, runtimeKnowledgeEvidenceFilterStats) {
+	kept, stats, _ := filterKnowledgeEvidenceForTaskWithDecisions(req, item, results)
+	return kept, stats
+}
+
+func filterKnowledgeEvidenceForTaskWithDecisions(req RunInput, item runtimeTaskKnowledgeItem, results []rag.RetrieveResult) ([]rag.RetrieveResult, runtimeKnowledgeEvidenceFilterStats, map[string]runtimeKnowledgeEvidenceDecision) {
 	stats := runtimeKnowledgeEvidenceFilterStats{}
 	metadata := runtimeKnowledgeEvidenceMetadata(req, results)
 	allowedKnowledgeBases := runtimeKnowledgeEvidenceScope(req, results)
 	actionBindings := runtimeKnowledgeActionBindings(req, results)
 	filtered := make([]rag.RetrieveResult, 0, len(results))
+	decisions := make(map[string]runtimeKnowledgeEvidenceDecision, len(results))
+	record := func(result rag.RetrieveResult, keep bool, reason string) {
+		decisions[runtimeKnowledgeEvidenceTraceKey(result.KnowledgeBaseID, result.SourceRecordID)] = runtimeKnowledgeEvidenceDecision{Keep: keep, Reason: reason}
+	}
 	for _, result := range results {
 		meta, hasMetadata := metadata[runtimeEvidenceSourceKey(result.KnowledgeBaseID, result.SourceRecordID)]
 		if knowledgeEvidenceIsMetaOrBlocked(result, meta, hasMetadata) {
 			stats.droppedMeta++
+			record(result, false, "meta_or_blocked")
 			continue
 		}
 		if !knowledgeEvidenceScopeAllowed(req, result, allowedKnowledgeBases) {
 			stats.droppedScope++
+			record(result, false, "scope_mismatch")
 			continue
 		}
 		if knowledgeEvidenceUseBlocked(meta, hasMetadata) {
 			stats.droppedPolicy++
+			record(result, false, "use_policy_blocked")
 			continue
 		}
 		if knowledgeEvidenceIsUnboundActionMarker(result, actionBindings) {
 			stats.droppedAction++
+			record(result, false, "unbound_action_marker")
 			continue
 		}
 		if knowledgeEvidenceMismatchesTask(item, result) {
 			stats.droppedMismatch++
+			record(result, false, "task_mismatch")
 			continue
 		}
 		if !knowledgeEvidenceHasPositiveRelevance(item, result, meta, hasMetadata) {
 			stats.droppedWeak++
+			record(result, false, "positive_relevance_missing")
 			continue
 		}
 		filtered = append(filtered, result)
+		record(result, true, "relevant_evidence")
 	}
-	return filtered, stats
+	return filtered, stats, decisions
+}
+
+func runtimeKnowledgeEvidenceTraceKey(knowledgeBaseID int64, sourceRecordID string) string {
+	return fmt.Sprintf("%d:%s", knowledgeBaseID, strings.TrimSpace(sourceRecordID))
+}
+
+func applyRuntimeKnowledgeEvidenceDecisions(result *retrievers.KnowledgeRetrieveResult, decisions map[string]runtimeKnowledgeEvidenceDecision) {
+	if result == nil || len(decisions) == 0 {
+		return
+	}
+	for index := range result.TraceItems {
+		item := &result.TraceItems[index]
+		decision, ok := decisions[runtimeKnowledgeEvidenceTraceKey(item.KnowledgeBaseID, item.SourceRecordID)]
+		if !ok {
+			continue
+		}
+		if decision.Keep {
+			item.JudgeDecision = "accepted"
+		} else {
+			item.JudgeDecision = "rejected"
+			item.UsedInContext = false
+			item.ContextRankNo = 0
+			item.DiscardReason = "evidence_judge_" + decision.Reason
+		}
+		item.JudgeReason = decision.Reason
+	}
 }
 
 func runtimeKnowledgeEvidenceMetadata(req RunInput, results []rag.RetrieveResult) map[string]models.KnowledgeEvidenceMetadata {
@@ -328,6 +378,14 @@ func knowledgeEvidenceMismatchesTask(item runtimeTaskKnowledgeItem, result rag.R
 	if isNormalCheckinKnowledgeItem(item) && knowledgeEvidenceSupportsNormalCheckinStep(candidate) {
 		return false
 	}
+	// 用品经常存放在洗衣房、百宝箱等位置。只要问题中的具体物品或其
+	// 等价别名在候选中明确出现，位置词不能再把正确证据判成跨主题。
+	if knowledgeEvidenceHasExplicitEntityMatch(query, candidate) {
+		return false
+	}
+	if knowledgeEvidenceHasConflictingExplicitEntity(query, candidate) {
+		return true
+	}
 	taskTopics := detectKnowledgeTopicClasses(query + " " + item.SubIntent + " " + runtimeKnowledgeTopicLabel(item.SubIntent))
 	strongTopics := detectKnowledgeTopicClasses(title)
 	if len(taskTopics) > 0 && len(strongTopics) > 0 {
@@ -344,6 +402,58 @@ func knowledgeEvidenceMismatchesTask(item runtimeTaskKnowledgeItem, result rag.R
 	}
 	candidateTopics := detectKnowledgeTopicClasses(result.Content)
 	return len(taskTopics) > 0 && len(candidateTopics) > 0 && !knowledgeTopicSetsIntersect(taskTopics, candidateTopics)
+}
+
+func knowledgeEvidenceHasExplicitEntityMatch(query, candidate string) bool {
+	query = strings.ToLower(compactRuntimeProtocolText(query))
+	candidate = strings.ToLower(compactRuntimeProtocolText(candidate))
+	if query == "" || candidate == "" {
+		return false
+	}
+	for _, aliases := range knowledgeEntityAliasGroups() {
+		if containsAny(query, aliases) && containsAny(candidate, aliases) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceHasConflictingExplicitEntity(query, candidate string) bool {
+	query = strings.ToLower(compactRuntimeProtocolText(query))
+	candidate = strings.ToLower(compactRuntimeProtocolText(candidate))
+	queryGroups := make(map[int]struct{})
+	candidateGroups := make(map[int]struct{})
+	for index, aliases := range knowledgeEntityAliasGroups() {
+		if containsAny(query, aliases) {
+			queryGroups[index] = struct{}{}
+		}
+		if containsAny(candidate, aliases) {
+			candidateGroups[index] = struct{}{}
+		}
+	}
+	if len(queryGroups) == 0 || len(candidateGroups) == 0 {
+		return false
+	}
+	for index := range queryGroups {
+		if _, ok := candidateGroups[index]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEntityAliasGroups() [][]string {
+	return [][]string{
+		{"熨斗", "挂烫机", "熨衣机", "蒸汽熨斗"},
+		{"针线包", "针线", "缝衣包"},
+		{"毛巾", "压缩毛巾", "一次性毛巾", "浴巾", "面巾"},
+		{"草稿纸", "便签纸", "便签", "纸张", "纸笔"},
+		{"百宝箱", "客用品柜", "自助用品柜", "自取柜"},
+		{"牙刷", "牙具", "洗漱用品"},
+		{"拖鞋", "一次性拖鞋"},
+		{"剃须刀", "刮胡刀"},
+		{"浴帽", "洗澡帽"},
+	}
 }
 
 func isNormalCheckinKnowledgeItem(item runtimeTaskKnowledgeItem) bool {
@@ -552,7 +662,7 @@ func detectKnowledgeTopicClasses(text string) map[string]struct{} {
 		"door_access":  {"开门", "门锁", "刷脸", "房门"},
 		"tv":           {"投屏", "电视"},
 		"aircon":       {"空调", "制冷", "制热"},
-		"supplies":     {"牙刷", "拖鞋", "剃须刀", "客用品", "洗漱用品", "草稿纸", "纸张", "纸笔"},
+		"supplies":     {"牙刷", "牙具", "拖鞋", "剃须刀", "刮胡刀", "浴帽", "客用品", "洗漱用品", "熨斗", "挂烫机", "熨衣机", "针线包", "针线", "毛巾", "浴巾", "面巾", "压缩毛巾", "一次性毛巾", "草稿纸", "便签纸", "便签", "纸张", "纸笔", "百宝箱", "客用品柜", "自助用品柜", "自取柜"},
 		"discount":     {"优惠", "折扣", "会员价", "便宜"},
 		"nearby_food":  {"附近吃", "吃的", "饿了", "推荐吃", "美食", "餐厅", "饭店", "小吃"},
 		"nearby_fun":   {"附近玩", "好玩", "景点", "游玩"},

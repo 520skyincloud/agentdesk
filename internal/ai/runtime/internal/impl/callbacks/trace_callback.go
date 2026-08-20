@@ -52,6 +52,8 @@ type RetrieverTraceItem struct {
 	ContextRankNo   int     `json:"contextRankNo,omitempty"`
 	UsedInContext   bool    `json:"usedInContext,omitempty"`
 	DiscardReason   string  `json:"discardReason,omitempty"`
+	JudgeDecision   string  `json:"judgeDecision,omitempty"`
+	JudgeReason     string  `json:"judgeReason,omitempty"`
 	Score           float64 `json:"score,omitempty"`
 	LatencyMs       int64   `json:"latencyMs,omitempty"`
 }

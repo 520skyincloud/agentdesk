@@ -152,9 +152,6 @@ func removeStructuredResourceCommitMentions(text string, intent callbacks.Intent
 }
 
 func removeUnsupportedStaffActionMentions(text string, intent callbacks.IntentTraceData) string {
-	if intent.NeedsHumanRoute && strings.TrimSpace(intent.HumanRoutePolicy) != "" {
-		return text
-	}
 	return filterReplySentences(text, func(sentence string) bool {
 		return containsAnyReplyPhrase(sentence, unsupportedFirstPersonStaffActionPhrases())
 	})
@@ -274,7 +271,7 @@ func replyPlanTaskCanCollectCustomerFields(task contracts.ReplyPlanTaskV2, inten
 			continue
 		}
 		matched = true
-		if intentTask.NeedsTool || (intentTask.NeedsHumanRoute && strings.TrimSpace(intent.HumanRoutePolicy) != "") {
+		if intentTask.NeedsTool {
 			return true
 		}
 	}
@@ -285,8 +282,7 @@ func replyPlanTaskCanCollectCustomerFields(task contracts.ReplyPlanTaskV2, inten
 }
 
 func intentHasExecutionCapability(intent callbacks.IntentTraceData) bool {
-	return intent.NeedsTool || len(intent.ToolCodes) > 0 ||
-		(intent.NeedsHumanRoute && strings.TrimSpace(intent.HumanRoutePolicy) != "")
+	return intent.NeedsTool || len(intent.ToolCodes) > 0
 }
 
 func isCustomerFieldSensitiveSubIntent(subIntent string) bool {

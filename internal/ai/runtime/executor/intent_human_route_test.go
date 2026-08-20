@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-desk/internal/ai/runtime/contracts"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
@@ -99,7 +100,10 @@ func TestExecuteIntentHumanRouteSkipsCustomerWithAutoHandoffDisabled(t *testing.
 		SubIntent:       "explicit_handoff",
 		NeedsHumanRoute: true,
 	}
-	handled, err := executeIntentHumanRoute(t.Context(), RunInput{Conversation: conversation}, &RunResult{}, collector)
+	handled, err := executeIntentHumanRoute(t.Context(), RunInput{
+		Conversation: conversation,
+		UserMessage:  models.Message{MessageType: enums.IMMessageTypeText, Content: "帮我转人工"},
+	}, &RunResult{}, collector)
 	if err != nil || handled {
 		t.Fatalf("expected disabled customer handoff to continue AI reply, handled=%v err=%v", handled, err)
 	}
@@ -108,5 +112,36 @@ func TestExecuteIntentHumanRouteSkipsCustomerWithAutoHandoffDisabled(t *testing.
 	}
 	if services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabled(conversation.CustomerID, 711) {
 		t.Fatal("expected account-scoped setting to remain disabled")
+	}
+}
+
+func TestDecideRuntimeIntentHandoffScopesTasksAndRejectsFalseExplicitRoute(t *testing.T) {
+	req := RunInput{
+		Conversation: models.Conversation{ID: 8, TenantID: 1, StoreID: 2, StoreStaffBindingID: 3},
+		UserMessage: models.Message{
+			ID: 11, SessionNo: 1, AIReplyTurnID: 21, AIReplyTurnVersion: 4,
+			MessageType: enums.IMMessageTypeText, Content: "别机器人了，帮我转人工",
+		},
+	}
+	summary := &RunResult{ReplyPlanV2: &contracts.ReplyPlanV2{TurnVersion: 4, Tasks: []contracts.ReplyPlanTaskV2{
+		{TaskKey: "handoff-a", OutputMode: "handoff"},
+		{TaskKey: "handoff-b", OutputMode: "handoff"},
+	}}}
+	intent := callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", SubIntent: "explicit_handoff", NeedsHumanRoute: true}
+	decision := decideRuntimeIntentHandoff(req, summary, intent, true)
+	if decision.Mode != contracts.HandoffModeConfirm || decision.TurnID != 21 || len(decision.TaskKeys) != 2 {
+		t.Fatalf("handoff decision lost turn/task scope: %+v", decision)
+	}
+
+	req.UserMessage.Content = "你说话真难听"
+	decision = decideRuntimeIntentHandoff(req, summary, intent, true)
+	if decision.Mode != contracts.HandoffModeNone || decision.ReasonCode != "explicit_handoff_not_present" {
+		t.Fatalf("an explicit_handoff label without an explicit customer request must be blocked: %+v", decision)
+	}
+
+	intent.SubIntent = "insult_complaint"
+	decision = decideRuntimeIntentHandoff(req, summary, intent, true)
+	if decision.Mode != contracts.HandoffModeNone || decision.ReasonCode != "handoff_category_not_eligible" {
+		t.Fatalf("ordinary insult must not enter handoff: %+v", decision)
 	}
 }

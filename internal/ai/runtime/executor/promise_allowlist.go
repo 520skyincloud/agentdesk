@@ -6,7 +6,9 @@ import (
 	"agent-desk/internal/ai/runtime/contracts"
 )
 
-// promiseAllowlist 用白名单判定“模型在回复里口头承诺去做 / 已经做了某事”是否越权。
+// promiseAllowlist identifies the action surface of a promise. Surface words
+// never grant permission: only a matching committed/delivered ActionLedger item
+// can authorize a completion claim.
 //
 // 之前用 futureCommitPhrases 黑名单枚举“不能承诺的动作”（查订单、改房号、加床……），
 // 但“不能干的事”是无限的，模型换一个措辞就会漏。改成白名单：只允许承诺动作目录里
@@ -48,6 +50,8 @@ func promiseCommitmentSignals() []string {
 		"我帮你退", "帮你退", "我退", "我帮你取消", "帮你取消", "我取消",
 		"我帮你拿", "帮你拿", "我帮你取", "帮你取", "我帮你搬", "帮你搬",
 		"我转", "我发", "我找", "帮你看看",
+		"会联系", "会安排", "会处理", "会转", "会提交", "会登记", "会通知", "会发送", "会发给",
+		"将联系", "将安排", "将处理", "将转", "将提交", "将登记", "将通知", "将发送",
 		// 悬置 / 进行 / 完成时态（同步链路里“正在/稍等”永远是假执行）
 		"正在", "稍等", "稍后", "稍候", "马上", "立刻", "这就",
 		// offer 语气（主动承诺"有需要就给你办"）
@@ -124,7 +128,8 @@ func splitPromiseClauses(content string) []string {
 	return clauses
 }
 
-// hasPromiseAllowlistedSurface 判断承诺对象是否落在白名单动作上。
+// hasPromiseAllowlistedSurface only classifies the mentioned action. It must not
+// be used as an authorization decision.
 func hasPromiseAllowlistedSurface(compact string) bool {
 	return containsAny(compact, promiseActionSurface())
 }
@@ -139,7 +144,10 @@ func validateReplyPromiseAllowlist(input ReplyValidationInput) []contracts.Valid
 		}
 		for _, clause := range splitPromiseClauses(content) {
 			compact := compactReplyText(clause)
-			if !hasUnnegatedPromiseSignal(compact) || hasPromiseAllowlistedSurface(compact) {
+			if !hasUnnegatedPromiseSignal(compact) {
+				continue
+			}
+			if promiseClauseBackedByCommittedAction(input, part, compact) {
 				continue
 			}
 			issues = append(issues, validationIssue(
@@ -151,4 +159,39 @@ func validateReplyPromiseAllowlist(input ReplyValidationInput) []contracts.Valid
 		}
 	}
 	return issues
+}
+
+func promiseClauseBackedByCommittedAction(input ReplyValidationInput, part contracts.ReplyPartV2, compact string) bool {
+	if !hasPromiseAllowlistedSurface(compact) || len(part.ActionRefs) == 0 {
+		return false
+	}
+	actions := make(map[string]contracts.ActionLedgerItemV1, len(input.ActionLedger.Actions))
+	for _, action := range input.ActionLedger.Actions {
+		actions[action.ActionKey] = action
+	}
+	for _, ref := range part.ActionRefs {
+		action, ok := actions[ref]
+		if !ok || action.Status != "committed" && action.Status != "delivered" {
+			continue
+		}
+		if promiseSurfaceMatchesAction(compact, action.ActionType) {
+			return true
+		}
+	}
+	return false
+}
+
+func promiseSurfaceMatchesAction(compact, actionType string) bool {
+	switch strings.TrimSpace(actionType) {
+	case "send_location":
+		return containsAny(compact, []string{"定位", "地址", "导航"})
+	case "send_mini_program":
+		return strings.Contains(compact, "小程序")
+	case "send_phone":
+		return containsAny(compact, []string{"电话", "号码", "联系电话"})
+	case "human_handoff":
+		return containsAny(compact, []string{"转人工", "转接", "人工客服", "找人工", "转给人工"})
+	default:
+		return false
+	}
 }

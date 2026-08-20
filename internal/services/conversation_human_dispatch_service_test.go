@@ -172,6 +172,34 @@ func TestConversationHandoffConfirmationSameRequestSendsOnePrompt(t *testing.T) 
 	}
 }
 
+func TestConversationHandoffConfirmationPersistsTurnTaskScope(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+
+	_, err := services.ConversationHandoffConfirmationService.RequestByAIForTasksWithOriginMessage(
+		conversation.ID, aiAgent, "客户明确要求人工", "handoff-confirm-scoped", origin.ID, 55, []string{"task-b", "task-a", "task-a"},
+	)
+	if err != nil {
+		t.Fatalf("RequestByAIForTasksWithOriginMessage() error = %v", err)
+	}
+	state := services.ConversationRouteService.GetByConversationIDInTenant(conversation.ID, 101)
+	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
+		t.Fatalf("expected pending handoff state, got %+v", state)
+	}
+	var payload struct {
+		TurnID   int64    `json:"turnId"`
+		TaskKeys []string `json:"taskKeys"`
+	}
+	if err := json.Unmarshal([]byte(state.PendingActionPayload), &payload); err != nil {
+		t.Fatalf("decode handoff payload: %v", err)
+	}
+	if payload.TurnID != 55 || strings.Join(payload.TaskKeys, ",") != "task-b,task-a" {
+		t.Fatalf("handoff payload lost its exact task scope: %+v", payload)
+	}
+}
+
 func TestConversationHumanDispatchAssignsScheduledAgentEvenOnBreak(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")

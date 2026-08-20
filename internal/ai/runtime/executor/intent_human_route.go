@@ -22,17 +22,26 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	if !intent.NeedsHumanRoute {
 		return false, nil
 	}
-	if !isHandoffIntentCategory(intent) {
+	autoHandoffEnabled := services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
+	decision := decideRuntimeIntentHandoff(req, summary, intent, autoHandoffEnabled)
+	if decision.Mode == contracts.HandoffModeNone {
+		recommendedAction := "ignore_ineligible_handoff"
+		resultPreview := "当前任务不满足人工确认门禁，继续按原任务链路处理"
+		if decision.ReasonCode == "customer_auto_handoff_disabled" {
+			recommendedAction = "customer_auto_handoff_disabled"
+			resultPreview = "当前客户在此企微员工号下已关闭自动转人工；继续由 AI 直接回复"
+		}
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,
 			Arguments: map[string]any{
-				"intent":    intent.PrimaryIntent,
-				"subIntent": intent.SubIntent,
+				"intent":     intent.PrimaryIntent,
+				"subIntent":  intent.SubIntent,
+				"reasonCode": decision.ReasonCode,
 			},
 			Status:            "skipped",
-			RecommendedAction: "ignore_non_handoff_intent_human_route_flag",
-			ResultPreview:     "二次确认只属于 human_complaint_risk 意图分类；当前分类继续按自身链路处理",
+			RecommendedAction: recommendedAction,
+			ResultPreview:     resultPreview,
 		})
 		return false, nil
 	}
@@ -50,23 +59,17 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
-		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
-			ToolCode: toolx.GraphHandoffConversation.Code,
-			ToolName: toolx.GraphHandoffConversation.Name,
-			Arguments: map[string]any{
-				"intent":    intent.PrimaryIntent,
-				"subIntent": intent.SubIntent,
-			},
-			Status:            "skipped",
-			RecommendedAction: "customer_auto_handoff_disabled",
-			ResultPreview:     "当前客户在此企微员工号下已关闭自动转人工；继续由 AI 直接回复",
-		})
-		return false, nil
-	}
 	reason := buildIntentHumanRouteReason(intent, runtimeUserMessageText(req.UserMessage))
 	started := time.Now()
-	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID), req.UserMessage.ID)
+	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIForTasksWithOriginMessage(
+		req.Conversation.ID,
+		req.AIAgent,
+		reason,
+		strings.TrimSpace(req.UserMessage.RequestID),
+		req.UserMessage.ID,
+		decision.TurnID,
+		decision.TaskKeys,
+	)
 	item := callbacks.GraphToolTraceItem{
 		ToolCode: toolx.GraphHandoffConversation.Code,
 		ToolName: toolx.GraphHandoffConversation.Name,
@@ -76,6 +79,10 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 			"subIntent":      intent.SubIntent,
 			"routePolicy":    intent.HumanRoutePolicy,
 			"conversationId": req.Conversation.ID,
+			"turnId":         decision.TurnID,
+			"taskKeys":       decision.TaskKeys,
+			"decisionMode":   decision.Mode,
+			"reasonCode":     decision.ReasonCode,
 		},
 		LatencyMs: time.Since(started).Milliseconds(),
 	}
@@ -96,6 +103,82 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+func decideRuntimeIntentHandoff(req RunInput, summary *RunResult, intent callbacks.IntentTraceData, autoHandoffEnabled bool) contracts.HandoffDecisionV2 {
+	taskKeys := runtimeHandoffTaskKeys(summary)
+	turnVersion := req.UserMessage.AIReplyTurnVersion
+	if summary != nil && summary.ReplyPlanV2 != nil && summary.ReplyPlanV2.TurnVersion > 0 {
+		turnVersion = summary.ReplyPlanV2.TurnVersion
+	}
+	instanceID := int64(0)
+	if instance := findRuntimeWxWorkInstance(req); instance != nil {
+		instanceID = instance.ID
+	}
+	task := HandoffTaskView{
+		TaskKeys: taskKeys, TurnID: req.UserMessage.AIReplyTurnID, TurnVersion: turnVersion,
+		TenantID: req.Conversation.TenantID, StoreID: req.Conversation.StoreID,
+		StoreStaffBindingID: req.Conversation.StoreStaffBindingID, ProtocolInstanceID: instanceID,
+		ConversationID: req.Conversation.ID, SessionNo: req.UserMessage.SessionNo,
+	}
+	if len(taskKeys) > 0 {
+		task.TaskKey = taskKeys[0]
+	}
+	capability := CapabilityDecisionV1{}
+	switch strings.TrimSpace(intent.SubIntent) {
+	case "explicit_handoff":
+		if !runtimeTextExplicitlyRequestsHuman(runtimeUserMessageText(req.UserMessage)) {
+			decision := DecideHandoff(task, capability, HandoffFailureNone)
+			decision.ReasonCode = "explicit_handoff_not_present"
+			return decision
+		}
+		task.ExplicitHumanRequest = true
+	case "complaint_escalation", "refund_compensation", "order_price_dispute":
+		capability.Route = "business_handoff"
+		capability.ExecutionMode = "human"
+	case "emergency_safety":
+		task.SafetyCritical = true
+	default:
+		decision := DecideHandoff(task, capability, HandoffFailureNone)
+		decision.ReasonCode = "handoff_category_not_eligible"
+		return decision
+	}
+	if !isHandoffIntentCategory(intent) {
+		decision := DecideHandoff(task, CapabilityDecisionV1{}, HandoffFailureNone)
+		decision.ReasonCode = "non_handoff_intent_category"
+		return decision
+	}
+	decision := DecideHandoff(task, capability, HandoffFailureNone)
+	if !autoHandoffEnabled {
+		decision.Mode = contracts.HandoffModeNone
+		decision.ReasonCode = "customer_auto_handoff_disabled"
+	}
+	return decision
+}
+
+func runtimeTextExplicitlyRequestsHuman(text string) bool {
+	compact := compactRuntimeProtocolText(text)
+	return containsAny(compact, []string{
+		"人工", "转人工", "找人工", "人工客服", "真人客服", "转客服", "找客服", "换个人", "叫个人", "别机器人", "不要机器人",
+	})
+}
+
+func runtimeHandoffTaskKeys(summary *RunResult) []string {
+	if summary == nil {
+		return nil
+	}
+	keys := make([]string, 0)
+	if summary.ReplyPlanV2 != nil {
+		for _, task := range summary.ReplyPlanV2.Tasks {
+			if task.OutputMode == "handoff" {
+				keys = appendUniqueStrings(keys, task.TaskKey)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		keys = appendUniqueStrings(keys, summary.HumanTaskKeys...)
+	}
+	return keys
 }
 
 func runtimeReplyPlanHasNonHandoffTask(plan *contracts.ReplyPlanV2) bool {

@@ -31,12 +31,12 @@ func TestDecideHandoffKnowledgeGapNeverPersists(t *testing.T) {
 	}
 }
 
-func TestDecideHandoffSafetyDispatches(t *testing.T) {
+func TestDecideHandoffSafetyRequiresConfirmation(t *testing.T) {
 	task := handoffTaskFixture()
 	task.SafetyCritical = true
 	decision := DecideHandoff(task, CapabilityDecisionV1{}, HandoffFailureNone)
-	if decision.Mode != contracts.HandoffModeDispatch || decision.OriginType != contracts.HandoffOriginSafety {
-		t.Fatalf("safety critical must dispatch: %+v", decision)
+	if decision.Mode != contracts.HandoffModeConfirm || decision.OriginType != contracts.HandoffOriginSafety {
+		t.Fatalf("safety critical must keep the current confirmation product semantics: %+v", decision)
 	}
 }
 

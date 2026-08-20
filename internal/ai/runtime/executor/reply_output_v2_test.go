@@ -381,6 +381,42 @@ func TestSafeRuntimeDegradedKeepsPreservedAnswersAndOriginalPlan(t *testing.T) {
 	}
 }
 
+func TestSafeRuntimeDegradedUsesCompactJudgedSupplyFacts(t *testing.T) {
+	plan := contracts.ReplyPlanV2{
+		SchemaVersion: contracts.ReplyPlanV2SchemaVersion, TurnVersion: 1, ShouldGenerate: true,
+		Tasks: []contracts.ReplyPlanTaskV2{{
+			TaskKey: "iron", Sequence: 1, Intent: "hotel_info", SubIntent: "supplies_self_help", Objective: "有熨斗吗，在哪里取", OutputMode: "text",
+			Knowledge: contracts.ReplyPlanKnowledge{Policy: "required", Status: "has_context"}, EvidenceRefs: []string{"K1"},
+		}},
+		GlobalConstraints: contracts.ReplyPlanGlobalConstraints{MaxReplyParts: 3, MaxQuestionsPerPart: 4},
+	}
+	evidence := contracts.EvidenceBundleV1{
+		SchemaVersion: contracts.EvidenceBundleV1SchemaVersion, ScopeFingerprint: strings.Repeat("a", 64), RetrievalStatus: "has_context",
+		Items: []contracts.EvidenceItemV1{{
+			Ref: "K1", SourceType: "fastgpt", TaskKeys: []string{"iron"}, Title: "客用品取用",
+			Content:       "答案：没有传统熨斗时可使用挂烫机，位于12楼洗衣房旁的百宝箱，可自行取用。内部运营说明不要展示。",
+			Answerability: "supporting",
+		}},
+	}
+	ledger := contracts.ActionLedgerV1{SchemaVersion: contracts.ActionLedgerV1SchemaVersion, TurnVersion: 1}
+	summary := &RunResult{
+		ReplyPlanV2: &plan, EvidenceBundle: &evidence, ActionLedgerV2: &ledger,
+		RuntimeValidatorMode: runtimeValidatorV2, ValidationGates: DefaultReplyValidationGates(),
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	if !applySafeRuntimeDegraded(summary, collector, RunInput{}, errors.New("generation failed")) {
+		t.Fatal("judged supply facts should provide a deterministic degraded answer")
+	}
+	for _, expected := range []string{"挂烫机", "12楼", "百宝箱", "自行取用"} {
+		if !strings.Contains(summary.ReplyText, expected) {
+			t.Fatalf("degraded supply answer missing %q: %s", expected, summary.ReplyText)
+		}
+	}
+	if strings.Contains(summary.ReplyText, "内部运营说明") || summary.HasRemainingTasks {
+		t.Fatalf("degraded answer must stay compact and complete only the grounded task: remaining=%t text=%q", summary.HasRemainingTasks, summary.ReplyText)
+	}
+}
+
 func TestApplyRuntimeReplyOutputV2HardRejectedTaskDoesNotDropValidSibling(t *testing.T) {
 	input := multiTaskReplyValidationInputForTest()
 	summary := &RunResult{

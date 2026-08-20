@@ -642,29 +642,18 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 	}
 }
 
-// applyKnowledgeActionBindings 把命中知识的任务按绑定动作改写为结构化执行计划。
-// 目前只把 human_handoff 提升为人工路由计划；资源/工具动作继续走各自链路。
-// 返回 (plans, hasHumanHandoff)。
+// applyKnowledgeActionBindings keeps knowledge evidence and execution authority
+// separate. A human_handoff marker bound to a knowledge record is audit data,
+// not permission to rewrite a hotel information task into a human route.
 func applyKnowledgeActionBindings(plans []callbacks.ReplyTaskPlanTraceData, taskActionCodes map[string]string) ([]callbacks.ReplyTaskPlanTraceData, bool) {
 	if len(taskActionCodes) == 0 {
 		return plans, false
 	}
 	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plans))
-	hasHandoff := false
 	for _, plan := range plans {
-		actionCode, ok := taskActionCodes[plan.TaskKey]
-		if !ok || actionCode != "human_handoff" {
-			ret = append(ret, plan)
-			continue
-		}
-		plan.Intent = "human_complaint_risk"
-		plan.SubIntent = "explicit_handoff"
-		plan.Output = "human_route_confirmation_or_dispatch"
-		plan.ResourceAction = ""
 		ret = append(ret, plan)
-		hasHandoff = true
 	}
-	return ret, hasHandoff
+	return ret, false
 }
 
 func withoutRuntimeActionCode(values map[string]string, blocked string) map[string]string {
