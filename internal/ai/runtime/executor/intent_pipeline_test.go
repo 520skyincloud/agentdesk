@@ -1226,7 +1226,7 @@ func TestRuntimePipelineInvoiceAttachmentFollowUpUsesKnowledge(t *testing.T) {
 		t.Fatal("invoice attachment follow-up should use knowledge")
 	}
 	instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent)
-	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "当前资料没写明") {
+	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "进入接待路由") || strings.Contains(instruction, "只能说当前资料没写明") {
 		t.Fatalf("expected invoice follow-up to retain category-level action safety, got %q", instruction)
 	}
 }

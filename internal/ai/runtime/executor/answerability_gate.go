@@ -379,6 +379,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	configuredKnowledgeIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 	if len(configuredKnowledgeIDs) == 0 {
+		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有配置可用知识库")
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but no knowledge configured", nil)
@@ -395,6 +396,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	knowledgeIDs := retriever.KnowledgeBaseIDs()
 	state.KnowledgeIDs = append([]int64(nil), knowledgeIDs...)
 	if len(knowledgeIDs) == 0 {
+		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有可用知识库")
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but retriever has no knowledge", nil)
@@ -435,6 +437,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		return state, nil
 	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
+		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识库没有可用答案")
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "no retrieved context", nil)
@@ -444,6 +447,27 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	state.prependDecisionInstruction(knowledgeActionInstruction)
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func markKnowledgeNoContextHandoffDirective(input answerabilityGateInput, reason string) {
+	if current := strings.TrimSpace(currentTurnDisplayText(input.Request.UserMessage.Content)); current != "" {
+		reason += "；客户消息：" + preview(current, 180)
+	}
+	if input.Summary != nil {
+		input.Summary.handoffDirective = true
+		input.Summary.handoffDirectiveReason = reason
+		input.Summary.handoffDirectiveSource = "knowledge_no_context"
+	}
+	if input.Collector == nil {
+		return
+	}
+	ledger := input.Collector.Data.ActionLedger
+	ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
+		Action: "human_route",
+		Status: "requested",
+		Reason: reason,
+	})
+	input.Collector.SetActionLedger(ledger)
 }
 
 func topKnowledgeHandoffDirective(result *retrievers.KnowledgeRetrieveResult) (rag.RetrieveResult, bool) {

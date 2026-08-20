@@ -363,8 +363,66 @@ func TestConversationHandoffConfirmationSemanticCancelClearsPending(t *testing.T
 		t.Fatalf("expected no store room notice after cancel, got %d", count)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.SenderType != enums.IMSenderTypeAI || !strings.Contains(latest.Content, "先不转人工") {
+	if latest == nil || latest.SenderType != enums.IMSenderTypeAI || !strings.Contains(latest.Content, "先不联系同事") {
 		t.Fatalf("expected cancel acknowledgement, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffCollectsRoomBeforeConfirmation(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "窗外好吵啊")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息：窗外好吵啊", "req-ask-room"); err != nil {
+		t.Fatalf("RequestByAI() error = %v", err)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "方便说下是哪个房间吗？" {
+		t.Fatalf("expected natural room question, got %+v", latest)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || !strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
+		t.Fatalf("expected room-number pending context, got %+v", state)
+	}
+
+	room := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "1305")
+	handled, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &room)
+	if err != nil || !handled {
+		t.Fatalf("HandleCustomerMessage(room) handled=%v err=%v", handled, err)
+	}
+	latest = services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+		t.Fatalf("expected coworker confirmation prompt, got %+v", latest)
+	}
+	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) || !strings.Contains(state.PendingActionPayload, `"roomNumber":"1305"`) {
+		t.Fatalf("expected collected room number in pending context, got %+v", state)
+	}
+
+	confirm := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "确认")
+	handled, err = services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &confirm)
+	if err != nil || !handled {
+		t.Fatalf("HandleCustomerMessage(confirm) handled=%v err=%v", handled, err)
+	}
+	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+		t.Fatalf("expected real handoff after confirmation, got %+v", state)
+	}
+}
+
+func TestConversationHandoffWithoutRoomContextUsesCoworkerWording(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息：问一下前台几点有人", "req-confirm-wording"); err != nil {
+		t.Fatalf("RequestByAI() error = %v", err)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+		t.Fatalf("expected coworker confirmation prompt, got %+v", latest)
 	}
 }
 

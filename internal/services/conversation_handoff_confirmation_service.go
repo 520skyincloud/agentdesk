@@ -28,6 +28,8 @@ type handoffConfirmationPayload struct {
 	AIAgentID       int64  `json:"aiAgentId"`
 	OriginMessageID int64  `json:"originMessageId"`
 	HandoffToken    string `json:"handoffToken"`
+	AwaitingField   string `json:"awaitingField,omitempty"`
+	RoomNumber      string `json:"roomNumber,omitempty"`
 	CreatedAt       string `json:"createdAt"`
 }
 
@@ -87,17 +89,25 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		}
 		_ = ConversationRouteService.ClearPendingAction(conversationID)
 	}
-	payload, _ := json.Marshal(handoffConfirmationPayload{
-		Reason:          cleanHumanHandoffReason(reason),
+	cleanedReason := cleanHumanHandoffReason(reason)
+	payloadValue := handoffConfirmationPayload{
+		Reason:          cleanedReason,
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
 		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
 		CreatedAt:       time.Now().Format(time.RFC3339),
-	})
+	}
+	if handoffNeedsRoomNumber(cleanedReason) && extractRoomNo(cleanedReason) == "" {
+		payloadValue.AwaitingField = "room_number"
+	}
+	payload, _ := json.Marshal(payloadValue)
 	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
 		return false, err
 	}
-	content := buildHandoffConfirmationPrompt(reason)
+	content := buildHandoffConfirmationPrompt(cleanedReason)
+	if payloadValue.AwaitingField == "room_number" {
+		content = "方便说下是哪个房间吗？"
+	}
 	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgent.ID, "ai_handoff_confirm_"+strs.UUID(), enums.IMMessageTypeText, content, "", systemOperator(), requestID)
 	if err != nil {
 		if clearErr := ConversationRouteService.ClearPendingAction(conversationID); clearErr != nil {
@@ -126,6 +136,9 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
 	payload := handoffConfirmationPayload{}
 	_ = json.Unmarshal([]byte(state.PendingActionPayload), &payload)
+	if payload.AwaitingField == "room_number" {
+		return s.handleRoomNumberReply(conversation, message, payload, text)
+	}
 	classifyCtx, cancel := context.WithTimeout(context.Background(), handoffConfirmationModelTimeout)
 	result := classifyHumanHandoffConfirmation(classifyCtx, conversation, message, payload, text)
 	cancel()
@@ -147,7 +160,7 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 		return false, err
 	}
 	if decision == humanHandoffConfirmationCancel {
-		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好，那先不转人工。我继续帮您看这个问题。", "", systemOperator(), message.RequestID)
+		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好的，那先不联系同事。", "", systemOperator(), message.RequestID)
 		return true, err
 	}
 	payload = handoffConfirmationPayload{}
@@ -164,6 +177,41 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 		}
 	}
 	return true, err
+}
+
+func (s *conversationHandoffConfirmationService) handleRoomNumberReply(conversation *models.Conversation, message *models.Message, payload handoffConfirmationPayload, text string) (bool, error) {
+	if isExplicitHandoffContextCancel(text) {
+		_, _, err := ConversationRouteService.ConsumePendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, time.Now())
+		if err != nil {
+			return true, err
+		}
+		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_context_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好的，那先不联系同事。", "", systemOperator(), message.RequestID)
+		return true, err
+	}
+	roomNumber := extractRoomNo(text)
+	if roomNumber == "" {
+		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
+		return false, nil
+	}
+	payload.AwaitingField = ""
+	payload.RoomNumber = roomNumber
+	payload.Reason = appendHandoffRoomNumber(payload.Reason, roomNumber)
+	data, _ := json.Marshal(payload)
+	if err := ConversationRouteService.SetPendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, string(data), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
+		return true, err
+	}
+	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_confirm_after_room_"+strs.UUID(), enums.IMMessageTypeText, buildHandoffConfirmationPrompt(payload.Reason), "", systemOperator(), message.RequestID)
+	return true, err
+}
+
+func isExplicitHandoffContextCancel(text string) bool {
+	text = strings.ToLower(strings.Trim(strings.TrimSpace(text), " ，。,.!！?？~～\n\t"))
+	switch text {
+	case "取消", "算了", "不用了", "先不用", "先不用了", "不用联系", "不要联系", "不需要联系":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *conversationHandoffConfirmationService) HandleWaitingCustomerResolution(conversation *models.Conversation, message *models.Message, state *models.ConversationRouteState) (bool, error) {
@@ -483,7 +531,36 @@ func buildHandoffConfirmationPrompt(reason string) string {
 	if isSafetyHandoffReason(cleaned) {
 		return "这类安全情况建议让门店同事尽快介入。要我现在通知门店同事吗？请回复“确认”或“取消”。"
 	}
-	return "这个需要门店同事接手处理。要我帮您转人工吗？请回复“确认”或“取消”。"
+	return "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。"
+}
+
+func handoffNeedsRoomNumber(reason string) bool {
+	text := strings.ToLower(strings.TrimSpace(reason))
+	if text == "" {
+		return false
+	}
+	for _, keyword := range []string{
+		"落在房间", "落了东西", "遗失", "跑腿", "开一下门", "开房门", "找不到遥控器",
+		"窗外好吵", "噪音来源", "空调好吵", "不用敲门", "不要敲门", "送到房间", "送浴巾",
+		"床单上有毛发", "换一个新的床单", "删掉同住人", "怎么投屏", "投不了屏", "无法投屏",
+	} {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendHandoffRoomNumber(reason string, roomNumber string) string {
+	reason = cleanHumanHandoffReason(reason)
+	roomNumber = strings.TrimSpace(roomNumber)
+	if roomNumber == "" || strings.Contains(reason, "客户补充房号："+roomNumber) {
+		return reason
+	}
+	if reason == "" {
+		return "客户补充房号：" + roomNumber
+	}
+	return reason + "；客户补充房号：" + roomNumber
 }
 
 func cleanHumanHandoffReason(value string) string {

@@ -442,8 +442,11 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
 	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
-	if !strings.Contains(state.Decision.Instructions[0].Content, "WiFi 缺房号就问房号") {
+	if !strings.Contains(state.Decision.Instructions[0].Content, "否则进入接待路由") {
 		t.Fatalf("expected actionable no-context policy, got %q", state.Decision.Instructions[0].Content)
+	}
+	if state.Input.Summary == nil || !state.Input.Summary.handoffDirective || state.Input.Summary.handoffDirectiveSource != "knowledge_no_context" {
+		t.Fatalf("expected no-context business question to request handoff, got %#v", state.Input.Summary)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
@@ -517,7 +520,7 @@ func TestKnowledgeGuardInstructionsDoNotLeakFixedFallbackSources(t *testing.T) {
 	}
 }
 
-func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
+func TestBuildRunMessagesMarksHandoffWhenNoContext(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
@@ -538,6 +541,9 @@ func TestBuildRunMessagesContinuesAgentFlowWhenNoContext(t *testing.T) {
 
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
+	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
+		t.Fatalf("expected no-context business question to enter handoff flow, got %#v", summary)
 	}
 	if !messagesContainContent(messages, "当前没有从知识库检索到可用资料") {
 		t.Fatalf("expected no-context instruction in messages: %#v", messages)
