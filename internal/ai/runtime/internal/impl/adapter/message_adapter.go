@@ -180,6 +180,9 @@ func RuntimeHistoryMessageContent(item *models.Message) string {
 	if item == nil {
 		return ""
 	}
+	if isStandaloneOneHistoryMessage(item) {
+		return ""
+	}
 	content := buildRuntimeMessageText(item)
 	if content == "" {
 		return ""
@@ -190,6 +193,18 @@ func RuntimeHistoryMessageContent(item *models.Message) string {
 		parts = append(parts, timeLabel)
 	}
 	return "[" + strings.Join(parts, "][") + "] " + content
+}
+
+func isStandaloneOneHistoryMessage(message *models.Message) bool {
+	if message == nil {
+		return false
+	}
+	if message.SenderType == enums.IMSenderTypeCustomer &&
+		utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
+		return true
+	}
+	return (message.SenderType == enums.IMSenderTypeAI || message.SenderType == enums.IMSenderTypeAgent) &&
+		strings.HasPrefix(strings.TrimSpace(message.ClientMsgID), "ai_reply_faq_one_")
 }
 
 func RuntimeSpeakerLabel(sender enums.IMSenderType) string {

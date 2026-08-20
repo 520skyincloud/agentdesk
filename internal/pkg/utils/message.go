@@ -28,6 +28,10 @@ type imMessageAssetPayload struct {
 	MediaStatus  string              `json:"mediaUnderstandingStatus,omitempty"`
 }
 
+func IsStandaloneOneTextControl(messageType enums.IMMessageType, content string) bool {
+	return messageType == enums.IMMessageTypeText && strings.TrimSpace(content) == "1"
+}
+
 func SanitizeMessageHTML(content string) string {
 	policy := bluemonday.UGCPolicy()
 	policy.AllowElements("img")

@@ -344,6 +344,65 @@ func TestSendCustomerMessageMiniProgramKeywordsGoThroughAIReplyHook(t *testing.T
 	}
 }
 
+func TestStandaloneOneUsesIndependentReplyHook(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("standalone-one-hook")
+	conversation, err := ConversationService.Create(external, 11, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	previousAIHook := TriggerAIReplyAsyncHook
+	previousStandaloneHook := TriggerStandaloneOneReplyAsyncHook
+	var aiHookCount int
+	var standaloneHookCount int
+	var standaloneMessageID int64
+	TriggerAIReplyAsyncHook = func(models.Conversation, models.Message) {
+		aiHookCount++
+	}
+	TriggerStandaloneOneReplyAsyncHook = func(_ models.Conversation, message models.Message) {
+		standaloneHookCount++
+		standaloneMessageID = message.ID
+	}
+	t.Cleanup(func() {
+		TriggerAIReplyAsyncHook = previousAIHook
+		TriggerStandaloneOneReplyAsyncHook = previousStandaloneHook
+	})
+
+	message, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID,
+		"standalone-one-hook-message",
+		enums.IMMessageTypeText,
+		" 1 ",
+		"",
+		external,
+		"standalone-one-hook-request",
+	)
+	if err != nil {
+		t.Fatalf("send standalone one: %v", err)
+	}
+	if standaloneHookCount != 1 || standaloneMessageID != message.ID || aiHookCount != 0 {
+		t.Fatalf("unexpected hook routing: standalone=%d message=%d ai=%d", standaloneHookCount, standaloneMessageID, aiHookCount)
+	}
+
+	duplicate, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID,
+		"standalone-one-hook-message",
+		enums.IMMessageTypeText,
+		"1",
+		"",
+		external,
+		"standalone-one-hook-request",
+	)
+	if err != nil || duplicate.ID != message.ID {
+		t.Fatalf("send duplicate standalone one: message=%#v err=%v", duplicate, err)
+	}
+	if standaloneHookCount != 2 || aiHookCount != 0 {
+		t.Fatalf("duplicate did not retry independent hook: standalone=%d ai=%d", standaloneHookCount, aiHookCount)
+	}
+}
+
 func TestSendCustomerMessageStoreWecomManualBlocksAIUntilTimeout(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")

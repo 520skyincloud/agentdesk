@@ -13,6 +13,27 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestIsStandaloneOneTextControl(t *testing.T) {
+	tests := []struct {
+		messageType enums.IMMessageType
+		content     string
+		want        bool
+	}{
+		{messageType: enums.IMMessageTypeText, content: "1", want: true},
+		{messageType: enums.IMMessageTypeText, content: " 1 ", want: true},
+		{messageType: enums.IMMessageTypeHTML, content: "1", want: false},
+		{messageType: enums.IMMessageTypeVoice, content: "1", want: false},
+		{messageType: enums.IMMessageTypeText, content: "11", want: false},
+		{messageType: enums.IMMessageTypeText, content: "1。", want: false},
+		{messageType: enums.IMMessageTypeText, content: "１", want: false},
+	}
+	for _, tt := range tests {
+		if got := IsStandaloneOneTextControl(tt.messageType, tt.content); got != tt.want {
+			t.Fatalf("IsStandaloneOneTextControl(%q, %q) = %v, want %v", tt.messageType, tt.content, got, tt.want)
+		}
+	}
+}
+
 func TestBuildIMMessageAssetPayloadForResponseAddsSignedURL(t *testing.T) {
 	config.SetCurrent(&config.Config{
 		Storage: config.StorageConfig{

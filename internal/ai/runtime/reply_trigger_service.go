@@ -10,6 +10,7 @@ import (
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/utils"
@@ -21,6 +22,87 @@ const aiReplyDebounceWindow = 120 * time.Millisecond
 const aiReplyMediaSettleWindow = 900 * time.Millisecond
 const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
+const standaloneOneReplyMaxAttempts = 3
+
+func (s *aiReplyService) TriggerStandaloneOneReplyAsync(conversation models.Conversation, message models.Message) {
+	go func() {
+		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), 15*time.Second)
+		defer cancel()
+		var lastErr error
+		for attempt := 1; attempt <= standaloneOneReplyMaxAttempts; attempt++ {
+			if lastErr = s.triggerStandaloneOneReply(ctx, conversation, message); lastErr == nil {
+				return
+			}
+			if attempt == standaloneOneReplyMaxAttempts || !sleepWithContext(ctx, time.Duration(attempt)*500*time.Millisecond) {
+				break
+			}
+		}
+		slog.Error("failed to send standalone one reply",
+			"requestId", message.RequestID,
+			"conversation_id", conversation.ID,
+			"message_id", message.ID,
+			"attempts", standaloneOneReplyMaxAttempts,
+			"error", lastErr,
+		)
+	}()
+}
+
+func (s *aiReplyService) triggerStandaloneOneReply(ctx context.Context, conversation models.Conversation, message models.Message) error {
+	if message.SenderType != enums.IMSenderTypeCustomer || !utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
+		return fmt.Errorf("standalone one message scope is invalid")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	route := svc.ConversationRouteService.GetByConversationID(conversation.ID)
+	if route == nil || route.WxWorkInstanceID <= 0 {
+		return fmt.Errorf("standalone one conversation has no employee account")
+	}
+	instance := svc.WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+	if instance == nil || instance.Status != enums.StatusOk {
+		return fmt.Errorf("standalone one employee account is unavailable")
+	}
+	welcomeText := strings.TrimSpace(utils.RepairMojibakeText(instance.WelcomeMessage))
+	if welcomeText == "" {
+		return fmt.Errorf("standalone one welcome message is not configured")
+	}
+	miniProgramContent, miniProgramPayload, err := svc.WxWorkProtocolDefaultResourceService.BuildDefaultMiniProgramMessage(instance)
+	if err != nil {
+		return err
+	}
+	operatorName := strings.TrimSpace(instance.EmployeeName)
+	if operatorName == "" {
+		operatorName = "AI"
+	}
+	operator := &dto.AuthPrincipal{
+		UserID:   0,
+		Username: operatorName,
+		Nickname: operatorName,
+	}
+	if _, err := svc.MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		conversation.AIAgentID,
+		fmt.Sprintf("ai_reply_faq_one_%d_text", message.ID),
+		enums.IMMessageTypeText,
+		welcomeText,
+		"",
+		operator,
+		message.RequestID,
+	); err != nil {
+		return err
+	}
+	_, err = svc.MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		conversation.AIAgentID,
+		fmt.Sprintf("ai_reply_faq_one_%d_mini_program", message.ID),
+		enums.IMMessageTypeMiniProgram,
+		miniProgramContent,
+		miniProgramPayload,
+		operator,
+		message.RequestID,
+	)
+	return err
+}
 
 func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Duration {
 	if aiAgent.ReplyTimeoutSeconds <= 0 {
@@ -300,6 +382,9 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	}
 	parts := make([]string, 0, len(items))
 	for idx, item := range items {
+		if utils.IsStandaloneOneTextControl(item.MessageType, item.Content) {
+			continue
+		}
 		text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload))
 		if text == "" {
 			continue
@@ -410,8 +495,8 @@ func committedReplyText(message models.Message) string {
 }
 
 func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {
-	latest, err := svc.MessageService.FindLatestByConversationID(conversationID)
-	if err != nil || latest == nil {
+	latest := s.latestNonStandaloneConversationMessage(conversationID)
+	if latest == nil {
 		return true
 	}
 	if latest.SenderType != enums.IMSenderTypeCustomer {
@@ -466,12 +551,56 @@ func isRuntimeReplyMediaMessage(messageType enums.IMMessageType) bool {
 }
 
 func (s *aiReplyService) isStillLatestCustomerMessage(conversationID int64, messageID int64) bool {
-	latest, err := svc.MessageService.FindLatestByConversationID(conversationID)
-	if err != nil || latest == nil {
+	latest := s.latestNonStandaloneConversationMessage(conversationID)
+	if latest == nil {
 		return true
 	}
 	if latest.SenderType == enums.IMSenderTypeCustomer {
 		return latest.ID == messageID
 	}
 	return latest.ID <= messageID
+}
+
+func (s *aiReplyService) latestNonStandaloneConversationMessage(conversationID int64) *models.Message {
+	if conversationID <= 0 {
+		return nil
+	}
+	const pageSize = 32
+	beforeID := int64(0)
+	for {
+		cnd := sqls.NewCnd().
+			Eq("conversation_id", conversationID).
+			Desc("seq_no").
+			Desc("id").
+			Limit(pageSize)
+		if beforeID > 0 {
+			cnd.Lt("id", beforeID)
+		}
+		items := svc.MessageService.Find(cnd)
+		if len(items) == 0 {
+			return nil
+		}
+		for index := range items {
+			if isStandaloneOneRuntimeMessage(&items[index]) {
+				continue
+			}
+			return &items[index]
+		}
+		if len(items) < pageSize {
+			return nil
+		}
+		beforeID = items[len(items)-1].ID
+	}
+}
+
+func isStandaloneOneRuntimeMessage(message *models.Message) bool {
+	if message == nil {
+		return false
+	}
+	if message.SenderType == enums.IMSenderTypeCustomer &&
+		utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
+		return true
+	}
+	return (message.SenderType == enums.IMSenderTypeAI || message.SenderType == enums.IMSenderTypeAgent) &&
+		strings.HasPrefix(strings.TrimSpace(message.ClientMsgID), "ai_reply_faq_one_")
 }

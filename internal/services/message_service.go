@@ -482,6 +482,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	// 防抖，消息存在就不再发送了
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgID(sqls.DB(), conversation.ID, clientMsgID); existing != nil {
+			if senderType == enums.IMSenderTypeCustomer &&
+				utils.IsStandaloneOneTextControl(existing.MessageType, existing.Content) &&
+				TriggerStandaloneOneReplyAsyncHook != nil {
+				TriggerStandaloneOneReplyAsyncHook(*conversation, *existing)
+			}
 			return existing, nil
 		}
 	}
@@ -645,6 +650,12 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}
 		if markErr := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); markErr != nil {
 			slog.Warn("mark customer route message failed", "conversation_id", conversation.ID, "error", markErr)
+		}
+		if utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
+			if TriggerStandaloneOneReplyAsyncHook != nil {
+				TriggerStandaloneOneReplyAsyncHook(*conversation, *message)
+			}
+			return message, err
 		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil {
 			if routeStatusBlocksAIReply(routeState.RouteStatus) {

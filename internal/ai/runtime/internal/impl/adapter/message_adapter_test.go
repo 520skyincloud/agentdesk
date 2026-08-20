@@ -43,6 +43,23 @@ func TestBuildHistoryMessagesOnlyUsesMessagesBeforeCurrent(t *testing.T) {
 	}
 }
 
+func TestRuntimeHistoryMessageContentExcludesStandaloneOneExchange(t *testing.T) {
+	items := []models.Message{
+		{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: " 1 ", ClientMsgID: "standalone-one"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "欢迎入住", ClientMsgID: "ai_reply_faq_one_10_text"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeMiniProgram, Content: "入住小程序", ClientMsgID: "ai_reply_faq_one_10_mini_program"},
+	}
+	for index := range items {
+		if got := RuntimeHistoryMessageContent(&items[index]); got != "" {
+			t.Fatalf("standalone exchange leaked into history: %q", got)
+		}
+	}
+	ordinary := models.Message{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点"}
+	if got := RuntimeHistoryMessageContent(&ordinary); !strings.Contains(got, "早餐几点") {
+		t.Fatalf("ordinary message was removed from history: %q", got)
+	}
+}
+
 func setupAdapterHistoryTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := "adapter_history_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
