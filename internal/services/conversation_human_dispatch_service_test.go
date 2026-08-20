@@ -3,6 +3,7 @@ package services_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -373,9 +374,9 @@ func TestConversationHandoffCollectsRoomBeforeConfirmation(t *testing.T) {
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "窗外好吵啊")
+	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我落东西了在房间")
 
-	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息：窗外好吵啊", "req-ask-room"); err != nil {
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息：我落东西了在房间", "req-ask-room"); err != nil {
 		t.Fatalf("RequestByAI() error = %v", err)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
@@ -423,6 +424,27 @@ func TestConversationHandoffWithoutRoomContextUsesCoworkerWording(t *testing.T) 
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
 	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
 		t.Fatalf("expected coworker confirmation prompt, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffCollectsRoomForInRoomCategories(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+
+	for index, reason := range []string{
+		"房内电视突然坏了",
+		"麻烦送两条毛巾过来",
+		"卫生间漏水了",
+		"我把东西遗落在酒店了",
+	} {
+		conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+		if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息："+reason, fmt.Sprintf("req-room-category-%d", index)); err != nil {
+			t.Fatalf("RequestByAI(%q) error = %v", reason, err)
+		}
+		latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+		if latest == nil || latest.Content != "方便说下是哪个房间吗？" {
+			t.Fatalf("expected room question for %q, got %+v", reason, latest)
+		}
 	}
 }
 

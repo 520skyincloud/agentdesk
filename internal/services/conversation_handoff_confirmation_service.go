@@ -539,16 +539,14 @@ func handoffNeedsRoomNumber(reason string) bool {
 	if text == "" {
 		return false
 	}
-	for _, keyword := range []string{
-		"落在房间", "落了东西", "遗失", "跑腿", "开一下门", "开房门", "找不到遥控器",
-		"窗外好吵", "噪音来源", "空调好吵", "不用敲门", "不要敲门", "送到房间", "送浴巾",
-		"床单上有毛发", "换一个新的床单", "删掉同住人", "怎么投屏", "投不了屏", "无法投屏",
-	} {
-		if strings.Contains(text, keyword) {
-			return true
-		}
-	}
-	return false
+	return containsAny(text, []string{
+		"房间", "房内", "屋里", "客房",
+		"床单", "被套", "被子", "枕头", "浴巾", "毛巾",
+		"遥控器", "电视", "投屏", "空调", "窗外", "噪音", "好吵",
+		"门锁", "开门", "敲门", "马桶", "卫生间", "洗手间", "漏水", "停电", "异味",
+		"打扫", "保洁", "维修", "送到", "送来", "送水", "同住人",
+		"落东西", "落了东西", "遗落", "遗失", "忘在", "跑腿",
+	})
 }
 
 func appendHandoffRoomNumber(reason string, roomNumber string) string {
