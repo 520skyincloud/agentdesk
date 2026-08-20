@@ -125,6 +125,76 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	return true, nil
 }
 
+func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (bool, error) {
+	if strings.HasPrefix(strings.TrimSpace(req.UserMessage.RequestID), "manual_resume_") {
+		return false, nil
+	}
+	if summary == nil || collector == nil || !summary.handoffDirective {
+		return false, nil
+	}
+	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"source":         summary.handoffDirectiveSource,
+				"conversationId": req.Conversation.ID,
+			},
+			Status:            "skipped",
+			RecommendedAction: "customer_auto_handoff_disabled",
+			ResultPreview:     "当前客户在此企微员工号下已关闭自动转人工；继续由 AI 直接回复",
+		})
+		return false, nil
+	}
+	reason := strings.TrimSpace(summary.handoffDirectiveReason)
+	if reason == "" {
+		reason = "当前问题需要门店同事接手"
+	}
+	started := time.Now()
+	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		req.Conversation.ID,
+		req.AIAgent,
+		reason,
+		strings.TrimSpace(req.UserMessage.RequestID),
+		req.UserMessage.ID,
+	)
+	item := callbacks.GraphToolTraceItem{
+		ToolCode: toolx.GraphHandoffConversation.Code,
+		ToolName: toolx.GraphHandoffConversation.Name,
+		Arguments: map[string]any{
+			"reason":         reason,
+			"source":         summary.handoffDirectiveSource,
+			"conversationId": req.Conversation.ID,
+		},
+		LatencyMs: time.Since(started).Milliseconds(),
+	}
+	if err != nil {
+		item.Status = "error"
+		item.ErrorMessage = err.Error()
+		collector.AddGraphToolItem(item)
+		return true, err
+	}
+	item.Status = "success"
+	item.RecommendedAction = "request_handoff_confirmation"
+	if promptSent {
+		item.ResultPreview = "pending customer confirmation"
+	} else {
+		item.ResultPreview = "human route already active"
+	}
+	collector.AddGraphToolItem(item)
+	ledger := collector.Data.ActionLedger
+	ledger.CommittedActions = appendIfMissingActionLedgerItem(ledger.CommittedActions, callbacks.ActionLedgerItem{
+		Action: "human_route",
+		Status: "confirmation_requested",
+		Reason: reason,
+	})
+	collector.SetActionLedger(ledger)
+	summary.ReplyText = ""
+	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
+	summary.ToolCallCount = len(summary.InvokedToolCodes)
+	return true, nil
+}
+
 func isHandoffIntentCategory(intent callbacks.IntentTraceData) bool {
 	return canonicalIntentCode(intent.PrimaryIntent) == "human_complaint_risk" ||
 		canonicalIntentCode(intent.MatchedIntentCode) == "human_complaint_risk"

@@ -202,3 +202,41 @@ func TestEnforceGeneratedReplyActionLedgerRemovesFindSomeoneAndAskColleague(t *t
 		})
 	}
 }
+
+func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply(t *testing.T) {
+	summary := &RunResult{ReplyText: "稍等，我先帮你把信息转给人工对接处理。"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "service_request",
+		NeedsKnowledge: true,
+	}
+	collector.SetActionLedger(buildInitialActionLedger(collector.Data.Pipeline.Intent))
+
+	outcome := enforceGeneratedReplyActionLedger(summary, collector)
+
+	if !outcome.RequestHandoffConfirmation {
+		t.Fatalf("expected unsupported promise-only reply to request persisted handoff confirmation, got %#v", outcome)
+	}
+	if summary.ReplyText != "" {
+		t.Fatalf("expected unsupported promise not to be committed as text, got %q", summary.ReplyText)
+	}
+}
+
+func TestEnforceGeneratedReplyActionLedgerKeepsRoomNumberClarification(t *testing.T) {
+	summary := &RunResult{ReplyText: "请告诉我房间号，我先确认是哪一间房。"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "service_request",
+		NeedsKnowledge: true,
+	}
+	collector.SetActionLedger(buildInitialActionLedger(collector.Data.Pipeline.Intent))
+
+	outcome := enforceGeneratedReplyActionLedger(summary, collector)
+
+	if outcome.RequestHandoffConfirmation {
+		t.Fatalf("room-number clarification must not request handoff, got %#v", outcome)
+	}
+	if summary.ReplyText != "请告诉我房间号，我先确认是哪一间房。" {
+		t.Fatalf("expected room-number clarification to remain unchanged, got %q", summary.ReplyText)
+	}
+}

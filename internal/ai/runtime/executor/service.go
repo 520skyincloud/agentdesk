@@ -56,6 +56,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
+	if handled, err := executeRuntimeHandoffDirective(req, summary, collector); handled || err != nil {
+		return completeRuntimeHandoffDirective(summary, collector, err, false)
+	}
 	if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
 		if err != nil {
 			summary.Status = "error"
@@ -151,7 +154,27 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
-	enforceGeneratedReplyActionLedger(summary, collector)
+	validation := enforceGeneratedReplyActionLedger(summary, collector)
+	if validation.RequestHandoffConfirmation {
+		summary.handoffDirective = true
+		summary.handoffDirectiveReason = validation.HandoffReason
+		summary.handoffDirectiveSource = "generated_reply_guard"
+		ledger := collector.Data.ActionLedger
+		ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
+			Action: "human_route",
+			Status: "requested",
+			Reason: validation.HandoffReason,
+		})
+		collector.SetActionLedger(ledger)
+		if handled, err := executeRuntimeHandoffDirective(req, summary, collector); handled || err != nil {
+			return completeRuntimeHandoffDirective(summary, collector, err, true)
+		}
+		summary.ReplyText = "这个问题我目前还没有足够准确的资料，不能直接承诺已经安排同事处理。"
+		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+			collector.Data.Pipeline.Validate.Reason,
+			"automatic handoff is disabled, so the unsupported promise was replaced with a non-action reply",
+		)
+	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
 	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
@@ -172,6 +195,39 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
 	}
 	syncSkillSummaryFromCollector(summary, collector)
+	summary.TraceData = collector.Marshal()
+	return summary, nil
+}
+
+func completeRuntimeHandoffDirective(summary *RunResult, collector *callbacks.RuntimeTraceCollector, err error, afterGenerate bool) (*RunResult, error) {
+	if err != nil {
+		summary.Status = "error"
+		summary.ErrorMessage = err.Error()
+		collector.Data.Status = summary.Status
+		collector.Data.Error.Message = err.Error()
+		collector.Data.Error.Stage = "human_route_confirmation"
+		collector.Data.Pipeline.Validate.Status = "failed"
+		collector.Data.Pipeline.Validate.Reason = err.Error()
+		summary.TraceData = collector.Marshal()
+		return summary, err
+	}
+	summary.Status = "completed"
+	summary.ModelName = collector.Data.Model.Name
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = ""
+	collector.Data.Output.FinishReason = "handoff_directive_confirmation_requested"
+	if afterGenerate {
+		collector.Data.Pipeline.Generate.Status = "completed"
+		collector.Data.Pipeline.Generate.Reason = "generated reply was replaced by a persisted handoff confirmation"
+	} else {
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "top knowledge answer requested handoff confirmation before generation"
+	}
+	collector.Data.Pipeline.Validate.Status = "passed"
+	collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+		collector.Data.Pipeline.Validate.Reason,
+		"handoff confirmation was persisted and sent through the existing route flow",
+	)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
 }

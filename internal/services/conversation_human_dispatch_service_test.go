@@ -252,6 +252,25 @@ func TestConversationHandoffConfirmationExecutesOnce(t *testing.T) {
 	}
 }
 
+func TestConversationHandoffConfirmationClearsPendingStateWhenPromptSendFails(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "马桶堵了")
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Update("status", enums.IMConversationStatusClosed).Error; err != nil {
+		t.Fatalf("close conversation: %v", err)
+	}
+
+	handled, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手", "req-send-fails")
+	if err == nil || handled {
+		t.Fatalf("expected prompt send failure to be retryable, handled=%v err=%v", handled, err)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.PendingAction != "" {
+		t.Fatalf("expected failed prompt send to clear pending action for retry, got %+v", state)
+	}
+}
+
 func TestConversationHandoffConfirmationPendingExpiresInFiveMinutes(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")

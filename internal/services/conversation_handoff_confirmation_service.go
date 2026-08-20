@@ -99,7 +99,13 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 	}
 	content := buildHandoffConfirmationPrompt(reason)
 	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgent.ID, "ai_handoff_confirm_"+strs.UUID(), enums.IMMessageTypeText, content, "", systemOperator(), requestID)
-	return true, err
+	if err != nil {
+		if clearErr := ConversationRouteService.ClearPendingAction(conversationID); clearErr != nil {
+			return false, fmt.Errorf("发送转人工确认失败: %w；清理待确认状态失败: %v", err, clearErr)
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversation *models.Conversation, message *models.Message) (bool, error) {

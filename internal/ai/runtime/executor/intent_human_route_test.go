@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,67 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/services"
 )
+
+func TestExecuteRuntimeHandoffDirectivePersistsConfirmation(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	if err := db.AutoMigrate(&models.ConversationReadState{}, &models.ConversationEventLog{}); err != nil {
+		t.Fatalf("auto migrate handoff message tables: %v", err)
+	}
+	conversation := models.Conversation{ID: 82, CustomerID: 902, AIAgentID: 17, Status: enums.IMConversationStatusAIServing}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID:   conversation.ID,
+		WxWorkInstanceID: 772,
+		RouteStatus:      enums.ConversationRouteStatusAIServing,
+		RouteTarget:      "ai",
+		SessionNo:        1,
+	}).Error; err != nil {
+		t.Fatalf("create route state: %v", err)
+	}
+	message := models.Message{
+		ID:             8201,
+		ConversationID: conversation.ID,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "马桶堵了",
+		RequestID:      "req-toilet",
+	}
+	if err := db.Create(&message).Error; err != nil {
+		t.Fatalf("create customer message: %v", err)
+	}
+	summary := &RunResult{
+		handoffDirective:       true,
+		handoffDirectiveReason: "知识库规则要求门店同事接手；客户消息：马桶堵了",
+		handoffDirectiveSource: "knowledge_top_answer",
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetActionLedger(callbacks.ActionLedgerTraceData{})
+
+	handled, err := executeRuntimeHandoffDirective(RunInput{
+		Conversation: conversation,
+		UserMessage:  message,
+		AIAgent:      models.AIAgent{ID: 17, Name: "AI", Status: enums.StatusOk},
+	}, summary, collector)
+	if err != nil || !handled {
+		t.Fatalf("expected handoff confirmation to be persisted, handled=%v err=%v", handled, err)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
+		t.Fatalf("expected pending handoff confirmation, got %+v", state)
+	}
+	var reply models.Message
+	if err := db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Order("id DESC").First(&reply).Error; err != nil {
+		t.Fatalf("load handoff confirmation reply: %v", err)
+	}
+	if !strings.Contains(reply.Content, "确认") || !strings.Contains(reply.Content, "取消") {
+		t.Fatalf("expected real confirmation prompt, got %q", reply.Content)
+	}
+	if !actionLedgerContainsAction(collector.Data.ActionLedger.CommittedActions, "human_route") {
+		t.Fatalf("expected committed handoff action, got %#v", collector.Data.ActionLedger)
+	}
+}
 
 func TestIsEmergencySafetyHandoff(t *testing.T) {
 	tests := []struct {

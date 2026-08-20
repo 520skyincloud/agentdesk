@@ -96,6 +96,98 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 }
 
+func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
+	top := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		SourceRecordID:  "toilet-blocked",
+		Title:           "马桶堵了怎么办",
+		Content:         "问题：马桶堵了怎么办\n答案：转接",
+		Score:           0.98,
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1},
+			Hits:             []rag.RetrieveResult{top},
+			ContextResults:   []rag.RetrieveResult{top},
+			ContextText:      top.Content,
+			AnswerMode:       enums.KnowledgeAnswerModeStrict,
+		},
+	}
+	summary := &RunResult{}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetActionLedger(buildInitialActionLedger(hotelInfoIntent()))
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("马桶堵了", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_top_answer" {
+		t.Fatalf("expected exact top answer to request handoff, got %+v", summary)
+	}
+	if state.RetrieveResult == nil || strings.Contains(state.RetrieveResult.ContextText, "转接") {
+		t.Fatalf("expected internal directive to stay out of Generate context, got %#v", state.RetrieveResult)
+	}
+	if !actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+		t.Fatalf("expected handoff request in action ledger, got %#v", collector.Data.ActionLedger)
+	}
+}
+
+func TestKnowledgePolicyKeepsRoomNumberAnswerAndIgnoresLowerRankedDirective(t *testing.T) {
+	top := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		SourceRecordID:  "room-number",
+		Title:           "设备故障",
+		Content:         "问题：空调坏了怎么办\n答案：请告诉我房间号，我先确认是哪一间房。",
+		Score:           0.98,
+	}
+	lower := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		SourceRecordID:  "legacy-transfer",
+		Title:           "其他服务",
+		Content:         "问题：其他服务\n答案：转接",
+		Score:           0.80,
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1},
+			Hits:             []rag.RetrieveResult{top, lower},
+			ContextResults:   []rag.RetrieveResult{top, lower},
+			ContextText:      top.Content + "\n" + lower.Content,
+			AnswerMode:       enums.KnowledgeAnswerModeStrict,
+		},
+	}
+	summary := &RunResult{}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetActionLedger(buildInitialActionLedger(hotelInfoIntent()))
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("空调坏了", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if summary.handoffDirective {
+		t.Fatal("lower-ranked transfer directive must not bypass the room-number reply")
+	}
+	if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, "房间号") {
+		t.Fatalf("expected normal room-number answer to remain available, got %#v", state.RetrieveResult)
+	}
+	if strings.Contains(state.RetrieveResult.ContextText, "转接") {
+		t.Fatalf("expected lower-ranked internal directive to stay out of Generate context, got %q", state.RetrieveResult.ContextText)
+	}
+	if actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+		t.Fatalf("ordinary room-number clarification must not request handoff, got %#v", collector.Data.ActionLedger)
+	}
+}
+
 func TestKnowledgePolicyDoesNotUseHardcodedSupplyFallback(t *testing.T) {
 	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
 	gate := newTestKnowledgePolicyGate(retriever)

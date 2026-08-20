@@ -426,6 +426,14 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		state.Input.Collector.AddRetrieverItems(result.TraceItems)
 		state.Input.Collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(state.Input.Request, result))
 	}
+	directiveHit, hasTopDirective := topKnowledgeHandoffDirective(result)
+	removeKnowledgeHandoffDirectiveContexts(result)
+	if hasTopDirective {
+		markKnowledgeHandoffDirective(state.Input, directiveHit)
+		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
+		state.recordAnswerability(answerabilityStatusSkipped, "top knowledge answer requested human handoff", nil)
+		return state, nil
+	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
@@ -436,6 +444,82 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	state.prependDecisionInstruction(knowledgeActionInstruction)
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func topKnowledgeHandoffDirective(result *retrievers.KnowledgeRetrieveResult) (rag.RetrieveResult, bool) {
+	if result == nil || len(result.Hits) == 0 {
+		return rag.RetrieveResult{}, false
+	}
+	top := result.Hits[0]
+	return top, isKnowledgeHandoffDirectiveContent(top.Content)
+}
+
+func isKnowledgeHandoffDirectiveContent(content string) bool {
+	answer := normalizeKnowledgeDirectiveAnswer(content)
+	return answer == "转接" || answer == "转人工"
+}
+
+func normalizeKnowledgeDirectiveAnswer(content string) string {
+	answer := strings.TrimSpace(content)
+	for _, marker := range []string{"\n答案：", "\n回答：", "\n答案:", "\n回答:"} {
+		if index := strings.LastIndex(answer, marker); index >= 0 {
+			answer = strings.TrimSpace(answer[index+len(marker):])
+			break
+		}
+	}
+	for _, prefix := range []string{"答案：", "回答：", "答案:", "回答:"} {
+		if strings.HasPrefix(answer, prefix) {
+			answer = strings.TrimSpace(strings.TrimPrefix(answer, prefix))
+			break
+		}
+	}
+	answer = strings.Trim(answer, " \t\r\n，,。.!！；;")
+	return strings.Join(strings.Fields(answer), "")
+}
+
+func markKnowledgeHandoffDirective(input answerabilityGateInput, hit rag.RetrieveResult) {
+	reason := "知识库规则要求门店同事接手"
+	if topic := strings.TrimSpace(hit.Title); topic != "" {
+		reason += "：" + preview(topic, 80)
+	}
+	if current := strings.TrimSpace(currentTurnDisplayText(input.Request.UserMessage.Content)); current != "" {
+		reason += "；客户消息：" + preview(current, 180)
+	}
+	if input.Summary != nil {
+		input.Summary.handoffDirective = true
+		input.Summary.handoffDirectiveReason = reason
+		input.Summary.handoffDirectiveSource = "knowledge_top_answer"
+	}
+	if input.Collector == nil {
+		return
+	}
+	ledger := input.Collector.Data.ActionLedger
+	ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
+		Action: "human_route",
+		Status: "requested",
+		Reason: reason,
+	})
+	input.Collector.SetActionLedger(ledger)
+}
+
+func removeKnowledgeHandoffDirectiveContexts(result *retrievers.KnowledgeRetrieveResult) {
+	if result == nil {
+		return
+	}
+	kept := make([]rag.RetrieveResult, 0, len(result.ContextResults))
+	removed := false
+	for _, item := range result.ContextResults {
+		if isKnowledgeHandoffDirectiveContent(item.Content) {
+			removed = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if !removed {
+		return
+	}
+	result.ContextResults = kept
+	result.ContextText = strings.TrimSpace(rag.Retrieve.BuildContext(context.Background(), kept, 1<<30))
 }
 
 func buildKnowledgePathActionInstruction(req RunInput, intent callbacks.IntentTraceData) string {

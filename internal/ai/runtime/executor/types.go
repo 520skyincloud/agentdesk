@@ -58,6 +58,9 @@ type RunResult struct {
 	ErrorMessage              string
 	SkipReply                 bool
 	ModelUsageCalls           []ModelUsageCall
+	handoffDirective          bool
+	handoffDirectiveReason    string
+	handoffDirectiveSource    string
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally
