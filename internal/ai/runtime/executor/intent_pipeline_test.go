@@ -124,14 +124,14 @@ func TestRuntimePipelineMediaFollowUpKeepsModelIntentAfterIntentDetect(t *testin
 	}
 }
 
-func TestRuntimePipelineIntentDetectFailureSkipsReply(t *testing.T) {
+func TestRuntimePipelineIntentDetectFailureStillReplies(t *testing.T) {
 	req := RunInput{
 		Conversation: models.Conversation{ID: 7},
 		UserMessage:  models.Message{ID: 13, ConversationID: 7, MessageType: enums.IMMessageTypeText, Content: "WiFi 密码多少"},
 	}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{err: context.DeadlineExceeded})
-	if plan.Intent.ShouldReply {
-		t.Fatalf("IntentDetect failure must not fabricate an interaction reply, got %#v", plan.Intent)
+	if !plan.Intent.ShouldReply {
+		t.Fatalf("IntentDetect failure must continue to a safe reply instead of going silent, got %#v", plan.Intent)
 	}
 	if plan.Intent.PrimaryIntent != "" || plan.Intent.DetectedIntent != "intent_detect_unavailable" {
 		t.Fatalf("expected explicit IntentDetect failure trace, got %#v", plan.Intent)

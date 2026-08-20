@@ -26,6 +26,8 @@ type runtimeIntentModelDetector interface {
 
 type llmRuntimeIntentDetector struct{}
 
+const runtimeIntentDetectTimeout = 40 * time.Second
+
 type runtimeIntentDetectJSON struct {
 	PrimaryIntent      string                  `json:"primaryIntent"`
 	SubIntent          string                  `json:"subIntent"`
@@ -143,7 +145,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if strings.TrimSpace(intentConfig.ModelName) == "" || strings.TrimSpace(string(intentConfig.Provider)) == "" {
 		return callbacks.IntentTraceData{}, fmt.Errorf("ai config unavailable")
 	}
-	intentCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	intentCtx, cancel := context.WithTimeout(ctx, runtimeIntentDetectTimeout)
 	defer cancel()
 	intentCtx, usageCapture := usagex.WithCapture(intentCtx)
 	chatModel, err := factory.NewChatModelFactory().Build(intentCtx, intentConfig)
@@ -660,7 +662,7 @@ func intentDetectUnavailableIntent(reason string) callbacks.IntentTraceData {
 	return callbacks.IntentTraceData{
 		DetectedIntent:     "intent_detect_unavailable",
 		IntentConfidence:   0.35,
-		ShouldReply:        false,
+		ShouldReply:        true,
 		NeedsClarification: false,
 		NeedsKnowledge:     false,
 		NeedsResource:      false,
