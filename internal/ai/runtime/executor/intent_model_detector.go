@@ -26,7 +26,7 @@ type runtimeIntentModelDetector interface {
 
 type llmRuntimeIntentDetector struct{}
 
-const runtimeIntentDetectTimeout = 40 * time.Second
+const runtimeIntentDetectTimeout = 60 * time.Second
 
 type runtimeIntentDetectJSON struct {
 	PrimaryIntent      string                  `json:"primaryIntent"`
