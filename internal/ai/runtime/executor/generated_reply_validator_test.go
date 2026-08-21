@@ -173,6 +173,26 @@ func TestEnforceGeneratedReplyActionLedgerKeepsAnswerBeforeUnpunctuatedRecordPro
 	}
 }
 
+func TestEnforceGeneratedReplyActionLedgerRemovesRecordPromiseTopicFiller(t *testing.T) {
+	summary := &RunResult{ReplyText: "空调的事我先记一下房间号1302，\n我们酒店不提供早餐，周边可以点外卖。"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "service_request",
+		NeedsKnowledge: true,
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	for _, forbidden := range []string{"我先记一下", "空调的事", "1302"} {
+		if strings.Contains(summary.ReplyText, forbidden) {
+			t.Fatalf("expected unsupported record filler %q to be removed, got %q", forbidden, summary.ReplyText)
+		}
+	}
+	if !strings.Contains(summary.ReplyText, "我们酒店不提供早餐") {
+		t.Fatalf("expected the supported breakfast answer to remain, got %q", summary.ReplyText)
+	}
+}
+
 func TestEnforceGeneratedReplyActionLedgerKeepsNeutralRecordKnowledge(t *testing.T) {
 	summary := &RunResult{ReplyText: "入住时需要在小程序登记身份证信息，系统会记录入住信息。"}
 	collector := callbacks.NewRuntimeTraceCollector()

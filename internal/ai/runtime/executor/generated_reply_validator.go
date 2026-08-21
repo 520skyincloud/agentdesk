@@ -179,6 +179,15 @@ func removeUnsupportedActionClauses(text string, phrases []string) string {
 				break
 			}
 		}
+		clauseStart := 0
+		for offset, r := range text[:start] {
+			if isReplySentenceDelimiter(r) || r == '\n' {
+				clauseStart = offset + utf8.RuneLen(r)
+			}
+		}
+		if isUnsupportedRecordActionFillerPrefix(text[clauseStart:start]) {
+			start = clauseStart
+		}
 		prefix := strings.TrimRightFunc(text[:start], unicode.IsSpace)
 		for _, connector := range []string{"同时", "另外", "然后", "并且", "并", "也"} {
 			if strings.HasSuffix(prefix, connector) {
@@ -188,6 +197,19 @@ func removeUnsupportedActionClauses(text string, phrases []string) string {
 		}
 		text = prefix + strings.TrimLeftFunc(text[end:], unicode.IsSpace)
 	}
+}
+
+func isUnsupportedRecordActionFillerPrefix(text string) bool {
+	compact := compactReplyText(text)
+	if compact == "" || utf8.RuneCountInString(compact) > 16 {
+		return false
+	}
+	for _, suffix := range []string{"的事", "这个事", "这件事", "这个问题", "的问题", "这边"} {
+		if strings.HasSuffix(compact, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestedResourceActionsFromIntent(intent callbacks.IntentTraceData) []string {
@@ -261,6 +283,7 @@ func unsupportedFirstPersonStaffActionPhrases() []string {
 func unsupportedFirstPersonRecordActionPhrases() []string {
 	return []string{
 		"我先记下", "我记下", "我已记下", "我已经记下", "我帮你记下", "我帮您记下",
+		"我先记一下", "我记一下", "我帮你记一下", "我帮您记一下",
 		"我先记录", "我记录一下", "我已记录", "我已经记录", "我帮你记录", "我帮您记录",
 		"我先登记", "我登记一下", "我已登记", "我已经登记", "我帮你登记", "我帮您登记",
 		"我先受理", "我已受理", "我已经受理", "我帮你受理", "我帮您受理",
