@@ -412,6 +412,7 @@ func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult)
 	b.WriteString("\n")
 	b.WriteString("关系标签只用于内部判断，不增加任何 JSON 字段：new_topic、normal_follow_up、clarification_answer、accepted、not_understood、answer_rejected、answer_contradicted、answer_unresolved。\n")
 	b.WriteString("只有以下语义关系输出 human_complaint_risk + answer_rejected，且 needsHumanRoute=true：客户明确否定上一答复；指出 AI 前后矛盾；指出答非所问并重申同一个问题；同一问题再次追问且上一答复仍未解决；拒绝 AI 给出的能力边界方案并要求无法满足的例外；引用真人客服说法或现场事实反驳上一答复。\n")
+	b.WriteString("明确示例（必须结合此前问题与紧邻 AI 答复判断，不能只看单个词）：AI 前一条说走路几分钟就到，客户说‘你刚才不是说要开车吗’属于 answer_contradicted；AI 只回答用品去哪里领取，客户说‘我问的是房间里有没有’属于答非所问；AI 说不能微信转账，客户说‘客服说可以微信转账’属于引用真人客服事实反驳。以上都输出 human_complaint_risk + answer_rejected。\n")
 	b.WriteString("以下不得输出 answer_rejected：提出独立新问题；正常补充收费、时间、支付等细节；正常回答 AI 刚才追问的房号、偏好、条件或选项；孤立的‘真的吗/为什么’但没有明确否定或矛盾；与上一业务答复无关的不满、吐槽或闲聊。此时按当前真实业务意图继续分类。")
 	return b.String()
 }

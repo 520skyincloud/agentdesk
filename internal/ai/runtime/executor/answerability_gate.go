@@ -265,6 +265,7 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 			return nil, err
 		}
 	}
+	seenRawHits := map[string]bool{}
 	seenHits := map[string]bool{}
 	seenContext := map[string]bool{}
 	contextSections := make([]string, 0, len(queries))
@@ -285,6 +286,7 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 		if result.TopScore > merged.TopScore {
 			merged.TopScore = result.TopScore
 		}
+		merged.RawHits = appendUniqueRuntimeRetrieveResults(merged.RawHits, result.RawHits, seenRawHits)
 		merged.Hits = appendUniqueRuntimeRetrieveResults(merged.Hits, result.Hits, seenHits)
 		merged.ContextResults = appendUniqueRuntimeRetrieveResults(merged.ContextResults, result.ContextResults, seenContext)
 		merged.TraceItems = append(merged.TraceItems, result.TraceItems...)

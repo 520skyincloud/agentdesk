@@ -54,6 +54,9 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
 			"能开专票不": {
 				KnowledgeBaseIDs: []int64{1},
+				RawHits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 1001, Title: "发票原始候选", Content: "发票原始候选", Score: 0.99},
+				},
 				Hits: []rag.RetrieveResult{
 					{KnowledgeBaseID: 1, ChunkID: 101, Title: "发票", Content: "可以开电子专票，退房后在小程序申请。", Score: 0.95},
 				},
@@ -65,6 +68,9 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 			},
 			"WiFi是哪个": {
 				KnowledgeBaseIDs: []int64{1},
+				RawHits: []rag.RetrieveResult{
+					{KnowledgeBaseID: 1, ChunkID: 1002, Title: "WiFi原始候选", Content: "WiFi原始候选", Score: 0.98},
+				},
 				Hits: []rag.RetrieveResult{
 					{KnowledgeBaseID: 1, ChunkID: 102, Title: "WiFi", Content: "WiFi 名称是 LISI，密码看房间桌牌。", Score: 0.93},
 				},
@@ -90,6 +96,9 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 	if state.RetrieveResult == nil {
 		t.Fatalf("expected retrieval result, got nil")
+	}
+	if len(state.RetrieveResult.RawHits) != 2 {
+		t.Fatalf("expected merged raw hits for both burst questions, got %#v", state.RetrieveResult.RawHits)
 	}
 	if !strings.Contains(state.RetrieveResult.ContextText, "能开专票不") || !strings.Contains(state.RetrieveResult.ContextText, "WiFi是哪个") {
 		t.Fatalf("expected merged context to label each question, got %q", state.RetrieveResult.ContextText)

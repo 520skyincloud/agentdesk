@@ -253,6 +253,9 @@ func TestBuildRuntimeIntentDetectUserPromptDisclosesAnswerRelationOnlyAfterAIRep
 		"answer_contradicted",
 		"答非所问",
 		"引用真人客服说法或现场事实",
+		"你刚才不是说要开车吗",
+		"我问的是房间里有没有",
+		"客服说可以微信转账",
 		"不能按‘不是、为什么、真的吗’等单个词机械匹配",
 	} {
 		if !strings.Contains(prompt, expected) {
