@@ -807,15 +807,18 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 	if len(labels) == 0 {
 		return ""
 	}
+	if willRequestHandoff {
+		return strings.Join([]string{
+			"【部分问题处理边界】部分原子问题已从当前 active ReplyPlan 移除，并由系统单独进入接待确认。",
+			"本次只回答 active ReplyPlan 中仍保留、且已经提供直接知识证据的问题；不得猜测、复述、概括或提及任何已移除任务，也不得声称已经记录、登记、受理、处理、联系、安排或转接。",
+			"系统会在本条知识答案提交成功后单独发送接待确认，本次 Generate 不要重复输出确认/取消话术。",
+		}, "\n")
+	}
 	parts := []string{
 		"【部分问题处理边界】以下问题当前没有可靠直接知识，或胜出知识明确要求门店同事接手：" + strings.Join(labels, "；") + "。",
 		"本次只回答已经提供直接知识证据的其他问题；不得猜测这些待处理问题，不得把其他问题的答案挪过来，也不得声称已经记录、登记、受理、处理、联系、安排或转接。",
 	}
-	if willRequestHandoff {
-		parts = append(parts, "系统会在本条知识答案提交成功后单独发送接待确认，本次 Generate 不要重复输出确认/取消话术。")
-	} else {
-		parts = append(parts, "当前会话不允许自动接待确认；对这些问题只可自然说明暂时无法确认，不要承诺后续动作。")
-	}
+	parts = append(parts, "当前会话不允许自动接待确认；对这些问题只可自然说明暂时无法确认，不要承诺后续动作。")
 	return strings.Join(parts, "\n")
 }
 

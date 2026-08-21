@@ -290,6 +290,22 @@ func TestRebuildRuntimeKnowledgeReplyPlanPreservesBlankServiceRequestTask(t *tes
 	}
 }
 
+func TestDeferredRuntimeKnowledgeInstructionHidesRemovedTaskTextFromGenerate(t *testing.T) {
+	pending := []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302，需要维修", NeedsHandoff: true}}
+	handoffInstruction := buildDeferredRuntimeKnowledgeInstruction(pending, true)
+	if strings.Contains(handoffInstruction, "空调") || strings.Contains(handoffInstruction, "1302") || strings.Contains(handoffInstruction, "维修") {
+		t.Fatalf("handoff-enabled Generate instruction must not expose removed task text, got %q", handoffInstruction)
+	}
+	if !strings.Contains(handoffInstruction, "不得猜测、复述、概括或提及任何已移除任务") {
+		t.Fatalf("expected an explicit removed-task output boundary, got %q", handoffInstruction)
+	}
+
+	disabledInstruction := buildDeferredRuntimeKnowledgeInstruction(pending, false)
+	if !strings.Contains(disabledInstruction, "空调坏了") {
+		t.Fatalf("handoff-disabled flow still needs the pending label for a natural no-answer response, got %q", disabledInstruction)
+	}
+}
+
 func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
 	top := rag.RetrieveResult{
 		KnowledgeBaseID: 1,

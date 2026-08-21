@@ -194,7 +194,8 @@ Commit 分支内的接待确认，Job 被当作成功但客户收不到消息。
 中 Text 为空的服务请求仍保留原 Intent/SubIntent，只补入真实问题文本。
 
 deferred 时即使只剩一个可回答任务也要求结构化输出；非法或缺失 part 继续
-fail-close，不放出未经归属的模型文本。外层执行把 deferred dispatch 与文本
+fail-close，不放出未经归属的模型文本。进入接待确认的任务原文不会再写入
+Generate 提示，避免模型把待处理主题复述进其他答案。外层执行把 deferred dispatch 与文本
 Commit 解耦：有答案时先提交答案再发送接待确认；无答案文本时仍经过消息时效
 检查后发送接待确认。没有新增 Intent、Judge、Generate、协议修复重试或固定等待。
 
