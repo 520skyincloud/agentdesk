@@ -332,6 +332,56 @@ func TestKnowledgeEvidenceJudgeDefersLaterTransferDirectiveAfterAnsweredQuestion
 	}
 }
 
+func TestKnowledgeEvidenceJudgeDefersFirstTransferDirectiveWithoutDroppingLaterAnswer(t *testing.T) {
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		"空调坏了，我住1302": judgeTestRetrieveResult(
+			judgeTestHit(1, 101, "空调故障", "问题：空调坏了\n答案：转接", 0.91),
+			judgeTestHit(2, 201, "空调设施", "问题：房间有空调吗\n答案：有。", 0.72),
+		),
+		"顺便问早餐几点": judgeTestRetrieveResult(
+			judgeTestHit(1, 102, "门店早餐", "问题：早餐几点\n答案：酒店暂不提供早餐。", 0.88),
+			judgeTestHit(2, 202, "通用早餐", "问题：早餐几点\n答案：7:00-10:00。", 0.83),
+		),
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return completedJudgeOutcome(tasks, map[string][]string{
+			"T1": {knowledgeEvidenceClassificationDirect, knowledgeEvidenceClassificationSupporting},
+			"T2": {knowledgeEvidenceClassificationDirect, knowledgeEvidenceClassificationDirect},
+		})
+	}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:  "service_request",
+		SubIntent:      "air_conditioner",
+		NeedsKnowledge: true,
+		ShouldReply:    true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "service_request", Text: "空调坏了，我住1302", NeedsKnowledge: true},
+			{Intent: "hotel_info", Text: "顺便问早餐几点", NeedsKnowledge: true},
+		},
+	}
+	summary := &RunResult{}
+	collector := callbacks.NewRuntimeTraceCollector()
+	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("空调坏了，我住1302，顺便问早餐几点", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if summary.handoffDirective {
+		t.Fatal("the first deferred task must not suppress the later answer")
+	}
+	if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, "酒店暂不提供早餐") || strings.Contains(state.RetrieveResult.ContextText, "转接") {
+		t.Fatalf("expected only the later breakfast answer in Generate context, got %#v", state.RetrieveResult)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
+		t.Fatalf("expected only T1 deferred, got %#v", trace)
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryKnownCandidateExactlyOnce(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID: "T1",
@@ -361,6 +411,18 @@ func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryKnownCandidateExactlyOn
 		if _, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks); err == nil {
 			t.Fatalf("invalid response %d unexpectedly passed", index)
 		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgePromptTreatsExplicitNegativeAnswerAsDirect(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, required := range []string{"否定答案也可以是完整直接答案", "早餐几点", "酒店不提供早餐", "必须标记 direct"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("expected judge prompt to contain %q, got %q", required, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "有空调吗") || !strings.Contains(prompt, "空调不制冷需要处理") {
+		t.Fatalf("expected capability-versus-fault boundary to remain, got %q", prompt)
 	}
 }
 

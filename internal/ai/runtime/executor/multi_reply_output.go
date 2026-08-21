@@ -41,9 +41,10 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData) string 
 	return strings.TrimSpace(b.String())
 }
 
-func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData) string {
+func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData, deferredKnowledgeTaskIDs []string) string {
 	groups := buildTextReplyTaskGroups(plan)
-	if len(groups) <= 1 {
+	deferredTaskIDs := deferredReplyPartTaskIDs(deferredKnowledgeTaskIDs)
+	if len(groups) <= 1 && len(deferredTaskIDs) == 0 {
 		return strings.TrimSpace(text)
 	}
 	raw := strings.TrimSpace(text)
@@ -55,6 +56,9 @@ func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData
 	}
 	envelope := generatedReplyPartsEnvelope{}
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil || len(envelope.ReplyParts) == 0 {
+		if len(deferredTaskIDs) > 0 {
+			return ""
+		}
 		return strings.TrimSpace(text)
 	}
 	contentByTaskID := make(map[string]string, len(envelope.ReplyParts))
@@ -70,13 +74,35 @@ func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData
 	}
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
+		if deferredTaskIDs[group.TaskID] {
+			continue
+		}
 		content := strings.TrimSpace(contentByTaskID[group.TaskID])
 		if content == "" {
+			if len(deferredTaskIDs) > 0 {
+				return ""
+			}
 			return strings.TrimSpace(text)
 		}
 		parts = append(parts, content)
 	}
 	return strings.Join(parts, "\n<<NEXT_MESSAGE>>\n")
+}
+
+func deferredReplyPartTaskIDs(taskIDs []string) map[string]bool {
+	ret := make(map[string]bool, len(taskIDs))
+	for _, taskID := range taskIDs {
+		taskID = strings.TrimSpace(taskID)
+		if len(taskID) < 2 || (taskID[0] != 'T' && taskID[0] != 't') {
+			continue
+		}
+		index := 0
+		if _, err := fmt.Sscanf(taskID[1:], "%d", &index); err != nil || index <= 0 {
+			continue
+		}
+		ret[fmt.Sprintf("task-%d", index)] = true
+	}
+	return ret
 }
 
 func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTaskGroup {

@@ -194,6 +194,8 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - supporting：候选与问题相关，但单独不足以直接回答，只能补充 direct 证据。
 - unrelated：候选答的是别的问题、条件不一致、对象不一致，或无法支持客户所问事实。
 
+否定答案也可以是完整直接答案。客户询问某项服务的时间、地点、价格、方式或是否提供时，如果候选明确说明“不提供、没有、不支持”，它已经直接回答了问题，必须标记 direct。例如“早餐几点”对应“酒店不提供早餐”是 direct，不能标记 supporting。
+
 必须区分能力/存在性与故障/执行请求。例如“有空调吗”不能把“空调不制冷需要处理”判为 direct；“谁是汤东强”不能把用品、人员无关内容判为 direct。检索分数、候选顺序和 store/general 层级都不能替代语义判断。
 
 严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId，并且每个 candidateId 恰好出现一次。输出格式：

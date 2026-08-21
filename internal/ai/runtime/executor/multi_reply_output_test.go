@@ -28,7 +28,7 @@ func TestNormalizeGeneratedReplyPartsOrdersPartsByTask(t *testing.T) {
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	raw := `{"replyParts":[{"taskId":"task-2","content":"早餐在一楼。"},{"taskId":"task-1","content":"停车从辅路入口进。"}]}`
-	got := normalizeGeneratedReplyParts(raw, plan)
+	got := normalizeGeneratedReplyParts(raw, plan, nil)
 	want := "停车从辅路入口进。\n<<NEXT_MESSAGE>>\n早餐在一楼。"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
@@ -41,8 +41,22 @@ func TestNormalizeGeneratedReplyPartsFallsBackWithoutLosingReply(t *testing.T) {
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	raw := "停车从辅路入口进，早餐在一楼。"
-	if got := normalizeGeneratedReplyParts(raw, plan); got != raw {
+	if got := normalizeGeneratedReplyParts(raw, plan, nil); got != raw {
 		t.Fatalf("invalid structured output must preserve existing reply, got %q", got)
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsDropsDeferredTaskContent(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "service_request", SubIntent: "air_conditioner_repair", Text: "空调坏了，我住1302", Output: "knowledge_text_reply"},
+		{Intent: "hotel_info", SubIntent: "breakfast", Text: "顺便问早餐几点", Output: "knowledge_text_reply"},
+	}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"空调的问题我先记下了，需要安排师傅处理。"},{"taskId":"task-2","content":"酒店暂不提供早餐。"}]}`
+
+	got := normalizeGeneratedReplyParts(raw, plan, []string{"T1"})
+
+	if got != "酒店暂不提供早餐。" {
+		t.Fatalf("expected only the answerable task content, got %q", got)
 	}
 }
 
