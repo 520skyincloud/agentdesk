@@ -654,7 +654,7 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 	}
 	parts := []string{
 		"【部分问题处理边界】以下问题当前没有可靠直接知识，或胜出知识明确要求门店同事接手：" + strings.Join(labels, "；") + "。",
-		"本次只回答已经提供直接知识证据的其他问题；不得猜测这些待处理问题，不得把其他问题的答案挪过来，也不得声称已经联系、安排或转接。",
+		"本次只回答已经提供直接知识证据的其他问题；不得猜测这些待处理问题，不得把其他问题的答案挪过来，也不得声称已经记录、登记、受理、处理、联系、安排或转接。",
 	}
 	if willRequestHandoff {
 		parts = append(parts, "系统会在本条知识答案提交成功后单独发送接待确认，本次 Generate 不要重复输出确认/取消话术。")

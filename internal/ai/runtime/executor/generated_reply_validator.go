@@ -155,9 +155,39 @@ func removeUnsupportedStaffActionMentions(text string, humanRouteCommitted bool)
 	if humanRouteCommitted {
 		return text
 	}
+	text = removeUnsupportedActionClauses(text, unsupportedFirstPersonRecordActionPhrases())
 	return filterReplySentences(text, func(sentence string) bool {
 		return containsAnyReplyPhrase(sentence, unsupportedFirstPersonStaffActionPhrases())
 	})
+}
+
+func removeUnsupportedActionClauses(text string, phrases []string) string {
+	for {
+		start := -1
+		for _, phrase := range phrases {
+			if index := strings.Index(text, phrase); index >= 0 && (start < 0 || index < start) {
+				start = index
+			}
+		}
+		if start < 0 {
+			return text
+		}
+		end := len(text)
+		for offset, r := range text[start:] {
+			if isReplySentenceDelimiter(r) {
+				end = start + offset + utf8.RuneLen(r)
+				break
+			}
+		}
+		prefix := strings.TrimRightFunc(text[:start], unicode.IsSpace)
+		for _, connector := range []string{"同时", "另外", "然后", "并且", "并", "也"} {
+			if strings.HasSuffix(prefix, connector) {
+				prefix = strings.TrimSpace(strings.TrimSuffix(prefix, connector))
+				break
+			}
+		}
+		text = prefix + strings.TrimLeftFunc(text[end:], unicode.IsSpace)
+	}
 }
 
 func requestedResourceActionsFromIntent(intent callbacks.IntentTraceData) []string {
@@ -210,7 +240,8 @@ func generatedResourceCommitPhrases() []string {
 }
 
 func unsupportedFirstPersonStaffActionPhrases() []string {
-	return []string{
+	phrases := append([]string{}, unsupportedFirstPersonRecordActionPhrases()...)
+	return append(phrases,
 		"我让同事", "我叫同事", "我喊同事", "我找同事", "我这边找同事", "我这边需要找同事",
 		"我帮你转给同事", "我转给同事", "我反馈给同事", "我通知同事", "我安排同事", "我帮你转达", "我转达",
 		"我帮你找人", "我再帮你找人", "找人来处理", "帮你找人来处理",
@@ -224,6 +255,16 @@ func unsupportedFirstPersonStaffActionPhrases() []string {
 		"需要现场看", "现场看一下", "现场看看", "现场看", "现场处理",
 		"我先帮你把信息转给人工", "我先帮您把信息转给人工", "我先把你的情况交过去", "我先把您的情况交过去",
 		"稍等我帮你转一下", "稍等我帮您转一下", "我帮你转一下", "我帮您转一下",
+	)
+}
+
+func unsupportedFirstPersonRecordActionPhrases() []string {
+	return []string{
+		"我先记下", "我记下", "我已记下", "我已经记下", "我帮你记下", "我帮您记下",
+		"我先记录", "我记录一下", "我已记录", "我已经记录", "我帮你记录", "我帮您记录",
+		"我先登记", "我登记一下", "我已登记", "我已经登记", "我帮你登记", "我帮您登记",
+		"我先受理", "我已受理", "我已经受理", "我帮你受理", "我帮您受理",
+		"我先处理", "我已处理", "我已经处理", "我帮您处理",
 	}
 }
 

@@ -111,6 +111,83 @@ func TestEnforceGeneratedReplyActionLedgerRemovesNeutralStaffAction(t *testing.T
 	}
 }
 
+func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedRecordPromiseFromMixedReply(t *testing.T) {
+	summary := &RunResult{
+		ReplyText: "房间空调出问题确实挺影响休息的，我先记下你在1302。早餐时间是早上7点到10点。",
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		NeedsKnowledge: true,
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	for _, forbidden := range []string{"我先记下", "记下你在1302"} {
+		if strings.Contains(summary.ReplyText, forbidden) {
+			t.Fatalf("expected unsupported record promise %q to be removed, got %q", forbidden, summary.ReplyText)
+		}
+	}
+	if !strings.Contains(summary.ReplyText, "早餐时间是早上7点到10点") {
+		t.Fatalf("expected the supported breakfast answer to remain, got %q", summary.ReplyText)
+	}
+}
+
+func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedRecordPromiseVariants(t *testing.T) {
+	for _, phrase := range []string{"我已经记录", "我已登记", "我已经受理"} {
+		t.Run(phrase, func(t *testing.T) {
+			summary := &RunResult{ReplyText: "早餐时间是早上7点到10点。" + phrase + "你的情况。"}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+				PrimaryIntent:  "hotel_info",
+				NeedsKnowledge: true,
+			}
+
+			enforceGeneratedReplyActionLedger(summary, collector)
+
+			if strings.Contains(summary.ReplyText, phrase) {
+				t.Fatalf("expected unsupported action promise %q to be removed, got %q", phrase, summary.ReplyText)
+			}
+			if !strings.Contains(summary.ReplyText, "早餐时间是早上7点到10点") {
+				t.Fatalf("expected the supported breakfast answer to remain, got %q", summary.ReplyText)
+			}
+		})
+	}
+}
+
+func TestEnforceGeneratedReplyActionLedgerKeepsAnswerBeforeUnpunctuatedRecordPromise(t *testing.T) {
+	summary := &RunResult{ReplyText: "早餐时间是早上7点到10点同时我先记下您在1302。"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		NeedsKnowledge: true,
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	if strings.Contains(summary.ReplyText, "我先记下") {
+		t.Fatalf("expected unsupported record promise to be removed, got %q", summary.ReplyText)
+	}
+	if !strings.Contains(summary.ReplyText, "早餐时间是早上7点到10点") {
+		t.Fatalf("expected the supported answer in the same sentence to remain, got %q", summary.ReplyText)
+	}
+}
+
+func TestEnforceGeneratedReplyActionLedgerKeepsNeutralRecordKnowledge(t *testing.T) {
+	summary := &RunResult{ReplyText: "入住时需要在小程序登记身份证信息，系统会记录入住信息。"}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		NeedsKnowledge: true,
+	}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	if summary.ReplyText != "入住时需要在小程序登记身份证信息，系统会记录入住信息。" {
+		t.Fatalf("expected neutral record knowledge to remain unchanged, got %q", summary.ReplyText)
+	}
+}
+
 func TestEnforceGeneratedReplyActionLedgerRemovesFrontDeskTransferPromise(t *testing.T) {
 	summary := &RunResult{
 		ReplyText: "空调不制冷这个问题需要现场看一下。你现在在哪个房间？我帮你转前台同事来跟进。",
