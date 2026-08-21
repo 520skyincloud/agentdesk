@@ -73,6 +73,7 @@ func TestStoreAIModelSettingUsesUsageSpecificTemplateSlotWithSameStoreKey(t *tes
 	}{
 		{StoreAIModelUsageReplyLLM, "reply-model"},
 		{StoreAIModelUsageIntentDetectLLM, "intent-model"},
+		{StoreAIModelUsageKnowledgeJudgeLLM, "judge-model"},
 		{StoreAIModelUsageMemorySummaryLLM, "summary-model"},
 		{StoreAIModelUsageMediaUnderstanding, "vision-model"},
 		{StoreAIModelUsageASR, "asr-model"},
@@ -198,13 +199,14 @@ func setupStoreAIModelSettingTestDB(t *testing.T) *gorm.DB {
 	slots := []models.ModelProfileSlot{
 		storeAIModelTestSlot(ModelProfileUsageReplyLLM, "reply-model", enums.AIModelTypeLLM, 1),
 		storeAIModelTestSlot(ModelProfileUsageIntentDetectLLM, "intent-model", enums.AIModelTypeLLM, 2),
-		storeAIModelTestSlot(ModelProfileUsageMemorySummary, "summary-model", enums.AIModelTypeLLM, 3),
-		storeAIModelTestSlot(ModelProfileUsageCustomerTag, "tag-model", enums.AIModelTypeLLM, 4),
-		storeAIModelTestSlot(ModelProfileUsageVision, "vision-model", enums.AIModelTypeVision, 5),
-		storeAIModelTestSlot(ModelProfileUsageASR, "asr-model", enums.AIModelTypeASR, 6),
-		storeAIModelTestSlot(ModelProfileUsageEmbedding, "embedding-model", enums.AIModelTypeEmbedding, 7),
-		storeAIModelTestSlot(ModelProfileUsageRerank, "rerank-model", enums.AIModelTypeRerank, 8),
-		storeAIModelTestSlot(ModelProfileUsageDocumentParser, "parser-model", enums.AIModelTypeLLM, 9),
+		storeAIModelTestSlot(ModelProfileUsageKnowledgeJudge, "judge-model", enums.AIModelTypeLLM, 3),
+		storeAIModelTestSlot(ModelProfileUsageMemorySummary, "summary-model", enums.AIModelTypeLLM, 4),
+		storeAIModelTestSlot(ModelProfileUsageCustomerTag, "tag-model", enums.AIModelTypeLLM, 5),
+		storeAIModelTestSlot(ModelProfileUsageVision, "vision-model", enums.AIModelTypeVision, 6),
+		storeAIModelTestSlot(ModelProfileUsageASR, "asr-model", enums.AIModelTypeASR, 7),
+		storeAIModelTestSlot(ModelProfileUsageEmbedding, "embedding-model", enums.AIModelTypeEmbedding, 8),
+		storeAIModelTestSlot(ModelProfileUsageRerank, "rerank-model", enums.AIModelTypeRerank, 9),
+		storeAIModelTestSlot(ModelProfileUsageDocumentParser, "parser-model", enums.AIModelTypeLLM, 10),
 	}
 	if err := db.Create(&slots).Error; err != nil {
 		t.Fatal(err)

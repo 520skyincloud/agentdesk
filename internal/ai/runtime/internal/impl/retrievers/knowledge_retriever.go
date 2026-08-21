@@ -191,6 +191,35 @@ func applyKnowledgeBasePriority(result *KnowledgeRetrieveResult, storeKnowledgeB
 	result.Hits = selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs, rawHits)
 }
 
+// RebuildKnowledgeRetrieveSelection applies an already-authorized evidence
+// selection without issuing another retrieval request or writing another log.
+func RebuildKnowledgeRetrieveSelection(result *KnowledgeRetrieveResult, hits []rag.RetrieveResult) {
+	if result == nil {
+		return
+	}
+	rawHits := result.RawHits
+	if len(rawHits) == 0 {
+		rawHits = append([]rag.RetrieveResult(nil), result.Hits...)
+		result.RawHits = append([]rag.RetrieveResult(nil), rawHits...)
+	}
+	result.Hits = append([]rag.RetrieveResult(nil), hits...)
+	contextMaxTokens := result.Options.ContextMaxTokens
+	if contextMaxTokens <= 0 {
+		contextMaxTokens = defaultRuntimeKnowledgeContextTokens
+	}
+	maxContextItems := result.Options.MaxContextItems
+	if maxContextItems <= 0 {
+		maxContextItems = defaultRuntimeKnowledgeMaxContextItems
+	}
+	result.ContextResults = rag.Retrieve.SelectContextResults(result.Hits, contextMaxTokens)
+	result.ContextResults = limitContextResults(result.ContextResults, maxContextItems)
+	result.ContextText = strings.TrimSpace(buildContextText(result.ContextResults))
+	result.TopScore = resolveTopScore(result.Hits)
+	result.AnswerMode = resolveRuntimeAnswerMode(result.KnowledgeBaseIDs, result.Hits)
+	result.TraceItems = buildRetrieverTraceItems(result.Options.QueryPreview, rawHits, result.ContextResults, result.Trace)
+	result.TraceSummary = buildRetrieverTraceSummary(result.Options, result.Policies, result.ContextResults, rawHits, result.Trace)
+}
+
 func selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs []int64, rawHits []rag.RetrieveResult) []rag.RetrieveResult {
 	if len(knowledgeBaseIDs) == 0 || len(rawHits) == 0 {
 		return nil
@@ -482,10 +511,11 @@ func normalizeRuntimeAnswerMode(knowledgeBase models.KnowledgeBase) enums.Knowle
 }
 
 func loadRuntimeKnowledgeBases(ids []int64) map[int64]models.KnowledgeBase {
-	if len(ids) == 0 {
+	db := sqls.DB()
+	if len(ids) == 0 || db == nil {
 		return nil
 	}
-	items := repositories.KnowledgeBaseRepository.Find(sqls.DB(), sqls.NewCnd().In("id", ids))
+	items := repositories.KnowledgeBaseRepository.Find(db, sqls.NewCnd().In("id", ids))
 	if len(items) == 0 {
 		return nil
 	}

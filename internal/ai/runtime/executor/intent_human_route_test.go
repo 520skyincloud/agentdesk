@@ -11,7 +11,7 @@ import (
 	"agent-desk/internal/services"
 )
 
-func TestExecuteRuntimeHandoffDirectivePersistsConfirmation(t *testing.T) {
+func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeConfirmation(t *testing.T) {
 	db := setupRuntimeIntentConfigTestDB(t)
 	if err := db.AutoMigrate(&models.ConversationReadState{}, &models.ConversationEventLog{}); err != nil {
 		t.Fatalf("auto migrate handoff message tables: %v", err)
@@ -64,8 +64,11 @@ func TestExecuteRuntimeHandoffDirectivePersistsConfirmation(t *testing.T) {
 	if err := db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Order("id DESC").First(&reply).Error; err != nil {
 		t.Fatalf("load handoff confirmation reply: %v", err)
 	}
-	if !strings.Contains(reply.Content, "确认") || !strings.Contains(reply.Content, "取消") {
-		t.Fatalf("expected real confirmation prompt, got %q", reply.Content)
+	if !strings.Contains(reply.Content, "哪个房间") {
+		t.Fatalf("expected room collection before handoff confirmation, got %q", reply.Content)
+	}
+	if !strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
+		t.Fatalf("expected room-number pending field, got %+v", state)
 	}
 	if !actionLedgerContainsAction(collector.Data.ActionLedger.CommittedActions, "human_route") {
 		t.Fatalf("expected committed handoff action, got %#v", collector.Data.ActionLedger)

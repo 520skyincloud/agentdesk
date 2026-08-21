@@ -27,6 +27,7 @@ import (
 const (
 	ModelProfileUsageReplyLLM        = "reply_llm"
 	ModelProfileUsageIntentDetectLLM = "intent_detect_llm"
+	ModelProfileUsageKnowledgeJudge  = "knowledge_judge_llm"
 	ModelProfileUsageMemorySummary   = "memory_summary_llm"
 	ModelProfileUsageCustomerTag     = "customer_tag_llm"
 	ModelProfileUsageVision          = "vision"

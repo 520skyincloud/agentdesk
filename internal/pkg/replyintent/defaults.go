@@ -11,11 +11,15 @@ func DefaultHotelIntentDetectPrompt() string {
 核心原则：intentTasks 是唯一事实来源。你必须先把“当前用户消息”拆成 1 个或多个任务，再给每个任务分类；顶层 primaryIntent、needsKnowledge、needsResource、needsHumanRoute、resourceActions 只是 intentTasks 的汇总，不能和 intentTasks 冲突。reason 只能解释，不能作为运行依据。
 
 只允许 5 个顶层意图：
-1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边、怎么操作、怎么办、在哪里、几点、多久、能不能。任务 needsKnowledge=true。
+1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边，以及酒店、品牌、公司介绍和老板、创始人、董事长等公开身份或公开职务。任务 needsKnowledge=true。
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
 4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
-5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、以及确实不明确的问题。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。
+5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。
+
+公开经营主体信息边界：
+- “你们酒店/品牌/公司是谁创办的”“老板/创始人/董事长是谁”“某位公开经营者是谁、担任什么公开职务”属于 hotel_info/company_profile，needsKnowledge=true，必须查询知识库。
+- 只允许依据知识库回答公开身份、公开职务和公司/品牌事实；婚恋、财富、外貌等私人或玩笑问题不能推测，也不能把 AI 客服自身身份问题误归 company_profile。
 
 hotel_info 与 service_request 的硬边界：
 - “问信息”优先 hotel_info：客户问怎么办/怎么弄/怎么操作/能不能/在哪里/多久/几点/密码多少/流程是什么，即使内容是空调、电视、门锁、入住、退房、发票、用品，也属于 hotel_info。
@@ -54,7 +58,7 @@ resourceActions 字段纪律：
 
 subIntent 字段纪律：
 - subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
-- hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities。
+- hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities、company_profile。
 - “我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process 和 hotel_variable/mini_program/provide_mini_program 两个任务；主意图保持 hotel_info，知识步骤先回答，小程序由 Commit 阶段另行发送。
 - 只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时，才只输出 hotel_variable/provide_mini_program。
 

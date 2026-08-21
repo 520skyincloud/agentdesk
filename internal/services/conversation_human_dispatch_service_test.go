@@ -272,6 +272,77 @@ func TestConversationHandoffConfirmationClearsPendingStateWhenPromptSendFails(t 
 	}
 }
 
+func TestConversationHandoffConfirmationPromptIsIdempotentForOriginMessage(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "早餐几点，马桶也堵了")
+
+	for attempt := 0; attempt < 2; attempt++ {
+		handled, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+			conversation.ID,
+			aiAgent,
+			"部分酒店业务问题需要门店同事接手：马桶堵了",
+			"req-idempotent-confirm",
+			origin.ID,
+		)
+		if err != nil || !handled {
+			t.Fatalf("RequestByAIWithOriginMessage() attempt %d handled=%v err=%v", attempt+1, handled, err)
+		}
+	}
+
+	var count int64
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	payload := struct {
+		HandoffToken string `json:"handoffToken"`
+	}{}
+	if state == nil || json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil || payload.HandoffToken == "" {
+		t.Fatalf("expected pending action with stable handoff token, got %+v", state)
+	}
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND client_msg_id = ?", conversation.ID, "ai_handoff_confirm_"+payload.HandoffToken).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count handoff confirmation prompts: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one stable confirmation prompt after retry, got %d", count)
+	}
+}
+
+func TestConversationHandoffConfirmationUsesDeferredQuestionForRoomDecision(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "空调不制冷，发票能备注吗")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"部分酒店业务问题需要门店同事接手；待处理问题：发票能备注吗",
+		"req-deferred-room-scope",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
+		t.Fatalf("expected answered room issue not to force room collection for another deferred question, got %+v", state)
+	}
+	payload := struct {
+		HandoffToken string `json:"handoffToken"`
+	}{}
+	if json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil || payload.HandoffToken == "" {
+		t.Fatalf("expected stable handoff token, got %+v", state)
+	}
+	message := services.MessageService.FindOne(sqls.NewCnd().
+		Eq("conversation_id", conversation.ID).
+		Eq("client_msg_id", "ai_handoff_confirm_"+payload.HandoffToken))
+	if message == nil || strings.Contains(message.Content, "哪个房间") {
+		t.Fatalf("expected ordinary handoff confirmation for deferred invoice question, got %+v", message)
+	}
+}
+
 func TestConversationHandoffConfirmationPendingExpiresInFiveMinutes(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
@@ -445,6 +516,61 @@ func TestConversationHandoffCollectsRoomForInRoomCategories(t *testing.T) {
 		if latest == nil || latest.Content != "方便说下是哪个房间吗？" {
 			t.Fatalf("expected room question for %q, got %+v", reason, latest)
 		}
+	}
+}
+
+func TestConversationHandoffDoesNotCollectRoomForInformationQuestions(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+
+	cases := []struct {
+		question string
+		reason   string
+	}{
+		{question: "有空调不", reason: "知识库规则要求门店同事接手：空调不制冷；客户消息：有空调不"},
+		{question: "每个房间都有空调吗", reason: "知识库规则要求门店同事接手：空调噪音；客户消息：每个房间都有空调吗"},
+		{question: "空调怎么开", reason: "知识库规则要求门店同事接手：空调故障；客户消息：空调怎么开"},
+		{question: "电视怎么投屏", reason: "知识库规则要求门店同事接手：电视坏了；客户消息：电视怎么投屏"},
+		{question: "房间里有浴巾吗", reason: "知识库规则要求门店同事接手：送浴巾；客户消息：房间里有浴巾吗"},
+		{question: "小程序不能用", reason: "知识库规则要求门店同事接手；客户消息：小程序不能用"},
+		{question: "电梯坏了", reason: "知识库规则要求门店同事接手；客户消息：电梯坏了"},
+		{question: "停车场很吵", reason: "知识库规则要求门店同事接手；客户消息：停车场很吵"},
+	}
+
+	for index, item := range cases {
+		conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+		origin := createHumanDispatchMessage(t, db, conversation.ID, int64(index+1)*10, enums.IMSenderTypeCustomer, item.question)
+		if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(conversation.ID, aiAgent, item.reason, fmt.Sprintf("req-room-info-%d", index), origin.ID); err != nil {
+			t.Fatalf("RequestByAIWithOriginMessage(%q) error = %v", item.question, err)
+		}
+		latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+		if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+			t.Fatalf("information question %q must not collect room, got %+v", item.question, latest)
+		}
+		state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+		if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
+			t.Fatalf("information question %q unexpectedly waits for room: %+v", item.question, state)
+		}
+	}
+}
+
+func TestConversationHandoffRoomDecisionUsesVoiceTranscript(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "wx_protocol_1305.mp3")
+	origin.MessageType = enums.IMMessageTypeVoice
+	origin.Payload = `{"mediaText":"有空调不","mediaUnderstandingStatus":"understood"}`
+	if err := db.Save(&origin).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(conversation.ID, aiAgent, "知识库规则要求门店同事接手：空调不制冷；客户消息：有空调不", "req-room-voice", origin.ID); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+		t.Fatalf("voice filename digits must not be treated as room number, got %+v", latest)
 	}
 }
 

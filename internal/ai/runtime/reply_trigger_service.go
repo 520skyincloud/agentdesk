@@ -23,6 +23,7 @@ const aiReplyMediaSettleWindow = 900 * time.Millisecond
 const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 const standaloneOneReplyMaxAttempts = 3
+const deferredKnowledgeHandoffMaxAttempts = 3
 
 func (s *aiReplyService) TriggerStandaloneOneReplyAsync(conversation models.Conversation, message models.Message) {
 	go func() {
@@ -472,8 +473,60 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			summary.ReplyText = committedReplyText(*replyMessage)
 		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
+		if err := s.dispatchDeferredKnowledgeHandoff(ctx, replyCtx, summary); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, replyCtx aiReplyContext, summary *applicationruntime.Summary) error {
+	if summary == nil || !svc.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(replyCtx.Conversation.ID) {
+		return nil
+	}
+	reason, ok := deferredKnowledgeHandoffFromTrace(summary.TraceData)
+	if !ok {
+		return nil
+	}
+	var lastErr error
+	for attempt := 1; attempt <= deferredKnowledgeHandoffMaxAttempts; attempt++ {
+		_, lastErr = svc.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+			replyCtx.Conversation.ID,
+			replyCtx.AIAgent,
+			reason,
+			strings.TrimSpace(replyCtx.Message.RequestID),
+			replyCtx.Message.ID,
+		)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == deferredKnowledgeHandoffMaxAttempts || !sleepWithContext(ctx, time.Duration(attempt)*150*time.Millisecond) {
+			break
+		}
+	}
+	return lastErr
+}
+
+func deferredKnowledgeHandoffFromTrace(raw string) (string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false
+	}
+	var trace struct {
+		Pipeline struct {
+			EvidenceJudge struct {
+				DeferredHandoff       bool   `json:"deferredHandoff"`
+				DeferredHandoffReason string `json:"deferredHandoffReason"`
+			} `json:"evidenceJudge"`
+		} `json:"pipeline"`
+	}
+	if err := json.Unmarshal([]byte(raw), &trace); err != nil || !trace.Pipeline.EvidenceJudge.DeferredHandoff {
+		return "", false
+	}
+	reason := strings.TrimSpace(trace.Pipeline.EvidenceJudge.DeferredHandoffReason)
+	if reason == "" {
+		reason = "部分酒店业务问题需要门店同事接手"
+	}
+	return reason, true
 }
 
 func committedReplyText(message models.Message) string {

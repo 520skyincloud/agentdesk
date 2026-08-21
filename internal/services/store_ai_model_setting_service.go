@@ -22,6 +22,7 @@ import (
 const (
 	StoreAIModelUsageReplyLLM           = "reply_llm"
 	StoreAIModelUsageIntentDetectLLM    = "intent_detect_llm"
+	StoreAIModelUsageKnowledgeJudgeLLM  = "knowledge_judge_llm"
 	StoreAIModelUsageMediaUnderstanding = "media_understanding"
 	StoreAIModelUsageMemorySummaryLLM   = "memory_summary_llm"
 	StoreAIModelUsageASR                = "media_asr"
@@ -56,6 +57,7 @@ func StoreAIModelUsageMetas() []StoreAIModelUsageMeta {
 	return []StoreAIModelUsageMeta{
 		{Code: StoreAIModelUsageReplyLLM, Name: "回复生成模型", ExpectedType: enums.AIModelTypeLLM},
 		{Code: StoreAIModelUsageIntentDetectLLM, Name: "意图识别模型", ExpectedType: enums.AIModelTypeLLM},
+		{Code: StoreAIModelUsageKnowledgeJudgeLLM, Name: "知识证据判断模型", ExpectedType: enums.AIModelTypeLLM},
 		{Code: StoreAIModelUsageMediaUnderstanding, Name: "媒体理解模型", ExpectedType: enums.AIModelTypeVision},
 		{Code: StoreAIModelUsageMemorySummaryLLM, Name: "长期记忆摘要模型", ExpectedType: enums.AIModelTypeLLM},
 		{Code: StoreAIModelUsageASR, Name: "语音识别模型", ExpectedType: enums.AIModelTypeASR},

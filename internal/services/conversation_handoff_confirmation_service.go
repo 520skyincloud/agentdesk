@@ -85,11 +85,14 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 	}
 	if state := ConversationRouteService.GetByConversationID(conversationID); state != nil && state.PendingAction == string(enums.ConversationPendingActionHumanHandoff) {
 		if state.PendingActionExpireAt == nil || time.Now().Before(*state.PendingActionExpireAt) {
-			return true, nil
+			payloadValue := handoffConfirmationPayload{}
+			_ = json.Unmarshal([]byte(state.PendingActionPayload), &payloadValue)
+			return s.sendConfirmationPrompt(conversationID, aiAgent.ID, payloadValue, requestID)
 		}
 		_ = ConversationRouteService.ClearPendingAction(conversationID)
 	}
 	cleanedReason := cleanHumanHandoffReason(reason)
+	originCustomerText := resolveHandoffOriginCustomerText(conversationID, originMessageID, reason)
 	payloadValue := handoffConfirmationPayload{
 		Reason:          cleanedReason,
 		AIAgentID:       aiAgent.ID,
@@ -97,18 +100,14 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	}
-	if handoffNeedsRoomNumber(cleanedReason) && extractRoomNo(cleanedReason) == "" {
+	if handoffNeedsRoomNumber(originCustomerText) && extractRoomNo(originCustomerText) == "" {
 		payloadValue.AwaitingField = "room_number"
 	}
 	payload, _ := json.Marshal(payloadValue)
 	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
 		return false, err
 	}
-	content := buildHandoffConfirmationPrompt(cleanedReason)
-	if payloadValue.AwaitingField == "room_number" {
-		content = "方便说下是哪个房间吗？"
-	}
-	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgent.ID, "ai_handoff_confirm_"+strs.UUID(), enums.IMMessageTypeText, content, "", systemOperator(), requestID)
+	_, err := s.sendConfirmationPrompt(conversationID, aiAgent.ID, payloadValue, requestID)
 	if err != nil {
 		if clearErr := ConversationRouteService.ClearPendingAction(conversationID); clearErr != nil {
 			return false, fmt.Errorf("发送转人工确认失败: %w；清理待确认状态失败: %v", err, clearErr)
@@ -116,6 +115,22 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *conversationHandoffConfirmationService) sendConfirmationPrompt(conversationID int64, aiAgentID int64, payload handoffConfirmationPayload, requestID string) (bool, error) {
+	content := buildHandoffConfirmationPrompt(payload.Reason)
+	if payload.AwaitingField == "room_number" {
+		content = "方便说下是哪个房间吗？"
+	}
+	clientMsgID := "ai_handoff_confirm_" + strings.TrimSpace(payload.HandoffToken)
+	if clientMsgID == "ai_handoff_confirm_" && payload.OriginMessageID > 0 {
+		clientMsgID = fmt.Sprintf("ai_handoff_confirm_origin_%d", payload.OriginMessageID)
+	}
+	if clientMsgID == "ai_handoff_confirm_" {
+		clientMsgID += strs.UUID()
+	}
+	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgentID, clientMsgID, enums.IMMessageTypeText, content, "", systemOperator(), requestID)
+	return err == nil, err
 }
 
 func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversation *models.Conversation, message *models.Message) (bool, error) {
@@ -539,14 +554,76 @@ func handoffNeedsRoomNumber(reason string) bool {
 	if text == "" {
 		return false
 	}
-	return containsAny(text, []string{
-		"房间", "房内", "屋里", "客房",
-		"床单", "被套", "被子", "枕头", "浴巾", "毛巾",
-		"遥控器", "电视", "投屏", "空调", "窗外", "噪音", "好吵",
-		"门锁", "开门", "敲门", "马桶", "卫生间", "洗手间", "漏水", "停电", "异味",
-		"打扫", "保洁", "维修", "送到", "送来", "送水", "同住人",
-		"落东西", "落了东西", "遗落", "遗失", "忘在", "跑腿",
+	if containsAny(text, []string{
+		"落东西", "落了东西", "遗落", "遗失", "忘在", "跑腿", "拿遗失物",
+		"送到房", "送来房", "送进房", "送上来", "帮我开门", "开一下门", "不用敲门",
+		"打扫", "保洁", "上门", "派人过来", "帮我看看噪音",
+	}) {
+		return true
+	}
+	roomItems := []string{
+		"房间", "房内", "屋里", "客房", "床单", "被套", "被子", "枕头", "地巾", "浴巾", "毛巾",
+		"遥控器", "电视", "投屏", "空调", "窗外", "隔壁", "门锁", "房门", "马桶", "卫生间", "洗手间",
+		"wifi", "wi-fi", "无线网", "网络",
+	}
+	deliveryItems := append(append([]string(nil), roomItems...), "水", "矿泉水", "拖鞋", "牙刷", "纸巾")
+	if containsAny(text, []string{"帮我送", "麻烦送", "给我送", "送水", "送拖鞋", "送牙刷", "送纸巾"}) && containsAny(text, deliveryItems) {
+		return true
+	}
+	if containsAny(text, []string{"帮我换", "换一个", "换新的", "更换"}) && containsAny(text, roomItems) {
+		return true
+	}
+	roomIssue := containsAny(text, []string{
+		"坏了", "坏掉", "不能用", "用不了", "打不开", "连不上", "失灵", "故障", "找不到",
+		"不制冷", "不制热", "漏水", "堵了", "堵住", "停电", "异味",
+		"噪音", "好吵", "很吵", "太吵", "毛发", "脏了", "不干净", "破了", "维修", "修一下", "过来看看",
 	})
+	return roomIssue && containsAny(text, roomItems)
+}
+
+func resolveHandoffOriginCustomerText(conversationID int64, originMessageID int64, reason string) string {
+	if scoped := handoffScopedCustomerTextFromReason(reason); scoped != "" {
+		return scoped
+	}
+	if originMessageID > 0 {
+		message := MessageService.Get(originMessageID)
+		if message != nil && message.ConversationID == conversationID && message.SenderType == enums.IMSenderTypeCustomer {
+			mediaText, mediaSummary, _ := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+			if mediaText != "" {
+				return mediaText
+			}
+			if mediaSummary != "" {
+				return mediaSummary
+			}
+			if message.MessageType == enums.IMMessageTypeVoice {
+				return ""
+			}
+			if text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload)); text != "" {
+				return text
+			}
+		}
+	}
+	return handoffCustomerTextFromReason(reason)
+}
+
+func handoffScopedCustomerTextFromReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	for _, marker := range []string{"待处理问题：", "待处理问题:"} {
+		if index := strings.LastIndex(reason, marker); index >= 0 {
+			return strings.TrimSpace(reason[index+len(marker):])
+		}
+	}
+	return ""
+}
+
+func handoffCustomerTextFromReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	for _, marker := range []string{"客户消息：", "客户消息:"} {
+		if index := strings.LastIndex(reason, marker); index >= 0 {
+			return strings.TrimSpace(reason[index+len(marker):])
+		}
+	}
+	return reason
 }
 
 func appendHandoffRoomNumber(reason string, roomNumber string) string {

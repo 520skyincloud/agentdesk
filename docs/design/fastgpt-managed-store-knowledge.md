@@ -28,17 +28,61 @@ enabled, belong to the same Store, use FastGPT, and have a dataset ID. Invalid
 or missing mappings preserve the existing store-only behavior.
 
 For every atomic task, the store-specific and general datasets are searched in
-parallel with their existing thresholds. The result is selected by layer:
+parallel with their existing thresholds. `RawHits` retains the candidates from
+both layers. All atomic tasks that returned candidates are then sent through
+one shared batch evidence Judge call, including tasks that currently have
+candidates from only one layer. The Judge classifies each candidate as:
 
 ```text
-store layer has an effective hit -> expose only store hits
-store layer has no effective hit -> expose general hits
+direct      -> directly and sufficiently answers the atomic question
+supporting  -> relevant, but insufficient without a direct answer
+unrelated   -> answers a different question or does not support the fact asked
 ```
 
-Scores are not compared across layers. Raw results from both layers remain in
-the retrieval trace for diagnosis, while Generate and handoff directives see
-only the selected layer. If a store-layer lookup fails, runtime must not treat
-that failure as a clean miss and fall back to general knowledge.
+The Judge does not answer the customer and does not choose the final knowledge
+layer. After classification, deterministic runtime code applies the following
+order independently for each atomic task:
+
+```text
+store has direct evidence
+-> expose store direct + store supporting evidence only
+
+otherwise general has direct evidence
+-> expose general direct + general supporting evidence only
+
+neither layer has direct evidence
+-> expose no knowledge answer for that task
+```
+
+This preserves `store direct > general direct`: scores are never compared
+across layers, and a higher-scoring general answer cannot override a direct
+store answer. Conversely, an unrelated store candidate cannot hide a direct
+general answer. Generate and handoff decisions read only the rebuilt selected
+evidence; `RawHits` and the `pipeline.evidenceJudge` trace retain the diagnostic
+candidate and decision data.
+
+The Judge uses the internal `knowledge_judge_llm` model-profile slot. One reply
+execution makes at most one Judge call for all candidate-bearing atomic tasks;
+the normalized limit is 4 seconds, 2,048 output tokens, and zero retries. A
+missing model configuration, model error, timeout, or invalid protocol response
+does not fail or restart the reply pipeline. Runtime records a `fallback` trace
+and preserves the pre-Judge deterministic selection:
+
+```text
+store has an effective retrieval hit -> keep store hits
+otherwise -> keep general hits
+```
+
+The fallback does not add another Intent, retrieval, Judge, or Generate call.
+If the store-layer lookup itself fails, runtime still must not treat that
+failure as a clean miss and fall back to general knowledge.
+
+For a multi-question message, questions with direct evidence remain available
+to the single Generate call. Questions with no direct evidence or whose
+selected answer is a handoff directive are removed from Generate. When both
+kinds occur together, the knowledge answer is committed first and the existing
+handoff-confirmation service is invoked afterward for only the deferred tasks;
+if every task needs handoff, the existing pre-Generate handoff path is used.
 
 The same release also adds two scoped prompt policies without adding model
 calls: `answer_rejected` is disclosed to Intent only when the physically
@@ -66,6 +110,28 @@ machine.
 Existing manually connected datasets remain on the legacy compatibility
 transport until they are explicitly migrated. New managed datasets use
 `connectionId=agentdesk_integration`.
+
+## General-dataset blue-green rollout
+
+Do not replace the contents of a production-referenced general dataset in
+place. Create a staging dataset inside the same Store-owned FastGPT Team,
+import and train the cleaned general FAQ data there, and verify collection
+readiness and real searches before switching Agent Desk.
+
+Cutover changes only the existing Agent Desk general knowledge-base record's
+`dataset_id`, using a compare-and-swap condition against the previously
+recorded dataset ID. The `reply_runtime.general_knowledge_base_by_store`
+mapping continues to point to the same Agent Desk knowledge-base ID. Keep the
+old FastGPT dataset enabled and unchanged during observation so rollback is an
+atomic `dataset_id` restore rather than a reply-runtime rollback.
+
+Before cutover, verify at least:
+
+- staging training has completed with no failed items;
+- representative general questions return the intended direct FAQ;
+- store-specific gold answers still produce store direct evidence;
+- weak or unrelated candidates are classified as `unrelated` by the Judge;
+- the staging dataset belongs to the same Store Team as the store dataset.
 
 ## Operational behavior
 

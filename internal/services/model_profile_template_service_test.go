@@ -9,7 +9,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 )
 
-func TestSyncLegacyFastGPTTemplateIgnoresTagOnlyChanges(t *testing.T) {
+func TestSyncLegacyFastGPTTemplateIgnoresAuxiliaryOnlyChanges(t *testing.T) {
 	db := setupConversationEvolutionTestDB(t)
 	now := time.Now()
 	legacy := &models.FastGPTProfileTemplate{
@@ -41,6 +41,10 @@ func TestSyncLegacyFastGPTTemplateIgnoresTagOnlyChanges(t *testing.T) {
 			UsageCode: ModelProfileUsageCustomerTag, ModelType: enums.AIModelTypeLLM,
 			Provider: "openai", ModelName: "changed-tag-model", APIMode: "chat_completions",
 		},
+		{
+			UsageCode: ModelProfileUsageKnowledgeJudge, ModelType: enums.AIModelTypeLLM,
+			Provider: "openai", ModelName: "deepseek-v4-flash", APIMode: "chat_completions",
+		},
 	}
 	operator := &dto.AuthPrincipal{UserID: 1, Username: "admin"}
 
@@ -49,7 +53,7 @@ func TestSyncLegacyFastGPTTemplateIgnoresTagOnlyChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if changed {
-		t.Fatal("tag-only template changes must not queue a FastGPT profile sync")
+		t.Fatal("auxiliary-only template changes must not queue a FastGPT profile sync")
 	}
 	current := db.First(&models.FastGPTProfileTemplate{}, "id = ?", 1)
 	if current.Error != nil {
@@ -60,7 +64,7 @@ func TestSyncLegacyFastGPTTemplateIgnoresTagOnlyChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if saved.Revision != 5 {
-		t.Fatalf("tag-only change modified FastGPT template revision: %d", saved.Revision)
+		t.Fatalf("auxiliary-only change modified FastGPT template revision: %d", saved.Revision)
 	}
 
 	slots[0].ModelName = "reply-model-v2"

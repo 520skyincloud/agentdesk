@@ -79,6 +79,32 @@ type AnswerabilityTraceData struct {
 	ErrorMessage       string   `json:"errorMessage,omitempty"`
 }
 
+type KnowledgeEvidenceJudgeTraceData struct {
+	SchemaVersion         string                                `json:"schemaVersion,omitempty"`
+	Status                string                                `json:"status,omitempty"`
+	Reason                string                                `json:"reason,omitempty"`
+	Model                 string                                `json:"model,omitempty"`
+	CandidateFingerprint  string                                `json:"candidateFingerprint,omitempty"`
+	TaskCount             int                                   `json:"taskCount,omitempty"`
+	CandidateCount        int                                   `json:"candidateCount,omitempty"`
+	LatencyMs             int64                                 `json:"latencyMs,omitempty"`
+	ErrorMessage          string                                `json:"errorMessage,omitempty"`
+	DeferredHandoff       bool                                  `json:"deferredHandoff,omitempty"`
+	DeferredHandoffReason string                                `json:"deferredHandoffReason,omitempty"`
+	DeferredTaskIDs       []string                              `json:"deferredTaskIds,omitempty"`
+	Tasks                 []KnowledgeEvidenceJudgeTaskTraceData `json:"tasks,omitempty"`
+}
+
+type KnowledgeEvidenceJudgeTaskTraceData struct {
+	TaskID                 string   `json:"taskId,omitempty"`
+	QueryPreview           string   `json:"queryPreview,omitempty"`
+	SelectedLayer          string   `json:"selectedLayer,omitempty"`
+	SelectedCandidateIDs   []string `json:"selectedCandidateIds,omitempty"`
+	DirectCandidateIDs     []string `json:"directCandidateIds,omitempty"`
+	SupportingCandidateIDs []string `json:"supportingCandidateIds,omitempty"`
+	Decision               string   `json:"decision,omitempty"`
+}
+
 type RetrieverPolicyTraceItem struct {
 	KnowledgeBaseID int64   `json:"knowledgeBaseId,omitempty"`
 	TopK            int     `json:"topK,omitempty"`
@@ -130,14 +156,15 @@ type RuntimeTraceData struct {
 		CurrentUserMessagePreview string   `json:"currentUserMessagePreview,omitempty"`
 	} `json:"input"`
 	Pipeline struct {
-		Normalize     NormalizeTraceData     `json:"normalize,omitempty"`
-		Intent        IntentTraceData        `json:"intent,omitempty"`
-		PromptSelect  IntentPromptTraceData  `json:"promptSelect,omitempty"`
-		ContextBuild  ContextBuildTraceData  `json:"contextBuild,omitempty"`
-		ToolKnowledge ToolKnowledgeTraceData `json:"toolKnowledge,omitempty"`
-		ReplyPlan     ReplyPlanTraceData     `json:"replyPlan,omitempty"`
-		Generate      GenerateTraceData      `json:"generate,omitempty"`
-		Validate      ValidateTraceData      `json:"validate,omitempty"`
+		Normalize     NormalizeTraceData              `json:"normalize,omitempty"`
+		Intent        IntentTraceData                 `json:"intent,omitempty"`
+		PromptSelect  IntentPromptTraceData           `json:"promptSelect,omitempty"`
+		ContextBuild  ContextBuildTraceData           `json:"contextBuild,omitempty"`
+		ToolKnowledge ToolKnowledgeTraceData          `json:"toolKnowledge,omitempty"`
+		EvidenceJudge KnowledgeEvidenceJudgeTraceData `json:"evidenceJudge,omitempty"`
+		ReplyPlan     ReplyPlanTraceData              `json:"replyPlan,omitempty"`
+		Generate      GenerateTraceData               `json:"generate,omitempty"`
+		Validate      ValidateTraceData               `json:"validate,omitempty"`
 	} `json:"pipeline,omitempty"`
 	ActionLedger ActionLedgerTraceData `json:"actionLedger,omitempty"`
 	Retriever    struct {

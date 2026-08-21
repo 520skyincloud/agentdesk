@@ -209,6 +209,24 @@ func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t
 	}
 }
 
+func TestRuntimeIntentDetectSystemPromptRoutesPublicCompanyIdentityToKnowledge(t *testing.T) {
+	prompt := runtimeIntentDetectSystemPrompt()
+	for _, expected := range []string{
+		"hotel_info/company_profile",
+		"老板、创始人、董事长",
+		"公开身份",
+		"公开职务",
+		"你是谁",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected company-profile boundary %q in prompt", expected)
+		}
+	}
+	if strings.Contains(prompt, "汤东强") {
+		t.Fatalf("company-profile routing must remain generic, got hard-coded person name")
+	}
+}
+
 func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, expected := range []string{

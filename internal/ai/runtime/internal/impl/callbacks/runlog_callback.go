@@ -128,6 +128,19 @@ func (c *RuntimeTraceCollector) SetAnswerability(data AnswerabilityTraceData) {
 	}
 }
 
+func (c *RuntimeTraceCollector) SetKnowledgeEvidenceJudge(data KnowledgeEvidenceJudgeTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data.DeferredTaskIDs = append([]string(nil), data.DeferredTaskIDs...)
+	data.Tasks = append([]KnowledgeEvidenceJudgeTaskTraceData(nil), data.Tasks...)
+	for index := range data.Tasks {
+		data.Tasks[index].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].SelectedCandidateIDs...)
+		data.Tasks[index].DirectCandidateIDs = append([]string(nil), data.Tasks[index].DirectCandidateIDs...)
+		data.Tasks[index].SupportingCandidateIDs = append([]string(nil), data.Tasks[index].SupportingCandidateIDs...)
+	}
+	c.Data.Pipeline.EvidenceJudge = data
+}
+
 func (c *RuntimeTraceCollector) SetKnowledgeResources(items []KnowledgeResourceTraceData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
