@@ -584,6 +584,38 @@ func TestIsMultiQuestionCurrentTurnDetectsContinuousHotelQuestions(t *testing.T)
 	}
 }
 
+func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeText,
+		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
+	}}
+	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
+	if !strings.Contains(prompt, "每个独立问题或动作都要在 intentTasks 中有对应任务") || !strings.Contains(prompt, "不能只分类最后一条") {
+		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
+	}
+}
+
+func TestCurrentTurnBoundaryUsesActualBurstWhenIntentMissesTasks(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeText,
+		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
+	}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		NeedsKnowledge: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:         "hotel_info",
+			SubIntent:      "supplies_self_help",
+			Text:           "剃须刀在哪",
+			NeedsKnowledge: true,
+		}},
+	}
+	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, intent)
+	if !strings.Contains(instruction, "当前轮包含连续多问") || !strings.Contains(instruction, "不要只回答主意图或最后一个问题") {
+		t.Fatalf("expected actual burst to enforce multi-question generation coverage, got %q", instruction)
+	}
+}
+
 func TestRuntimePipelineSeenQuestionAfterPlainMediaUsesMediaContext(t *testing.T) {
 	req := RunInput{
 		Conversation: models.Conversation{ID: 7},

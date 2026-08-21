@@ -41,6 +41,7 @@ type scenario struct {
 	RecordEachTurn       bool
 	MustContainAny       []string
 	MustContainAll       []string
+	RequiredOutcomes     []outcomeRequirement
 	Banned               []string
 	ExpectedIntent       string
 	ExpectedSubIntentAny []string
@@ -59,6 +60,7 @@ type turn struct {
 	BackdateGap          time.Duration
 	MustContainAny       []string
 	MustContainAll       []string
+	RequiredOutcomes     []outcomeRequirement
 	Banned               []string
 	ExpectedIntent       string
 	ExpectedSubIntentAny []string
@@ -66,6 +68,12 @@ type turn struct {
 	NeedsResource        *bool
 	NeedsHumanRoute      *bool
 	Notes                string
+}
+
+type outcomeRequirement struct {
+	Label                      string
+	TextContainsAny            []string
+	DeferredHandoffContainsAny []string
 }
 
 type record struct {
@@ -94,6 +102,8 @@ type record struct {
 	ResourceAction            string         `json:"resourceAction"`
 	ResourceActions           []string       `json:"resourceActions,omitempty"`
 	CommitMessages            []commitRecord `json:"commitMessages,omitempty"`
+	DeferredHandoff           bool           `json:"deferredHandoff,omitempty"`
+	DeferredHandoffReason     string         `json:"deferredHandoffReason,omitempty"`
 	KnowledgeHit              bool           `json:"knowledgeHit"`
 	KnowledgeExpected         bool           `json:"knowledgeExpected"`
 	ResourceExpected          bool           `json:"resourceExpected"`
@@ -152,6 +162,10 @@ type runtimeTrace struct {
 		Generate struct {
 			LatencyMs int64 `json:"latencyMs"`
 		} `json:"generate"`
+		EvidenceJudge struct {
+			DeferredHandoff       bool   `json:"deferredHandoff"`
+			DeferredHandoffReason string `json:"deferredHandoffReason"`
+		} `json:"evidenceJudge"`
 	} `json:"pipeline"`
 	Retriever struct {
 		Count int `json:"count"`
@@ -460,6 +474,7 @@ func scenarioFromTurn(sc scenario, index int, t turn) scenario {
 		Name:                 strings.TrimSpace(t.Content),
 		MustContainAny:       t.MustContainAny,
 		MustContainAll:       t.MustContainAll,
+		RequiredOutcomes:     t.RequiredOutcomes,
 		Banned:               t.Banned,
 		ExpectedIntent:       t.ExpectedIntent,
 		ExpectedSubIntentAny: t.ExpectedSubIntentAny,
@@ -753,6 +768,8 @@ func (r *runner) fillRecordFromRunLog(rec record, sc scenario, logItem *models.A
 			rec.RetrieverCount = rt.Retriever.Count
 			rec.ToolCount = rt.Tools.Count
 			rec.CommitMessages = append([]commitRecord(nil), rt.Output.CommitMessages...)
+			rec.DeferredHandoff = rt.Pipeline.EvidenceJudge.DeferredHandoff
+			rec.DeferredHandoffReason = strings.TrimSpace(rt.Pipeline.EvidenceJudge.DeferredHandoffReason)
 			rec.TraceSummary = map[string]any{
 				"model":                     strings.TrimSpace(rt.Model.Name),
 				"provider":                  strings.TrimSpace(rt.Model.Provider),
@@ -765,6 +782,8 @@ func (r *runner) fillRecordFromRunLog(rec record, sc scenario, logItem *models.A
 				"secondaryIntents":          rt.Pipeline.Intent.SecondaryIntents,
 				"resourceActions":           rt.Pipeline.Intent.ResourceActions,
 				"commitMessages":            rt.Output.CommitMessages,
+				"deferredHandoff":           rec.DeferredHandoff,
+				"deferredHandoffReason":     rec.DeferredHandoffReason,
 				"toolTriggered":             rt.Pipeline.ToolKnowledge.ToolTriggered,
 				"knowledgeTriggered":        rt.Pipeline.ToolKnowledge.KnowledgeTriggered,
 			}
@@ -797,6 +816,17 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 	if len(sc.MustContainAny) > 0 && !containsAnyLoose(reply, sc.MustContainAny) {
 		score -= 16
 		issues = append(issues, "missing any required text: "+strings.Join(sc.MustContainAny, "/"))
+	}
+	for _, requirement := range sc.RequiredOutcomes {
+		if requiredOutcomeSatisfied(rec, requirement) {
+			continue
+		}
+		score -= 24
+		label := strings.TrimSpace(requirement.Label)
+		if label == "" {
+			label = "unnamed outcome"
+		}
+		issues = append(issues, "missing required answer/action: "+label)
 	}
 	for _, banned := range append(defaultBannedPhrases(), sc.Banned...) {
 		if containsLoose(reply, banned) {
@@ -940,6 +970,21 @@ func containsAnyLoose(text string, needles []string) bool {
 	return false
 }
 
+func requiredOutcomeSatisfied(rec record, requirement outcomeRequirement) bool {
+	textParts := []string{rec.ReplyText}
+	for _, item := range rec.CommitMessages {
+		if strings.TrimSpace(item.Status) == "sent" {
+			textParts = append(textParts, item.Content)
+		}
+	}
+	if len(requirement.TextContainsAny) > 0 && containsAnyLoose(strings.Join(textParts, "\n"), requirement.TextContainsAny) {
+		return true
+	}
+	return rec.DeferredHandoff &&
+		len(requirement.DeferredHandoffContainsAny) > 0 &&
+		containsAnyLoose(rec.DeferredHandoffReason, requirement.DeferredHandoffContainsAny)
+}
+
 func containsExact(values []string, target string) bool {
 	for _, value := range values {
 		if strings.TrimSpace(value) == strings.TrimSpace(target) {
@@ -1003,7 +1048,11 @@ func buildScenarios(round int) []scenario {
 
 	cases = append(cases,
 		rapid("C01", []string{"WiFi密码", "发票怎么开"}, []string{"WiFi", "发票"}, "hotel_info", &t),
-		rapid("C02", []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}, []string{"早餐", "停车", "剃须刀"}, "hotel_info", &t),
+		rapid("C02", []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}, nil, "hotel_info", &t).withRequiredOutcomes(
+			outcomeRequirement{Label: "早餐问题", TextContainsAny: []string{"早餐", "早饭"}},
+			outcomeRequirement{Label: "停车问题", TextContainsAny: []string{"停车", "停车场", "车位"}},
+			outcomeRequirement{Label: "剃须刀问题", TextContainsAny: []string{"剃须刀", "刮胡刀"}},
+		),
 		rapid("C03", []string{"我到楼下了", "入口怎么走", "定位也发我"}, []string{"入口", "定位"}, "hotel_variable", &t).withResource(&t),
 		rapid("C04", []string{"电视投屏怎么弄", "WiFi也发下"}, []string{"投屏", "WiFi"}, "hotel_info", &t),
 		rapid("C05", []string{"报销票咋开", "抬头等下发你"}, []string{"发票", "抬头"}, "hotel_info", &t),
@@ -1030,7 +1079,10 @@ func buildScenarios(round int) []scenario {
 	cases = append(cases,
 		rapid("X01", []string{"我到附近了", "定位发我", "入住小程序也发一下", "停车在哪里"}, []string{"定位", "小程序", "停车"}, "hotel_variable", &t).withResource(&t),
 		rapid("X02", []string{"WiFi连不上", "发票怎么开", "顺便给电话"}, []string{"WiFi", "发票", "电话"}, "hotel_variable", &t).withResource(&t),
-		rapid("X03", []string{"空调坏了", "我住1302", "顺便问早餐几点"}, []string{"1302", "空调", "早餐"}, "service_request", &t),
+		rapid("X03", []string{"空调坏了", "我住1302", "顺便问早餐几点"}, nil, "service_request", &t).withRequiredOutcomes(
+			outcomeRequirement{Label: "空调故障处理", DeferredHandoffContainsAny: []string{"空调", "制冷"}},
+			outcomeRequirement{Label: "早餐问题", TextContainsAny: []string{"早餐", "早饭"}},
+		),
 		rapid("X04", []string{"价格不一样我要人工", "停车还收费吗"}, []string{"人工", "停车"}, "human_complaint_risk", &t).withHuman(&t),
 		rapid("X05", []string{"图片发票资料你看下", "如果不行我转人工", "我赶时间"}, []string{"发票", "人工"}, "human_complaint_risk", &t).withHuman(&t),
 	)
@@ -1416,6 +1468,11 @@ func (sc scenario) withResource(v *bool) scenario {
 
 func (sc scenario) withHuman(v *bool) scenario {
 	sc.NeedsHumanRoute = v
+	return sc
+}
+
+func (sc scenario) withRequiredOutcomes(requirements ...outcomeRequirement) scenario {
+	sc.RequiredOutcomes = append([]outcomeRequirement(nil), requirements...)
 	return sc
 }
 

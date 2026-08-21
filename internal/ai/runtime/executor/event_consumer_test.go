@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -134,6 +135,33 @@ func TestConsumeAgentEventsCollectsTokenUsage(t *testing.T) {
 	}
 	if len(summary.ModelUsageCalls) != 1 || summary.ModelUsageCalls[0].PromptTokens != 120 || summary.ModelUsageCalls[0].CachedPromptTokens != 80 {
 		t.Fatalf("expected one billable upstream usage call, got %+v", summary.ModelUsageCalls)
+	}
+}
+
+func TestConsumeAgentEventsKeepsEveryMultiQuestionGeneratePart(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: make([]string, 0)}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", Text: "早餐有吗", Output: "knowledge_text_reply"},
+		{Intent: "hotel_info", Text: "停车免费吗", Output: "knowledge_text_reply"},
+		{Intent: "hotel_info", Text: "剃须刀在哪", Output: "knowledge_text_reply"},
+	}}
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+		Role:    schema.Assistant,
+		Message: &schema.Message{Content: `{"replyParts":[{"taskId":"task-1","content":"早餐供应到9:30。"},{"taskId":"task-2","content":"停车免费。"},{"taskId":"task-3","content":"剃须刀可在自助区领取。"}]}`},
+	}}})
+	gen.Close()
+
+	consumeAgentEvents(events, summary, collector, nil)
+
+	for _, want := range []string{"早餐", "停车", "剃须刀"} {
+		if !strings.Contains(summary.ReplyText, want) {
+			t.Fatalf("multi-question Generate output lost %q: %q", want, summary.ReplyText)
+		}
+	}
+	if strings.Count(summary.ReplyText, "<<NEXT_MESSAGE>>") != 2 {
+		t.Fatalf("expected three ordered reply parts, got %q", summary.ReplyText)
 	}
 }
 

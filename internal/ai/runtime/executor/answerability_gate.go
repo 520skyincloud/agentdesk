@@ -172,14 +172,90 @@ func fallbackAnswerabilityPassThrough(ctx context.Context, state *answerabilityG
 }
 
 func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string, intent callbacks.IntentTraceData) (*runtimeKnowledgeRetrieveBatch, error) {
-	queries := knowledgeQueriesFromIntentTasks(intent)
-	if len(queries) == 0 {
-		queries = splitRuntimeKnowledgeQueries(query)
-	}
+	queries := mergeRuntimeKnowledgeQueries(query, knowledgeQueriesFromIntentTasks(intent))
 	if len(queries) == 0 && strings.TrimSpace(query) != "" {
 		queries = []string{strings.TrimSpace(query)}
 	}
 	return retrieveContextForRuntimeQuestionList(ctx, retriever, opts, query, queries)
+}
+
+func mergeRuntimeKnowledgeQueries(query string, taskQueries []string) []string {
+	burstQueries := splitRuntimeKnowledgeQueries(query)
+	if len(burstQueries) <= 1 || len(taskQueries) == 0 {
+		if len(taskQueries) > 0 {
+			return append([]string(nil), taskQueries...)
+		}
+		return burstQueries
+	}
+
+	ret := make([]string, 0, len(burstQueries)+len(taskQueries))
+	usedTasks := make([]bool, len(taskQueries))
+	for _, burstQuery := range burstQueries {
+		matched := -1
+		for index, taskQuery := range taskQueries {
+			if usedTasks[index] || !runtimeKnowledgeQueryCovers(taskQuery, burstQuery) {
+				continue
+			}
+			matched = index
+			break
+		}
+		if matched >= 0 {
+			ret = appendRuntimeKnowledgeQuery(ret, taskQueries[matched])
+			usedTasks[matched] = true
+			continue
+		}
+		if runtimeBurstLineLooksLikeTask(burstQuery) {
+			ret = appendRuntimeKnowledgeQuery(ret, burstQuery)
+		}
+	}
+	for index, taskQuery := range taskQueries {
+		if !usedTasks[index] {
+			ret = appendRuntimeKnowledgeQuery(ret, taskQuery)
+		}
+	}
+	return ret
+}
+
+func appendRuntimeKnowledgeQuery(items []string, query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return items
+	}
+	for _, existing := range items {
+		if runtimeKnowledgeQueryCovers(existing, query) && runtimeKnowledgeQueryCovers(query, existing) {
+			return items
+		}
+	}
+	return append(items, query)
+}
+
+func runtimeKnowledgeQueryCovers(taskQuery string, burstQuery string) bool {
+	task := normalizeRuntimeKnowledgeQuery(taskQuery)
+	burst := normalizeRuntimeKnowledgeQuery(burstQuery)
+	if task == "" || burst == "" {
+		return false
+	}
+	return task == burst || strings.Contains(task, burst) || strings.Contains(burst, task)
+}
+
+func normalizeRuntimeKnowledgeQuery(query string) string {
+	return strings.NewReplacer(
+		" ", "", "\t", "", "\r", "", "\n", "",
+		"，", "", ",", "", "。", "", "？", "", "?", "",
+		"！", "", "!", "", "：", "", ":", "", "；", "", ";", "",
+	).Replace(strings.ToLower(strings.TrimSpace(cleanRuntimeQuestionLine(query))))
+}
+
+func runtimeBurstLineLooksLikeTask(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	if compact == "" {
+		return false
+	}
+	return strings.ContainsAny(query, "?？") || containsAny(compact, []string{
+		"吗", "么", "呢", "哪", "什么", "怎么", "如何", "谁", "多少", "几", "多久", "几点", "为什么", "有没有", "能不能", "可不可以", "是否",
+		"帮我", "给我", "发我", "我要", "我想", "请问", "麻烦", "转人工", "投诉",
+		"没了", "没有", "坏了", "堵了", "打不开", "不制冷", "失败", "拿不出", "太吵", "很吵",
+	})
 }
 
 func knowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []string {
@@ -234,6 +310,7 @@ func cleanRuntimeQuestionLine(line string) string {
 	if line == "" {
 		return ""
 	}
+	line = trimRuntimeQuestionOrdinal(line)
 	for strings.HasPrefix(line, "[") {
 		end := strings.Index(line, "]")
 		if end <= 0 || end >= len(line)-1 {
@@ -244,6 +321,23 @@ func cleanRuntimeQuestionLine(line string) string {
 	line = strings.TrimPrefix(line, "-")
 	line = strings.TrimPrefix(line, "•")
 	return strings.TrimSpace(line)
+}
+
+func trimRuntimeQuestionOrdinal(line string) string {
+	runes := []rune(strings.TrimSpace(line))
+	index := 0
+	for index < len(runes) && runes[index] >= '0' && runes[index] <= '9' {
+		index++
+	}
+	if index == 0 || index >= len(runes) {
+		return strings.TrimSpace(line)
+	}
+	switch runes[index] {
+	case '.', '．', '、':
+		return strings.TrimSpace(string(runes[index+1:]))
+	default:
+		return strings.TrimSpace(line)
+	}
 }
 
 func isRuntimeBurstStructureLine(line string) bool {

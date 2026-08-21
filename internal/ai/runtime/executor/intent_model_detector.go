@@ -331,6 +331,9 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	currentDisplayText := currentTurnDisplayText(currentText)
 	b.WriteString("必须分类的当前消息:\n")
 	b.WriteString(currentDisplayText)
+	if isMultiQuestionCurrentTurn(currentDisplayText) {
+		b.WriteString("\n\n【连续消息任务覆盖】当前轮包含多条连续客户消息。必须从第一条扫描到最后一条；每个独立问题或动作都要在 intentTasks 中有对应任务，并保持客户原顺序，不能只分类最后一条。纯背景、情绪或补充条件可以并入相关任务，不要凭空新增业务任务。输出前逐条核对当前轮，遗漏任一独立问题或动作都属于协议错误。")
+	}
 	b.WriteString("\n\n当前消息类型: ")
 	b.WriteString(string(req.UserMessage.MessageType))
 	if timeLabel := adapter.RuntimeMessageTimeLabel(&req.UserMessage); timeLabel != "" {

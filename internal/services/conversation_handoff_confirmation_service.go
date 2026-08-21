@@ -15,11 +15,13 @@ import (
 	"agent-desk/internal/pkg/utils"
 
 	"github.com/mlogclub/simple/common/strs"
+	"github.com/mlogclub/simple/sqls"
 )
 
 var ConversationHandoffConfirmationService = newConversationHandoffConfirmationService()
 
 const handoffConfirmationModelTimeout = 2 * time.Second
+const handoffRoomContextBurstWindow = 8 * time.Second
 
 type conversationHandoffConfirmationService struct{}
 
@@ -100,8 +102,19 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	}
-	if handoffNeedsRoomNumber(originCustomerText) && extractRoomNo(originCustomerText) == "" {
-		payloadValue.AwaitingField = "room_number"
+	if handoffNeedsRoomNumber(originCustomerText) {
+		roomNumber := extractRoomNo(originCustomerText)
+		if roomNumber == "" {
+			roomNumber = resolveRecentHandoffBurstRoomNumber(conversationID, originMessageID)
+			if roomNumber != "" {
+				payloadValue.Reason = appendHandoffRoomNumber(payloadValue.Reason, roomNumber)
+			}
+		}
+		if roomNumber == "" {
+			payloadValue.AwaitingField = "room_number"
+		} else {
+			payloadValue.RoomNumber = roomNumber
+		}
 	}
 	payload, _ := json.Marshal(payloadValue)
 	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
@@ -604,6 +617,87 @@ func resolveHandoffOriginCustomerText(conversationID int64, originMessageID int6
 		}
 	}
 	return handoffCustomerTextFromReason(reason)
+}
+
+func resolveRecentHandoffBurstRoomNumber(conversationID int64, originMessageID int64) string {
+	if conversationID <= 0 || originMessageID <= 0 {
+		return ""
+	}
+	origin := MessageService.Get(originMessageID)
+	if origin == nil || origin.ConversationID != conversationID || origin.SenderType != enums.IMSenderTypeCustomer || origin.SentAt == nil {
+		return ""
+	}
+	cnd := sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("session_no", origin.SessionNo).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeHTML), string(enums.IMMessageTypeVoice)}).
+		Lte("id", originMessageID).
+		Gte("sent_at", origin.SentAt.Add(-handoffRoomContextBurstWindow)).
+		Lte("sent_at", *origin.SentAt).
+		Asc("id").
+		Limit(12)
+	if latestOutbound := MessageService.FindOne(sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("session_no", origin.SessionNo).
+		In("sender_type", []string{string(enums.IMSenderTypeAI), string(enums.IMSenderTypeAgent)}).
+		Lt("id", originMessageID).
+		Desc("id")); latestOutbound != nil {
+		cnd.Gt("id", latestOutbound.ID)
+	}
+	items := MessageService.Find(cnd)
+	for index := len(items) - 1; index >= 0; index-- {
+		text := recentHandoffBurstMessageText(items[index])
+		if roomNumber := extractRecentHandoffBurstRoomNumber(text); roomNumber != "" {
+			return roomNumber
+		}
+	}
+	return ""
+}
+
+func recentHandoffBurstMessageText(message models.Message) string {
+	mediaText, mediaSummary, _ := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+	if mediaText != "" {
+		return strings.TrimSpace(mediaText)
+	}
+	if mediaSummary != "" {
+		return strings.TrimSpace(mediaSummary)
+	}
+	if message.MessageType == enums.IMMessageTypeVoice {
+		return ""
+	}
+	return strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
+}
+
+func extractRecentHandoffBurstRoomNumber(text string) string {
+	roomNumber := extractRoomNo(text)
+	if roomNumber == "" {
+		return ""
+	}
+	compact := strings.ToLower(strings.NewReplacer(
+		" ", "", "\t", "", "\n", "", "\r", "",
+		"，", "", "。", "", ",", "", ".", "", "：", "", ":", "",
+		"！", "", "!", "", "？", "", "?", "",
+	).Replace(strings.TrimSpace(text)))
+	if compact == roomNumber {
+		return roomNumber
+	}
+	for _, marker := range []string{
+		"房号" + roomNumber,
+		"房号是" + roomNumber,
+		"房间" + roomNumber,
+		"客房" + roomNumber,
+		"我住" + roomNumber,
+		"住在" + roomNumber,
+		"住的是" + roomNumber,
+		roomNumber + "房",
+		roomNumber + "号房",
+	} {
+		if strings.Contains(compact, marker) {
+			return roomNumber
+		}
+	}
+	return ""
 }
 
 func handoffScopedCustomerTextFromReason(reason string) string {

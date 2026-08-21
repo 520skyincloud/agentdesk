@@ -105,6 +105,24 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 }
 
+func TestMergeRuntimeKnowledgeQueriesBackfillsIntentMissedBurstQuestions(t *testing.T) {
+	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪"
+	got := mergeRuntimeKnowledgeQueries(query, []string{"剃须刀在哪"})
+	want := []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected uncovered burst questions to be restored in customer order, got %#v", got)
+	}
+}
+
+func TestMergeRuntimeKnowledgeQueriesDoesNotTurnPureContextIntoTask(t *testing.T) {
+	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 好困啊\n2. [消息] 有没有咖啡"
+	got := mergeRuntimeKnowledgeQueries(query, []string{"有没有咖啡"})
+	want := []string{"有没有咖啡"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected pure context to remain attached to the actual question, got %#v", got)
+	}
+}
+
 func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
 	top := rag.RetrieveResult{
 		KnowledgeBaseID: 1,

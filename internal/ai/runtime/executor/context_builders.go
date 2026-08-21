@@ -294,7 +294,7 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果明确的酒店业务问题没有可用答案，进入接待路由，不要对客户说资料没写明或没查到。")
 	}
-	if len(intent.IntentTasks) > 1 {
+	if len(intent.IntentTasks) > 1 || isMultiQuestionCurrentTurn(currentText) {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答；没有可用答案的酒店业务项进入接待路由，不能说“资料没写明”“帮你查/我查一下”。")
 	}
 	if intent.PrimaryIntent == "service_request" {

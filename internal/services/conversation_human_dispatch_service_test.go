@@ -343,6 +343,99 @@ func TestConversationHandoffConfirmationUsesDeferredQuestionForRoomDecision(t *t
 	}
 }
 
+func TestConversationHandoffConfirmationUsesRoomFromSameCustomerBurst(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "空调坏了")
+	createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "我住1302")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "顺便问早餐几点")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"部分酒店业务问题需要门店同事接手；待处理问题：空调坏了",
+		"req-deferred-room-burst",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	payload := struct {
+		AwaitingField string `json:"awaitingField"`
+		RoomNumber    string `json:"roomNumber"`
+		Reason        string `json:"reason"`
+	}{}
+	if state == nil || json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil {
+		t.Fatalf("expected valid pending handoff payload, got %+v", state)
+	}
+	if payload.AwaitingField != "" || payload.RoomNumber != "1302" || !strings.Contains(payload.Reason, "客户补充房号：1302") {
+		t.Fatalf("expected room 1302 from the same customer burst, got %+v", payload)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+		t.Fatalf("expected direct handoff confirmation after burst room recovery, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffConfirmationDoesNotReuseRoomBeforeLatestOutbound(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我住1302")
+	createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeAI, "好的，有需要再告诉我")
+	createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "空调坏了")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 40, enums.IMSenderTypeCustomer, "顺便问早餐几点")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"部分酒店业务问题需要门店同事接手；待处理问题：空调坏了",
+		"req-deferred-room-outbound-boundary",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || !strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) || strings.Contains(state.PendingActionPayload, `"roomNumber":"1302"`) {
+		t.Fatalf("room before the latest outbound must not be reused, got %+v", state)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != "方便说下是哪个房间吗？" {
+		t.Fatalf("expected a fresh room question after the outbound boundary, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffConfirmationDoesNotReuseRoomOutsideBurstWindow(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	room := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我住1302")
+	createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "空调坏了")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "顺便问早餐几点")
+	staleAt := origin.SentAt.Add(-9 * time.Second)
+	if err := db.Model(&models.Message{}).Where("id = ?", room.ID).Update("sent_at", staleAt).Error; err != nil {
+		t.Fatalf("backdate room message: %v", err)
+	}
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"部分酒店业务问题需要门店同事接手；待处理问题：空调坏了",
+		"req-deferred-room-time-boundary",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || !strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) || strings.Contains(state.PendingActionPayload, `"roomNumber":"1302"`) {
+		t.Fatalf("room outside the short customer burst must not be reused, got %+v", state)
+	}
+}
+
 func TestConversationHandoffConfirmationPendingExpiresInFiveMinutes(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
