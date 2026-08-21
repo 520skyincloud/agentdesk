@@ -122,7 +122,49 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 	default:
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")
 	}
-	return callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}
+	return appendSpatialFactInstruction(callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}, intent)
+}
+
+func appendSpatialFactInstruction(prompt callbacks.IntentPromptTraceData, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {
+	instruction := buildSpatialFactInstruction(intent)
+	if instruction == "" {
+		return prompt
+	}
+	for _, existing := range prompt.Instructions {
+		if strings.TrimSpace(existing) == instruction {
+			return prompt
+		}
+	}
+	prompt.Instructions = append(prompt.Instructions, instruction)
+	return prompt
+}
+
+func buildSpatialFactInstruction(intent callbacks.IntentTraceData) string {
+	if !hasSpatialFactTask(intent) {
+		return ""
+	}
+	return "【仅适用于本轮周边/位置任务】空间事实必须按独立维度使用：地点是否存在、地点名称、具体地址、距离、交通方式、预计时间、完整路线。知识只支持其中一个维度时，只能回答该维度，不能跨维度推断；知道地点名称或存在，不代表很近、可以步行、需要开车或几分钟可到；知道酒店地址，不代表知道最近地铁站、线路、出口、换乘或步行时间。距离、步行/驾车方式、分钟数、公里数、站点、线路、出口和换乘都必须有知识片段直接支持，没有直接证据就不估算、不编造，也不能用地点名称代替客户真正询问的距离或路线。"
+}
+
+func hasSpatialFactTask(intent callbacks.IntentTraceData) bool {
+	if intent.PrimaryIntent == "hotel_info" && isSpatialFactSubIntent(intent.SubIntent) {
+		return true
+	}
+	for _, task := range intent.IntentTasks {
+		if task.Intent == "hotel_info" && isSpatialFactSubIntent(task.SubIntent) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSpatialFactSubIntent(subIntent string) bool {
+	switch strings.TrimSpace(subIntent) {
+	case "surrounding_facilities", "location_info":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasCheckinProcessTask(intent callbacks.IntentTraceData) bool {

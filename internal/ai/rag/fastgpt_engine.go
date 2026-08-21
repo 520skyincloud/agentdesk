@@ -77,17 +77,24 @@ func splitFastGPTKnowledgeBases(knowledgeBases []models.KnowledgeBase) ([]models
 	return local, fastGPT
 }
 
-func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveRequest, knowledgeBases []models.KnowledgeBase) ([]RetrieveResult, int64, error) {
+func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveRequest, knowledgeBases []models.KnowledgeBase) ([]RetrieveResult, int64, []int64, error) {
 	if strings.TrimSpace(req.Query) == "" || len(knowledgeBases) == 0 {
-		return nil, 0, nil
+		return nil, 0, nil, nil
 	}
 	startedAt := time.Now()
 	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		batches  = make([][]RetrieveResult, len(knowledgeBases))
-		errCount int
+		mu                     sync.Mutex
+		wg                     sync.WaitGroup
+		batches                = make([][]RetrieveResult, len(knowledgeBases))
+		errCount               int
+		failedKnowledgeBaseIDs []int64
 	)
+	markFailed := func(knowledgeBaseID int64) {
+		mu.Lock()
+		errCount++
+		failedKnowledgeBaseIDs = append(failedKnowledgeBaseIDs, knowledgeBaseID)
+		mu.Unlock()
+	}
 	for index, knowledgeBase := range knowledgeBases {
 		index := index
 		knowledgeBase := knowledgeBase
@@ -96,17 +103,13 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 			defer wg.Done()
 			datasetID := strings.TrimSpace(knowledgeBase.DatasetID)
 			if datasetID == "" {
-				mu.Lock()
-				errCount++
-				mu.Unlock()
+				markFailed(knowledgeBase.ID)
 				return
 			}
 			topK, scoreThreshold := resolveKnowledgeBaseSearchOptions(req, &knowledgeBase)
 			gateway, gatewayErr := newPlatformFastGPTGateway(strings.TrimSpace(knowledgeBase.ConnectionID) == fastgptapi.ManagedConnectionID)
 			if gatewayErr != nil {
-				mu.Lock()
-				errCount++
-				mu.Unlock()
+				markFailed(knowledgeBase.ID)
 				return
 			}
 			// Transport scope is the only integration change here. Search mode,
@@ -118,9 +121,7 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 			})
 			if searchErr != nil {
 				slog.Warn("FastGPT knowledge lookup failed", "knowledge_base_id", knowledgeBase.ID, "dataset_id", datasetID, "error", searchErr)
-				mu.Lock()
-				errCount++
-				mu.Unlock()
+				markFailed(knowledgeBase.ID)
 				return
 			}
 			mapped := make([]RetrieveResult, 0, len(searchResult.Hits))
@@ -136,9 +137,9 @@ func (s *retrieve) retrieveFastGPTKnowledge(ctx context.Context, req RetrieveReq
 		results = append(results, batch...)
 	}
 	if len(results) == 0 && errCount > 0 {
-		return nil, time.Since(startedAt).Milliseconds(), fmt.Errorf("FastGPT knowledge lookup failed")
+		return nil, time.Since(startedAt).Milliseconds(), failedKnowledgeBaseIDs, fmt.Errorf("FastGPT knowledge lookup failed")
 	}
-	return results, time.Since(startedAt).Milliseconds(), nil
+	return results, time.Since(startedAt).Milliseconds(), failedKnowledgeBaseIDs, nil
 }
 
 func resolveFastGPTTokenLimit(contextMaxTokens int) int {

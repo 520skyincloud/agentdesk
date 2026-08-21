@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/replyintent"
 	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/usagex"
@@ -341,6 +342,10 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("但若紧邻的上一条 AI 客服消息正在追问一个业务问题的偏好、条件、范围或选项，当前短回答属于该业务的连续补充：必须继承该业务 intent/subIntent，并将 intentTasks[].text 写成包含上一轮业务主题和当前补充条件的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应输出 hotel_info/surrounding_facilities 且 needsKnowledge=true，任务文本可写‘附近餐饮推荐，偏好麻辣口味’。没有紧邻业务追问时，独立短语不得从更早历史强行继承旧主题。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
+	if instruction := buildAdjacentAIReplyRelationInstruction(history); instruction != "" {
+		b.WriteString("\n\n")
+		b.WriteString(instruction)
+	}
 	mediaContext := currentAndRecentMediaText(req, history)
 	if mediaContext != "" {
 		b.WriteString("\n\n上下文中的媒体理解:\n")
@@ -389,6 +394,75 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	return b.String()
 }
 
+func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult) string {
+	aiReply, ok := immediatelyPreviousAIReply(history)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("【上一答复关系判断（仅本轮启用）】\n")
+	b.WriteString("紧邻上一条历史消息确为 AI 客服答复。必须结合此前客户原问题、这条紧邻 AI 答复和当前客户消息，判断客户是在继续业务，还是明确拒绝了上一答复；不能按‘不是、为什么、真的吗’等单个词机械匹配。\n")
+	if customerQuestion := customerMessageBeforeAdjacentAIReply(history); customerQuestion != "" {
+		b.WriteString("此前客户原问题：")
+		b.WriteString(preview(customerQuestion, 240))
+		b.WriteString("\n")
+	}
+	b.WriteString("紧邻 AI 客服答复：")
+	b.WriteString(preview(aiReply, 240))
+	b.WriteString("\n")
+	b.WriteString("关系标签只用于内部判断，不增加任何 JSON 字段：new_topic、normal_follow_up、clarification_answer、accepted、not_understood、answer_rejected、answer_contradicted、answer_unresolved。\n")
+	b.WriteString("只有以下语义关系输出 human_complaint_risk + answer_rejected，且 needsHumanRoute=true：客户明确否定上一答复；指出 AI 前后矛盾；指出答非所问并重申同一个问题；同一问题再次追问且上一答复仍未解决；拒绝 AI 给出的能力边界方案并要求无法满足的例外；引用真人客服说法或现场事实反驳上一答复。\n")
+	b.WriteString("以下不得输出 answer_rejected：提出独立新问题；正常补充收费、时间、支付等细节；正常回答 AI 刚才追问的房号、偏好、条件或选项；孤立的‘真的吗/为什么’但没有明确否定或矛盾；与上一业务答复无关的不满、吐槽或闲聊。此时按当前真实业务意图继续分类。")
+	return b.String()
+}
+
+func hasImmediatelyPreviousAIReply(history adapter.HistoryBuildResult) bool {
+	_, ok := immediatelyPreviousAIReply(history)
+	return ok
+}
+
+func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, bool) {
+	if history.LatestRawItem != nil {
+		item := *history.LatestRawItem
+		if item.SenderType != enums.IMSenderTypeAI {
+			return "", false
+		}
+		content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+		if content == "" {
+			return "", false
+		}
+		return content, true
+	}
+	if len(history.RawItems) == 0 {
+		return "", false
+	}
+	item := history.RawItems[len(history.RawItems)-1]
+	if item.SenderType != enums.IMSenderTypeAI {
+		return "", false
+	}
+	content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+	if content == "" {
+		return "", false
+	}
+	return content, true
+}
+
+func customerMessageBeforeAdjacentAIReply(history adapter.HistoryBuildResult) string {
+	if !hasImmediatelyPreviousAIReply(history) {
+		return ""
+	}
+	for i := len(history.RawItems) - 2; i >= 0; i-- {
+		item := history.RawItems[i]
+		if item.SenderType != enums.IMSenderTypeCustomer {
+			continue
+		}
+		if content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item)); content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
 func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, error) {
 	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
@@ -407,7 +481,7 @@ func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, erro
 	return parsed, nil
 }
 
-func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _ adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
+func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
 	intent.PrimaryIntent = canonicalIntentCode(intent.PrimaryIntent)
 	if intent.PrimaryIntent == "" {
 		intent.PrimaryIntent = canonicalIntentCode(intent.MatchedIntentCode)
@@ -436,6 +510,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.NeedsHumanRoute = false
 	}
 	intent.IntentTasks = normalizeRuntimeIntentTasks(intent.IntentTasks)
+	intent = enforceAnswerRejectedAdjacency(intent, history)
 	intent = deriveModelIntentFromTasks(intent)
 	if intentHasHotelVariableTask(intent) {
 		intent.ResourceActions = normalizeHotelVariableResourceActions(intent.ResourceActions, intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
@@ -535,6 +610,49 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, _
 		intent.MatchedConfig = strings.TrimSpace(config.Name)
 		intent.MatchMode = "model"
 	}
+	return intent
+}
+
+func enforceAnswerRejectedAdjacency(intent callbacks.IntentTraceData, history adapter.HistoryBuildResult) callbacks.IntentTraceData {
+	if hasImmediatelyPreviousAIReply(history) {
+		return intent
+	}
+	changedTask := false
+	for i := range intent.IntentTasks {
+		task := &intent.IntentTasks[i]
+		if task.Intent != "human_complaint_risk" || strings.TrimSpace(task.SubIntent) != "answer_rejected" {
+			continue
+		}
+		task.Intent = "interaction"
+		task.SubIntent = "frustration"
+		task.NeedsHumanRoute = false
+		task.NeedsKnowledge = false
+		task.NeedsResource = false
+		task.NeedsTool = false
+		task.ResourceAction = ""
+		changedTask = true
+	}
+	if canonicalIntentCode(intent.PrimaryIntent) != "human_complaint_risk" || strings.TrimSpace(intent.SubIntent) != "answer_rejected" {
+		if changedTask {
+			intent.Reason = appendIntentReason(intent.Reason, "answer_rejected ignored: immediately previous message is not an AI reply")
+		}
+		return intent
+	}
+	intent.PrimaryIntent = "interaction"
+	intent.MatchedIntentCode = "interaction"
+	if len(intent.IntentTasks) > 0 {
+		intent.SubIntent = ""
+	} else {
+		intent.SubIntent = "frustration"
+	}
+	intent.NeedsHumanRoute = false
+	intent.HumanRoutePolicy = ""
+	intent.NeedsKnowledge = false
+	intent.NeedsResource = false
+	intent.NeedsTool = false
+	intent.ResourceAction = ""
+	intent.ResourceActions = nil
+	intent.Reason = appendIntentReason(intent.Reason, "answer_rejected ignored: immediately previous message is not an AI reply")
 	return intent
 }
 
@@ -787,9 +905,9 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 
 func promptForModelDetectedIntent(intent callbacks.IntentTraceData, configs []models.ReplyIntentConfig) callbacks.IntentPromptTraceData {
 	if config, ok := findIntentConfigByCode(configs, intent.PrimaryIntent); ok {
-		return promptTraceFromConfig(config, intent)
+		return appendSpatialFactInstruction(promptTraceFromConfig(config, intent), intent)
 	}
-	return selectIntentPromptPack(intent)
+	return appendSpatialFactInstruction(selectIntentPromptPack(intent), intent)
 }
 
 func findIntentConfigByCode(configs []models.ReplyIntentConfig, code string) (models.ReplyIntentConfig, bool) {

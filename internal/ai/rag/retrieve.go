@@ -26,13 +26,14 @@ func (s *retrieve) Retrieve(ctx context.Context, req RetrieveRequest) ([]Retriev
 }
 
 type RetrieveTrace struct {
-	EmbeddingMs    int64
-	VectorSearchMs int64
-	HydrateMs      int64
-	Providers      []string
-	DatasetIDs     []string
-	RequestCount   int64
-	RerankCount    int64
+	EmbeddingMs            int64
+	VectorSearchMs         int64
+	HydrateMs              int64
+	Providers              []string
+	DatasetIDs             []string
+	FailedKnowledgeBaseIDs []int64
+	RequestCount           int64
+	RerankCount            int64
 }
 
 func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) ([]RetrieveResult, *RetrieveTrace, error) {
@@ -63,8 +64,9 @@ func (s *retrieve) RetrieveWithTrace(ctx context.Context, req RetrieveRequest) (
 		}
 	}
 	if len(fastGPTKnowledgeBases) > 0 {
-		fastGPTResults, fastGPTMs, err := s.retrieveFastGPTKnowledge(ctx, req, fastGPTKnowledgeBases)
+		fastGPTResults, fastGPTMs, failedKnowledgeBaseIDs, err := s.retrieveFastGPTKnowledge(ctx, req, fastGPTKnowledgeBases)
 		trace.VectorSearchMs += fastGPTMs
+		trace.FailedKnowledgeBaseIDs = append(trace.FailedKnowledgeBaseIDs, failedKnowledgeBaseIDs...)
 		if err != nil && len(results) == 0 {
 			return nil, trace, err
 		}

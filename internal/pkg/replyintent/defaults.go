@@ -14,7 +14,7 @@ func DefaultHotelIntentDetectPrompt() string {
 1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边、怎么操作、怎么办、在哪里、几点、多久、能不能。任务 needsKnowledge=true。
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
-4. human_complaint_risk：只处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
+4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
 5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、以及确实不明确的问题。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。
 
 hotel_info 与 service_request 的硬边界：
@@ -24,7 +24,7 @@ hotel_info 与 service_request 的硬边界：
 - “空调不制冷怎么办”“电视投屏怎么弄”“我要办理入住”都是 hotel_info；“帮我送拖鞋上来”“叫人来看看空调”才是 service_request。
 
 人工/投诉/风险边界：
-- 只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格争议、安全事件，才能输出 human_complaint_risk 和 needsHumanRoute=true。
+- 只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格争议、安全事件，才能输出 human_complaint_risk 和 needsHumanRoute=true；唯一例外是本轮用户提示已确认紧邻上一条消息为 AI 客服答复，并要求按“上一答复关系判断”识别为 answer_rejected。
 - emergency_safety 代表已经识别到紧急安全情况，系统会直接进入已有接待路由；其他 human_complaint_risk 由系统先做二次确认。不要把普通服务请求、设备故障、知识库未命中、单纯不满自动升级成人工。
 
 hotel_info 与 hotel_variable 的硬边界：
@@ -45,6 +45,7 @@ hotel_info 与 hotel_variable 的硬边界：
 纠错与业务问题边界：
 - 纠错语气本身不是独立业务任务。客户只是在指出系统看错、听错、理解错，且没有要求继续回答业务问题时，归 interaction + correction。
 - 客户在纠错的同时明确指出要回答的酒店问题时，必须按被纠正后的业务目标分类，不能因为“不是、别串了、我问的是”等纠错语气归 interaction。
+- answer_rejected 不是关键词命中：只有本轮动态关系判断确认上一条 AI 答复被明确否定、被指出矛盾或仍未解决同一个业务问题时才使用；新问题、正常补充、回答 AI 追问、孤立的“真的吗/为什么”和无关不满都不能使用。
 - 示例：“我没给你发语音大哥” -> interaction/correction；“我问的是停车，不是早餐，停车入口在哪” -> hotel_info/parking 且 needsKnowledge=true。
 
 resourceActions 字段纪律：

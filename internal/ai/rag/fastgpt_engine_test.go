@@ -30,7 +30,7 @@ func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
 	config.SetCurrent(&config.Config{FastGPT: config.FastGPTConfig{Enabled: true, BaseURL: server.URL, APIKey: "secret", TimeoutMS: 1000}})
 	t.Cleanup(func() { config.SetCurrent(&config.Config{}) })
 
-	results, _, err := Retrieve.retrieveFastGPTKnowledge(context.Background(), RetrieveRequest{Query: "有剃须刀吗", ContextMaxTokens: 2000}, []models.KnowledgeBase{
+	results, _, failedKnowledgeBaseIDs, err := Retrieve.retrieveFastGPTKnowledge(context.Background(), RetrieveRequest{Query: "有剃须刀吗", ContextMaxTokens: 2000}, []models.KnowledgeBase{
 		{ID: 3, DatasetID: "dataset-1", DefaultTopK: 5, DefaultScoreThreshold: 0.2, DefaultRerankLimit: 10},
 	})
 	if err != nil {
@@ -38,6 +38,9 @@ func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("results=%#v", results)
+	}
+	if len(failedKnowledgeBaseIDs) != 0 {
+		t.Fatalf("unexpected failed knowledge bases: %v", failedKnowledgeBaseIDs)
 	}
 	if requestedTokenLimit != fastGPTDefaultContextTokens {
 		t.Fatalf("requested token limit=%d want %d", requestedTokenLimit, fastGPTDefaultContextTokens)
@@ -48,6 +51,40 @@ func TestRetrieveFastGPTMapsQAToRetrieveResultWithoutFAQFields(t *testing.T) {
 	}
 	if result.FaqID != 0 || result.FaqQuestion != "" || result.Content != "问题：有剃须刀吗\n答案：前台自助柜可领取" {
 		t.Fatalf("unexpected mapping=%#v", result)
+	}
+}
+
+func TestRetrieveFastGPTReportsPartialKnowledgeBaseFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload := struct {
+			DatasetID string `json:"datasetId"`
+		}{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload.DatasetID == "store-dataset" {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"code":502,"message":"store dataset unavailable"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":200,"data":[{"id":"general-1","datasetId":"general-dataset","collectionId":"general-collection","sourceName":"通用库.xlsx","q":"有布草一客一换吗","a":"是的","score":0.9}]}`)
+	}))
+	defer server.Close()
+	config.SetCurrent(&config.Config{FastGPT: config.FastGPTConfig{Enabled: true, BaseURL: server.URL, APIKey: "secret", TimeoutMS: 1000, MaxRetries: 1}})
+	t.Cleanup(func() { config.SetCurrent(&config.Config{}) })
+
+	results, _, failedKnowledgeBaseIDs, err := Retrieve.retrieveFastGPTKnowledge(context.Background(), RetrieveRequest{Query: "有布草一客一换吗"}, []models.KnowledgeBase{
+		{ID: 3, DatasetID: "store-dataset"},
+		{ID: 4, DatasetID: "general-dataset"},
+	})
+	if err != nil {
+		t.Fatalf("partial failure should preserve successful raw results: %v", err)
+	}
+	if len(results) != 1 || results[0].KnowledgeBaseID != 4 {
+		t.Fatalf("successful general result missing: %#v", results)
+	}
+	if len(failedKnowledgeBaseIDs) != 1 || failedKnowledgeBaseIDs[0] != 3 {
+		t.Fatalf("failed knowledge bases=%v, want [3]", failedKnowledgeBaseIDs)
 	}
 }
 

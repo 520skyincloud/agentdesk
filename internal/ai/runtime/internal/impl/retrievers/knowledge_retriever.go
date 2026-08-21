@@ -50,6 +50,7 @@ type KnowledgeRetrieveResult struct {
 	KnowledgeBaseIDs []int64
 	Query            string
 	Options          KnowledgeRetrieveOptions
+	RawHits          []rag.RetrieveResult
 	Hits             []rag.RetrieveResult
 	ContextResults   []rag.RetrieveResult
 	ContextText      string
@@ -73,7 +74,14 @@ func DefaultKnowledgeRetrieveOptions() KnowledgeRetrieveOptions {
 }
 
 func (r *KnowledgeRetriever) KnowledgeBaseIDs() []int64 {
-	return utils.SplitInt64s(r.AIAgent.KnowledgeIDs)
+	_, knowledgeBaseIDs := r.knowledgeBaseLayers()
+	return knowledgeBaseIDs
+}
+
+func (r *KnowledgeRetriever) knowledgeBaseLayers() ([]int64, []int64) {
+	storeKnowledgeBaseIDs := normalizeRuntimeKnowledgeBaseIDs(utils.SplitInt64s(r.AIAgent.KnowledgeIDs))
+	knowledgeBaseIDs := services.ReplyRuntimeGeneralKnowledgeService.ResolveKnowledgeBaseIDs(storeKnowledgeBaseIDs)
+	return storeKnowledgeBaseIDs, knowledgeBaseIDs
 }
 
 func (r *KnowledgeRetriever) Retrieve(ctx context.Context, query string) ([]rag.RetrieveResult, *rag.RetrieveTrace, error) {
@@ -82,6 +90,10 @@ func (r *KnowledgeRetriever) Retrieve(ctx context.Context, query string) ([]rag.
 
 func (r *KnowledgeRetriever) RetrieveByOptions(ctx context.Context, opts KnowledgeRetrieveOptions, query string) ([]rag.RetrieveResult, *rag.RetrieveTrace, error) {
 	ids := r.KnowledgeBaseIDs()
+	return r.retrieveByKnowledgeBaseIDs(ctx, ids, opts, query)
+}
+
+func (r *KnowledgeRetriever) retrieveByKnowledgeBaseIDs(ctx context.Context, ids []int64, opts KnowledgeRetrieveOptions, query string) ([]rag.RetrieveResult, *rag.RetrieveTrace, error) {
 	return rag.Retrieve.RetrieveWithTrace(ctx, rag.RetrieveRequest{
 		Query:            query,
 		KnowledgeBaseIDs: ids,
@@ -97,7 +109,7 @@ func (r *KnowledgeRetriever) RetrieveContext(ctx context.Context, query string) 
 
 func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts KnowledgeRetrieveOptions, query string) (*KnowledgeRetrieveResult, error) {
 	query = strings.TrimSpace(query)
-	knowledgeBaseIDs := r.KnowledgeBaseIDs()
+	storeKnowledgeBaseIDs, knowledgeBaseIDs := r.knowledgeBaseLayers()
 	policies := r.resolvePolicies(knowledgeBaseIDs, opts)
 	contextMaxTokens := opts.ContextMaxTokens
 	if contextMaxTokens <= 0 {
@@ -127,23 +139,110 @@ func (r *KnowledgeRetriever) RetrieveContextByOptions(ctx context.Context, opts 
 		return ret, nil
 	}
 	retrieveStartedAt := time.Now()
-	results, trace, err := r.RetrieveByOptions(ctx, opts, query)
+	results, trace, err := r.retrieveByKnowledgeBaseIDs(ctx, knowledgeBaseIDs, opts, query)
 	retrieveMs := time.Since(retrieveStartedAt).Milliseconds()
 	if err != nil {
 		return nil, err
 	}
-	ret.Hits = append([]rag.RetrieveResult(nil), results...)
+	if shouldBlockGeneralKnowledgeFallback(storeKnowledgeBaseIDs, results, trace) {
+		slog.Warn("store knowledge lookup failed while general knowledge returned results", "store_knowledge_base_ids", storeKnowledgeBaseIDs, "failed_knowledge_base_ids", trace.FailedKnowledgeBaseIDs)
+		return nil, fmt.Errorf("store knowledge lookup failed")
+	}
+	applyKnowledgeBasePriority(ret, storeKnowledgeBaseIDs, knowledgeBaseIDs, results)
 	ret.Trace = trace
-	ret.ContextResults = rag.Retrieve.SelectContextResults(results, contextMaxTokens)
+	ret.ContextResults = rag.Retrieve.SelectContextResults(ret.Hits, contextMaxTokens)
 	ret.ContextResults = limitContextResults(ret.ContextResults, maxContextItems)
 	ret.ContextText = strings.TrimSpace(buildContextText(ret.ContextResults))
-	ret.TopScore = resolveTopScore(results)
-	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, results)
+	ret.TopScore = resolveTopScore(ret.Hits)
+	ret.AnswerMode = resolveRuntimeAnswerMode(knowledgeBaseIDs, ret.Hits)
 	ret.TraceItems = buildRetrieverTraceItems(queryPreview, results, ret.ContextResults, trace)
 	ret.TraceSummary = buildRetrieverTraceSummary(ret.Options, ret.Policies, ret.ContextResults, results, trace)
 	r.writeRuntimeRetrieveLog(ctx, query, retrieveMs, ret)
 	r.writeKnowledgeUsageEvent(ctx, retrieveMs, ret)
 	return ret, nil
+}
+
+func storeKnowledgeBaseLookupFailed(storeKnowledgeBaseIDs []int64, trace *rag.RetrieveTrace) bool {
+	if len(storeKnowledgeBaseIDs) == 0 || trace == nil || len(trace.FailedKnowledgeBaseIDs) == 0 {
+		return false
+	}
+	storeSet := make(map[int64]struct{}, len(storeKnowledgeBaseIDs))
+	for _, knowledgeBaseID := range storeKnowledgeBaseIDs {
+		storeSet[knowledgeBaseID] = struct{}{}
+	}
+	for _, knowledgeBaseID := range trace.FailedKnowledgeBaseIDs {
+		if _, ok := storeSet[knowledgeBaseID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldBlockGeneralKnowledgeFallback(storeKnowledgeBaseIDs []int64, rawHits []rag.RetrieveResult, trace *rag.RetrieveTrace) bool {
+	return len(selectKnowledgeBaseHits(storeKnowledgeBaseIDs, rawHits)) == 0 &&
+		storeKnowledgeBaseLookupFailed(storeKnowledgeBaseIDs, trace)
+}
+
+func applyKnowledgeBasePriority(result *KnowledgeRetrieveResult, storeKnowledgeBaseIDs, knowledgeBaseIDs []int64, rawHits []rag.RetrieveResult) {
+	if result == nil {
+		return
+	}
+	result.RawHits = append([]rag.RetrieveResult(nil), rawHits...)
+	result.Hits = selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs, rawHits)
+}
+
+func selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs []int64, rawHits []rag.RetrieveResult) []rag.RetrieveResult {
+	if len(knowledgeBaseIDs) == 0 || len(rawHits) == 0 {
+		return nil
+	}
+	if selected := selectKnowledgeBaseHits(storeKnowledgeBaseIDs, rawHits); len(selected) > 0 {
+		return selected
+	}
+	storeSet := make(map[int64]struct{}, len(storeKnowledgeBaseIDs))
+	for _, knowledgeBaseID := range storeKnowledgeBaseIDs {
+		storeSet[knowledgeBaseID] = struct{}{}
+	}
+	generalKnowledgeBaseIDs := make([]int64, 0, len(knowledgeBaseIDs))
+	for _, knowledgeBaseID := range knowledgeBaseIDs {
+		if _, ok := storeSet[knowledgeBaseID]; ok {
+			continue
+		}
+		generalKnowledgeBaseIDs = append(generalKnowledgeBaseIDs, knowledgeBaseID)
+	}
+	return selectKnowledgeBaseHits(generalKnowledgeBaseIDs, rawHits)
+}
+
+func selectKnowledgeBaseHits(knowledgeBaseIDs []int64, rawHits []rag.RetrieveResult) []rag.RetrieveResult {
+	if len(knowledgeBaseIDs) == 0 || len(rawHits) == 0 {
+		return nil
+	}
+	allowed := make(map[int64]struct{}, len(knowledgeBaseIDs))
+	for _, knowledgeBaseID := range knowledgeBaseIDs {
+		allowed[knowledgeBaseID] = struct{}{}
+	}
+	selected := make([]rag.RetrieveResult, 0, len(rawHits))
+	for _, hit := range rawHits {
+		if _, ok := allowed[hit.KnowledgeBaseID]; ok {
+			selected = append(selected, hit)
+		}
+	}
+	return selected
+}
+
+func normalizeRuntimeKnowledgeBaseIDs(knowledgeBaseIDs []int64) []int64 {
+	ret := make([]int64, 0, len(knowledgeBaseIDs))
+	seen := make(map[int64]struct{}, len(knowledgeBaseIDs))
+	for _, knowledgeBaseID := range knowledgeBaseIDs {
+		if knowledgeBaseID <= 0 {
+			continue
+		}
+		if _, ok := seen[knowledgeBaseID]; ok {
+			continue
+		}
+		seen[knowledgeBaseID] = struct{}{}
+		ret = append(ret, knowledgeBaseID)
+	}
+	return ret
 }
 
 func (r *KnowledgeRetriever) writeKnowledgeUsageEvent(ctx context.Context, retrieveMs int64, result *KnowledgeRetrieveResult) {
@@ -200,7 +299,11 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 	if result == nil || len(result.KnowledgeBaseIDs) == 0 {
 		return
 	}
-	hits := buildKnowledgeSearchResults(result.Hits)
+	rawHits := result.RawHits
+	if rawHits == nil {
+		rawHits = result.Hits
+	}
+	hits := buildKnowledgeSearchResults(rawHits)
 	usedHits := buildKnowledgeSearchResults(result.ContextResults)
 	answerStatus := int(enums.KnowledgeAnswerStatusNormal)
 	if len(hits) == 0 {
@@ -225,8 +328,8 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 		RerankEnabled:      false,
 		Hits:               hits,
 		UsedHits:           usedHits,
-		HitSourceRecordIDs: retrieveSourceRecordIDs(result.Hits),
-		UsedHitRankNos:     resolveUsedHitRankNos(result.Hits, result.ContextResults),
+		HitSourceRecordIDs: retrieveSourceRecordIDs(rawHits),
+		UsedHitRankNos:     resolveUsedHitRankNos(rawHits, result.ContextResults),
 		RetrieveMs:         retrieveMs,
 		LatencyMs:          retrieveMs,
 		ModelName:          "runtime-retriever",
@@ -287,10 +390,14 @@ func runtimeRetrieveChunkProvider(result *KnowledgeRetrieveResult) string {
 	if result == nil {
 		return "runtime"
 	}
-	if len(result.Hits) == 0 {
+	rawHits := result.RawHits
+	if rawHits == nil {
+		rawHits = result.Hits
+	}
+	if len(rawHits) == 0 {
 		return "runtime_empty"
 	}
-	return inferRuntimeRetrieveSourceType(buildKnowledgeSearchResults(result.Hits))
+	return inferRuntimeRetrieveSourceType(buildKnowledgeSearchResults(rawHits))
 }
 
 func limitContextResults(results []rag.RetrieveResult, maxItems int) []rag.RetrieveResult {

@@ -2,9 +2,11 @@
 
 ## Boundary
 
-This integration keeps the existing reply runtime unchanged. It does not
-change intent detection, prompt packs, JSON schema, retrieval parameters,
-variables, media processing, conversation routing, or human handoff.
+The managed integration itself does not change variables, media processing,
+the public API, conversation state, or the human-handoff state machine.
+Reply-runtime policy may select more than one Store-owned dataset as described
+below, while keeping one Intent call, parallel retrieval, and one Generate
+call.
 
 The managed topology is:
 
@@ -13,8 +15,37 @@ Agent Desk Store -> FastGPT managed Team -> FastGPT Datasets
 ```
 
 One Store maps to one FastGPT Team. A Store can own several datasets. Each
-WeCom employee account selects one current knowledge base, and only that
-dataset is used for subsequent reply retrieval.
+WeCom employee account selects its store-specific knowledge base. An optional
+Store-owned general knowledge base may be appended by runtime configuration;
+it never replaces or crosses the Store boundary.
+
+## Reply-runtime knowledge layers
+
+The optional mapping is stored in `SystemConfig` under
+`reply_runtime.general_knowledge_base_by_store` as Store ID to Agent Desk
+knowledge-base ID, for example `{"1":"4"}`. The mapped knowledge base must be
+enabled, belong to the same Store, use FastGPT, and have a dataset ID. Invalid
+or missing mappings preserve the existing store-only behavior.
+
+For every atomic task, the store-specific and general datasets are searched in
+parallel with their existing thresholds. The result is selected by layer:
+
+```text
+store layer has an effective hit -> expose only store hits
+store layer has no effective hit -> expose general hits
+```
+
+Scores are not compared across layers. Raw results from both layers remain in
+the retrieval trace for diagnosis, while Generate and handoff directives see
+only the selected layer. If a store-layer lookup fails, runtime must not treat
+that failure as a clean miss and fall back to general knowledge.
+
+The same release also adds two scoped prompt policies without adding model
+calls: `answer_rejected` is disclosed to Intent only when the physically
+adjacent previous message is an ordinary AI reply, and spatial fact rules are
+disclosed to Generate only for `surrounding_facilities` or `location_info`
+tasks. Neither policy changes the existing confirmation/cancel handoff state
+machine.
 
 ## Credentials and isolation
 

@@ -17,6 +17,7 @@ const defaultHistoryLimit = 15
 type HistoryBuildResult struct {
 	Messages        []*schema.Message
 	RawItems        []models.Message
+	LatestRawItem   *models.Message
 	MemoryMessage   *schema.Message
 	MemorySource    string
 	MemoryItemCount int
@@ -49,6 +50,10 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 	ret := HistoryBuildResult{
 		Messages: make([]*schema.Message, 0, len(items)),
 		RawItems: make([]models.Message, 0, len(items)),
+	}
+	if len(items) > 0 {
+		latest := items[len(items)-1]
+		ret.LatestRawItem = &latest
 	}
 	for _, item := range items {
 		msg := BuildSchemaMessage(&item)

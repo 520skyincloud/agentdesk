@@ -215,6 +215,8 @@ func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testi
 		"紧邻的上一条 AI 客服消息正在就一个业务问题追问偏好、条件、范围或选项",
 		"附近餐饮推荐，偏好麻辣口味",
 		"不能从更早历史里挑一个旧主题强行续接",
+		"answer_rejected 只有本轮用户提示明确启用",
+		"answer_rejected 不是关键词命中",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent prompt missing follow-up rule %q: %s", expected, prompt)
@@ -232,6 +234,135 @@ func TestBuildRuntimeIntentDetectUserPromptMarksShortBusinessFollowUp(t *testing
 	for _, expected := range []string{"麻辣口味的", "附近餐饮想吃什么口味", "hotel_info/surrounding_facilities", "完整检索问题"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("user prompt missing follow-up context %q: %s", expected, prompt)
+		}
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptDisclosesAnswerRelationOnlyAfterAIReply(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "你刚才不是说要开车吗？"}}
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "小丁小吃能走过去吗"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "走路几分钟就能到。"},
+	}}
+	prompt := buildRuntimeIntentDetectUserPrompt(req, history, nil)
+	for _, expected := range []string{
+		"上一答复关系判断（仅本轮启用）",
+		"此前客户原问题",
+		"紧邻 AI 客服答复",
+		"answer_rejected",
+		"answer_contradicted",
+		"答非所问",
+		"引用真人客服说法或现场事实",
+		"不能按‘不是、为什么、真的吗’等单个词机械匹配",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("answer relation prompt missing %q: %s", expected, prompt)
+		}
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptDoesNotDiscloseAnswerRelationWithoutAdjacentAIReply(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{ID: 4, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "为什么"}}
+	tests := []struct {
+		name    string
+		history adapter.HistoryBuildResult
+	}{
+		{name: "no history"},
+		{name: "previous customer", history: adapter.HistoryBuildResult{RawItems: []models.Message{{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点"}}}},
+		{name: "previous human agent", history: adapter.HistoryBuildResult{RawItems: []models.Message{{ID: 3, SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "早餐到十点"}}}},
+		{name: "older ai but adjacent customer", history: adapter.HistoryBuildResult{RawItems: []models.Message{
+			{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "早餐到十点"},
+			{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "好的"},
+		}}},
+		{name: "standalone one reply is the physical latest message", history: adapter.HistoryBuildResult{
+			RawItems: []models.Message{{ID: 1, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "早餐到十点"}},
+			LatestRawItem: &models.Message{
+				ID:          3,
+				SenderType:  enums.IMSenderTypeAI,
+				MessageType: enums.IMMessageTypeText,
+				Content:     "欢迎入住",
+				ClientMsgID: "ai_reply_faq_one_fixed",
+			},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := buildRuntimeIntentDetectUserPrompt(req, tc.history, nil)
+			if strings.Contains(prompt, "上一答复关系判断（仅本轮启用）") {
+				t.Fatalf("answer relation prompt must stay hidden without an adjacent AI reply: %s", prompt)
+			}
+		})
+	}
+}
+
+func TestNormalizeAnswerRejectedRequiresAdjacentAIReply(t *testing.T) {
+	base := callbacks.IntentTraceData{
+		PrimaryIntent:    "human_complaint_risk",
+		SubIntent:        "answer_rejected",
+		IntentConfidence: 0.9,
+		ShouldReply:      true,
+		NeedsHumanRoute:  true,
+		Reason:           "客户指出上一答复矛盾",
+	}
+	withAI := normalizeModelIntentTrace(base, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{{
+		ID:          1,
+		SenderType:  enums.IMSenderTypeAI,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "可以走路过去。",
+	}}}, nil)
+	if withAI.PrimaryIntent != "human_complaint_risk" || withAI.SubIntent != "answer_rejected" || !withAI.NeedsHumanRoute || withAI.HumanRoutePolicy != "managed_mode" {
+		t.Fatalf("expected adjacent AI answer rejection to use existing human route, got %#v", withAI)
+	}
+
+	withoutAI := normalizeModelIntentTrace(base, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{{
+		ID:          1,
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "真的吗",
+	}}}, nil)
+	if withoutAI.PrimaryIntent != "interaction" || withoutAI.SubIntent != "frustration" || withoutAI.NeedsHumanRoute || withoutAI.HumanRoutePolicy != "" {
+		t.Fatalf("expected detached answer_rejected to be downgraded safely, got %#v", withoutAI)
+	}
+}
+
+func TestIntentPromptPackDisclosesSpatialFactsOnlyForSpatialTasks(t *testing.T) {
+	for _, intent := range []callbacks.IntentTraceData{
+		{PrimaryIntent: "hotel_info", SubIntent: "surrounding_facilities"},
+		{PrimaryIntent: "hotel_info", SubIntent: "location_info"},
+		{PrimaryIntent: "hotel_variable", SubIntent: "mini_program", IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_variable", SubIntent: "mini_program"},
+			{Intent: "hotel_info", SubIntent: "surrounding_facilities", Text: "附近有什么吃的"},
+		}},
+	} {
+		joined := strings.Join(selectIntentPromptPack(intent).Instructions, "\n")
+		for _, expected := range []string{"仅适用于本轮周边/位置任务", "地点是否存在", "具体地址", "交通方式", "预计时间", "完整路线", "不能跨维度推断"} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("spatial task prompt missing %q: %s", expected, joined)
+			}
+		}
+	}
+
+	configured := promptForModelDetectedIntent(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		SubIntent:     "surrounding_facilities",
+	}, []models.ReplyIntentConfig{{
+		Code:       "hotel_info",
+		PromptPack: "使用当前门店知识回答。",
+	}})
+	configuredText := strings.Join(configured.Instructions, "\n")
+	if !strings.Contains(configuredText, "仅适用于本轮周边/位置任务") || !strings.Contains(configuredText, "使用当前门店知识回答") {
+		t.Fatalf("configured prompt must retain its rules and append spatial facts: %s", configuredText)
+	}
+
+	for _, intent := range []callbacks.IntentTraceData{
+		{PrimaryIntent: "hotel_info", SubIntent: "breakfast"},
+		{PrimaryIntent: "hotel_info", SubIntent: "parking"},
+		{PrimaryIntent: "interaction", SubIntent: "chat"},
+		{PrimaryIntent: "hotel_variable", SubIntent: "location_info"},
+	} {
+		joined := strings.Join(selectIntentPromptPack(intent).Instructions, "\n")
+		if strings.Contains(joined, "仅适用于本轮周边/位置任务") {
+			t.Fatalf("spatial fact prompt leaked into unrelated intent %#v: %s", intent, joined)
 		}
 	}
 }
