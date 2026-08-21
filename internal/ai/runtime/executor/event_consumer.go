@@ -54,7 +54,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			replyText = normalizeGeneratedReplyParts(
 				replyText,
 				collector.Data.Pipeline.ReplyPlan,
-				collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs,
+				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff,
 			)
 			if looksLikeBareToolCallText(replyText) {
 				continue

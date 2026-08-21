@@ -172,18 +172,32 @@ func fallbackAnswerabilityPassThrough(ctx context.Context, state *answerabilityG
 }
 
 func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string, intent callbacks.IntentTraceData) (*runtimeKnowledgeRetrieveBatch, error) {
-	queries := mergeRuntimeKnowledgeQueries(query, knowledgeQueriesFromIntentTasks(intent))
-	if len(queries) == 0 && strings.TrimSpace(query) != "" {
+	nonKnowledgeQueries := nonKnowledgeQueriesFromIntentTasks(intent)
+	queries := mergeRuntimeKnowledgeQueries(
+		query,
+		knowledgeQueriesFromIntentTasks(intent),
+		nonKnowledgeQueries,
+	)
+	if len(queries) == 0 && len(nonKnowledgeQueries) == 0 && strings.TrimSpace(query) != "" {
 		queries = []string{strings.TrimSpace(query)}
 	}
 	return retrieveContextForRuntimeQuestionList(ctx, retriever, opts, query, queries)
 }
 
-func mergeRuntimeKnowledgeQueries(query string, taskQueries []string) []string {
+func mergeRuntimeKnowledgeQueries(query string, taskQueries []string, nonKnowledgeQueries []string) []string {
 	burstQueries := splitRuntimeKnowledgeQueries(query)
-	if len(burstQueries) <= 1 || len(taskQueries) == 0 {
+	if len(taskQueries) == 0 && len(nonKnowledgeQueries) == 0 {
+		return burstQueries
+	}
+	if len(burstQueries) <= 1 {
 		if len(taskQueries) > 0 {
 			return append([]string(nil), taskQueries...)
+		}
+		if len(burstQueries) == 1 && runtimeKnowledgeQueryMatchesAny(nonKnowledgeQueries, burstQueries[0]) {
+			if residual := runtimeKnowledgeResidualQueries(burstQueries[0], nonKnowledgeQueries); len(residual) > 0 {
+				return residual
+			}
+			return nil
 		}
 		return burstQueries
 	}
@@ -204,6 +218,9 @@ func mergeRuntimeKnowledgeQueries(query string, taskQueries []string) []string {
 			usedTasks[matched] = true
 			continue
 		}
+		if runtimeKnowledgeQueryMatchesAny(nonKnowledgeQueries, burstQuery) {
+			continue
+		}
 		if runtimeBurstLineLooksLikeTask(burstQuery) {
 			ret = appendRuntimeKnowledgeQuery(ret, burstQuery)
 		}
@@ -212,6 +229,35 @@ func mergeRuntimeKnowledgeQueries(query string, taskQueries []string) []string {
 		if !usedTasks[index] {
 			ret = appendRuntimeKnowledgeQuery(ret, taskQuery)
 		}
+	}
+	return ret
+}
+
+func runtimeKnowledgeQueryMatchesAny(queries []string, query string) bool {
+	for _, candidate := range queries {
+		if runtimeKnowledgeQueryCovers(candidate, query) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeKnowledgeResidualQueries(query string, nonKnowledgeQueries []string) []string {
+	parts := strings.FieldsFunc(strings.TrimSpace(currentTurnDisplayText(query)), func(r rune) bool {
+		switch r {
+		case '\n', '\r', ',', '，', '.', '。', ';', '；', '?', '？', '!', '！':
+			return true
+		default:
+			return false
+		}
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = cleanRuntimeQuestionLine(part)
+		if part == "" || isRuntimeBurstStructureLine(part) || runtimeKnowledgeQueryMatchesAny(nonKnowledgeQueries, part) || !runtimeBurstLineLooksLikeTask(part) {
+			continue
+		}
+		ret = appendRuntimeKnowledgeQuery(ret, part)
 	}
 	return ret
 }
@@ -273,6 +319,30 @@ func knowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []string 
 			continue
 		}
 		seen[query] = true
+		ret = append(ret, query)
+	}
+	return ret
+}
+
+func nonKnowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []string {
+	ret := make([]string, 0, len(intent.IntentTasks))
+	seen := map[string]bool{}
+	for _, task := range intent.IntentTasks {
+		if task.NeedsKnowledge || task.Intent == "hotel_info" {
+			continue
+		}
+		if !task.NeedsResource && !task.NeedsTool && !task.NeedsHumanRoute && task.Intent != "hotel_variable" && task.Intent != "human_complaint_risk" {
+			continue
+		}
+		query := strings.TrimSpace(task.Text)
+		if query == "" {
+			continue
+		}
+		normalized := normalizeRuntimeKnowledgeQuery(query)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
 		ret = append(ret, query)
 	}
 	return ret
@@ -611,6 +681,91 @@ func splitRuntimeKnowledgeQuestionDispositions(items []runtimeKnowledgeQuestionD
 	return answered, pending
 }
 
+func rebuildRuntimeKnowledgeReplyPlan(
+	plan callbacks.ReplyPlanTraceData,
+	questions []runtimeKnowledgeQuestionResult,
+	pending []runtimeKnowledgeQuestionDisposition,
+	excludePending bool,
+) callbacks.ReplyPlanTraceData {
+	pendingTaskIDs := make(map[string]bool, len(pending))
+	if excludePending {
+		for _, item := range pending {
+			pendingTaskIDs[strings.TrimSpace(item.TaskID)] = true
+		}
+	}
+
+	usedPlanTasks := make([]bool, len(plan.TaskPlans))
+	activeKnowledgeTasks := make([]callbacks.ReplyTaskPlanTraceData, 0, len(questions))
+	for _, question := range questions {
+		if pendingTaskIDs[strings.TrimSpace(question.TaskID)] {
+			continue
+		}
+		query := strings.TrimSpace(question.Query)
+		if query == "" {
+			continue
+		}
+		task := callbacks.ReplyTaskPlanTraceData{
+			Intent: "hotel_info",
+			Text:   query,
+			Output: "knowledge_text_reply",
+		}
+		matchedPlanIndex := -1
+		for index, candidate := range plan.TaskPlans {
+			if usedPlanTasks[index] || !runtimeReplyTaskUsesKnowledge(candidate) || !runtimeKnowledgeQueryCovers(candidate.Text, query) {
+				continue
+			}
+			matchedPlanIndex = index
+			break
+		}
+		if matchedPlanIndex < 0 {
+			for index, candidate := range plan.TaskPlans {
+				if usedPlanTasks[index] || !runtimeReplyTaskUsesKnowledge(candidate) || strings.TrimSpace(candidate.Text) != "" {
+					continue
+				}
+				matchedPlanIndex = index
+				break
+			}
+		}
+		if matchedPlanIndex >= 0 {
+			usedPlanTasks[matchedPlanIndex] = true
+			task = plan.TaskPlans[matchedPlanIndex]
+			task.Text = query
+			task.Output = "knowledge_text_reply"
+			if strings.TrimSpace(task.Intent) == "" {
+				task.Intent = "hotel_info"
+			}
+		}
+		activeKnowledgeTasks = append(activeKnowledgeTasks, task)
+	}
+
+	rebuilt := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plan.TaskPlans)+len(activeKnowledgeTasks))
+	insertedKnowledgeTasks := false
+	for _, task := range plan.TaskPlans {
+		if runtimeReplyTaskUsesKnowledge(task) {
+			if !insertedKnowledgeTasks {
+				rebuilt = append(rebuilt, activeKnowledgeTasks...)
+				insertedKnowledgeTasks = true
+			}
+			continue
+		}
+		rebuilt = append(rebuilt, task)
+	}
+	if !insertedKnowledgeTasks && len(activeKnowledgeTasks) > 0 {
+		rebuilt = append(activeKnowledgeTasks, rebuilt...)
+	}
+	plan.TaskPlans = rebuilt
+	return plan
+}
+
+func runtimeReplyTaskUsesKnowledge(task callbacks.ReplyTaskPlanTraceData) bool {
+	output := strings.TrimSpace(task.Output)
+	intent := strings.TrimSpace(task.Intent)
+	if output == "structured_resource_commit" || output == "human_route_confirmation_or_dispatch" || intent == "hotel_variable" {
+		return false
+	}
+	return output == "knowledge_text_reply" || intent == "hotel_info"
+}
+
 func clearDeferredRuntimeKnowledgeQuestions(batch *runtimeKnowledgeRetrieveBatch, pending []runtimeKnowledgeQuestionDisposition) {
 	if batch == nil || len(pending) == 0 {
 		return
@@ -821,8 +976,17 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		state.recordAnswerability(answerabilityStatusNoContext, "no retrieved context", nil)
 		return state, nil
 	}
+	willRequestHandoff := len(pendingQuestions) > 0 && services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
+	if state.Input.Collector != nil {
+		activePlan := rebuildRuntimeKnowledgeReplyPlan(
+			state.Input.Collector.Data.Pipeline.ReplyPlan,
+			batch.Questions,
+			pendingQuestions,
+			willRequestHandoff,
+		)
+		state.Input.Collector.SetReplyPlan(activePlan)
+	}
 	if len(pendingQuestions) > 0 {
-		willRequestHandoff := services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
 		clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
 		result = batch.Merged
 		deferredInstruction = buildDeferredRuntimeKnowledgeInstruction(pendingQuestions, willRequestHandoff)

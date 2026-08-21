@@ -107,7 +107,7 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 
 func TestMergeRuntimeKnowledgeQueriesBackfillsIntentMissedBurstQuestions(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪"
-	got := mergeRuntimeKnowledgeQueries(query, []string{"剃须刀在哪"})
+	got := mergeRuntimeKnowledgeQueries(query, []string{"剃须刀在哪"}, nil)
 	want := []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("expected uncovered burst questions to be restored in customer order, got %#v", got)
@@ -116,10 +116,177 @@ func TestMergeRuntimeKnowledgeQueriesBackfillsIntentMissedBurstQuestions(t *test
 
 func TestMergeRuntimeKnowledgeQueriesDoesNotTurnPureContextIntoTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 好困啊\n2. [消息] 有没有咖啡"
-	got := mergeRuntimeKnowledgeQueries(query, []string{"有没有咖啡"})
+	got := mergeRuntimeKnowledgeQueries(query, []string{"有没有咖啡"}, nil)
 	want := []string{"有没有咖啡"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("expected pure context to remain attached to the actual question, got %#v", got)
+	}
+}
+
+func TestMergeRuntimeKnowledgeQueriesSkipsExplicitResourceTasks(t *testing.T) {
+	tests := []struct {
+		name          string
+		query         string
+		knowledgeTask string
+		resourceTask  string
+	}{
+		{
+			name:          "location resource before breakfast knowledge",
+			query:         "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点",
+			knowledgeTask: "早餐几点",
+			resourceTask:  "定位发我",
+		},
+		{
+			name:          "knowledge before repeated location resource",
+			query:         "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [语音] 洗衣房在哪\n2. [消息] 定位再发我",
+			knowledgeTask: "洗衣房在哪",
+			resourceTask:  "定位再发我",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{
+				{Intent: "hotel_info", Text: tt.knowledgeTask, NeedsKnowledge: true},
+				{Intent: "hotel_variable", Text: tt.resourceTask, NeedsResource: true, ResourceAction: "provide_location"},
+			}}
+			got := mergeRuntimeKnowledgeQueries(
+				tt.query,
+				knowledgeQueriesFromIntentTasks(intent),
+				nonKnowledgeQueriesFromIntentTasks(intent),
+			)
+			want := []string{tt.knowledgeTask}
+			if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+				t.Fatalf("expected only the knowledge task to be retrieved, got %#v", got)
+			}
+		})
+	}
+}
+
+func TestMergeRuntimeKnowledgeQueriesFiltersResourceWhenIntentMissedKnowledgeTask(t *testing.T) {
+	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
+	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})
+	want := []string{"早餐几点"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected the missed knowledge question to be restored without retrieving the resource task, got %#v", got)
+	}
+}
+
+func TestMergeRuntimeKnowledgeQueriesKeepsSingleLineKnowledgeResidual(t *testing.T) {
+	tests := []struct {
+		query       string
+		resource    string
+		wantQueries []string
+	}{
+		{query: "定位发我，早餐几点", resource: "定位发我", wantQueries: []string{"早餐几点"}},
+		{query: "定位发我，早餐几点", resource: "定位", wantQueries: []string{"早餐几点"}},
+		{query: "把入住小程序发我，空调坏了怎么办", resource: "把入住小程序发我", wantQueries: []string{"空调坏了怎么办"}},
+		{query: "把入住小程序发我，空调坏了怎么办", resource: "入住小程序", wantQueries: []string{"空调坏了怎么办"}},
+	}
+	for _, tt := range tests {
+		got := mergeRuntimeKnowledgeQueries(tt.query, nil, []string{tt.resource})
+		if strings.Join(got, "\x00") != strings.Join(tt.wantQueries, "\x00") {
+			t.Fatalf("expected residual knowledge queries %#v for %q, got %#v", tt.wantQueries, tt.query, got)
+		}
+	}
+}
+
+func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
+	tests := []struct {
+		name      string
+		plan      callbacks.ReplyPlanTraceData
+		questions []runtimeKnowledgeQuestionResult
+		pending   []runtimeKnowledgeQuestionDisposition
+		want      []string
+	}{
+		{
+			name: "restored deferred question appears before planned answer",
+			plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+				{Intent: "hotel_info", SubIntent: "breakfast", Text: "顺便问早餐几点", Output: "knowledge_text_reply"},
+			}},
+			questions: []runtimeKnowledgeQuestionResult{
+				{TaskID: "T1", Query: "空调坏了，我住1302"},
+				{TaskID: "T2", Query: "顺便问早餐几点"},
+			},
+			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			want:    []string{"顺便问早餐几点"},
+		},
+		{
+			name: "restored answer appears before planned deferred question",
+			plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+				{Intent: "service_request", SubIntent: "air_conditioner", Text: "空调坏了，我住1302", Output: "knowledge_text_reply"},
+			}},
+			questions: []runtimeKnowledgeQuestionResult{
+				{TaskID: "T1", Query: "顺便问早餐几点"},
+				{TaskID: "T2", Query: "空调坏了，我住1302"},
+			},
+			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T2", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			want:    []string{"顺便问早餐几点"},
+		},
+		{
+			name: "intent task order differs from customer question order",
+			plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+				{Intent: "hotel_info", SubIntent: "breakfast", Text: "顺便问早餐几点", Output: "knowledge_text_reply"},
+				{Intent: "service_request", SubIntent: "air_conditioner", Text: "空调坏了，我住1302", Output: "knowledge_text_reply"},
+			}},
+			questions: []runtimeKnowledgeQuestionResult{
+				{TaskID: "T1", Query: "空调坏了，我住1302"},
+				{TaskID: "T2", Query: "顺便问早餐几点"},
+			},
+			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			want:    []string{"顺便问早餐几点"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rebuildRuntimeKnowledgeReplyPlan(tt.plan, tt.questions, tt.pending, true)
+			texts := make([]string, 0, len(got.TaskPlans))
+			for _, task := range got.TaskPlans {
+				if runtimeReplyTaskUsesKnowledge(task) {
+					texts = append(texts, task.Text)
+				}
+			}
+			if strings.Join(texts, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Fatalf("expected active knowledge tasks %#v, got %#v", tt.want, texts)
+			}
+		})
+	}
+}
+
+func TestRebuildRuntimeKnowledgeReplyPlanRestoresEveryAnswerableBurstQuestion(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", SubIntent: "supplies_self_help", Text: "剃须刀在哪", Output: "knowledge_text_reply"},
+	}}
+	questions := []runtimeKnowledgeQuestionResult{
+		{TaskID: "T1", Query: "早餐有吗"},
+		{TaskID: "T2", Query: "停车免费吗"},
+		{TaskID: "T3", Query: "剃须刀在哪"},
+	}
+	got := rebuildRuntimeKnowledgeReplyPlan(plan, questions, nil, false)
+	texts := make([]string, 0, len(got.TaskPlans))
+	for _, task := range got.TaskPlans {
+		if runtimeReplyTaskUsesKnowledge(task) {
+			texts = append(texts, task.Text)
+		}
+	}
+	want := []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}
+	if strings.Join(texts, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected restored tasks in customer order %#v, got %#v", want, texts)
+	}
+}
+
+func TestRebuildRuntimeKnowledgeReplyPlanPreservesBlankServiceRequestTask(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "service_request", SubIntent: "air_conditioner", Output: "knowledge_text_reply"},
+	}}
+	questions := []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: "空调坏了"}}
+	got := rebuildRuntimeKnowledgeReplyPlan(plan, questions, nil, false)
+	if len(got.TaskPlans) != 1 {
+		t.Fatalf("expected one rebuilt task, got %#v", got.TaskPlans)
+	}
+	task := got.TaskPlans[0]
+	if task.Intent != "service_request" || task.SubIntent != "air_conditioner" || task.Text != "空调坏了" {
+		t.Fatalf("expected the original service request semantics to survive query binding, got %#v", task)
 	}
 }
 

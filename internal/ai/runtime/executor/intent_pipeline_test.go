@@ -842,7 +842,7 @@ func TestRuntimePipelineHotelVariableMixedHotelInfoRequiresKnowledge(t *testing.
 			t.Fatalf("generate prompt must not expose variable task names %q: %s", forbidden, plan.Prompt)
 		}
 	}
-	scope := buildGenerationScopeInstruction(plan.Intent)
+	scope := buildGenerationScopeInstruction(plan.Intent, plan.ReplyPlan)
 	if !strings.Contains(scope, "本阶段只输出酒店信息任务的文本答案") || !strings.Contains(scope, "停车") || !strings.Contains(scope, "Commit 阶段") {
 		t.Fatalf("expected generation scope to isolate knowledge text from variable commits, got %q", scope)
 	}
@@ -867,6 +867,35 @@ func TestRuntimePipelineHotelVariableMixedHotelInfoRequiresKnowledge(t *testing.
 	ledger := buildInitialActionLedger(plan.Intent)
 	if !actionLedgerHas(ledger.RequestedActions, "provide_location", "location") || !actionLedgerHas(ledger.RequestedActions, "provide_mini_program", "mini_program") || !actionLedgerHas(ledger.RequestedActions, "knowledge_lookup", "") {
 		t.Fatalf("expected action ledger to request variables and knowledge, got %#v", ledger.RequestedActions)
+	}
+}
+
+func TestDeferredKnowledgeGenerationInstructionsUseActiveReplyPlan(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:   "service_request",
+		SubIntent:       "air_conditioner",
+		NeedsKnowledge:  true,
+		NeedsResource:   true,
+		ResourceActions: []string{"provide_mini_program"},
+	}
+	activePlan := callbacks.ReplyPlanTraceData{
+		Intent:     "service_request",
+		AnswerGoal: "回答仍有直接证据的当前问题",
+		Style:      "自然微信口吻，1-3句",
+		TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+			{Intent: "hotel_variable", SubIntent: "mini_program", Output: "structured_resource_commit", ResourceAction: "provide_mini_program"},
+			{Intent: "hotel_info", SubIntent: "breakfast", Text: "顺便问早餐几点", Output: "knowledge_text_reply"},
+		},
+	}
+	prompt := buildIntentStagePrompt(selectIntentPromptPack(intent), activePlan)
+	scope := buildGenerationScopeInstruction(intent, activePlan)
+	for name, value := range map[string]string{"prompt": prompt, "scope": scope} {
+		if !strings.Contains(value, "顺便问早餐几点") {
+			t.Fatalf("%s must contain the active breakfast task, got %q", name, value)
+		}
+		if strings.Contains(value, "空调坏了") {
+			t.Fatalf("%s must not reintroduce the deferred air-conditioner task, got %q", name, value)
+		}
 	}
 }
 

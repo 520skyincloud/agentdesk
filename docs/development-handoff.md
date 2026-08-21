@@ -179,6 +179,37 @@ Judge 失败保留旧确定性选择；多个原子问题只调用一次 Judge�
 X03 必须同时有早餐答案和空调故障的 deferred handoff。旧的
 `MustContainAny` 不再把“只答中一题”误判为通过。
 
+### Judge 后 active ReplyPlan 与接待确认收口
+
+生产 X03 回归暴露了两个结构边界：Judge 的 `T1/T2` 来自真实检索问题顺序，
+不能按数字直接映射为 Intent ReplyPlan 的 `task-1/task-2`；同时 deferred 场景
+若 Generate 返回非法 JSON 或缺少可回答 part，空 `ReplyText` 会绕过原先位于
+Commit 分支内的接待确认，Job 被当作成功但客户收不到消息。
+
+本轮在 Judge 后按 `batch.Questions` 的真实客户顺序重建 active ReplyPlan：保留
+可回答知识任务、补回 Intent 漏掉但检索已恢复的问题，并排除将由接待流程处理
+的任务。Intent 专项 Prompt、多任务输出契约、Generate 用户输入、变量混合范围
+和输出解析统一读取该 active plan，不再依赖 `Tn -> task-n` 位置转换。明确的
+定位、小程序、人工等非知识任务不会被连续消息补题误送入知识检索；原 ReplyPlan
+中 Text 为空的服务请求仍保留原 Intent/SubIntent，只补入真实问题文本。
+
+deferred 时即使只剩一个可回答任务也要求结构化输出；非法或缺失 part 继续
+fail-close，不放出未经归属的模型文本。外层执行把 deferred dispatch 与文本
+Commit 解耦：有答案时先提交答案再发送接待确认；无答案文本时仍经过消息时效
+检查后发送接待确认。没有新增 Intent、Judge、Generate、协议修复重试或固定等待。
+
+本收口仅修改 Runtime/Executor 内部实现和测试；没有数据库、Migration、外部
+API、DTO、枚举、WebSocket、前端、模型配置、计费或 Token 口径变化。聚焦验证为：
+
+```bash
+go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime/internal/impl/retrievers ./internal/ai/runtime ./internal/services ./cmd/reply-runtime-eval -count=1
+```
+
+回滚可直接部署 `0f82a1d`，或完整恢复“原神”锚点
+`backup/yuanshen-20260821-003dfb7`；本轮没有外部数据迁移需要反向处理。共享文件
+主要是 Runtime Trace collector 和回复触发 service，push 前需核对并行分支同文件
+修改，建议本提交作为 Judge/连续消息提交之后的独立收口提交合入。
+
 ### 通用知识库蓝绿上线
 
 清洗成品为 `/private/tmp/agentdesk-general-kb-final/general-kb-final-90.csv`，

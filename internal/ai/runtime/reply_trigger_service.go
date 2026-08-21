@@ -449,15 +449,16 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	if summary != nil && summary.Interrupted {
 		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
 	}
-	if summary != nil && (strings.TrimSpace(summary.ReplyText) != "" || s.commit.HasStructuredVariableReply(replyCtx.Trace)) {
-		if !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
-			slog.Info("skip stale ai reply because newer customer message arrived",
-				"conversation_id", replyCtx.Conversation.ID,
-				"message_id", replyCtx.Message.ID,
-				"requestId", replyCtx.Message.RequestID,
-			)
-			return nil
-		}
+	hasCommitPayload, hasDeferredKnowledge := resolveReplyExecutionActions(summary, s.commit.HasStructuredVariableReply(replyCtx.Trace))
+	if summary != nil && (hasCommitPayload || hasDeferredKnowledge) && !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
+		slog.Info("skip stale ai reply because newer customer message arrived",
+			"conversation_id", replyCtx.Conversation.ID,
+			"message_id", replyCtx.Message.ID,
+			"requestId", replyCtx.Message.RequestID,
+		)
+		return nil
+	}
+	if hasCommitPayload {
 		replyMessage, err := s.commit.CommitAIReply(replyCommitInput{
 			Conversation: replyCtx.Conversation,
 			Message:      replyCtx.Message,
@@ -473,11 +474,20 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 			summary.ReplyText = committedReplyText(*replyMessage)
 		}
 		replyCtx.Trace.ReplySent = replyMessage != nil
-		if err := s.dispatchDeferredKnowledgeHandoff(ctx, replyCtx, summary); err != nil {
-			return err
-		}
+	}
+	if hasDeferredKnowledge {
+		return s.dispatchDeferredKnowledgeHandoff(ctx, replyCtx, summary)
 	}
 	return nil
+}
+
+func resolveReplyExecutionActions(summary *applicationruntime.Summary, hasStructuredVariableReply bool) (hasCommitPayload bool, hasDeferredKnowledge bool) {
+	if summary == nil {
+		return false, false
+	}
+	hasCommitPayload = strings.TrimSpace(summary.ReplyText) != "" || hasStructuredVariableReply
+	_, hasDeferredKnowledge = deferredKnowledgeHandoffFromTrace(summary.TraceData)
+	return hasCommitPayload, hasDeferredKnowledge
 }
 
 func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, replyCtx aiReplyContext, summary *applicationruntime.Summary) error {

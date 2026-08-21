@@ -141,6 +141,15 @@ func (c *RuntimeTraceCollector) SetKnowledgeEvidenceJudge(data KnowledgeEvidence
 	c.Data.Pipeline.EvidenceJudge = data
 }
 
+func (c *RuntimeTraceCollector) SetReplyPlan(data ReplyPlanTraceData) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data.UseContext = append([]string(nil), data.UseContext...)
+	data.DoNot = append([]string(nil), data.DoNot...)
+	data.TaskPlans = append([]ReplyTaskPlanTraceData(nil), data.TaskPlans...)
+	c.Data.Pipeline.ReplyPlan = data
+}
+
 func (c *RuntimeTraceCollector) SetKnowledgeResources(items []KnowledgeResourceTraceData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

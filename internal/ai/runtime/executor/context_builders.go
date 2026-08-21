@@ -47,12 +47,6 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
-	if strings.TrimSpace(plan.Prompt) != "" {
-		messages = append(messages, schema.SystemMessage(plan.Prompt))
-	}
-	if instruction := buildMultiReplyOutputInstruction(plan.ReplyPlan); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
 	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
@@ -64,12 +58,49 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		return messages
 	}
 	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
-	appendReplyTagContext(req, plan.Intent, plan.ReplyPlan, retrievedContext.AnswerabilityStatus, collector, &messages)
-	if instruction := buildGenerationScopeInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
+	activeReplyPlan := plan.ReplyPlan
+	hasDeferredKnowledge := false
+	if collector != nil {
+		activeReplyPlan = collector.Data.Pipeline.ReplyPlan
+		hasDeferredKnowledge = collector.Data.Pipeline.EvidenceJudge.DeferredHandoff
+	}
+	if prompt := buildIntentStagePrompt(plan.PromptSelect, activeReplyPlan); strings.TrimSpace(prompt) != "" {
+		messages = append(messages, schema.SystemMessage(prompt))
+	}
+	if instruction := buildMultiReplyOutputInstruction(activeReplyPlan, hasDeferredKnowledge); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
-	messages = append(messages, schema.UserMessage(buildGenerationUserMessageText(req.UserMessage.Content, plan.Intent)))
+	appendReplyTagContext(req, plan.Intent, activeReplyPlan, retrievedContext.AnswerabilityStatus, collector, &messages)
+	if instruction := buildGenerationScopeInstruction(plan.Intent, activeReplyPlan); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
+	messages = append(messages, schema.UserMessage(buildActiveGenerationUserMessageText(
+		req.UserMessage.Content,
+		plan.Intent,
+		activeReplyPlan,
+		hasDeferredKnowledge,
+	)))
 	return messages
+}
+
+func buildActiveGenerationUserMessageText(currentText string, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData, hasDeferredKnowledge bool) string {
+	if !hasDeferredKnowledge {
+		return buildGenerationUserMessageText(currentText, intent)
+	}
+	groups := buildTextReplyTaskGroups(plan)
+	activeTasks := make([]string, 0, len(groups))
+	for _, group := range groups {
+		for _, text := range group.Texts {
+			text = strings.TrimSpace(text)
+			if text != "" {
+				activeTasks = appendIfMissing(activeTasks, text)
+			}
+		}
+	}
+	if len(activeTasks) == 0 {
+		return "当前没有需要 Generate 输出的文本任务。"
+	}
+	return strings.Join(activeTasks, "\n")
 }
 
 func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {
@@ -107,11 +138,14 @@ func buildGenerationUserMessageText(currentText string, intent callbacks.IntentT
 	return strings.Join(knowledgeTasks, "\n")
 }
 
-func buildGenerationScopeInstruction(intent callbacks.IntentTraceData) string {
+func buildGenerationScopeInstruction(intent callbacks.IntentTraceData, replyPlan callbacks.ReplyPlanTraceData) string {
 	if !intent.NeedsKnowledge || (!intent.NeedsResource && len(intent.ResourceActions) == 0) {
 		return ""
 	}
-	taskPlans := buildReplyTaskPlans(intent)
+	taskPlans := replyPlan.TaskPlans
+	if len(taskPlans) == 0 {
+		taskPlans = buildReplyTaskPlans(intent)
+	}
 	knowledgeTasks := make([]string, 0, len(taskPlans))
 	resourceTasks := make([]string, 0, len(taskPlans))
 	for _, task := range taskPlans {

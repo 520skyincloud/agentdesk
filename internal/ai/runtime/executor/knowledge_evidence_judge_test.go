@@ -261,6 +261,10 @@ func TestKnowledgeEvidenceJudgeDefersUnansweredQuestionWithoutDroppingAnsweredQu
 	}
 	summary := &RunResult{}
 	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "service_request", SubIntent: "air_conditioner", Text: "空调坏了，我住1302", Output: "knowledge_text_reply"},
+		{Intent: "hotel_info", SubIntent: "breakfast", Text: "顺便问早餐几点", Output: "knowledge_text_reply"},
+	}})
 	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("早餐几点，汤东强是谁", "1"),
 		Summary:   summary,
@@ -379,6 +383,10 @@ func TestKnowledgeEvidenceJudgeDefersFirstTransferDirectiveWithoutDroppingLaterA
 	trace := collector.Data.Pipeline.EvidenceJudge
 	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
 		t.Fatalf("expected only T1 deferred, got %#v", trace)
+	}
+	activePlan := collector.Data.Pipeline.ReplyPlan
+	if len(activePlan.TaskPlans) != 1 || activePlan.TaskPlans[0].Text != "顺便问早餐几点" {
+		t.Fatalf("expected Generate plan to contain only the answerable breakfast task, got %#v", activePlan.TaskPlans)
 	}
 }
 
