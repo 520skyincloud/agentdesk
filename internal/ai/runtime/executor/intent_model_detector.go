@@ -798,7 +798,7 @@ func enforceHumanRouteFlagByIntentCategory(intent callbacks.IntentTraceData) cal
 		return intent
 	}
 	if intent.NeedsHumanRoute || strings.TrimSpace(intent.HumanRoutePolicy) != "" {
-		intent.Reason = appendIntentReason(intent.Reason, "human route ignored: handoff confirmation only belongs to human_complaint_risk intent category")
+		intent.Reason = appendIntentReason(intent.Reason, "human route ignored: direct handoff only belongs to human_complaint_risk intent category")
 	}
 	intent.NeedsHumanRoute = false
 	intent.HumanRoutePolicy = ""

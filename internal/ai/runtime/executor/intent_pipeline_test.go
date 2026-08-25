@@ -1581,7 +1581,7 @@ func TestRuntimePipelineAbuseWithoutHandoffDoesNotRequestHuman(t *testing.T) {
 		t.Fatalf("expected plain abuse to stay out of human handoff, got %#v", plan.Intent)
 	}
 	if plan.Intent.NeedsHumanRoute || plan.ToolKnowledge.ToolTriggered {
-		t.Fatalf("plain abuse must not trigger handoff confirmation, got intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
+		t.Fatalf("plain abuse must not trigger direct handoff, got intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
 	}
 }
 
@@ -1736,7 +1736,7 @@ func TestRuntimePipelineModelServiceRequestPrechecksKnowledge(t *testing.T) {
 	}
 }
 
-func TestRuntimePipelineServiceRequestCannotRequestHandoffConfirmation(t *testing.T) {
+func TestRuntimePipelineServiceRequestCannotRequestDirectHandoff(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "service_request", Name: "服务请求", Priority: 100, MatchMode: "hybrid", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", PromptPack: "服务请求先看当前门店知识库。", Status: enums.StatusOk})
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "门锁不上，帮我看看怎么处理"}}
@@ -1745,12 +1745,12 @@ func TestRuntimePipelineServiceRequestCannotRequestHandoffConfirmation(t *testin
 		t.Fatalf("expected service_request, got %#v", plan.Intent)
 	}
 	if plan.Intent.NeedsHumanRoute || plan.Intent.HumanRoutePolicy != "" {
-		t.Fatalf("service_request must not request handoff confirmation, got %#v", plan.Intent)
+		t.Fatalf("service_request must not request direct handoff, got %#v", plan.Intent)
 	}
 	if !plan.Intent.NeedsKnowledge || !plan.ToolKnowledge.KnowledgeTriggered || plan.ToolKnowledge.ToolTriggered {
 		t.Fatalf("expected service_request to stay on knowledge/service path, got intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
 	}
-	if !strings.Contains(plan.Intent.Reason, "handoff confirmation only belongs") {
+	if !strings.Contains(plan.Intent.Reason, "direct handoff only belongs") {
 		t.Fatalf("expected downgrade reason in trace, got %q", plan.Intent.Reason)
 	}
 }
@@ -1766,7 +1766,7 @@ func TestRuntimePipelineModelExplicitHandoffUsesHumanComplaintRiskRoute(t *testi
 	if plan.Intent.SubIntent != "explicit_handoff" || !plan.Intent.NeedsHumanRoute || plan.Intent.NeedsKnowledge || plan.Intent.HumanRoutePolicy != "managed_mode" {
 		t.Fatalf("expected managed-mode human route intent, got %#v", plan.Intent)
 	}
-	if !plan.ToolKnowledge.ToolTriggered || len(plan.ToolKnowledge.ExpectedResources) == 0 || plan.ToolKnowledge.ExpectedResources[0] != "handoff confirmation policy" {
+	if !plan.ToolKnowledge.ToolTriggered || len(plan.ToolKnowledge.ExpectedResources) == 0 || plan.ToolKnowledge.ExpectedResources[0] != "direct handoff policy" {
 		t.Fatalf("expected human route tool trace, got %#v", plan.ToolKnowledge)
 	}
 }

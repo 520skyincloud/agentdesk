@@ -11,7 +11,7 @@ import (
 	"agent-desk/internal/services"
 )
 
-func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeConfirmation(t *testing.T) {
+func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeDirectDispatch(t *testing.T) {
 	db := setupRuntimeIntentConfigTestDB(t)
 	if err := db.AutoMigrate(&models.ConversationReadState{}, &models.ConversationEventLog{}); err != nil {
 		t.Fatalf("auto migrate handoff message tables: %v", err)
@@ -54,24 +54,175 @@ func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeConfirmation(t *testing
 		AIAgent:      models.AIAgent{ID: 17, Name: "AI", Status: enums.StatusOk},
 	}, summary, collector)
 	if err != nil || !handled {
-		t.Fatalf("expected handoff confirmation to be persisted, handled=%v err=%v", handled, err)
+		t.Fatalf("expected room collection before direct handoff, handled=%v err=%v", handled, err)
+	}
+	if summary.handoffDispatchStatus != string(services.HandoffDispatchStatusAwaitingRoomNumber) {
+		t.Fatalf("expected awaiting_room_number status, got %q", summary.handoffDispatchStatus)
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
-		t.Fatalf("expected pending handoff confirmation, got %+v", state)
+		t.Fatalf("expected pending room-number collection, got %+v", state)
 	}
 	var reply models.Message
 	if err := db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Order("id DESC").First(&reply).Error; err != nil {
-		t.Fatalf("load handoff confirmation reply: %v", err)
+		t.Fatalf("load room-number reply: %v", err)
 	}
-	if !strings.Contains(reply.Content, "哪个房间") {
-		t.Fatalf("expected room collection before handoff confirmation, got %q", reply.Content)
+	if reply.Content != "方便说下是哪个房间吗？" {
+		t.Fatalf("expected exact room collection prompt, got %q", reply.Content)
 	}
 	if !strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
 		t.Fatalf("expected room-number pending field, got %+v", state)
 	}
-	if !actionLedgerContainsAction(collector.Data.ActionLedger.CommittedActions, "human_route") {
+	if !actionLedgerContainsActionWithStatus(collector.Data.ActionLedger.CommittedActions, "human_route", string(services.HandoffDispatchStatusAwaitingRoomNumber)) {
 		t.Fatalf("expected committed handoff action, got %#v", collector.Data.ActionLedger)
+	}
+	if len(collector.Data.GraphTools.Items) != 1 || collector.Data.GraphTools.Items[0].RecommendedAction != "collect_handoff_room_number" {
+		t.Fatalf("expected room collection trace, got %+v", collector.Data.GraphTools.Items)
+	}
+	assertNoHandoffConfirmationProtocol(t, reply.Content+"\n"+collector.Marshal())
+}
+
+func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *testing.T) {
+	tests := []struct {
+		name      string
+		subIntent string
+		message   string
+	}{
+		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工"},
+		{name: "answer rejected", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupRuntimeIntentConfigTestDB(t)
+			if err := db.AutoMigrate(
+				&models.AIAgent{},
+				&models.AgentTeam{},
+				&models.AgentTeamSchedule{},
+				&models.AIManualResumeTask{},
+				&models.ConversationReadState{},
+				&models.ConversationEventLog{},
+			); err != nil {
+				t.Fatalf("auto migrate direct handoff tables: %v", err)
+			}
+
+			const teamID int64 = 9401
+			if err := db.Create(&models.AgentTeam{ID: teamID, Name: "测试客服组", Status: enums.StatusOk}).Error; err != nil {
+				t.Fatalf("create team: %v", err)
+			}
+			now := time.Now()
+			if err := db.Create(&models.AgentTeamSchedule{
+				TeamID:  teamID,
+				StartAt: now.Add(-time.Hour),
+				EndAt:   now.Add(time.Hour),
+				Status:  enums.StatusOk,
+			}).Error; err != nil {
+				t.Fatalf("create team schedule: %v", err)
+			}
+			aiAgent := models.AIAgent{
+				ID:          9402,
+				Name:        "AI",
+				TeamIDs:     "9401",
+				ServiceMode: enums.IMConversationServiceModeAIFirst,
+				Status:      enums.StatusOk,
+			}
+			if err := db.Create(&aiAgent).Error; err != nil {
+				t.Fatalf("create ai agent: %v", err)
+			}
+			conversation := models.Conversation{
+				ID:          9403,
+				CustomerID:  9404,
+				AIAgentID:   aiAgent.ID,
+				Status:      enums.IMConversationStatusAIServing,
+				ServiceMode: enums.IMConversationServiceModeAIFirst,
+			}
+			if err := db.Create(&conversation).Error; err != nil {
+				t.Fatalf("create conversation: %v", err)
+			}
+			if err := db.Create(&models.ConversationRouteState{
+				ConversationID: conversation.ID,
+				RouteStatus:    enums.ConversationRouteStatusAIServing,
+				RouteTarget:    "ai",
+				SessionNo:      1,
+			}).Error; err != nil {
+				t.Fatalf("create route state: %v", err)
+			}
+			message := models.Message{
+				ID:             9405,
+				ConversationID: conversation.ID,
+				ClientMsgID:    "customer-direct-handoff",
+				SeqNo:          1,
+				SenderType:     enums.IMSenderTypeCustomer,
+				MessageType:    enums.IMMessageTypeText,
+				Content:        tt.message,
+				RequestID:      "req-direct-handoff",
+				SendStatus:     enums.IMMessageStatusSent,
+				SentAt:         &now,
+			}
+			if err := db.Create(&message).Error; err != nil {
+				t.Fatalf("create customer message: %v", err)
+			}
+
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+				PrimaryIntent:   "human_complaint_risk",
+				SubIntent:       tt.subIntent,
+				NeedsHumanRoute: true,
+			}
+			summary := &RunResult{}
+			handled, err := executeIntentHumanRoute(t.Context(), RunInput{
+				Conversation: conversation,
+				UserMessage:  message,
+				AIAgent:      aiAgent,
+			}, summary, collector)
+			if err != nil || !handled {
+				t.Fatalf("expected direct handoff, handled=%v err=%v", handled, err)
+			}
+			if summary.handoffDispatchStatus != string(services.HandoffDispatchStatusDispatched) {
+				t.Fatalf("expected dispatched status, got %q", summary.handoffDispatchStatus)
+			}
+			state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+			if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+				t.Fatalf("expected direct manual route without a pending action, got %+v", state)
+			}
+			var replies []models.Message
+			if err := db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Order("seq_no ASC, id ASC").Find(&replies).Error; err != nil {
+				t.Fatalf("load direct handoff replies: %v", err)
+			}
+			if len(replies) != 1 || replies[0].Content != services.DirectHandoffSuccessMessage {
+				t.Fatalf("expected one exact success message, got %+v", replies)
+			}
+			if len(collector.Data.GraphTools.Items) != 1 || collector.Data.GraphTools.Items[0].RecommendedAction != "dispatch_human_route" {
+				t.Fatalf("expected direct dispatch trace, got %+v", collector.Data.GraphTools.Items)
+			}
+			assertNoHandoffConfirmationProtocol(t, replies[0].Content+"\n"+collector.Marshal())
+		})
+	}
+}
+
+func TestApplyHandoffDispatchResultMapsDirectStatuses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status services.HandoffDispatchStatus
+		action string
+	}{
+		{name: "awaiting room", status: services.HandoffDispatchStatusAwaitingRoomNumber, action: "collect_handoff_room_number"},
+		{name: "dispatched", status: services.HandoffDispatchStatusDispatched, action: "dispatch_human_route"},
+		{name: "already active", status: services.HandoffDispatchStatusAlreadyActive, action: "human_route_already_active"},
+		{name: "off hours", status: services.HandoffDispatchStatusOffHours, action: "handoff_off_hours"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := &RunResult{}
+			item := &callbacks.GraphToolTraceItem{}
+			err := applyHandoffDispatchResult(summary, item, &services.HandoffDispatchResult{Status: tt.status}, false)
+			if err != nil {
+				t.Fatalf("applyHandoffDispatchResult() error = %v", err)
+			}
+			if summary.handoffDispatchStatus != string(tt.status) || item.Status != "success" || item.RecommendedAction != tt.action {
+				t.Fatalf("unexpected mapped result: summary=%+v item=%+v", summary, item)
+			}
+			assertNoHandoffConfirmationProtocol(t, item.ResultPreview)
+		})
 	}
 }
 
@@ -91,7 +242,7 @@ func TestIsEmergencySafetyHandoff(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "ordinary handoff confirmation",
+			name: "ordinary direct handoff",
 			intent: callbacks.IntentTraceData{
 				PrimaryIntent:   "human_complaint_risk",
 				SubIntent:       "explicit_handoff",
@@ -115,6 +266,25 @@ func TestIsEmergencySafetyHandoff(t *testing.T) {
 				t.Fatalf("isEmergencySafetyHandoff() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func actionLedgerContainsActionWithStatus(items []callbacks.ActionLedgerItem, action, status string) bool {
+	for _, item := range items {
+		if item.Action == action && item.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNoHandoffConfirmationProtocol(t *testing.T, value string) {
+	t.Helper()
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{"confirmation", "回复“确认”", "确认或取消", "接待确认", "二次确认"} {
+		if strings.Contains(lower, strings.ToLower(forbidden)) {
+			t.Fatalf("direct handoff output still contains confirmation protocol %q: %s", forbidden, value)
+		}
 	}
 }
 

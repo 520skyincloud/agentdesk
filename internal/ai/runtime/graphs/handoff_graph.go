@@ -10,27 +10,18 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/services"
-
-	componenttool "github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
 )
-
-type HandoffGraphState struct {
-	Reason string `json:"reason"`
-}
-
-type HandoffGraphInterruptInfo struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
 
 type handoffGraphArgs struct {
 	Reason string `json:"reason"`
 }
 
-func init() {
-	schema.RegisterName[HandoffGraphState]("cs_ai_agent_handoff_graph_state")
-	schema.RegisterName[HandoffGraphInterruptInfo]("cs_ai_agent_handoff_graph_interrupt_info")
+var dispatchHandoffByAI = func(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (*services.HandoffDispatchResult, error) {
+	return services.ConversationHandoffConfirmationService.DispatchByAI(conversationID, aiAgent, reason, requestID)
+}
+
+var isAutoHandoffEnabledForConversation = func(conversationID int64) bool {
+	return services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(conversationID)
 }
 
 type HandoffGraph struct {
@@ -46,64 +37,33 @@ func NewHandoffGraph(conversation models.Conversation, aiAgent models.AIAgent) *
 }
 
 func (g *HandoffGraph) Run(ctx context.Context, argumentsInJSON string) (string, error) {
-	wasInterrupted, hasState, state := componenttool.GetInterruptState[HandoffGraphState](ctx)
-	if !wasInterrupted {
-		reason, err := g.buildReason(argumentsInJSON)
-		if err != nil {
-			return "", err
-		}
-		info := HandoffGraphInterruptInfo{
-			Type:    InterruptTypeHandoffConfirmation,
-			Message: g.buildConfirmationPrompt(reason),
-		}
-		return "", componenttool.StatefulInterrupt(ctx, info, HandoffGraphState{Reason: reason})
-	}
-	if !hasState {
-		return "", fmt.Errorf("handoff graph state missing")
-	}
-	isResumeTarget, hasData, resumeText := componenttool.GetResumeContext[string](ctx)
-	if !isResumeTarget {
-		info := HandoffGraphInterruptInfo{
-			Type:    InterruptTypeHandoffConfirmation,
-			Message: g.buildConfirmationPrompt(state.Reason),
-		}
-		return "", componenttool.StatefulInterrupt(ctx, info, state)
-	}
-	if !hasData {
-		info := HandoffGraphInterruptInfo{
-			Type:    InterruptTypeHandoffConfirmation,
-			Message: ConfirmOrCancelPrompt,
-		}
-		return "", componenttool.StatefulInterrupt(ctx, info, state)
-	}
-	switch parseHandoffDecision(resumeText) {
-	case ConfirmationDecisionConfirm:
-		if err := services.ConversationService.HandoffByAIWithRequestID(g.conversation.ID, g.aiAgent, state.Reason, tracex.RequestIDFromContext(ctx)); err != nil {
-			return "", err
-		}
-		// ConversationService sends the customer-visible handoff notice according to the dispatch decision.
+	if !isAutoHandoffEnabledForConversation(g.conversation.ID) {
 		return tooling.MarshalToolResult(tooling.ToolResult{
-			Handled:     true,
-			Terminal:    true,
-			Action:      "handoff_confirmed",
-			ReplySent:   true,
+			Handled:     false,
+			Terminal:    false,
+			Action:      "auto_handoff_disabled",
+			ReplySent:   false,
 			ShouldRetry: false,
 		}), nil
-	case ConfirmationDecisionCancel:
-		return tooling.MarshalToolResult(tooling.ToolResult{
-			Handled:     true,
-			Terminal:    true,
-			Action:      "handoff_cancelled",
-			ReplyText:   CancelHandoffReply,
-			ShouldRetry: false,
-		}), nil
-	default:
-		info := HandoffGraphInterruptInfo{
-			Type:    InterruptTypeHandoffConfirmation,
-			Message: NeedExplicitConfirmationPrompt,
-		}
-		return "", componenttool.StatefulInterrupt(ctx, info, state)
 	}
+	reason, err := g.buildReason(argumentsInJSON)
+	if err != nil {
+		return "", err
+	}
+	result, err := dispatchHandoffByAI(g.conversation.ID, g.aiAgent, reason, tracex.RequestIDFromContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	if result == nil {
+		return "", fmt.Errorf("handoff dispatch result missing")
+	}
+	return tooling.MarshalToolResult(tooling.ToolResult{
+		Handled:     true,
+		Terminal:    true,
+		Action:      string(result.Status),
+		ReplySent:   true,
+		ShouldRetry: false,
+	}), nil
 }
 
 func (g *HandoffGraph) buildReason(argumentsInJSON string) (string, error) {
@@ -118,25 +78,4 @@ func (g *HandoffGraph) buildReason(argumentsInJSON string) (string, error) {
 		reason = parsed
 	}
 	return reason, nil
-}
-
-func (g *HandoffGraph) buildConfirmationPrompt(reason string) string {
-	return fmt.Sprintf("我准备为你转接人工客服。\n原因：%s\n请直接回复“确认”或“取消”。", strings.TrimSpace(reason))
-}
-
-func isEmergencySafetyHandoffReason(reason string) bool {
-	reason = strings.ToLower(strings.TrimSpace(reason))
-	if reason == "" {
-		return false
-	}
-	for _, keyword := range []string{"emergency_safety", "摔倒", "摔跤", "滑倒", "受伤", "流血", "出血", "骨折", "晕倒", "昏倒", "报警", "120", "安全事故"} {
-		if strings.Contains(reason, strings.ToLower(keyword)) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseHandoffDecision(value string) ConfirmationDecision {
-	return ParseConfirmationDecision(value)
 }

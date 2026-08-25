@@ -207,53 +207,43 @@ func TestConversationHumanDispatchStoreRoomNoticeSummarizesRelevantCustomerConte
 	}
 }
 
-func TestConversationHandoffConfirmationExecutesOnce(t *testing.T) {
+func TestConversationHandoffDirectDispatchWithoutRoomUsesExactSuccessMessage(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "这个问题需要人工处理")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "这个问题需要人工处理")
 
-	handled, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "客人需要人工接待；客户消息：我要找人", "req-ask")
+	handled, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(conversation.ID, aiAgent, "客人需要人工接待；客户消息：我要找人", "req-direct", origin.ID)
 	if err != nil {
-		t.Fatalf("RequestByAI() error = %v", err)
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
 	}
 	if !handled {
-		t.Fatalf("expected confirmation prompt to be handled")
+		t.Fatal("expected direct handoff to be handled")
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
-		t.Fatalf("expected pending human handoff action, got %+v", state)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+		t.Fatalf("expected immediate store manual route without confirmation pending, got %+v", state)
 	}
-	confirm := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "确认")
-	handled, err = services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &confirm)
-	if err != nil {
-		t.Fatalf("HandleCustomerMessage(confirm) error = %v", err)
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected exact direct handoff success message, got %+v", latest)
 	}
-	if !handled {
-		t.Fatalf("expected confirmation to be consumed")
-	}
-	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || state.PendingAction != "" || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
-		t.Fatalf("expected pending action cleared and store manual route, got %+v", state)
+	if strings.Contains(latest.Content, "确认") || strings.Contains(latest.Content, "取消") {
+		t.Fatalf("direct handoff must not ask for confirmation, got %q", latest.Content)
 	}
 	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 1 {
-		t.Fatalf("expected one store room notice after confirmation, got %d", count)
+		t.Fatalf("expected one store room notice after direct handoff, got %d", count)
 	}
-	repeat := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "确认")
-	handled, err = services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &repeat)
-	if err != nil {
-		t.Fatalf("HandleCustomerMessage(repeat) error = %v", err)
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("expected one exact success message, got %d", count)
 	}
-	if handled {
-		t.Fatalf("expected repeated confirmation without pending action not to be consumed")
-	}
-	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 1 {
-		t.Fatalf("expected no duplicate store room notice, got %d", count)
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("expected one manual resume task, got %d", count)
 	}
 }
 
-func TestConversationHandoffConfirmationClearsPendingStateWhenPromptSendFails(t *testing.T) {
+func TestConversationHandoffRoomPromptFailureClearsPendingState(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
@@ -264,7 +254,7 @@ func TestConversationHandoffConfirmationClearsPendingStateWhenPromptSendFails(t 
 
 	handled, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手", "req-send-fails")
 	if err == nil || handled {
-		t.Fatalf("expected prompt send failure to be retryable, handled=%v err=%v", handled, err)
+		t.Fatalf("expected room prompt send failure to be retryable, handled=%v err=%v", handled, err)
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.PendingAction != "" {
@@ -272,18 +262,20 @@ func TestConversationHandoffConfirmationClearsPendingStateWhenPromptSendFails(t 
 	}
 }
 
-func TestConversationHandoffConfirmationPromptIsIdempotentForOriginMessage(t *testing.T) {
+func TestConversationHandoffDirectDispatchIsIdempotentForOriginMessage(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
-	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "早餐几点，马桶也堵了")
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+	backdateHumanDispatchMessage(t, db, origin.ID, time.Now().Add(-time.Second))
 
 	for attempt := 0; attempt < 2; attempt++ {
 		handled, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
 			conversation.ID,
 			aiAgent,
-			"部分酒店业务问题需要门店同事接手：马桶堵了",
-			"req-idempotent-confirm",
+			"客户明确要求人工接待",
+			"req-idempotent-direct",
 			origin.ID,
 		)
 		if err != nil || !handled {
@@ -291,21 +283,384 @@ func TestConversationHandoffConfirmationPromptIsIdempotentForOriginMessage(t *te
 		}
 	}
 
-	var count int64
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	payload := struct {
-		HandoffToken string `json:"handoffToken"`
-	}{}
-	if state == nil || json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil || payload.HandoffToken == "" {
-		t.Fatalf("expected pending action with stable handoff token, got %+v", state)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+		t.Fatalf("expected one active manual route without confirmation pending, got %+v", state)
 	}
-	if err := db.Model(&models.Message{}).
-		Where("conversation_id = ? AND client_msg_id = ?", conversation.ID, "ai_handoff_confirm_"+payload.HandoffToken).
-		Count(&count).Error; err != nil {
-		t.Fatalf("count handoff confirmation prompts: %v", err)
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("expected one stable success message after retry, got %d", count)
 	}
-	if count != 1 {
-		t.Fatalf("expected one stable confirmation prompt after retry, got %d", count)
+	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 1 {
+		t.Fatalf("expected one store room notice after retry, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("expected one stable manual resume task after retry, got %d", count)
+	}
+}
+
+func TestConversationHandoffAlreadyActiveDifferentOriginDoesNotDuplicateSuccessOrResumeTask(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	firstOrigin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+
+	first, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-direct-first-origin",
+		firstOrigin.ID,
+	)
+	if err != nil {
+		t.Fatalf("first DispatchByAIWithOriginMessage() error = %v", err)
+	}
+	if first == nil || first.Status != services.HandoffDispatchStatusDispatched {
+		t.Fatalf("expected first origin to dispatch, got %+v", first)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("expected one success message after first origin, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("expected one resume task after first origin, got %d", count)
+	}
+
+	secondOrigin := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "我再补充一句")
+	second, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"另一条消息再次触发人工接待",
+		"req-direct-second-origin",
+		secondOrigin.ID,
+	)
+	if err != nil {
+		t.Fatalf("second DispatchByAIWithOriginMessage() error = %v", err)
+	}
+	if second == nil || second.Status != services.HandoffDispatchStatusAlreadyActive {
+		t.Fatalf("expected different origin to observe already-active route, got %+v", second)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("different origin must not add another success message, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("different origin must not add another resume task, got %d", count)
+	}
+	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 1 {
+		t.Fatalf("different origin must not add another store room notice, got %d", count)
+	}
+}
+
+func TestConversationEmergencyHandoffBypassesRoomCollection(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "门锁坏了，我被困在房间里")
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchEmergencyByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客人遇到安全或突发情况，需要门店同事尽快关注；客户消息：门锁坏了，我被困在房间里",
+		"req-emergency-direct",
+		origin.ID,
+	)
+	if err != nil {
+		t.Fatalf("DispatchEmergencyByAIWithOriginMessage() error = %v", err)
+	}
+	if result == nil || result.Status != services.HandoffDispatchStatusDispatched {
+		t.Fatalf("expected emergency direct dispatch, got %+v", result)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+		t.Fatalf("emergency route must not wait for room collection, got %+v", state)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("expected one emergency direct success message, got %d", count)
+	}
+}
+
+func TestConversationHandoffRetryRepairsMissingSuccessOutboxWithoutDuplicatingMessage(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	createHumanDispatchWxWorkProtocolChannel(t, db, 1)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+	backdateHumanDispatchMessage(t, db, origin.ID, time.Now().Add(-time.Second))
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-repair-success-outbox",
+		origin.ID,
+	)
+	if err != nil || result == nil || result.Status != services.HandoffDispatchStatusDispatched {
+		t.Fatalf("first dispatch result=%+v err=%v", result, err)
+	}
+	clientMsgID := "ai_handoff_success_" + result.HandoffToken
+	successMessage := services.MessageService.FindOne(sqls.NewCnd().
+		Eq("conversation_id", conversation.ID).
+		Eq("client_msg_id", clientMsgID))
+	if successMessage == nil {
+		t.Fatalf("expected stable success message %q", clientMsgID)
+	}
+	if count := countChannelOutboxesForMessage(t, db, enums.ChannelTypeWxWorkProtocol, successMessage.ID); count != 1 {
+		t.Fatalf("expected one success outbox before deletion, got %d", count)
+	}
+	if err := db.Where("channel_type = ? AND message_id = ?", enums.ChannelTypeWxWorkProtocol, successMessage.ID).Delete(&models.ChannelMessageOutbox{}).Error; err != nil {
+		t.Fatalf("delete success outbox: %v", err)
+	}
+
+	retried, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-repair-success-outbox",
+		origin.ID,
+	)
+	if err != nil || retried == nil || retried.Status != services.HandoffDispatchStatusAlreadyActive {
+		t.Fatalf("retry result=%+v err=%v", retried, err)
+	}
+	if count := countMessagesByClientMsgID(t, db, conversation.ID, clientMsgID); count != 1 {
+		t.Fatalf("retry must reuse the stable success message, got %d", count)
+	}
+	if count := countChannelOutboxesForMessage(t, db, enums.ChannelTypeWxWorkProtocol, successMessage.ID); count != 1 {
+		t.Fatalf("retry must repair the missing success outbox, got %d", count)
+	}
+}
+
+func TestConversationHandoffRetryRepairsMissingStoreRoomNoticeOutboxIdempotently(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+	backdateHumanDispatchMessage(t, db, origin.ID, time.Now().Add(-time.Second))
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-repair-store-notice",
+		origin.ID,
+	)
+	if err != nil || result == nil || result.Status != services.HandoffDispatchStatusDispatched {
+		t.Fatalf("first dispatch result=%+v err=%v", result, err)
+	}
+	noticeOutbox := findStoreRoomHandoffNoticeOutboxModel(t, db, conversation.ID)
+	if err := db.Delete(&models.ChannelMessageOutbox{}, noticeOutbox.ID).Error; err != nil {
+		t.Fatalf("delete store-room notice outbox: %v", err)
+	}
+	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 0 {
+		t.Fatalf("expected deleted store-room notice before repair, got %d", count)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		retried, retryErr := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+			conversation.ID,
+			aiAgent,
+			"客户明确要求人工接待",
+			"req-repair-store-notice",
+			origin.ID,
+		)
+		if retryErr != nil || retried == nil || retried.Status != services.HandoffDispatchStatusAlreadyActive {
+			t.Fatalf("retry %d result=%+v err=%v", attempt+1, retried, retryErr)
+		}
+	}
+	if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 1 {
+		t.Fatalf("retry must repair exactly one stable store-room notice, got %d", count)
+	}
+	repairedNotice := findStoreRoomHandoffNoticeOutboxModel(t, db, conversation.ID)
+	if repairedNotice.MessageID != noticeOutbox.MessageID {
+		t.Fatalf("store-room notice repair must reuse stable message id: got %d want %d", repairedNotice.MessageID, noticeOutbox.MessageID)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("store notice repair must not duplicate success messages, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("store notice repair must not duplicate resume tasks, got %d", count)
+	}
+}
+
+func TestConversationHandoffHQNotificationIsIdempotentForSameToken(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	createHumanDispatchTeam(t, db, 1, "总部接待组")
+	createHumanDispatchAgentProfile(t, db, 101, 1, enums.ServiceStatusIdle, 3, true, enums.StatusOk)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+	backdateHumanDispatchMessage(t, db, origin.ID, time.Now().Add(-time.Second))
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-hq-notification-idempotent",
+		origin.ID,
+	)
+	if err != nil || result == nil || result.Status != services.HandoffDispatchStatusDispatched || result.Decision != services.HandoffDecisionHQAgentDesk {
+		t.Fatalf("first HQ dispatch result=%+v err=%v", result, err)
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 1 {
+		t.Fatalf("expected one HQ handoff notification after dispatch, got %d", count)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		retried, retryErr := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+			conversation.ID,
+			aiAgent,
+			"客户明确要求人工接待",
+			"req-hq-notification-idempotent",
+			origin.ID,
+		)
+		if retryErr != nil || retried == nil || retried.Status != services.HandoffDispatchStatusAlreadyActive {
+			t.Fatalf("HQ retry %d result=%+v err=%v", attempt+1, retried, retryErr)
+		}
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 1 {
+		t.Fatalf("same HQ handoff token must not duplicate notifications, got %d", count)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("same HQ handoff token must not duplicate success messages, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("same HQ handoff token must not duplicate resume tasks, got %d", count)
+	}
+}
+
+func TestConversationHandoffRoomReplyDoesNotDispatchAfterPendingConsumedOrExpired(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		invalidate func(t *testing.T, db *gorm.DB, conversationID int64)
+	}{
+		{
+			name: "consumed",
+			invalidate: func(t *testing.T, db *gorm.DB, conversationID int64) {
+				t.Helper()
+				if _, ok, err := services.ConversationRouteService.ConsumePendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, time.Now()); err != nil || !ok {
+					t.Fatalf("consume pending room action ok=%v err=%v", ok, err)
+				}
+			},
+		},
+		{
+			name: "expired",
+			invalidate: func(t *testing.T, db *gorm.DB, conversationID int64) {
+				t.Helper()
+				if err := db.Model(&models.ConversationRouteState{}).
+					Where("conversation_id = ?", conversationID).
+					Update("pending_action_expire_at", time.Now().Add(-time.Minute)).Error; err != nil {
+					t.Fatalf("expire pending room action: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupConversationHumanDispatchTestDB(t)
+			aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+			conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+			createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+			origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "马桶堵了")
+			result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+				conversation.ID,
+				aiAgent,
+				"知识库规则要求门店同事接手；客户消息：马桶堵了",
+				"req-room-race-"+tc.name,
+				origin.ID,
+			)
+			if err != nil || result == nil || result.Status != services.HandoffDispatchStatusAwaitingRoomNumber {
+				t.Fatalf("room request result=%+v err=%v", result, err)
+			}
+			tc.invalidate(t, db, conversation.ID)
+
+			roomReply := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "1305")
+			if _, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &roomReply); err != nil {
+				t.Fatalf("HandleCustomerMessage(room) error = %v", err)
+			}
+			state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+			if state == nil || state.RouteStatus != enums.ConversationRouteStatusAIServing {
+				t.Fatalf("invalid pending room reply must not enter human route, got %+v", state)
+			}
+			if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 0 {
+				t.Fatalf("invalid pending room reply must not send success, got %d", count)
+			}
+			if count := countStoreRoomHandoffNoticeOutbox(t, db, conversation.ID); count != 0 {
+				t.Fatalf("invalid pending room reply must not notify store room, got %d", count)
+			}
+			if count := countManualResumeTasks(t, db, conversation.ID); count != 0 {
+				t.Fatalf("invalid pending room reply must not create resume task, got %d", count)
+			}
+		})
+	}
+}
+
+func TestConversationHandoffManagedNoneWithActiveTeamDispatchesInsteadOfOffHours(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "1")
+	createHumanDispatchTeam(t, db, 1, "售后支持组")
+	createHumanDispatchActiveSchedule(t, db, 1)
+	createHumanDispatchAgentProfile(t, db, 101, 0, enums.ServiceStatusIdle, 3, false, enums.StatusOk)
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeNone, "")
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", 55).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable store room handoff: %v", err)
+	}
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", 77).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable instance room handoff: %v", err)
+	}
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-managed-none-active-team",
+		origin.ID,
+	)
+	if err != nil {
+		t.Fatalf("DispatchByAIWithOriginMessage() error = %v", err)
+	}
+	if result == nil || result.Status != services.HandoffDispatchStatusDispatched || result.Decision != services.HandoffDecisionTeamPool {
+		t.Fatalf("expected active team dispatch instead of off-hours, got %+v", result)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusHQAgentDeskPending {
+		t.Fatalf("expected pending human route for active team, got %+v", state)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusPending || current.CurrentTeamID != 1 {
+		t.Fatalf("expected conversation in active team pool, got %+v", current)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("expected one direct success message, got %d", count)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.HandoffOffHoursMessage); count != 0 {
+		t.Fatalf("active team route must not send off-hours message, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("expected one resume task for active team route, got %d", count)
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 1 {
+		t.Fatalf("expected one stable HQ notification for active team route, got %d", count)
+	}
+	retried, retryErr := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-managed-none-active-team",
+		origin.ID,
+	)
+	if retryErr != nil || retried == nil || retried.Status != services.HandoffDispatchStatusAlreadyActive {
+		t.Fatalf("retry result=%+v err=%v", retried, retryErr)
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 1 {
+		t.Fatalf("retry must not duplicate the active-team HQ notification, got %d", count)
 	}
 }
 
@@ -313,6 +668,7 @@ func TestConversationHandoffConfirmationUsesDeferredQuestionForRoomDecision(t *t
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "空调不制冷，发票能备注吗")
 
 	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
@@ -326,20 +682,12 @@ func TestConversationHandoffConfirmationUsesDeferredQuestionForRoomDecision(t *t
 	}
 
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
-		t.Fatalf("expected answered room issue not to force room collection for another deferred question, got %+v", state)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+		t.Fatalf("expected deferred invoice question to dispatch directly without room collection, got %+v", state)
 	}
-	payload := struct {
-		HandoffToken string `json:"handoffToken"`
-	}{}
-	if json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil || payload.HandoffToken == "" {
-		t.Fatalf("expected stable handoff token, got %+v", state)
-	}
-	message := services.MessageService.FindOne(sqls.NewCnd().
-		Eq("conversation_id", conversation.ID).
-		Eq("client_msg_id", "ai_handoff_confirm_"+payload.HandoffToken))
-	if message == nil || strings.Contains(message.Content, "哪个房间") {
-		t.Fatalf("expected ordinary handoff confirmation for deferred invoice question, got %+v", message)
+	message := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if message == nil || message.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected exact direct success message for deferred invoice question, got %+v", message)
 	}
 }
 
@@ -347,6 +695,7 @@ func TestConversationHandoffConfirmationUsesRoomFromSameCustomerBurst(t *testing
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "空调坏了")
 	createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "我住1302")
 	origin := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "顺便问早餐几点")
@@ -362,20 +711,12 @@ func TestConversationHandoffConfirmationUsesRoomFromSameCustomerBurst(t *testing
 	}
 
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-	payload := struct {
-		AwaitingField string `json:"awaitingField"`
-		RoomNumber    string `json:"roomNumber"`
-		Reason        string `json:"reason"`
-	}{}
-	if state == nil || json.Unmarshal([]byte(state.PendingActionPayload), &payload) != nil {
-		t.Fatalf("expected valid pending handoff payload, got %+v", state)
-	}
-	if payload.AwaitingField != "" || payload.RoomNumber != "1302" || !strings.Contains(payload.Reason, "客户补充房号：1302") {
-		t.Fatalf("expected room 1302 from the same customer burst, got %+v", payload)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" || !strings.Contains(state.HandoffReason, "客户补充房号：1302") {
+		t.Fatalf("expected room 1302 from the same customer burst to dispatch directly, got %+v", state)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
-		t.Fatalf("expected direct handoff confirmation after burst room recovery, got %+v", latest)
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected direct handoff after burst room recovery, got %+v", latest)
 	}
 }
 
@@ -436,25 +777,43 @@ func TestConversationHandoffConfirmationDoesNotReuseRoomOutsideBurstWindow(t *te
 	}
 }
 
-func TestConversationHandoffConfirmationPendingExpiresInFiveMinutes(t *testing.T) {
+func TestConversationLegacyHandoffConfirmationRemainsCompatibleWithinFiveMinutes(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
+	restore := services.SetHumanHandoffConfirmationClassifierForTest(func(ctx context.Context, conversation *models.Conversation, message *models.Message, reason string, text string) (string, float64, string) {
+		return "confirm", 0.99, "legacy confirmation reply"
+	})
+	t.Cleanup(restore)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
-	createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我摔倒流血了")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "我要找人工")
 
 	start := time.Now()
-	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "客人需要人工接待", "req-ask"); err != nil {
-		t.Fatalf("RequestByAI() error = %v", err)
+	payload := fmt.Sprintf(`{"reason":"客人需要人工接待","aiAgentId":%d,"originMessageId":%d,"handoffToken":"legacy-five-minutes","createdAt":"%s"}`, aiAgent.ID, origin.ID, start.Format(time.RFC3339))
+	if err := services.ConversationRouteService.SetPendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, payload, start.Add(services.DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
+		t.Fatalf("SetPendingAction() error = %v", err)
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) || state.PendingActionExpireAt == nil {
-		t.Fatalf("expected pending human handoff with expiry, got %+v", state)
+		t.Fatalf("expected legacy pending handoff with expiry, got %+v", state)
 	}
 	minExpire := start.Add(services.DefaultHandoffConfirmationMinutes * time.Minute).Add(-2 * time.Second)
 	maxExpire := start.Add(services.DefaultHandoffConfirmationMinutes * time.Minute).Add(2 * time.Second)
 	if state.PendingActionExpireAt.Before(minExpire) || state.PendingActionExpireAt.After(maxExpire) {
 		t.Fatalf("expected pending expiry around 5 minutes, got %v", state.PendingActionExpireAt)
+	}
+	confirm := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "确认")
+	handled, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &confirm)
+	if err != nil || !handled {
+		t.Fatalf("HandleCustomerMessage(legacy confirm) handled=%v err=%v", handled, err)
+	}
+	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.PendingAction != "" || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
+		t.Fatalf("expected legacy confirmation to dispatch successfully, got %+v", state)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected legacy confirmation to use current success wording, got %+v", latest)
 	}
 }
 
@@ -471,9 +830,7 @@ func TestConversationHandoffConfirmationSemanticConfirmDispatches(t *testing.T) 
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 
-	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "客人需要人工接待；客户消息：我要找人", "req-ask"); err != nil {
-		t.Fatalf("RequestByAI() error = %v", err)
-	}
+	seedLegacyHandoffConfirmation(t, conversation.ID, aiAgent.ID, 10, "legacy-semantic-confirm", "客人需要人工接待；客户消息：我要找人")
 	confirm := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "那你帮我叫一下人吧")
 	handled, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &confirm)
 	if err != nil {
@@ -509,9 +866,7 @@ func TestConversationHandoffConfirmationSemanticCancelClearsPending(t *testing.T
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 
-	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "客人需要人工接待", "req-ask"); err != nil {
-		t.Fatalf("RequestByAI() error = %v", err)
-	}
+	seedLegacyHandoffConfirmation(t, conversation.ID, aiAgent.ID, 10, "legacy-semantic-cancel", "客人需要人工接待")
 	cancelMsg := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "先不用了我自己看看")
 	handled, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &cancelMsg)
 	if err != nil {
@@ -533,7 +888,7 @@ func TestConversationHandoffConfirmationSemanticCancelClearsPending(t *testing.T
 	}
 }
 
-func TestConversationHandoffCollectsRoomBeforeConfirmation(t *testing.T) {
+func TestConversationHandoffCollectsRoomThenDispatchesWithoutConfirmation(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
@@ -558,36 +913,98 @@ func TestConversationHandoffCollectsRoomBeforeConfirmation(t *testing.T) {
 		t.Fatalf("HandleCustomerMessage(room) handled=%v err=%v", handled, err)
 	}
 	latest = services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
-		t.Fatalf("expected coworker confirmation prompt, got %+v", latest)
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected immediate handoff success after room number, got %+v", latest)
 	}
 	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) || !strings.Contains(state.PendingActionPayload, `"roomNumber":"1305"`) {
-		t.Fatalf("expected collected room number in pending context, got %+v", state)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" || !strings.Contains(state.HandoffReason, "客户补充房号：1305") {
+		t.Fatalf("expected collected room number to dispatch immediately, got %+v", state)
 	}
-
-	confirm := createHumanDispatchMessage(t, db, conversation.ID, 30, enums.IMSenderTypeCustomer, "确认")
-	handled, err = services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &confirm)
-	if err != nil || !handled {
-		t.Fatalf("HandleCustomerMessage(confirm) handled=%v err=%v", handled, err)
-	}
-	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
-	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
-		t.Fatalf("expected real handoff after confirmation, got %+v", state)
+	if strings.Contains(latest.Content, "确认") || strings.Contains(latest.Content, "取消") {
+		t.Fatalf("room completion must not trigger a second confirmation, got %q", latest.Content)
 	}
 }
 
-func TestConversationHandoffWithoutRoomContextUsesCoworkerWording(t *testing.T) {
+func TestConversationHandoffWithoutRoomContextDispatchesDirectly(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 
 	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "知识库规则要求门店同事接手；客户消息：问一下前台几点有人", "req-confirm-wording"); err != nil {
 		t.Fatalf("RequestByAI() error = %v", err)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
-		t.Fatalf("expected coworker confirmation prompt, got %+v", latest)
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected direct coworker handoff wording, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffWithRoomNumberDispatchesDirectly(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "1306房间的马桶堵了")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"知识库规则要求门店同事接手；客户消息：1306房间的马桶堵了",
+		"req-room-ready",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" || !strings.Contains(state.HandoffReason, "1306") {
+		t.Fatalf("expected direct handoff with supplied room number, got %+v", state)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+		t.Fatalf("expected exact direct handoff success message, got %+v", latest)
+	}
+}
+
+func TestConversationHandoffOffHoursDoesNotSendSuccessMessage(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeNone, "")
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", 55).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable store room handoff: %v", err)
+	}
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", 77).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable instance room handoff: %v", err)
+	}
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+
+	if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-off-hours-direct",
+		origin.ID,
+	); err != nil {
+		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
+	}
+
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 0 {
+		t.Fatalf("off-hours handoff must not claim success, got %d success messages", count)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
+	if latest == nil || latest.Content != services.HandoffOffHoursMessage {
+		t.Fatalf("expected exact off-hours response, got %+v", latest)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 0 {
+		t.Fatalf("off-hours response must not create a manual resume task, got %d", count)
 	}
 }
 
@@ -632,17 +1049,18 @@ func TestConversationHandoffDoesNotCollectRoomForInformationQuestions(t *testing
 
 	for index, item := range cases {
 		conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+		createHumanDispatchStoreRoomRuntimeWithIDs(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59", int64(100+index), int64(200+index), int64(300+index))
 		origin := createHumanDispatchMessage(t, db, conversation.ID, int64(index+1)*10, enums.IMSenderTypeCustomer, item.question)
 		if _, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(conversation.ID, aiAgent, item.reason, fmt.Sprintf("req-room-info-%d", index), origin.ID); err != nil {
 			t.Fatalf("RequestByAIWithOriginMessage(%q) error = %v", item.question, err)
 		}
 		latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-		if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
-			t.Fatalf("information question %q must not collect room, got %+v", item.question, latest)
+		if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
+			t.Fatalf("information question %q must dispatch without collecting room, got %+v", item.question, latest)
 		}
 		state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-		if state == nil || strings.Contains(state.PendingActionPayload, `"awaitingField":"room_number"`) {
-			t.Fatalf("information question %q unexpectedly waits for room: %+v", item.question, state)
+		if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
+			t.Fatalf("information question %q unexpectedly waits for room or confirmation: %+v", item.question, state)
 		}
 	}
 }
@@ -651,6 +1069,7 @@ func TestConversationHandoffRoomDecisionUsesVoiceTranscript(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "wx_protocol_1305.mp3")
 	origin.MessageType = enums.IMMessageTypeVoice
 	origin.Payload = `{"mediaText":"有空调不","mediaUnderstandingStatus":"understood"}`
@@ -662,7 +1081,7 @@ func TestConversationHandoffRoomDecisionUsesVoiceTranscript(t *testing.T) {
 		t.Fatalf("RequestByAIWithOriginMessage() error = %v", err)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.Content != "这个需要我帮您联系同事来解决吗？回复“确认”或“取消”。" {
+	if latest == nil || latest.Content != services.DirectHandoffSuccessMessage {
 		t.Fatalf("voice filename digits must not be treated as room number, got %+v", latest)
 	}
 }
@@ -677,9 +1096,7 @@ func TestConversationHandoffConfirmationClearsOnNewTopic(t *testing.T) {
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
 
-	if _, err := services.ConversationHandoffConfirmationService.RequestByAI(conversation.ID, aiAgent, "客人需要人工接待", "req-ask"); err != nil {
-		t.Fatalf("RequestByAI() error = %v", err)
-	}
+	seedLegacyHandoffConfirmation(t, conversation.ID, aiAgent.ID, 10, "legacy-new-topic", "客人需要人工接待")
 	newTopic := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "早餐几点")
 	handled, err := services.ConversationHandoffConfirmationService.HandleCustomerMessage(&conversation, &newTopic)
 	if err != nil {
@@ -1171,6 +1588,21 @@ func createHumanDispatchAIAgent(t *testing.T, db *gorm.DB, mode enums.IMConversa
 	return item
 }
 
+func createHumanDispatchWxWorkProtocolChannel(t *testing.T, db *gorm.DB, id int64) {
+	t.Helper()
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          id,
+		Name:        "企微员工号测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-handoff-" + strconv.FormatInt(id, 10),
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create wxwork protocol channel: %v", err)
+	}
+}
+
 func createHumanDispatchTeam(t *testing.T, db *gorm.DB, id int64, name string) {
 	t.Helper()
 	if err := db.Create(&models.AgentTeam{ID: id, Name: name, Status: enums.StatusOk}).Error; err != nil {
@@ -1259,6 +1691,17 @@ func createHumanDispatchMessage(t *testing.T, db *gorm.DB, conversationID int64,
 	return item
 }
 
+func backdateHumanDispatchMessage(t *testing.T, db *gorm.DB, messageID int64, sentAt time.Time) {
+	t.Helper()
+	if err := db.Model(&models.Message{}).Where("id = ?", messageID).Updates(map[string]any{
+		"sent_at":    sentAt,
+		"created_at": sentAt,
+		"updated_at": sentAt,
+	}).Error; err != nil {
+		t.Fatalf("backdate message: %v", err)
+	}
+}
+
 func setHumanDispatchConversationSummary(t *testing.T, db *gorm.DB, conversationID int64, summary string) {
 	t.Helper()
 	if err := db.Model(&models.Conversation{}).Where("id = ?", conversationID).Update("last_message_summary", summary).Error; err != nil {
@@ -1267,13 +1710,17 @@ func setHumanDispatchConversationSummary(t *testing.T, db *gorm.DB, conversation
 }
 
 func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversationID int64, managedMode string, serviceHours string) {
+	createHumanDispatchStoreRoomRuntimeWithIDs(t, db, conversationID, managedMode, serviceHours, 88, 55, 77)
+}
+
+func createHumanDispatchStoreRoomRuntimeWithIDs(t *testing.T, db *gorm.DB, conversationID int64, managedMode string, serviceHours string, storeID int64, bindingID int64, instanceID int64) {
 	t.Helper()
-	if err := db.Create(&models.Store{ID: 88, StoreCode: "store-room-test", Name: "测试门店", Status: enums.StatusOk}).Error; err != nil {
+	if err := db.Create(&models.Store{ID: storeID, StoreCode: "store-room-test-" + strconv.FormatInt(storeID, 10), Name: "测试门店", Status: enums.StatusOk}).Error; err != nil {
 		t.Fatalf("create store error = %v", err)
 	}
 	binding := models.StoreStaffBinding{
-		ID:                      55,
-		StoreID:                 88,
+		ID:                      bindingID,
+		StoreID:                 storeID,
 		ManagedMode:             managedMode,
 		ServiceHours:            serviceHours,
 		StoreRoomConversationID: "R:room-100",
@@ -1287,8 +1734,8 @@ func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversation
 		t.Fatalf("create store staff binding error = %v", err)
 	}
 	instance := models.WxWorkProtocolInstance{
-		ID:                     77,
-		Guid:                   "guid-store-room-test",
+		ID:                     instanceID,
+		Guid:                   "guid-store-room-test-" + strconv.FormatInt(instanceID, 10),
 		StoreID:                binding.StoreID,
 		StoreStaffBindingID:    binding.ID,
 		StoreNavigationName:    "测试门店",
@@ -1305,6 +1752,83 @@ func createHumanDispatchStoreRoomRuntime(t *testing.T, db *gorm.DB, conversation
 	if err := db.Create(&models.ConversationRouteState{ConversationID: conversationID, StoreID: binding.StoreID, WxWorkInstanceID: instance.ID, RouteStatus: enums.ConversationRouteStatusAIServing, RouteTarget: "ai", SessionNo: 1}).Error; err != nil {
 		t.Fatalf("create conversation route state error = %v", err)
 	}
+}
+
+func seedLegacyHandoffConfirmation(t *testing.T, conversationID int64, aiAgentID int64, originMessageID int64, handoffToken string, reason string) {
+	t.Helper()
+	payload := fmt.Sprintf(
+		`{"reason":%q,"aiAgentId":%d,"originMessageId":%d,"handoffToken":%q,"createdAt":%q}`,
+		reason,
+		aiAgentID,
+		originMessageID,
+		handoffToken,
+		time.Now().Format(time.RFC3339),
+	)
+	if err := services.ConversationRouteService.SetPendingAction(
+		conversationID,
+		enums.ConversationPendingActionHumanHandoff,
+		payload,
+		time.Now().Add(services.DefaultHandoffConfirmationMinutes*time.Minute),
+	); err != nil {
+		t.Fatalf("seed legacy handoff confirmation: %v", err)
+	}
+}
+
+func countHumanDispatchMessages(t *testing.T, db *gorm.DB, conversationID int64, content string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND sender_type = ? AND content = ?", conversationID, enums.IMSenderTypeAI, content).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count human dispatch messages: %v", err)
+	}
+	return count
+}
+
+func countManualResumeTasks(t *testing.T, db *gorm.DB, conversationID int64) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.AIManualResumeTask{}).Where("conversation_id = ?", conversationID).Count(&count).Error; err != nil {
+		t.Fatalf("count manual resume tasks: %v", err)
+	}
+	return count
+}
+
+func countMessagesByClientMsgID(t *testing.T, db *gorm.DB, conversationID int64, clientMsgID string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND client_msg_id = ?", conversationID, clientMsgID).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count messages by client message id: %v", err)
+	}
+	return count
+}
+
+func countChannelOutboxesForMessage(t *testing.T, db *gorm.DB, channelType string, messageID int64) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.ChannelMessageOutbox{}).
+		Where("channel_type = ? AND message_id = ?", channelType, messageID).
+		Count(&count).Error; err != nil {
+		t.Fatalf("count channel outboxes for message: %v", err)
+	}
+	return count
+}
+
+func countManualHandoffNotifications(t *testing.T, db *gorm.DB, conversationID int64, recipientUserID int64) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&models.Notification{}).Where(
+		"recipient_user_id = ? AND notification_type = ? AND biz_type = ? AND biz_id = ?",
+		recipientUserID,
+		"manual_handoff_created",
+		"conversation",
+		conversationID,
+	).Count(&count).Error; err != nil {
+		t.Fatalf("count manual handoff notifications: %v", err)
+	}
+	return count
 }
 
 type storeRoomHandoffNoticePayload struct {
@@ -1333,6 +1857,22 @@ func findStoreRoomHandoffNoticeOutbox(t *testing.T, db *gorm.DB, conversationID 
 	}
 	t.Fatalf("expected store room handoff notice outbox, got %#v", outboxes)
 	return storeRoomHandoffNoticePayload{}
+}
+
+func findStoreRoomHandoffNoticeOutboxModel(t *testing.T, db *gorm.DB, conversationID int64) models.ChannelMessageOutbox {
+	t.Helper()
+	var outboxes []models.ChannelMessageOutbox
+	if err := db.Where("conversation_id = ? AND channel_type = ?", conversationID, enums.ChannelTypeWxWorkProtocol).Order("id ASC").Find(&outboxes).Error; err != nil {
+		t.Fatalf("find outboxes error = %v", err)
+	}
+	for _, outbox := range outboxes {
+		var payload storeRoomHandoffNoticePayload
+		if err := json.Unmarshal([]byte(outbox.Payload), &payload); err == nil && payload.Kind == "store_room_handoff_notice" {
+			return outbox
+		}
+	}
+	t.Fatalf("expected store room handoff notice outbox, got %#v", outboxes)
+	return models.ChannelMessageOutbox{}
 }
 
 func countStoreRoomHandoffNoticeOutbox(t *testing.T, db *gorm.DB, conversationID int64) int {

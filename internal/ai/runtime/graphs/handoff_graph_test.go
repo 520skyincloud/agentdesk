@@ -2,192 +2,157 @@ package graphs
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"testing"
-	"time"
 
+	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/services"
-
-	"github.com/glebarez/sqlite"
-	"github.com/mlogclub/simple/sqls"
-	"gorm.io/gorm"
-	"gorm.io/gorm/schema"
 )
 
-func TestHandoffGraphOffHoursRequestsConfirmation(t *testing.T) {
-	db := setupHandoffGraphTestDB(t)
-	aiAgent := createHandoffGraphAIAgent(t, db, "1")
-	conversation := createHandoffGraphConversation(t, db, aiAgent.ID)
+func TestHandoffGraphDispatchesWithoutConfirmation(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	isAutoHandoffEnabledForConversation = func(int64) bool { return true }
+	t.Cleanup(func() { isAutoHandoffEnabledForConversation = previousEnabled })
 
-	reply, err := NewHandoffGraph(conversation, aiAgent).Run(context.Background(), `{"reason":"用户要求转人工"}`)
-	if err == nil {
-		t.Fatalf("expected confirmation interrupt")
-	}
-	if !strings.Contains(err.Error(), InterruptTypeHandoffConfirmation) {
-		t.Fatalf("expected handoff confirmation interrupt, got %v", err)
-	}
-	if reply != "" {
-		t.Fatalf("expected no reply before confirmation, got %q", reply)
-	}
-
-	message := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if message != nil {
-		t.Fatalf("expected no off-hours notice before confirmation, got %+v", message)
+	tests := []struct {
+		name   string
+		status services.HandoffDispatchStatus
+	}{
+		{name: "awaiting room number", status: services.HandoffDispatchStatusAwaitingRoomNumber},
+		{name: "dispatched", status: services.HandoffDispatchStatusDispatched},
+		{name: "already active", status: services.HandoffDispatchStatusAlreadyActive},
+		{name: "off hours", status: services.HandoffDispatchStatusOffHours},
 	}
 
-	current := services.ConversationService.Get(conversation.ID)
-	if current == nil {
-		t.Fatalf("expected conversation")
-	}
-	if current.Status != enums.IMConversationStatusAIServing {
-		t.Fatalf("expected conversation to stay ai-serving, got %d", current.Status)
-	}
-	if current.HandoffAt != nil {
-		t.Fatalf("expected handoff_at to remain nil, got %v", current.HandoffAt)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			previous := dispatchHandoffByAI
+			t.Cleanup(func() { dispatchHandoffByAI = previous })
+
+			conversation := models.Conversation{ID: 101}
+			aiAgent := models.AIAgent{ID: 202}
+			var gotConversationID int64
+			var gotAIAgent models.AIAgent
+			var gotReason string
+			var gotRequestID string
+			dispatchHandoffByAI = func(conversationID int64, agent models.AIAgent, reason string, requestID string) (*services.HandoffDispatchResult, error) {
+				gotConversationID = conversationID
+				gotAIAgent = agent
+				gotReason = reason
+				gotRequestID = requestID
+				return &services.HandoffDispatchResult{Status: tt.status}, nil
+			}
+
+			ctx := tracex.ContextWithRequestID(context.Background(), "req-graph-handoff")
+			reply, err := NewHandoffGraph(conversation, aiAgent).Run(ctx, `{"reason":"用户明确要求人工"}`)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			result, ok := tooling.ParseToolResult(reply)
+			if !ok {
+				t.Fatalf("expected structured tool result, got %q", reply)
+			}
+			if !result.Handled || !result.Terminal || !result.ReplySent || result.ShouldRetry {
+				t.Fatalf("unexpected tool result: %+v", result)
+			}
+			if result.Action != string(tt.status) {
+				t.Fatalf("expected action %q, got %q", tt.status, result.Action)
+			}
+			if gotConversationID != conversation.ID || gotAIAgent.ID != aiAgent.ID {
+				t.Fatalf("unexpected dispatch target: conversation=%d agent=%d", gotConversationID, gotAIAgent.ID)
+			}
+			if gotReason != "用户明确要求人工" {
+				t.Fatalf("unexpected reason %q", gotReason)
+			}
+			if gotRequestID != "req-graph-handoff" {
+				t.Fatalf("unexpected request id %q", gotRequestID)
+			}
+		})
 	}
 }
 
-func TestHandoffGraphWithActiveScheduleStillRequestsConfirmation(t *testing.T) {
-	db := setupHandoffGraphTestDB(t)
-	aiAgent := createHandoffGraphAIAgent(t, db, "1")
-	createHandoffGraphTeam(t, db, 1)
-	createHandoffGraphActiveSchedule(t, db, 1)
-	conversation := createHandoffGraphConversation(t, db, aiAgent.ID)
-
-	reply, err := NewHandoffGraph(conversation, aiAgent).Run(context.Background(), `{"reason":"用户要求转人工"}`)
-	if err == nil {
-		t.Fatalf("expected confirmation interrupt")
-	}
-	if !strings.Contains(err.Error(), InterruptTypeHandoffConfirmation) {
-		t.Fatalf("expected handoff confirmation interrupt, got %v", err)
-	}
-	if reply != "" {
-		t.Fatalf("expected no reply before confirmation, got %q", reply)
-	}
-
-	var count int64
-	if err := db.Model(&models.Message{}).Where("conversation_id = ?", conversation.ID).Count(&count).Error; err != nil {
-		t.Fatalf("count messages error = %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected no notice before confirmation, got %d messages", count)
-	}
-}
-
-func TestHandoffGraphEmergencySafetyRequestsConfirmation(t *testing.T) {
-	db := setupHandoffGraphTestDB(t)
-	aiAgent := createHandoffGraphAIAgent(t, db, "1")
-	createHandoffGraphTeam(t, db, 1)
-	createHandoffGraphActiveSchedule(t, db, 1)
-	conversation := createHandoffGraphConversation(t, db, aiAgent.ID)
-
-	reply, err := NewHandoffGraph(conversation, aiAgent).Run(context.Background(), `{"reason":"emergency_safety: 客人在109摔倒流血"}`)
-	if err == nil {
-		t.Fatalf("expected confirmation interrupt")
-	}
-	if !strings.Contains(err.Error(), InterruptTypeHandoffConfirmation) {
-		t.Fatalf("expected handoff confirmation interrupt, got %v", err)
-	}
-	if reply != "" {
-		t.Fatalf("expected no reply before confirmation, got %q", reply)
-	}
-	current := services.ConversationService.Get(conversation.ID)
-	if current == nil || current.HandoffAt != nil {
-		t.Fatalf("expected conversation not to enter handoff before confirmation, got %+v", current)
-	}
-}
-
-func setupHandoffGraphTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-
-	dbName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
-	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{
-			TablePrefix:   "t_",
-			SingularTable: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("open sqlite error = %v", err)
-	}
+func TestHandoffGraphDoesNotDispatchWhenAutoHandoffDisabled(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	previousDispatch := dispatchHandoffByAI
 	t.Cleanup(func() {
-		sqlDB, err := db.DB()
-		if err == nil {
-			_ = sqlDB.Close()
-		}
+		isAutoHandoffEnabledForConversation = previousEnabled
+		dispatchHandoffByAI = previousDispatch
 	})
-	if err := db.AutoMigrate(
-		&models.AIAgent{},
-		&models.AgentTeam{},
-		&models.AgentTeamSchedule{},
-		&models.Conversation{},
-		&models.ConversationRouteState{},
-		&models.ConversationEventLog{},
-		&models.ConversationReadState{},
-		&models.Message{},
-		&models.ChannelMessageOutbox{},
-	); err != nil {
-		t.Fatalf("auto migrate error = %v", err)
+
+	var checkedConversationID int64
+	isAutoHandoffEnabledForConversation = func(conversationID int64) bool {
+		checkedConversationID = conversationID
+		return false
 	}
-	sqls.SetDB(db)
-	return db
-}
-
-func createHandoffGraphAIAgent(t *testing.T, db *gorm.DB, teamIDs string) models.AIAgent {
-	t.Helper()
-
-	item := models.AIAgent{
-		Name:        "测试AI",
-		ServiceMode: enums.IMConversationServiceModeAIFirst,
-		TeamIDs:     teamIDs,
-		Status:      enums.StatusOk,
+	dispatchCalled := false
+	dispatchHandoffByAI = func(_ int64, _ models.AIAgent, _ string, _ string) (*services.HandoffDispatchResult, error) {
+		dispatchCalled = true
+		return &services.HandoffDispatchResult{Status: services.HandoffDispatchStatusDispatched}, nil
 	}
-	if err := db.Create(&item).Error; err != nil {
-		t.Fatalf("create ai agent error = %v", err)
+
+	reply, err := NewHandoffGraph(models.Conversation{ID: 101}, models.AIAgent{ID: 202}).Run(context.Background(), `{"reason":"用户明确要求人工"}`)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
-	return item
-}
-
-func createHandoffGraphTeam(t *testing.T, db *gorm.DB, id int64) {
-	t.Helper()
-
-	if err := db.Create(&models.AgentTeam{ID: id, Name: "售后支持组", Status: enums.StatusOk}).Error; err != nil {
-		t.Fatalf("create team error = %v", err)
+	if checkedConversationID != 101 {
+		t.Fatalf("expected setting check for conversation 101, got %d", checkedConversationID)
+	}
+	if dispatchCalled {
+		t.Fatal("dispatch must not be called when automatic handoff is disabled")
+	}
+	result, ok := tooling.ParseToolResult(reply)
+	if !ok {
+		t.Fatalf("expected structured tool result, got %q", reply)
+	}
+	if result.Action != "auto_handoff_disabled" {
+		t.Fatalf("expected auto_handoff_disabled action, got %q", result.Action)
+	}
+	if result.Handled || result.Terminal || result.ReplySent || result.ShouldRetry || result.ReplyText != "" {
+		t.Fatalf("disabled handoff must leave normal answering available without claiming a reply: %+v", result)
 	}
 }
 
-func createHandoffGraphActiveSchedule(t *testing.T, db *gorm.DB, teamID int64) {
-	t.Helper()
+func TestHandoffGraphUsesDefaultReason(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	previous := dispatchHandoffByAI
+	isAutoHandoffEnabledForConversation = func(int64) bool { return true }
+	t.Cleanup(func() {
+		isAutoHandoffEnabledForConversation = previousEnabled
+		dispatchHandoffByAI = previous
+	})
 
-	now := time.Now()
-	if err := db.Create(&models.AgentTeamSchedule{
-		TeamID:  teamID,
-		StartAt: now.Add(-time.Hour),
-		EndAt:   now.Add(time.Hour),
-		Status:  enums.StatusOk,
-	}).Error; err != nil {
-		t.Fatalf("create schedule error = %v", err)
+	var gotReason string
+	dispatchHandoffByAI = func(_ int64, _ models.AIAgent, reason string, _ string) (*services.HandoffDispatchResult, error) {
+		gotReason = reason
+		return &services.HandoffDispatchResult{Status: services.HandoffDispatchStatusDispatched}, nil
+	}
+
+	if _, err := NewHandoffGraph(models.Conversation{ID: 1}, models.AIAgent{ID: 2}).Run(context.Background(), `{}`); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if gotReason != "用户需要转人工支持" {
+		t.Fatalf("unexpected default reason %q", gotReason)
 	}
 }
 
-func createHandoffGraphConversation(t *testing.T, db *gorm.DB, aiAgentID int64) models.Conversation {
-	t.Helper()
+func TestHandoffGraphReturnsDispatchError(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	previous := dispatchHandoffByAI
+	isAutoHandoffEnabledForConversation = func(int64) bool { return true }
+	t.Cleanup(func() {
+		isAutoHandoffEnabledForConversation = previousEnabled
+		dispatchHandoffByAI = previous
+	})
 
-	now := time.Now()
-	item := models.Conversation{
-		AIAgentID:     aiAgentID,
-		ChannelID:     1,
-		CustomerID:    1,
-		CustomerName:  "测试访客",
-		Status:        enums.IMConversationStatusAIServing,
-		ServiceMode:   enums.IMConversationServiceModeAIFirst,
-		LastMessageAt: now,
-		LastActiveAt:  now,
+	wantErr := errors.New("dispatch failed")
+	dispatchHandoffByAI = func(_ int64, _ models.AIAgent, _ string, _ string) (*services.HandoffDispatchResult, error) {
+		return nil, wantErr
 	}
-	if err := db.Create(&item).Error; err != nil {
-		t.Fatalf("create conversation error = %v", err)
+
+	reply, err := NewHandoffGraph(models.Conversation{ID: 1}, models.AIAgent{ID: 2}).Run(context.Background(), `{}`)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected dispatch error, got reply=%q err=%v", reply, err)
 	}
-	return item
 }

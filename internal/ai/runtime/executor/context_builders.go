@@ -110,7 +110,7 @@ func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTr
 	if services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
 		return ""
 	}
-	return "【当前会话接待边界】当前客户在此企微员工号下不允许自动转人工。不要提及任何内部设置，不要发起转人工确认、通知、派发或承诺同事处理。继续直接回答当前问题；若涉及紧急安全情况，优先给出可立即执行的自我保护和 120/110 建议。"
+	return "【当前会话接待边界】当前客户在此企微员工号下不允许自动转人工。不要提及任何内部设置，不要发起转人工、通知、派发或承诺同事处理。继续直接回答当前问题；若涉及紧急安全情况，优先给出可立即执行的自我保护和 120/110 建议。"
 }
 
 func buildGenerationUserMessageText(currentText string, intent callbacks.IntentTraceData) string {

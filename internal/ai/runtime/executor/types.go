@@ -61,6 +61,7 @@ type RunResult struct {
 	handoffDirective          bool
 	handoffDirectiveReason    string
 	handoffDirectiveSource    string
+	handoffDispatchStatus     string
 }
 
 // ModelUsageCall preserves one upstream model response. It is intentionally

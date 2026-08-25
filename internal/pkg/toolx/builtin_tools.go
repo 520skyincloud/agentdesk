@@ -146,19 +146,21 @@ var (
 		Code:          "graph/handoff_to_human",
 		ServerCode:    "graph",
 		Name:          "handoff_to_human",
-		Title:         "转人工确认流程",
-		Description:   "Graph Tool。用于封装转人工原因整理、用户确认、真正转人工和结果返回的确定性流程。",
+		Title:         "直接转人工流程",
+		Description:   "Graph Tool。用于封装转人工原因整理、必要房号补充、真正转人工和结果返回的确定性流程。",
 		SourceType:    enums.ToolSourceTypeGraph,
 		DirectAccess:  true,
 		RuntimeStatic: true,
 		Appendix: strings.TrimSpace(`
-你可以在确认需要人工介入后调用 handoff_to_human 这个 Graph Tool 来转人工，但必须遵守以下规则：
+你可以在判断需要人工介入后调用 handoff_to_human 这个 Graph Tool 来直接转人工，但必须遵守以下规则：
 1. 只有在用户明确要求人工客服，或你已经判断该问题必须由人工继续处理时，才调用该工具。
 2. 调用前先尽量整理清楚转人工原因；如果理由含糊，先追问或澄清，不要直接转人工。
 3. 一旦决定转人工，必须调用 handoff_to_human 工具，禁止只在回复里口头说“我帮你转人工了”。
-4. 该 Graph Tool 会先向用户发起确认。用户确认后才会真正转人工；用户取消则结束本次转人工流程。
-5. 如果问题仍可由当前对话继续解决，优先继续解答，不要过早转人工。
-6. 如果工具返回 terminal=true 且 shouldRetry=false，说明转人工流程已经结束，禁止重复调用该工具。
+4. 该 Graph Tool 会直接执行转人工；如果服务事项需要房号但当前缺少房号，工具会先向用户追问房号，禁止额外发送“确认/取消”提示。
+5. 工具返回 awaiting_room_number、dispatched、already_active 或 off_hours 时，本轮流程均已由系统处理，禁止自行补发转接话术。
+6. 如果问题仍可由当前对话继续解决，优先继续解答，不要过早转人工。
+7. 如果工具返回 terminal=true 且 shouldRetry=false，说明本轮转人工流程已经结束，禁止重复调用该工具。
+8. 如果工具返回 auto_handoff_disabled，说明客户已关闭自动转人工；继续正常回答当前问题，禁止声称已经回复或转接。
 `),
 	}
 	RegisteredToolSpecs = []ToolSpec{

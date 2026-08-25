@@ -500,7 +500,7 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 	}
 	var lastErr error
 	for attempt := 1; attempt <= deferredKnowledgeHandoffMaxAttempts; attempt++ {
-		_, lastErr = svc.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+		_, lastErr = svc.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
 			replyCtx.Conversation.ID,
 			replyCtx.AIAgent,
 			reason,

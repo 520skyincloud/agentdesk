@@ -38,6 +38,14 @@ func ptrTime(v time.Time) *time.Time {
 
 func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	previousAIReplyHook := TriggerAIReplyAsyncHook
+	previousStandaloneReplyHook := TriggerStandaloneOneReplyAsyncHook
+	TriggerAIReplyAsyncHook = nil
+	TriggerStandaloneOneReplyAsyncHook = nil
+	t.Cleanup(func() {
+		TriggerAIReplyAsyncHook = previousAIReplyHook
+		TriggerStandaloneOneReplyAsyncHook = previousStandaloneReplyHook
+	})
 
 	dbName := "message_welcome_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
 	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{

@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
+	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/google/uuid"
@@ -72,20 +73,21 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
 		collector.Data.Status = summary.Status
-		if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) {
+		if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) && summary.handoffDispatchStatus == string(services.HandoffDispatchStatusDispatched) {
 			collector.Data.Output.FinishReason = "intent_emergency_human_route_dispatched"
 			collector.Data.Pipeline.Generate.Status = "skipped"
 			collector.Data.Pipeline.Generate.Reason = "intent stage dispatched emergency safety directly to human reception"
 			collector.Data.Pipeline.Validate.Status = "passed"
-			collector.Data.Pipeline.Validate.Reason = "emergency safety route dispatched without customer confirmation"
+			collector.Data.Pipeline.Validate.Reason = "emergency safety route dispatched directly"
 			summary.TraceData = collector.Marshal()
 			return summary, nil
 		}
-		collector.Data.Output.FinishReason = "intent_human_route_confirmation_requested"
+		finishReason, generateReason, validateReason := handoffCompletionMetadata("intent_human_route", summary.handoffDispatchStatus)
+		collector.Data.Output.FinishReason = finishReason
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "intent stage requested customer confirmation before human route"
+		collector.Data.Pipeline.Generate.Reason = generateReason
 		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = "human route waits for explicit customer confirmation"
+		collector.Data.Pipeline.Validate.Reason = validateReason
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
@@ -205,7 +207,7 @@ func completeRuntimeHandoffDirective(summary *RunResult, collector *callbacks.Ru
 		summary.ErrorMessage = err.Error()
 		collector.Data.Status = summary.Status
 		collector.Data.Error.Message = err.Error()
-		collector.Data.Error.Stage = "human_route_confirmation"
+		collector.Data.Error.Stage = "human_route_dispatch"
 		collector.Data.Pipeline.Validate.Status = "failed"
 		collector.Data.Pipeline.Validate.Reason = err.Error()
 		summary.TraceData = collector.Marshal()
@@ -215,21 +217,47 @@ func completeRuntimeHandoffDirective(summary *RunResult, collector *callbacks.Ru
 	summary.ModelName = collector.Data.Model.Name
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = ""
-	collector.Data.Output.FinishReason = "handoff_directive_confirmation_requested"
+	finishReason, generateReason, validateReason := handoffCompletionMetadata("handoff_directive", summary.handoffDispatchStatus)
+	collector.Data.Output.FinishReason = finishReason
 	if afterGenerate {
 		collector.Data.Pipeline.Generate.Status = "completed"
-		collector.Data.Pipeline.Generate.Reason = "generated reply was replaced by a persisted handoff confirmation"
+		collector.Data.Pipeline.Generate.Reason = "generated reply was replaced by the direct handoff flow: " + generateReason
 	} else {
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "top knowledge answer requested handoff confirmation before generation"
+		collector.Data.Pipeline.Generate.Reason = generateReason
 	}
 	collector.Data.Pipeline.Validate.Status = "passed"
 	collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 		collector.Data.Pipeline.Validate.Reason,
-		"handoff confirmation was persisted and sent through the existing route flow",
+		validateReason,
 	)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func handoffCompletionMetadata(prefix string, status string) (string, string, string) {
+	switch services.HandoffDispatchStatus(status) {
+	case services.HandoffDispatchStatusAwaitingRoomNumber:
+		return prefix + "_awaiting_room_number",
+			"room number was requested before direct human route",
+			"required room number collection is active"
+	case services.HandoffDispatchStatusDispatched:
+		return prefix + "_dispatched",
+			"human route was dispatched directly",
+			"human route dispatch completed"
+	case services.HandoffDispatchStatusAlreadyActive:
+		return prefix + "_already_active",
+			"human route was already active",
+			"existing human route remains active"
+	case services.HandoffDispatchStatusOffHours:
+		return prefix + "_off_hours",
+			"human route was unavailable outside service hours",
+			"off-hours handling completed without a success claim"
+	default:
+		return prefix + "_unknown",
+			"human route flow completed with an unknown status",
+			"human route result requires inspection"
+	}
 }
 
 func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {

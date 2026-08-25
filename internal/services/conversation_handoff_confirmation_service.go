@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,21 @@ const handoffConfirmationModelTimeout = 2 * time.Second
 const handoffRoomContextBurstWindow = 8 * time.Second
 
 type conversationHandoffConfirmationService struct{}
+
+type HandoffDispatchStatus string
+
+const (
+	HandoffDispatchStatusAwaitingRoomNumber HandoffDispatchStatus = "awaiting_room_number"
+	HandoffDispatchStatusDispatched         HandoffDispatchStatus = "dispatched"
+	HandoffDispatchStatusAlreadyActive      HandoffDispatchStatus = "already_active"
+	HandoffDispatchStatusOffHours           HandoffDispatchStatus = "off_hours"
+)
+
+type HandoffDispatchResult struct {
+	Status       HandoffDispatchStatus
+	HandoffToken string
+	Decision     HandoffDecisionType
+}
 
 type handoffConfirmationPayload struct {
 	Reason          string `json:"reason"`
@@ -70,26 +86,78 @@ func SetHumanHandoffConfirmationClassifierForTest(classifier func(context.Contex
 }
 
 func (s *conversationHandoffConfirmationService) RequestByAI(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (bool, error) {
+	result, err := s.DispatchByAI(conversationID, aiAgent, reason, requestID)
+	return result != nil, err
+}
+
+func (s *conversationHandoffConfirmationService) DispatchByAI(conversationID int64, aiAgent models.AIAgent, reason string, requestID string) (*HandoffDispatchResult, error) {
 	originMessageID := int64(0)
 	if message := AIManualResumeTaskService.latestCustomerMessage(conversationID); message != nil {
 		originMessageID = message.ID
 	}
-	return s.RequestByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID)
+	return s.DispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID)
 }
 
 func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (bool, error) {
+	result, err := s.DispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID)
+	return result != nil, err
+}
+
+func (s *conversationHandoffConfirmationService) DispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true)
+}
+
+func (s *conversationHandoffConfirmationService) DispatchEmergencyByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false)
+}
+
+func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool) (*HandoffDispatchResult, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
-		return false, fmt.Errorf("会话不存在")
+		return nil, fmt.Errorf("会话不存在")
 	}
+	if originMessageID <= 0 {
+		if message := AIManualResumeTaskService.latestCustomerMessage(conversationID); message != nil {
+			originMessageID = message.ID
+		}
+	}
+	handoffToken := stableDirectHandoffToken(conversationID, originMessageID, requestID)
 	if s.alreadyInHumanRoute(conversationID) {
-		return true, nil
+		if activeTask := AIManualResumeTaskService.latestActiveTask(conversationID, []string{
+			aiManualResumeTaskWaiting,
+			aiManualResumeTaskReady,
+			aiManualResumeTaskRunning,
+			aiManualResumeTaskRetry,
+			aiManualResumeTaskBlockedAIDisabled,
+		}); activeTask != nil && strings.TrimSpace(activeTask.HandoffToken) != handoffToken {
+			return &HandoffDispatchResult{Status: HandoffDispatchStatusAlreadyActive, HandoffToken: activeTask.HandoffToken}, nil
+		}
+		if !s.shouldRepairActiveDirectHandoff(conversationID, originMessageID) {
+			return &HandoffDispatchResult{Status: HandoffDispatchStatusAlreadyActive, HandoffToken: handoffToken}, nil
+		}
+		if err := ConversationHumanDispatchService.EnsureDirectHandoffArtifacts(conversationID, aiAgent.ID, reason, handoffToken, requestID); err != nil {
+			return nil, err
+		}
+		if _, err := AIManualResumeTaskService.Schedule(conversationID, originMessageID, handoffToken); err != nil {
+			return nil, fmt.Errorf("补建人工接待恢复任务失败: %w", err)
+		}
+		return &HandoffDispatchResult{Status: HandoffDispatchStatusAlreadyActive, HandoffToken: handoffToken}, nil
 	}
 	if state := ConversationRouteService.GetByConversationID(conversationID); state != nil && state.PendingAction == string(enums.ConversationPendingActionHumanHandoff) {
 		if state.PendingActionExpireAt == nil || time.Now().Before(*state.PendingActionExpireAt) {
 			payloadValue := handoffConfirmationPayload{}
 			_ = json.Unmarshal([]byte(state.PendingActionPayload), &payloadValue)
-			return s.sendConfirmationPrompt(conversationID, aiAgent.ID, payloadValue, requestID)
+			if payloadValue.AwaitingField == "room_number" {
+				if _, err := s.sendRoomNumberPrompt(conversationID, aiAgent.ID, payloadValue, requestID); err != nil {
+					return nil, err
+				}
+				return &HandoffDispatchResult{Status: HandoffDispatchStatusAwaitingRoomNumber, HandoffToken: payloadValue.HandoffToken}, nil
+			}
+			// Compatibility for confirmation prompts sent by the previous release.
+			if _, err := s.sendConfirmationPrompt(conversationID, aiAgent.ID, payloadValue, requestID); err != nil {
+				return nil, err
+			}
+			return &HandoffDispatchResult{Status: HandoffDispatchStatusAlreadyActive, HandoffToken: payloadValue.HandoffToken}, nil
 		}
 		_ = ConversationRouteService.ClearPendingAction(conversationID)
 	}
@@ -99,42 +167,51 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 		Reason:          cleanedReason,
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
-		HandoffToken:    AIManualResumeTaskService.NewHandoffToken(),
+		HandoffToken:    handoffToken,
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	}
-	if handoffNeedsRoomNumber(originCustomerText) {
+	if applyRoomNumberPolicy && handoffNeedsRoomNumber(originCustomerText) {
 		roomNumber := extractRoomNo(originCustomerText)
 		if roomNumber == "" {
 			roomNumber = resolveRecentHandoffBurstRoomNumber(conversationID, originMessageID)
-			if roomNumber != "" {
-				payloadValue.Reason = appendHandoffRoomNumber(payloadValue.Reason, roomNumber)
-			}
 		}
 		if roomNumber == "" {
 			payloadValue.AwaitingField = "room_number"
 		} else {
 			payloadValue.RoomNumber = roomNumber
+			payloadValue.Reason = appendHandoffRoomNumber(payloadValue.Reason, roomNumber)
 		}
 	}
-	payload, _ := json.Marshal(payloadValue)
-	if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
-		return false, err
-	}
-	_, err := s.sendConfirmationPrompt(conversationID, aiAgent.ID, payloadValue, requestID)
-	if err != nil {
-		if clearErr := ConversationRouteService.ClearPendingAction(conversationID); clearErr != nil {
-			return false, fmt.Errorf("发送转人工确认失败: %w；清理待确认状态失败: %v", err, clearErr)
+	if payloadValue.AwaitingField == "room_number" {
+		payload, _ := json.Marshal(payloadValue)
+		if err := ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(payload), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
+			return nil, err
 		}
-		return false, err
+		if _, err := s.sendRoomNumberPrompt(conversationID, aiAgent.ID, payloadValue, requestID); err != nil {
+			if clearErr := ConversationRouteService.ClearPendingAction(conversationID); clearErr != nil {
+				return nil, fmt.Errorf("发送房号追问失败: %w；清理待补充状态失败: %v", err, clearErr)
+			}
+			return nil, err
+		}
+		return &HandoffDispatchResult{Status: HandoffDispatchStatusAwaitingRoomNumber, HandoffToken: handoffToken}, nil
 	}
-	return true, nil
+	return s.dispatchPreparedHandoff(conversation, aiAgent, payloadValue, requestID)
+}
+
+func (s *conversationHandoffConfirmationService) sendRoomNumberPrompt(conversationID int64, aiAgentID int64, payload handoffConfirmationPayload, requestID string) (bool, error) {
+	clientMsgID := "ai_handoff_room_" + strings.TrimSpace(payload.HandoffToken)
+	if clientMsgID == "ai_handoff_room_" && payload.OriginMessageID > 0 {
+		clientMsgID = fmt.Sprintf("ai_handoff_room_origin_%d", payload.OriginMessageID)
+	}
+	if clientMsgID == "ai_handoff_room_" {
+		clientMsgID += strs.UUID()
+	}
+	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgentID, clientMsgID, enums.IMMessageTypeText, "方便说下是哪个房间吗？", "", systemOperator(), requestID)
+	return err == nil, err
 }
 
 func (s *conversationHandoffConfirmationService) sendConfirmationPrompt(conversationID int64, aiAgentID int64, payload handoffConfirmationPayload, requestID string) (bool, error) {
 	content := buildHandoffConfirmationPrompt(payload.Reason)
-	if payload.AwaitingField == "room_number" {
-		content = "方便说下是哪个房间吗？"
-	}
 	clientMsgID := "ai_handoff_confirm_" + strings.TrimSpace(payload.HandoffToken)
 	if clientMsgID == "ai_handoff_confirm_" && payload.OriginMessageID > 0 {
 		clientMsgID = fmt.Sprintf("ai_handoff_confirm_origin_%d", payload.OriginMessageID)
@@ -144,6 +221,50 @@ func (s *conversationHandoffConfirmationService) sendConfirmationPrompt(conversa
 	}
 	_, err := MessageService.SendAIMessageWithRequestID(conversationID, aiAgentID, clientMsgID, enums.IMMessageTypeText, content, "", systemOperator(), requestID)
 	return err == nil, err
+}
+
+func (s *conversationHandoffConfirmationService) dispatchPreparedHandoff(conversation *models.Conversation, aiAgent models.AIAgent, payload handoffConfirmationPayload, requestID string) (*HandoffDispatchResult, error) {
+	if conversation == nil {
+		return nil, fmt.Errorf("会话不存在")
+	}
+	reason := cleanHumanHandoffReason(payload.Reason)
+	if reason == "" {
+		reason = "用户需要人工接待"
+	}
+	requestID = stableHandoffRequestID(requestID, payload.HandoffToken)
+	decision, err := ConversationHumanDispatchService.HandoffByAIWithDirectNotice(conversation.ID, aiAgent, reason, requestID, payload.HandoffToken)
+	if err != nil {
+		return nil, err
+	}
+	if decision == nil {
+		return nil, fmt.Errorf("转人工结果为空")
+	}
+	if decision.Decision == HandoffDecisionOffHours {
+		return &HandoffDispatchResult{Status: HandoffDispatchStatusOffHours, HandoffToken: payload.HandoffToken, Decision: decision.Decision}, nil
+	}
+	if _, scheduleErr := AIManualResumeTaskService.Schedule(conversation.ID, payload.OriginMessageID, payload.HandoffToken); scheduleErr != nil {
+		return nil, fmt.Errorf("创建人工接待恢复任务失败: %w", scheduleErr)
+	}
+	return &HandoffDispatchResult{Status: HandoffDispatchStatusDispatched, HandoffToken: payload.HandoffToken, Decision: decision.Decision}, nil
+}
+
+func stableDirectHandoffToken(conversationID int64, originMessageID int64, requestID string) string {
+	if conversationID > 0 && originMessageID > 0 {
+		return fmt.Sprintf("direct_%d_%d", conversationID, originMessageID)
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		sum := sha256.Sum256([]byte(requestID))
+		return fmt.Sprintf("direct_%d_%x", conversationID, sum[:8])
+	}
+	return "direct_" + AIManualResumeTaskService.NewHandoffToken()
+}
+
+func stableHandoffRequestID(requestID string, handoffToken string) string {
+	if requestID = strings.TrimSpace(requestID); requestID != "" {
+		return requestID
+	}
+	return "handoff_" + strings.TrimSpace(handoffToken)
 }
 
 func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversation *models.Conversation, message *models.Message) (bool, error) {
@@ -194,24 +315,21 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	payload = handoffConfirmationPayload{}
 	_ = json.Unmarshal([]byte(payloadText), &payload)
 	aiAgent := s.resolveRuntimeAIAgent(conversation, payload.AIAgentID)
-	reason := cleanHumanHandoffReason(payload.Reason)
-	if reason == "" {
-		reason = "用户确认需要人工接待"
-	}
-	_, err = ConversationHumanDispatchService.HandoffByAIWithRequestID(conversation.ID, aiAgent, reason, message.RequestID)
-	if err == nil {
-		if _, scheduleErr := AIManualResumeTaskService.Schedule(conversation.ID, payload.OriginMessageID, payload.HandoffToken); scheduleErr != nil {
-			slog.Warn("schedule AI manual resume task failed", "conversation_id", conversation.ID, "origin_message_id", payload.OriginMessageID, "error", scheduleErr)
-		}
+	_, err = s.dispatchPreparedHandoffWithRetry(conversation, aiAgent, payload, message.RequestID)
+	if err != nil && !s.alreadyInHumanRoute(conversation.ID) {
+		_ = s.restorePendingHandoff(conversation.ID, payload)
 	}
 	return true, err
 }
 
 func (s *conversationHandoffConfirmationService) handleRoomNumberReply(conversation *models.Conversation, message *models.Message, payload handoffConfirmationPayload, text string) (bool, error) {
 	if isExplicitHandoffContextCancel(text) {
-		_, _, err := ConversationRouteService.ConsumePendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, time.Now())
+		_, ok, err := ConversationRouteService.ConsumePendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, time.Now())
 		if err != nil {
 			return true, err
+		}
+		if !ok {
+			return true, nil
 		}
 		_, err = MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_context_cancel_"+strs.UUID(), enums.IMMessageTypeText, "好的，那先不联系同事。", "", systemOperator(), message.RequestID)
 		return true, err
@@ -221,15 +339,59 @@ func (s *conversationHandoffConfirmationService) handleRoomNumberReply(conversat
 		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
 		return false, nil
 	}
+	payloadText, ok, err := ConversationRouteService.ConsumePendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, time.Now())
+	if err != nil {
+		return true, err
+	}
+	if !ok {
+		return true, nil
+	}
+	consumedPayload := handoffConfirmationPayload{}
+	if err := json.Unmarshal([]byte(payloadText), &consumedPayload); err == nil && consumedPayload.HandoffToken != "" {
+		payload = consumedPayload
+	}
+	restorePayload := payload
+	restorePayload.AwaitingField = "room_number"
+	restorePayload.RoomNumber = ""
 	payload.AwaitingField = ""
 	payload.RoomNumber = roomNumber
 	payload.Reason = appendHandoffRoomNumber(payload.Reason, roomNumber)
-	data, _ := json.Marshal(payload)
-	if err := ConversationRouteService.SetPendingAction(conversation.ID, enums.ConversationPendingActionHumanHandoff, string(data), time.Now().Add(DefaultHandoffConfirmationMinutes*time.Minute)); err != nil {
-		return true, err
+	aiAgent := s.resolveRuntimeAIAgent(conversation, payload.AIAgentID)
+	_, err = s.dispatchPreparedHandoffWithRetry(conversation, aiAgent, payload, message.RequestID)
+	if err != nil && !s.alreadyInHumanRoute(conversation.ID) {
+		_ = s.restorePendingHandoff(conversation.ID, restorePayload)
 	}
-	_, err := MessageService.SendAIMessageWithRequestID(conversation.ID, conversation.AIAgentID, "ai_handoff_confirm_after_room_"+strs.UUID(), enums.IMMessageTypeText, buildHandoffConfirmationPrompt(payload.Reason), "", systemOperator(), message.RequestID)
 	return true, err
+}
+
+func (s *conversationHandoffConfirmationService) dispatchPreparedHandoffWithRetry(conversation *models.Conversation, aiAgent models.AIAgent, payload handoffConfirmationPayload, requestID string) (*HandoffDispatchResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		result, err := s.dispatchPreparedHandoff(conversation, aiAgent, payload, requestID)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *conversationHandoffConfirmationService) restorePendingHandoff(conversationID int64, payload handoffConfirmationPayload) error {
+	expireAt := time.Now().Add(DefaultHandoffConfirmationMinutes * time.Minute)
+	if createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.CreatedAt)); err == nil {
+		expireAt = createdAt.Add(DefaultHandoffConfirmationMinutes * time.Minute)
+	}
+	if !expireAt.After(time.Now()) {
+		return nil
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return ConversationRouteService.SetPendingAction(conversationID, enums.ConversationPendingActionHumanHandoff, string(data), expireAt)
 }
 
 func isExplicitHandoffContextCancel(text string) bool {
@@ -302,6 +464,18 @@ func (s *conversationHandoffConfirmationService) alreadyInHumanRoute(conversatio
 	default:
 		return false
 	}
+}
+
+func (s *conversationHandoffConfirmationService) shouldRepairActiveDirectHandoff(conversationID int64, originMessageID int64) bool {
+	state := ConversationRouteService.GetByConversationID(conversationID)
+	if state == nil || state.LastManualHandoffAt == nil || originMessageID <= 0 {
+		return true
+	}
+	origin := MessageService.Get(originMessageID)
+	if origin == nil || origin.ConversationID != conversationID {
+		return true
+	}
+	return !origin.CreatedAt.After(*state.LastManualHandoffAt)
 }
 
 type humanHandoffConfirmationDecision string

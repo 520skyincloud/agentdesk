@@ -39,10 +39,10 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 			collector.Data.Pipeline.Validate.Status = "passed"
 			collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 				collector.Data.Pipeline.Validate.Reason,
-				"unsupported handoff promise was replaced by persisted handoff confirmation",
+				"unsupported handoff promise was replaced by the real direct handoff flow",
 			)
 			outcome.RequestHandoffConfirmation = true
-			outcome.HandoffReason = "生成回复要求门店同事接手，但尚未执行真实转接；客户消息需要人工确认"
+			outcome.HandoffReason = "生成回复要求门店同事接手，但尚未执行真实转接"
 			return outcome
 		}
 		cleaned = "这个问题我目前还没有足够准确的资料。"

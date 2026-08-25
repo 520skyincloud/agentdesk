@@ -321,6 +321,10 @@ func (s *messageService) SendAIServiceNoticeWithRequestID(conversationID int64, 
 }
 
 func (s *messageService) SendAIServiceNoticeWithPayloadAndRequestID(conversationID int64, aiAgentID int64, content string, payload string, requestID string) (*models.Message, error) {
+	return s.SendAIServiceNoticeWithClientMsgIDAndRequestID(conversationID, aiAgentID, strs.UUID(), content, payload, requestID)
+}
+
+func (s *messageService) SendAIServiceNoticeWithClientMsgIDAndRequestID(conversationID int64, aiAgentID int64, clientMsgID string, content string, payload string, requestID string) (*models.Message, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
@@ -328,7 +332,7 @@ func (s *messageService) SendAIServiceNoticeWithPayloadAndRequestID(conversation
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return nil, errorsx.InvalidParam("会话已关闭")
 	}
-	return s.sendValidatedMessage(conversation, enums.IMSenderTypeAI, aiAgentID, strs.UUID(), enums.IMMessageTypeText, content, payload, &dto.AuthPrincipal{
+	return s.sendValidatedMessage(conversation, enums.IMSenderTypeAI, aiAgentID, clientMsgID, enums.IMMessageTypeText, content, payload, &dto.AuthPrincipal{
 		UserID:   0,
 		Username: "system",
 		Nickname: "system",
@@ -661,7 +665,7 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 			if routeStatusBlocksAIReply(routeState.RouteStatus) {
 				if handled, handleErr := ConversationHandoffConfirmationService.HandleWaitingCustomerResolution(conversation, message, routeState); handleErr != nil {
 					slog.Warn("handle customer manual-wait resolution failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", handleErr)
-					return message, err
+					return message, handleErr
 				} else if handled {
 					return message, err
 				}
@@ -671,8 +675,8 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 				return message, err
 			}
 			if handled, handleErr := ConversationHandoffConfirmationService.HandleCustomerMessage(conversation, message); handleErr != nil {
-				slog.Warn("consume pending human handoff confirmation failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", handleErr)
-				return message, err
+				slog.Warn("consume pending human handoff action failed", "conversation_id", conversation.ID, "message_id", message.ID, "error", handleErr)
+				return message, handleErr
 			} else if handled {
 				return message, err
 			}
@@ -737,12 +741,32 @@ func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
 }
 
 func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conversation, message *models.Message) bool {
-	if conversation == nil || message == nil || conversation.ChannelID <= 0 {
+	handled, err := s.ensureOutboundChannelMessage(conversation, message)
+	if err != nil {
+		channelType := ""
+		if conversation != nil {
+			if channel := ChannelService.Get(conversation.ChannelID); channel != nil {
+				channelType = channel.ChannelType
+			}
+		}
+		slog.Error("enqueue outbound channel message failed",
+			"channel_type", channelType,
+			"conversation_id", safeConversationID(conversation),
+			"message_id", safeMessageID(message),
+			"error", err,
+		)
 		return false
+	}
+	return handled
+}
+
+func (s *messageService) ensureOutboundChannelMessage(conversation *models.Conversation, message *models.Message) (bool, error) {
+	if conversation == nil || message == nil || conversation.ChannelID <= 0 {
+		return false, nil
 	}
 	channel := ChannelService.Get(conversation.ChannelID)
 	if channel == nil {
-		return false
+		return false, nil
 	}
 	var err error
 	switch channel.ChannelType {
@@ -753,18 +777,12 @@ func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conv
 	case enums.ChannelTypeWxWorkCLI:
 		err = ChannelMessageOutboxService.EnqueueWxWorkCLIMessage(conversation, message)
 	default:
-		return false
+		return false, nil
 	}
 	if err != nil {
-		slog.Error("enqueue outbound channel message failed",
-			"channel_type", channel.ChannelType,
-			"conversation_id", conversation.ID,
-			"message_id", message.ID,
-			"error", err,
-		)
-		return false
+		return true, err
 	}
-	return true
+	return true, nil
 }
 
 // handleReadState 根据发送者类型更新会话已读状态，并返回更新后的客服和客户未读消息数。

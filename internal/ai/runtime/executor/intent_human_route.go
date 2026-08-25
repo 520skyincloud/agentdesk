@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 			},
 			Status:            "skipped",
 			RecommendedAction: "ignore_non_handoff_intent_human_route_flag",
-			ResultPreview:     "二次确认只属于 human_complaint_risk 意图分类；当前分类继续按自身链路处理",
+			ResultPreview:     "直接转人工只属于 human_complaint_risk 意图分类；当前分类继续按自身链路处理",
 		})
 		return false, nil
 	}
@@ -51,49 +52,11 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	}
 	reason := buildIntentHumanRouteReason(intent, req.UserMessage.Content)
 	started := time.Now()
+	dispatch := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage
 	if isEmergencySafetyHandoff(intent) {
-		_, err := services.ConversationHumanDispatchService.HandoffByAIWithRequestID(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID))
-		if err == nil {
-			if _, scheduleErr := services.AIManualResumeTaskService.Schedule(req.Conversation.ID, req.UserMessage.ID, services.AIManualResumeTaskService.NewHandoffToken()); scheduleErr != nil {
-				// The human route is already active. Persisting the recovery task is
-				// best-effort here and is surfaced in the runtime trace below.
-				collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
-					ToolCode:          toolx.GraphHandoffConversation.Code,
-					ToolName:          toolx.GraphHandoffConversation.Name,
-					Status:            "warning",
-					ErrorMessage:      scheduleErr.Error(),
-					ResultPreview:     "human route active but AI resume task could not be persisted",
-					RecommendedAction: "inspect_manual_resume_task",
-				})
-			}
-		}
-		item := callbacks.GraphToolTraceItem{
-			ToolCode: toolx.GraphHandoffConversation.Code,
-			ToolName: toolx.GraphHandoffConversation.Name,
-			Arguments: map[string]any{
-				"reason":         reason,
-				"intent":         intent.PrimaryIntent,
-				"subIntent":      intent.SubIntent,
-				"routePolicy":    intent.HumanRoutePolicy,
-				"conversationId": req.Conversation.ID,
-			},
-			LatencyMs: time.Since(started).Milliseconds(),
-		}
-		if err != nil {
-			item.Status = "error"
-			item.ErrorMessage = err.Error()
-			collector.AddGraphToolItem(item)
-			return true, err
-		}
-		item.Status = "success"
-		item.RecommendedAction = "dispatch_emergency_handoff"
-		item.ResultPreview = "emergency safety routed directly to human reception"
-		collector.AddGraphToolItem(item)
-		summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
-		summary.ToolCallCount = len(summary.InvokedToolCodes)
-		return true, nil
+		dispatch = services.ConversationHandoffConfirmationService.DispatchEmergencyByAIWithOriginMessage
 	}
-	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID), req.UserMessage.ID)
+	result, err := dispatch(req.Conversation.ID, req.AIAgent, reason, strings.TrimSpace(req.UserMessage.RequestID), req.UserMessage.ID)
 	item := callbacks.GraphToolTraceItem{
 		ToolCode: toolx.GraphHandoffConversation.Code,
 		ToolName: toolx.GraphHandoffConversation.Name,
@@ -112,12 +75,11 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		collector.AddGraphToolItem(item)
 		return true, err
 	}
-	item.Status = "success"
-	item.RecommendedAction = "request_handoff_confirmation"
-	if promptSent {
-		item.ResultPreview = "pending customer confirmation"
-	} else {
-		item.ResultPreview = "human route already active"
+	if err := applyHandoffDispatchResult(summary, &item, result, isEmergencySafetyHandoff(intent)); err != nil {
+		item.Status = "error"
+		item.ErrorMessage = err.Error()
+		collector.AddGraphToolItem(item)
+		return true, err
 	}
 	collector.AddGraphToolItem(item)
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
@@ -151,7 +113,7 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 		reason = "当前问题需要门店同事接手"
 	}
 	started := time.Now()
-	promptSent, err := services.ConversationHandoffConfirmationService.RequestByAIWithOriginMessage(
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
 		req.Conversation.ID,
 		req.AIAgent,
 		reason,
@@ -174,18 +136,17 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 		collector.AddGraphToolItem(item)
 		return true, err
 	}
-	item.Status = "success"
-	item.RecommendedAction = "request_handoff_confirmation"
-	if promptSent {
-		item.ResultPreview = "pending customer confirmation"
-	} else {
-		item.ResultPreview = "human route already active"
+	if err := applyHandoffDispatchResult(summary, &item, result, false); err != nil {
+		item.Status = "error"
+		item.ErrorMessage = err.Error()
+		collector.AddGraphToolItem(item)
+		return true, err
 	}
 	collector.AddGraphToolItem(item)
 	ledger := collector.Data.ActionLedger
 	ledger.CommittedActions = appendIfMissingActionLedgerItem(ledger.CommittedActions, callbacks.ActionLedgerItem{
 		Action: "human_route",
-		Status: "confirmation_requested",
+		Status: summary.handoffDispatchStatus,
 		Reason: reason,
 	})
 	collector.SetActionLedger(ledger)
@@ -193,6 +154,35 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+func applyHandoffDispatchResult(summary *RunResult, item *callbacks.GraphToolTraceItem, result *services.HandoffDispatchResult, emergency bool) error {
+	if summary == nil || item == nil || result == nil {
+		return fmt.Errorf("转人工结果为空")
+	}
+	summary.handoffDispatchStatus = string(result.Status)
+	item.Status = "success"
+	switch result.Status {
+	case services.HandoffDispatchStatusAwaitingRoomNumber:
+		item.RecommendedAction = "collect_handoff_room_number"
+		item.ResultPreview = "room number requested before direct human route"
+	case services.HandoffDispatchStatusDispatched:
+		item.RecommendedAction = "dispatch_human_route"
+		item.ResultPreview = "routed directly to human reception"
+		if emergency {
+			item.RecommendedAction = "dispatch_emergency_handoff"
+			item.ResultPreview = "emergency safety routed directly to human reception"
+		}
+	case services.HandoffDispatchStatusAlreadyActive:
+		item.RecommendedAction = "human_route_already_active"
+		item.ResultPreview = "human route already active"
+	case services.HandoffDispatchStatusOffHours:
+		item.RecommendedAction = "handoff_off_hours"
+		item.ResultPreview = "human service is currently outside service hours"
+	default:
+		return fmt.Errorf("未知转人工状态: %s", result.Status)
+	}
+	return nil
 }
 
 func isHandoffIntentCategory(intent callbacks.IntentTraceData) bool {

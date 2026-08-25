@@ -113,7 +113,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		} else if isSocialCorrectionSubIntent(intent.SubIntent) {
 			instructions = append(instructions, "当前问题是在纠正或澄清上一轮误会；只接住当前纠正，轻声道歉或确认即可，不要继续补答历史里的电视、早餐、停车、语音等旧主题。")
 		} else if intent.SubIntent == "frustration" {
-			instructions = append(instructions, "客户在表达不满但没有明确要求人工或投诉升级；先自然道歉一句，然后回到当前可解决的问题，不主动触发转人工确认。")
+			instructions = append(instructions, "客户在表达不满但没有明确要求人工或投诉升级；先自然道歉一句，然后回到当前可解决的问题，不主动触发转人工。")
 		} else if intent.SubIntent == "clarify" || intent.NeedsClarification {
 			instructions = append(instructions, "当前表达不明确时，只追问一个关键点；不要乱查知识、乱取变量或乱转人工。")
 		} else {
@@ -439,7 +439,7 @@ func expectedIntentResources(intent callbacks.IntentTraceData) []string {
 		ret = append(ret, label)
 	}
 	if intent.NeedsHumanRoute {
-		ret = append(ret, "handoff confirmation policy")
+		ret = append(ret, "direct handoff policy")
 	}
 	return ret
 }

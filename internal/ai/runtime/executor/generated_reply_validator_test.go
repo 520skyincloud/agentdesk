@@ -312,7 +312,7 @@ func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply
 	outcome := enforceGeneratedReplyActionLedger(summary, collector)
 
 	if !outcome.RequestHandoffConfirmation {
-		t.Fatalf("expected unsupported promise-only reply to request persisted handoff confirmation, got %#v", outcome)
+		t.Fatalf("expected unsupported promise-only reply to request a real direct handoff, got %#v", outcome)
 	}
 	if summary.ReplyText != "" {
 		t.Fatalf("expected unsupported promise not to be committed as text, got %q", summary.ReplyText)
@@ -331,7 +331,7 @@ func TestEnforceGeneratedReplyActionLedgerKeepsRoomNumberClarification(t *testin
 	outcome := enforceGeneratedReplyActionLedger(summary, collector)
 
 	if outcome.RequestHandoffConfirmation {
-		t.Fatalf("room-number clarification must not request handoff, got %#v", outcome)
+		t.Fatalf("room-number clarification must not request direct handoff, got %#v", outcome)
 	}
 	if summary.ReplyText != "请告诉我房间号，我先确认是哪一间房。" {
 		t.Fatalf("expected room-number clarification to remain unchanged, got %q", summary.ReplyText)
