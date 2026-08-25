@@ -664,6 +664,63 @@ func TestConversationHandoffManagedNoneWithActiveTeamDispatchesInsteadOfOffHours
 	}
 }
 
+func TestConversationHandoffAssignedRetryDoesNotCreatePendingHQNotification(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "1")
+	createHumanDispatchTeam(t, db, 1, "售后支持组")
+	createHumanDispatchActiveSchedule(t, db, 1)
+	createHumanDispatchAgentProfile(t, db, 101, 1, enums.ServiceStatusIdle, 3, true, enums.StatusOk)
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeNone, "")
+	if err := db.Model(&models.StoreStaffBinding{}).Where("id = ?", 55).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable store room handoff: %v", err)
+	}
+	if err := db.Model(&models.WxWorkProtocolInstance{}).Where("id = ?", 77).Updates(map[string]any{
+		"store_room_notify_enabled": false,
+		"fallback_to_hq":            false,
+	}).Error; err != nil {
+		t.Fatalf("disable instance room handoff: %v", err)
+	}
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "帮我转人工")
+
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-assigned-direct",
+		origin.ID,
+	)
+	if err != nil || result == nil || result.Status != services.HandoffDispatchStatusDispatched || result.Decision != services.HandoffDecisionAssigned {
+		t.Fatalf("first assigned dispatch result=%+v err=%v", result, err)
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 0 {
+		t.Fatalf("assigned route must not create a pending-HQ notification, got %d", count)
+	}
+
+	retried, retryErr := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		conversation.ID,
+		aiAgent,
+		"客户明确要求人工接待",
+		"req-assigned-direct",
+		origin.ID,
+	)
+	if retryErr != nil || retried == nil || retried.Status != services.HandoffDispatchStatusAlreadyActive {
+		t.Fatalf("retry result=%+v err=%v", retried, retryErr)
+	}
+	if count := countManualHandoffNotifications(t, db, conversation.ID, 101); count != 0 {
+		t.Fatalf("assigned retry must not add a pending-HQ notification, got %d", count)
+	}
+	if count := countHumanDispatchMessages(t, db, conversation.ID, services.DirectHandoffSuccessMessage); count != 1 {
+		t.Fatalf("assigned retry must keep one success message, got %d", count)
+	}
+	if count := countManualResumeTasks(t, db, conversation.ID); count != 1 {
+		t.Fatalf("assigned retry must keep one resume task, got %d", count)
+	}
+}
+
 func TestConversationHandoffConfirmationUsesDeferredQuestionForRoomDecision(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")

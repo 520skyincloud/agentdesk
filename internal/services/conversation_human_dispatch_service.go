@@ -191,7 +191,7 @@ func (s *conversationHumanDispatchService) EnsureDirectHandoffArtifacts(conversa
 			if err := s.notifyStoreRoomHandoffWithKey(conversationID, reason, directHandoffNoticeKey(handoffToken, "store")); err != nil {
 				return err
 			}
-		case enums.ConversationRouteStatusHQAgentDeskPending, enums.ConversationRouteStatusHQAgentDeskServing:
+		case enums.ConversationRouteStatusHQAgentDeskPending:
 			if err := s.notifyAgentDeskHandoffWithKey(conversationID, reason, directHandoffNoticeKey(handoffToken, "hq")); err != nil {
 				return err
 			}
@@ -365,7 +365,17 @@ func (s *conversationHumanDispatchService) dispatchAfterHandoffWithRequestID(con
 		return nil, err
 	}
 	if len(candidates) > 0 {
-		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidates[0].profile, "自动分配")
+		candidate := candidates[0].profile
+		current := ConversationService.Get(conversationID)
+		if current == nil {
+			return nil, errorsx.InvalidParam("会话不存在")
+		}
+		if current.Status != enums.IMConversationStatusPending || current.CurrentAssigneeID > 0 {
+			if _, err := s.moveToTeamPoolStateWithRequestID(conversationID, candidate.TeamID, reason, requestID); err != nil {
+				return nil, err
+			}
+		}
+		dispatched, err := ConversationDispatchService.tryAssignConversation(conversationID, candidate, "自动分配")
 		if err != nil {
 			return nil, err
 		}
@@ -482,6 +492,19 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestID(conversat
 }
 
 func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestIDAndNoticeKey(conversationID, teamID int64, reason string, requestID string, noticeKey string) (*models.Conversation, error) {
+	conversation, err := s.moveToTeamPoolStateWithRequestID(conversationID, teamID, reason, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(noticeKey) == "" {
+		s.notifyAgentDeskHandoff(conversationID, strings.TrimSpace(reason))
+	} else if err := s.notifyAgentDeskHandoffWithKey(conversationID, strings.TrimSpace(reason), noticeKey); err != nil {
+		return nil, err
+	}
+	return conversation, nil
+}
+
+func (s *conversationHumanDispatchService) moveToTeamPoolStateWithRequestID(conversationID, teamID int64, reason string, requestID string) (*models.Conversation, error) {
 	now := time.Now()
 	var conversation *models.Conversation
 	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
@@ -526,11 +549,6 @@ func (s *conversationHumanDispatchService) moveToTeamPoolWithRequestIDAndNoticeK
 		return nil, err
 	}
 	if _, err := ConversationRouteService.EnterHQAgentDeskPending(conversationID, strings.TrimSpace(reason), now); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(noticeKey) == "" {
-		s.notifyAgentDeskHandoff(conversationID, strings.TrimSpace(reason))
-	} else if err := s.notifyAgentDeskHandoffWithKey(conversationID, strings.TrimSpace(reason), noticeKey); err != nil {
 		return nil, err
 	}
 	return conversation, nil
