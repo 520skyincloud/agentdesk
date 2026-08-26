@@ -10,6 +10,14 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
+
+	"github.com/cloudwego/eino/schema"
+)
+
+const (
+	knowledgeEvidenceClassificationDirect     = "direct"
+	knowledgeEvidenceClassificationSupporting = "supporting"
+	knowledgeEvidenceClassificationUnrelated  = "unrelated"
 )
 
 type fakeKnowledgeEvidenceJudge struct {
@@ -390,30 +398,31 @@ func TestKnowledgeEvidenceJudgeDefersFirstTransferDirectiveWithoutDroppingLaterA
 	}
 }
 
-func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryKnownCandidateExactlyOnce(t *testing.T) {
+func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryLayerAndKeepsCandidatesInLayer(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID: "T1",
 		Query:  "有空调吗",
 		Candidates: []knowledgeEvidenceJudgeCandidate{
-			{CandidateID: "T1C1"},
-			{CandidateID: "T1C2"},
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral},
 		},
 	}}
-	valid := `{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"unrelated"},{"candidateId":"T1C2","classification":"direct"}]}]}`
+	valid := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[]}]}]}`
 	parsed, err := parseKnowledgeEvidenceJudgeResponse(valid, tasks)
 	if err != nil {
 		t.Fatalf("parse valid response: %v", err)
 	}
-	if parsed["T1"]["T1C2"] != knowledgeEvidenceClassificationDirect {
+	if parsed["T1"][knowledgeEvidenceLayerStore].Decision != knowledgeEvidenceDecisionDirectCombined || len(parsed["T1"][knowledgeEvidenceLayerStore].SelectedCandidateIDs) != 2 {
 		t.Fatalf("unexpected parsed classifications: %#v", parsed)
 	}
 
 	invalid := []string{
 		"```json\n" + valid + "\n```",
-		`{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"direct"}]}]}`,
-		`{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"maybe"},{"candidateId":"T1C2","classification":"direct"}]}]}`,
-		`{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"direct"},{"candidateId":"UNKNOWN","classification":"unrelated"}]}]}`,
-		`{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"direct"},{"candidateId":"T1C2","classification":"unrelated"}]}],"explanation":"extra"}`,
+		`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"]}]}]}`,
+		`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1"]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[]}]}]}`,
+		`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C3"]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[]}]}]}`,
+		`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[]}]}],"explanation":"extra"}`,
 	}
 	for index, raw := range invalid {
 		if _, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks); err == nil {
@@ -422,15 +431,122 @@ func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryKnownCandidateExactlyOn
 	}
 }
 
-func TestKnowledgeEvidenceJudgePromptTreatsExplicitNegativeAnswerAsDirect(t *testing.T) {
+func TestKnowledgeEvidenceJudgePromptSupportsFAQRehydrationAndSameLayerCombination(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
-	for _, required := range []string{"否定答案也可以是完整直接答案", "早餐几点", "酒店不提供早餐", "必须标记 direct"} {
+	for _, required := range []string{"faqQuestion", "faqAnswer", "省略表达", "direct_combined", "严禁跨 store/general", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("expected judge prompt to contain %q, got %q", required, prompt)
 		}
 	}
 	if !strings.Contains(prompt, "有空调吗") || !strings.Contains(prompt, "空调不制冷需要处理") {
 		t.Fatalf("expected capability-versus-fault boundary to remain, got %q", prompt)
+	}
+}
+
+func TestBuildKnowledgeEvidenceJudgePromptSeparatesFastGPTFAQQuestionAnswerAndRaw(t *testing.T) {
+	raw := "问题：问下房间的两瓶矿泉水是免费的吗？\n答案：是的，房间内的矿泉水都是免费的"
+	prompt := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{{
+		TaskID: "T1",
+		Query:  "房间里有几瓶矿泉水",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "问下房间的两瓶矿泉水是免费的吗？", raw, 0.91),
+		}},
+	}})
+	got := prompt.Tasks[0].Candidates[0]
+	if got.FAQQuestion != "问下房间的两瓶矿泉水是免费的吗？" {
+		t.Fatalf("FAQ question was not separated: %#v", got)
+	}
+	if got.FAQAnswer != "是的，房间内的矿泉水都是免费的" {
+		t.Fatalf("FAQ answer was not separated: %#v", got)
+	}
+	if got.RawContent != raw {
+		t.Fatalf("raw content must remain auditable: %#v", got)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeUsesOnlySelectedSameLayerCombinedEvidence(t *testing.T) {
+	storeSofa := judgeTestHit(1, 101, "沙发房型", "合柴、艺林、塔川、岭南带沙发。", 0.91)
+	storeDesk := judgeTestHit(1, 102, "办公桌房型", "合柴、麦田、艺林带办公桌。", 0.89)
+	storeUnselected := judgeTestHit(1, 103, "茶几房型", "岭南、合柴、塔川、积木带茶几。", 0.87)
+	generalAnswer := judgeTestHit(2, 201, "通用房型", "通用房型可能同时有沙发和办公桌。", 0.99)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		"既有沙发又有办公桌的房间有哪些": {
+			KnowledgeBaseIDs: []int64{1, 2},
+			RawHits:          []rag.RetrieveResult{storeSofa, storeDesk, storeUnselected, generalAnswer},
+			Hits:             []rag.RetrieveResult{storeSofa, storeDesk, storeUnselected},
+			ContextResults:   []rag.RetrieveResult{storeSofa, storeDesk, storeUnselected},
+			ContextText:      storeSofa.Content + "\n" + storeDesk.Content + "\n" + storeUnselected.Content,
+		},
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(_ []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return knowledgeEvidenceJudgeOutcome{
+			Applied: true,
+			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				"T1": {
+					knowledgeEvidenceLayerStore: {
+						Decision:             knowledgeEvidenceDecisionDirectCombined,
+						SelectedCandidateIDs: []string{"T1C1", "T1C2"},
+					},
+					knowledgeEvidenceLayerGeneral: {
+						Decision:             knowledgeEvidenceDecisionDirectSingle,
+						SelectedCandidateIDs: []string{"T1C4"},
+					},
+				},
+			},
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{SchemaVersion: knowledgeEvidenceJudgeSchemaVersion, Status: "completed"},
+		}
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("既有沙发又有办公桌的房间有哪些", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.RetrieveResult == nil || len(state.RetrieveResult.Hits) != 2 {
+		t.Fatalf("expected exactly two selected store hits, got %#v", state.RetrieveResult)
+	}
+	contextText := state.RetrieveResult.ContextText
+	if !strings.Contains(contextText, "带沙发") || !strings.Contains(contextText, "带办公桌") {
+		t.Fatalf("combined evidence missing from Generate context: %q", contextText)
+	}
+	if strings.Contains(contextText, "带茶几") || strings.Contains(contextText, "通用房型") {
+		t.Fatalf("unselected or losing-layer evidence leaked into Generate: %q", contextText)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge.Tasks[0]
+	if trace.SelectedLayer != knowledgeEvidenceLayerStore || trace.Decision != knowledgeEvidenceDecisionDirectCombined || len(trace.SelectedCandidateIDs) != 2 {
+		t.Fatalf("unexpected V2 trace: %#v", trace)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeSourceContextOnlyUsesAdjacentTurnForReference(t *testing.T) {
+	messages := []*schema.Message{
+		schema.UserMessage("很久以前问过早餐"),
+		schema.AssistantMessage("酒店不提供早餐", nil),
+		schema.UserMessage("你们哪些房间有沙发"),
+		schema.AssistantMessage("合柴、艺林、塔川、岭南这四种房型都带沙发。", nil),
+	}
+	contextItems := buildKnowledgeEvidenceJudgeSourceContext(messages, "那这4个房型都有办公桌吗", "那这4个房型都有办公桌吗")
+	if len(contextItems) != 3 {
+		t.Fatalf("expected previous customer, previous assistant and current primary only, got %#v", contextItems)
+	}
+	joined := contextItems[0].Content + contextItems[1].Content + contextItems[2].Content
+	if strings.Contains(joined, "早餐") || !strings.Contains(joined, "哪些房间有沙发") || !strings.Contains(joined, "四种房型") {
+		t.Fatalf("source context was polluted or incomplete: %#v", contextItems)
+	}
+	plain := buildKnowledgeEvidenceJudgeSourceContext(messages, "房间有矿泉水吗", "房间有矿泉水吗")
+	if len(plain) != 1 || plain[0].Role != "customer_current" {
+		t.Fatalf("independent task must not carry adjacent history: %#v", plain)
+	}
+	withTrailingCustomer := append(append([]*schema.Message(nil), messages...), schema.UserMessage("我又问了一个新的问题"))
+	stale := buildKnowledgeEvidenceJudgeSourceContext(withTrailingCustomer, "那几个房型呢", "那几个房型呢")
+	if len(stale) != 1 || stale[0].Role != "customer_current" {
+		t.Fatalf("non-adjacent AI reply must not be attached across a newer customer message: %#v", stale)
 	}
 }
 
@@ -490,8 +606,8 @@ func judgeTestHit(knowledgeBaseID int64, chunkID int64, title string, content st
 
 func completedJudgeOutcome(tasks []knowledgeEvidenceJudgeTask, classifications map[string][]string) knowledgeEvidenceJudgeOutcome {
 	ret := knowledgeEvidenceJudgeOutcome{
-		Applied:         true,
-		Classifications: make(map[string]map[string]string, len(tasks)),
+		Applied:    true,
+		Selections: make(map[string]map[string]knowledgeEvidenceLayerSelection, len(tasks)),
 		Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
 			SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
 			Status:        "completed",
@@ -499,14 +615,45 @@ func completedJudgeOutcome(tasks []knowledgeEvidenceJudgeTask, classifications m
 	}
 	for _, task := range tasks {
 		values := classifications[task.TaskID]
-		ret.Classifications[task.TaskID] = make(map[string]string, len(task.Candidates))
+		ret.Selections[task.TaskID] = make(map[string]knowledgeEvidenceLayerSelection, 2)
+		directByLayer := make(map[string][]string, 2)
+		supportingByLayer := make(map[string][]string, 2)
 		for index, candidate := range task.Candidates {
 			classification := knowledgeEvidenceClassificationUnrelated
 			if index < len(values) {
 				classification = values[index]
 			}
-			ret.Classifications[task.TaskID][candidate.CandidateID] = classification
+			switch classification {
+			case knowledgeEvidenceClassificationDirect:
+				directByLayer[candidate.Layer] = append(directByLayer[candidate.Layer], candidate.CandidateID)
+			case knowledgeEvidenceClassificationSupporting:
+				supportingByLayer[candidate.Layer] = append(supportingByLayer[candidate.Layer], candidate.CandidateID)
+			}
+		}
+		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+			selected := append([]string(nil), directByLayer[layer]...)
+			if len(selected) > 0 {
+				selected = append(selected, supportingByLayer[layer]...)
+			}
+			decision := knowledgeEvidenceDecisionInsufficient
+			if len(selected) == 1 {
+				decision = knowledgeEvidenceDecisionDirectSingle
+			} else if len(selected) > 1 {
+				decision = knowledgeEvidenceDecisionDirectCombined
+			}
+			if layerHasKnowledgeEvidenceCandidates(task, layer) {
+				ret.Selections[task.TaskID][layer] = knowledgeEvidenceLayerSelection{Decision: decision, SelectedCandidateIDs: selected}
+			}
 		}
 	}
 	return ret
+}
+
+func layerHasKnowledgeEvidenceCandidates(task knowledgeEvidenceJudgeTask, layer string) bool {
+	for _, candidate := range task.Candidates {
+		if candidate.Layer == layer {
+			return true
+		}
+	}
+	return false
 }

@@ -1216,6 +1216,102 @@ func TestManualSessionTimeoutPreparesHQPendingResumeBeforeSwitchingToAI(t *testi
 	}
 }
 
+func TestManualSessionTimeoutHQServingUnansweredCustomerStartsResume(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusActive)
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]any{
+		"current_team_id":     int64(1),
+		"current_assignee_id": int64(101),
+	}).Error; err != nil {
+		t.Fatalf("assign HQ conversation: %v", err)
+	}
+	if _, err := services.ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "HQ人工接待", time.Now()); err != nil {
+		t.Fatalf("EnterHQAgentDeskServing() error = %v", err)
+	}
+	customer := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "这个问题还没处理")
+	if err := services.ConversationRouteService.MarkCustomerMessage(conversation.ID, time.Now()); err != nil {
+		t.Fatalf("MarkCustomerMessage() error = %v", err)
+	}
+	services.AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, customer.ID)
+	setRouteManualExpireAt(t, db, conversation.ID, time.Now().Add(-time.Minute))
+
+	if count := services.ManualSessionTimeoutService.ScanAndRestoreExpired(50); count != 1 {
+		t.Fatalf("expected one expired HQ serving route handled, got %d", count)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusHQAgentDeskServing || !state.NeedHumanFollowUp || state.ManualExpireAt != nil {
+		t.Fatalf("expected HQ route held until a real resume reply commits, got %+v", state)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusActive || current.CurrentAssigneeID != 101 {
+		t.Fatalf("expected assigned shell retained before resume commit, got %+v", current)
+	}
+	task := latestManualResumeTask(t, db, conversation.ID)
+	if task == nil || task.TaskStatus != "ready" || task.LatestWaitingMessageID != customer.ID {
+		t.Fatalf("expected ready resume task for latest customer message, got %+v", task)
+	}
+}
+
+func TestManualSessionTimeoutHQServingAfterAgentReplyRestoresSilently(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusActive)
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]any{
+		"current_team_id":     int64(1),
+		"current_assignee_id": int64(101),
+	}).Error; err != nil {
+		t.Fatalf("assign HQ conversation: %v", err)
+	}
+	if _, err := services.ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "HQ人工接待", time.Now()); err != nil {
+		t.Fatalf("EnterHQAgentDeskServing() error = %v", err)
+	}
+	customer := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "这个问题还没处理")
+	if err := services.ConversationRouteService.MarkCustomerMessage(conversation.ID, time.Now()); err != nil {
+		t.Fatalf("MarkCustomerMessage() error = %v", err)
+	}
+	services.AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, customer.ID)
+	operator := &dto.AuthPrincipal{UserID: 101, Username: "hq-agent", Nickname: "总部同事"}
+	agent, err := services.MessageService.SendAgentMessageWithRequestID(
+		conversation.ID,
+		101,
+		"hq-agent-final-reply",
+		enums.IMMessageTypeText,
+		"已经处理好了",
+		"",
+		operator,
+		"req-hq-agent-final-reply",
+	)
+	if err != nil {
+		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.NeedHumanFollowUp || state.ManualExpireAt == nil {
+		t.Fatalf("expected agent reply to clear follow-up inside the message transaction, got %+v", state)
+	}
+	task := latestManualResumeTask(t, db, conversation.ID)
+	if task == nil || task.TaskStatus != "cancelled" {
+		t.Fatalf("expected agent reply to cancel the pending resume task, got %+v", task)
+	}
+	setRouteManualExpireAt(t, db, conversation.ID, time.Now().Add(-time.Minute))
+
+	if count := services.ManualSessionTimeoutService.ScanAndRestoreExpired(50); count != 1 {
+		t.Fatalf("expected one expired HQ serving route handled, got %d", count)
+	}
+	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusAIServing || state.NeedHumanFollowUp || state.ManualExpireAt != nil {
+		t.Fatalf("expected HQ route restored after the employee reply, got %+v", state)
+	}
+	current := services.ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusAIServing || current.CurrentAssigneeID != 0 || current.CurrentTeamID != 0 {
+		t.Fatalf("expected conversation shell restored atomically, got %+v", current)
+	}
+	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("seq_no").Desc("id"))
+	if latest == nil || latest.ID != agent.ID || latest.SenderType != enums.IMSenderTypeAgent {
+		t.Fatalf("expected no AI restore notice after the employee's final reply, got %+v", latest)
+	}
+}
+
 func TestManualSessionTimeoutPreparesStoreManualOrdinaryResume(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
@@ -1327,7 +1423,7 @@ func TestStoreManualAgentReplyStartsIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotice(t *testing.T) {
+func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplySilently(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
@@ -1338,7 +1434,8 @@ func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotic
 		t.Fatalf("HandoffByAI() error = %v", err)
 	}
 	operator := &dto.AuthPrincipal{UserID: 101, Username: "store-staff", Nickname: "门店同事"}
-	if _, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout-notice", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply-notice"); err != nil {
+	agent, err := services.MessageService.SendAgentMessageWithRequestID(conversation.ID, 0, "store-manual-reply-timeout-notice", enums.IMMessageTypeText, "我来处理。", "", operator, "req-store-reply-notice")
+	if err != nil {
 		t.Fatalf("SendAgentMessageWithRequestID() error = %v", err)
 	}
 	setRouteManualExpireAt(t, db, conversation.ID, time.Now().Add(-time.Minute))
@@ -1350,8 +1447,8 @@ func TestManualSessionTimeoutRestoresStoreManualAfterAgentReplyWithCustomerNotic
 		t.Fatalf("expected store manual idle timeout to restore AI route, got %+v", state)
 	}
 	latest := services.MessageService.FindOne(sqls.NewCnd().Eq("conversation_id", conversation.ID).Desc("id"))
-	if latest == nil || latest.SenderType != enums.IMSenderTypeAI || !strings.Contains(latest.Content, "刚才由同事协助的这段接待先结束了") {
-		t.Fatalf("expected AI handback notice after manual idle timeout, got %+v", latest)
+	if latest == nil || latest.ID != agent.ID || latest.SenderType != enums.IMSenderTypeAgent {
+		t.Fatalf("expected silent AI restore after the employee's final reply, got %+v", latest)
 	}
 }
 

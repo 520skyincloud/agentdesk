@@ -519,7 +519,7 @@ func mergeRuntimeKnowledgeQuestionResults(knowledgeBaseIDs []int64, opts retriev
 	return merged
 }
 
-func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, storeKnowledgeBaseIDs []int64, knowledgeBaseIDs []int64) []knowledgeEvidenceJudgeTask {
+func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, storeKnowledgeBaseIDs []int64, knowledgeBaseIDs []int64, messages []*schema.Message, currentText string) []knowledgeEvidenceJudgeTask {
 	if batch == nil || len(batch.Questions) == 0 {
 		return nil
 	}
@@ -548,7 +548,11 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		if len(rawHits) == 0 {
 			rawHits = question.Result.Hits
 		}
-		item := knowledgeEvidenceJudgeTask{TaskID: question.TaskID, Query: question.Query}
+		item := knowledgeEvidenceJudgeTask{
+			TaskID:        question.TaskID,
+			Query:         question.Query,
+			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question.Query),
+		}
 		for _, hit := range rawHits {
 			layer := ""
 			if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
@@ -572,6 +576,67 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 	return tasks
 }
 
+func buildKnowledgeEvidenceJudgeSourceContext(messages []*schema.Message, currentText string, taskQuery string) []knowledgeEvidenceJudgeSourceMessage {
+	primary := strings.TrimSpace(taskQuery)
+	if primary == "" {
+		primary = strings.TrimSpace(currentText)
+	}
+	items := make([]knowledgeEvidenceJudgeSourceMessage, 0, 3)
+	if knowledgeEvidenceTaskNeedsAdjacentContext(primary) {
+		assistantIndex := -1
+		for index := len(messages) - 1; index >= 0; index-- {
+			message := messages[index]
+			if message == nil || strings.TrimSpace(message.Content) == "" {
+				continue
+			}
+			if message.Role != schema.User && message.Role != schema.Assistant {
+				continue
+			}
+			if message.Role == schema.Assistant {
+				assistantIndex = index
+			}
+			break
+		}
+		if assistantIndex >= 0 {
+			customerIndex := -1
+			for index := assistantIndex - 1; index >= 0; index-- {
+				message := messages[index]
+				if message == nil || strings.TrimSpace(message.Content) == "" {
+					continue
+				}
+				if message.Role != schema.User && message.Role != schema.Assistant {
+					continue
+				}
+				if message.Role == schema.User {
+					customerIndex = index
+				}
+				break
+			}
+			if customerIndex >= 0 {
+				items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "customer", Content: preview(messages[customerIndex].Content, 400)})
+			}
+			items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "assistant", Content: preview(messages[assistantIndex].Content, 600)})
+		}
+	}
+	if primary != "" {
+		items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "customer_current", Content: preview(primary, 600)})
+	}
+	return items
+}
+
+func knowledgeEvidenceTaskNeedsAdjacentContext(text string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(strings.TrimSpace(text))
+	if compact == "" {
+		return false
+	}
+	for _, marker := range []string{"这个", "这些", "那个", "那些", "上述", "上面", "前面", "刚才", "刚刚", "其中", "它们", "两者", "几个房型", "这几个", "那几个"} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return strings.HasPrefix(compact, "这") || strings.HasPrefix(compact, "那")
+}
+
 func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, tasks []knowledgeEvidenceJudgeTask, outcome knowledgeEvidenceJudgeOutcome) callbacks.KnowledgeEvidenceJudgeTraceData {
 	trace := outcome.Trace
 	if batch == nil || !outcome.Applied {
@@ -587,50 +652,63 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		if question == nil || question.Result == nil {
 			continue
 		}
-		classifications := outcome.Classifications[task.TaskID]
-		directByLayer := map[string][]knowledgeEvidenceJudgeCandidate{}
-		supportingByLayer := map[string][]knowledgeEvidenceJudgeCandidate{}
+		selections := outcome.Selections[task.TaskID]
+		candidateByID := make(map[string]knowledgeEvidenceJudgeCandidate, len(task.Candidates))
+		for _, candidate := range task.Candidates {
+			candidateByID[candidate.CandidateID] = candidate
+		}
 		taskTrace := callbacks.KnowledgeEvidenceJudgeTaskTraceData{
 			TaskID:       task.TaskID,
 			QueryPreview: preview(task.Query, 120),
 		}
-		for _, candidate := range task.Candidates {
-			switch classifications[candidate.CandidateID] {
-			case knowledgeEvidenceClassificationDirect:
-				directByLayer[candidate.Layer] = append(directByLayer[candidate.Layer], candidate)
-				taskTrace.DirectCandidateIDs = append(taskTrace.DirectCandidateIDs, candidate.CandidateID)
-			case knowledgeEvidenceClassificationSupporting:
-				supportingByLayer[candidate.Layer] = append(supportingByLayer[candidate.Layer], candidate)
-				taskTrace.SupportingCandidateIDs = append(taskTrace.SupportingCandidateIDs, candidate.CandidateID)
-			}
-		}
 		selectedLayer := ""
-		if len(directByLayer[knowledgeEvidenceLayerStore]) > 0 {
+		if selectionHasDirectEvidence(selections[knowledgeEvidenceLayerStore]) {
 			selectedLayer = knowledgeEvidenceLayerStore
-		} else if len(directByLayer[knowledgeEvidenceLayerGeneral]) > 0 {
+		} else if selectionHasDirectEvidence(selections[knowledgeEvidenceLayerGeneral]) {
 			selectedLayer = knowledgeEvidenceLayerGeneral
 		}
-		selectedCandidates := make([]knowledgeEvidenceJudgeCandidate, 0, len(task.Candidates))
-		if selectedLayer != "" {
-			selectedCandidates = append(selectedCandidates, directByLayer[selectedLayer]...)
-			selectedCandidates = append(selectedCandidates, supportingByLayer[selectedLayer]...)
+		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+			selection, ok := selections[layer]
+			if !ok {
+				continue
+			}
+			taskTrace.Layers = append(taskTrace.Layers, callbacks.KnowledgeEvidenceJudgeLayerTraceData{
+				Layer:                layer,
+				Decision:             selection.Decision,
+				SelectedCandidateIDs: append([]string(nil), selection.SelectedCandidateIDs...),
+			})
 		}
-		selectedHits := make([]rag.RetrieveResult, 0, len(selectedCandidates))
-		for _, candidate := range selectedCandidates {
-			selectedHits = append(selectedHits, candidate.Hit)
-			taskTrace.SelectedCandidateIDs = append(taskTrace.SelectedCandidateIDs, candidate.CandidateID)
+		selectedHits := make([]rag.RetrieveResult, 0)
+		if selectedLayer != "" {
+			selection := selections[selectedLayer]
+			taskTrace.Decision = selection.Decision
+			for _, candidateID := range selection.SelectedCandidateIDs {
+				candidate, ok := candidateByID[candidateID]
+				if !ok || candidate.Layer != selectedLayer {
+					continue
+				}
+				selectedHits = append(selectedHits, candidate.Hit)
+				taskTrace.SelectedCandidateIDs = append(taskTrace.SelectedCandidateIDs, candidateID)
+			}
 		}
 		taskTrace.SelectedLayer = selectedLayer
 		if selectedLayer == "" {
-			taskTrace.Decision = "no_direct_evidence"
-		} else {
-			taskTrace.Decision = "selected_" + selectedLayer
+			taskTrace.Decision = knowledgeEvidenceDecisionInsufficient
 		}
 		retrievers.RebuildKnowledgeRetrieveSelection(question.Result, selectedHits)
 		trace.Tasks = append(trace.Tasks, taskTrace)
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 	return trace
+}
+
+func selectionHasDirectEvidence(selection knowledgeEvidenceLayerSelection) bool {
+	switch selection.Decision {
+	case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined:
+		return len(selection.SelectedCandidateIDs) > 0
+	default:
+		return false
+	}
 }
 
 func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) []runtimeKnowledgeQuestionDisposition {
@@ -939,7 +1017,13 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	result := batch.Merged
 	storeKnowledgeBaseIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
-	judgeTasks := buildKnowledgeEvidenceJudgeTasks(batch, storeKnowledgeBaseIDs, knowledgeIDs)
+	judgeTasks := buildKnowledgeEvidenceJudgeTasks(
+		batch,
+		storeKnowledgeBaseIDs,
+		knowledgeIDs,
+		state.Input.Messages,
+		req.UserMessage.Content,
+	)
 	judgeTrace := callbacks.KnowledgeEvidenceJudgeTraceData{
 		SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
 		Status:        "skipped",

@@ -135,8 +135,10 @@ func (c *RuntimeTraceCollector) SetKnowledgeEvidenceJudge(data KnowledgeEvidence
 	data.Tasks = append([]KnowledgeEvidenceJudgeTaskTraceData(nil), data.Tasks...)
 	for index := range data.Tasks {
 		data.Tasks[index].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].SelectedCandidateIDs...)
-		data.Tasks[index].DirectCandidateIDs = append([]string(nil), data.Tasks[index].DirectCandidateIDs...)
-		data.Tasks[index].SupportingCandidateIDs = append([]string(nil), data.Tasks[index].SupportingCandidateIDs...)
+		data.Tasks[index].Layers = append([]KnowledgeEvidenceJudgeLayerTraceData(nil), data.Tasks[index].Layers...)
+		for layerIndex := range data.Tasks[index].Layers {
+			data.Tasks[index].Layers[layerIndex].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].Layers[layerIndex].SelectedCandidateIDs...)
+		}
 	}
 	c.Data.Pipeline.EvidenceJudge = data
 }

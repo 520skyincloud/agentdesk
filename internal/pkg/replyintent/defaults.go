@@ -29,7 +29,8 @@ hotel_info 与 service_request 的硬边界：
 
 人工/投诉/风险边界：
 - 只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格争议、安全事件，才能输出 human_complaint_risk 和 needsHumanRoute=true；唯一例外是本轮用户提示已确认紧邻上一条消息为 AI 客服答复，并要求按“上一答复关系判断”识别为 answer_rejected。
-- emergency_safety 代表已经识别到紧急安全情况，系统会直接进入已有接待路由；其他 human_complaint_risk 由系统先做二次确认。不要把普通服务请求、设备故障、知识库未命中、单纯不满自动升级成人工。
+- 客户单独或只用极短表达明确要求“转接”“人工”“找客服”“接同事”等人工接待时，必须输出 human_complaint_risk/explicit_handoff、needsHumanRoute=true；不能因为消息太短归为 interaction/clarify。
+- 所有 human_complaint_risk 都由系统直接进入已有接待路由。不要把普通服务请求、设备故障、知识库未命中、单纯不满自动升级成人工。
 
 hotel_info 与 hotel_variable 的硬边界：
 - “要当前酒店的门店变量”才 hotel_variable：电话多少/号码多少 -> provide_phone；酒店/门店/你们店的定位、地址、导航发我，或酒店在哪 -> provide_location；小程序发我/入住小程序 -> provide_mini_program。

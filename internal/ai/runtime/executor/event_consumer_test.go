@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -162,6 +163,56 @@ func TestConsumeAgentEventsKeepsEveryMultiQuestionGeneratePart(t *testing.T) {
 	}
 	if strings.Count(summary.ReplyText, "<<NEXT_MESSAGE>>") != 2 {
 		t.Fatalf("expected three ordered reply parts, got %q", summary.ReplyText)
+	}
+}
+
+func TestConsumeAgentEventsUnwrapsSingleQuestionGenerateProtocol(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: make([]string, 0)}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", Text: "有没有空调", Output: "knowledge_text_reply"},
+	}}
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+		Role: schema.Assistant,
+		Message: &schema.Message{Content: "```json\n" +
+			`{"replyParts":[{"taskId":"task-1","content":"房间配有空调。"}]}` + "\n```"},
+	}}})
+	gen.Close()
+
+	consumeAgentEvents(events, summary, collector, nil)
+
+	if summary.ReplyText != "房间配有空调。" {
+		t.Fatalf("single-question protocol must be unwrapped before commit, got %q", summary.ReplyText)
+	}
+	if summary.Status != "completed" {
+		t.Fatalf("unexpected summary status: %q", summary.Status)
+	}
+}
+
+func TestConsumeAgentEventsSuppressesMalformedReplyProtocol(t *testing.T) {
+	summary := &RunResult{Status: "started", InvokedToolCodes: make([]string, 0)}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", Text: "有没有空调", Output: "knowledge_text_reply"},
+	}}
+	events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+		Role:    schema.Assistant,
+		Message: &schema.Message{Content: `{"replyParts":[{"taskId":"task-1","content":"房间配有空调。"}]`},
+	}}})
+	gen.Close()
+
+	err := consumeAgentEvents(events, summary, collector, nil)
+
+	if summary.ReplyText != "" {
+		t.Fatalf("malformed internal protocol must not reach the final reply, got %q", summary.ReplyText)
+	}
+	if !errors.Is(err, errGeneratedReplyProtocol) {
+		t.Fatalf("malformed internal protocol must return a retryable executor error, got %v", err)
+	}
+	if summary.Status != "error" {
+		t.Fatalf("malformed internal protocol must fail the executor run, got %q", summary.Status)
 	}
 }
 

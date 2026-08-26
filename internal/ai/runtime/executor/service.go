@@ -153,9 +153,12 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
 	generateStartedAt := time.Now()
-	consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
+	consumeErr := consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
+	if consumeErr != nil {
+		return completeGeneratedReplyProtocolFailure(summary, collector, consumeErr, "generate")
+	}
 	validation := enforceGeneratedReplyActionLedger(summary, collector)
 	if validation.RequestHandoffConfirmation {
 		summary.handoffDirective = true
@@ -442,15 +445,36 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 		return summary, err
 	}
 	generateStartedAt := time.Now()
-	consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
+	consumeErr := consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
+	if consumeErr != nil {
+		return completeGeneratedReplyProtocolFailure(summary, collector, consumeErr, "resume_generate")
+	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
 	collector.Data.Output.FinishReason = summary.Status
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func completeGeneratedReplyProtocolFailure(summary *RunResult, collector *callbacks.RuntimeTraceCollector, err error, stage string) (*RunResult, error) {
+	summary.Status = "error"
+	summary.ReplyText = ""
+	summary.ErrorMessage = err.Error()
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = ""
+	collector.Data.Output.FinishReason = "generated_reply_protocol_error"
+	collector.Data.Error.Message = summary.ErrorMessage
+	collector.Data.Error.Stage = stage
+	collector.Data.Pipeline.Generate.Status = "error"
+	collector.Data.Pipeline.Generate.Reason = summary.ErrorMessage
+	collector.Data.Pipeline.Validate.Status = "failed"
+	collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
+	syncSkillSummaryFromCollector(summary, collector)
+	summary.TraceData = collector.Marshal()
+	return summary, err
 }
 
 func syncSkillSummaryFromCollector(summary *RunResult, collector *callbacks.RuntimeTraceCollector) {

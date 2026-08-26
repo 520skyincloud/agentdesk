@@ -62,3 +62,7 @@ func (s *Service) Resume(ctx context.Context, req ResumeRequest) (*Summary, erro
 	}
 	return toSummary(summary), nil
 }
+
+func IsGeneratedReplyProtocolError(err error) bool {
+	return executor.IsGeneratedReplyProtocolError(err)
+}

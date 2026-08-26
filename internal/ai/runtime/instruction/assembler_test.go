@@ -39,8 +39,9 @@ func TestAssemblerBaseInstructionKeepsHumanToneGuardrails(t *testing.T) {
 	result := NewAssembler().Assemble(AssemblerInput{})
 	checks := []string{
 		"默认 1 句，最多 2 句",
-		"少用“您”，优先说“你”",
-		"不要说“亲”“为您”“这边”",
+		"自然使用“您”“为您”“这边”“呀”“啦”“～”",
+		"但不要刻意堆叠",
+		"不要说“亲”“感谢理解”“请稍等片刻”“祝您生活愉快”等模板话术",
 		"互动不是敷衍回复",
 		"短、自然、有回应感",
 		"不能用“有啥事你直接说”",
@@ -65,9 +66,22 @@ func TestAssemblerBaseInstructionKeepsHumanToneGuardrails(t *testing.T) {
 			t.Fatalf("missing human tone guardrail %q in: %s", check, result.Text)
 		}
 	}
-	for _, forbidden := range []string{"这个需要同事处理", "同事会去房间查看", "说明需要同事接手"} {
+	for _, forbidden := range []string{
+		"这个需要同事处理",
+		"同事会去房间查看",
+		"说明需要同事接手",
+		"少用“您”，优先说“你”",
+		"不要说“亲”“为您”“这边”",
+		"不能出站语音时，不要说“这边”",
+	} {
 		if strings.Contains(result.Text, forbidden) {
 			t.Fatalf("base instruction should not teach unsupported staff action %q in: %s", forbidden, result.Text)
 		}
+	}
+	if !strings.Contains(result.Text, "human_complaint_risk 一律交给现有接待路由直接处理") {
+		t.Fatalf("base instruction must use the direct handoff contract: %s", result.Text)
+	}
+	if strings.Contains(result.Text, "二次确认") {
+		t.Fatalf("base instruction must not retain the removed handoff confirmation protocol: %s", result.Text)
 	}
 }

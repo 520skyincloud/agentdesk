@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/openidentity"
 
@@ -77,6 +78,8 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkCustomerHandoffSetting{},
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.AIManualResumeTask{},
+		&models.ConversationAssignment{},
 		&models.ConversationParticipant{},
 		&models.ConversationReadState{},
 		&models.ConversationEventLog{},
@@ -284,6 +287,736 @@ func TestCreateExternalAgentMessageWithoutOutboxTakesOverAIServingRoute(t *testi
 	}
 	if state.LastManualHandoffAt == nil {
 		t.Fatalf("expected external employee reply to begin a manual interval")
+	}
+}
+
+func TestExternalAgentEchoCancelsOrdinaryAIOutboxButKeepsServiceNotice(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          13,
+		Name:        "企微员工号",
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID:   "wxwork-protocol-outbox-race-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("self-echo-outbox-user"), 13, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	ordinary := &models.Message{
+		ConversationID: conversation.ID,
+		SenderType:     enums.IMSenderTypeAI,
+		SenderID:       aiAgent.ID,
+		ClientMsgID:    "ai_reply_old",
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "旧的AI回答",
+		SeqNo:          1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(ordinary).Error; err != nil {
+		t.Fatalf("create ordinary ai message: %v", err)
+	}
+	serviceNotice := &models.Message{
+		ConversationID: conversation.ID,
+		SenderType:     enums.IMSenderTypeAI,
+		SenderID:       aiAgent.ID,
+		ClientMsgID:    "ai_handoff_success_test",
+		MessageType:    enums.IMMessageTypeText,
+		Content:        DirectHandoffSuccessMessage,
+		SeqNo:          2,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(serviceNotice).Error; err != nil {
+		t.Fatalf("create service notice: %v", err)
+	}
+	ordinaryOutbox := &models.ChannelMessageOutbox{
+		ChannelType: enums.ChannelTypeWxWorkProtocol, ConversationID: conversation.ID, MessageID: ordinary.ID,
+		Payload: `{}`, SendStatus: string(enums.ChannelMessageOutboxStatusPending), AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	serviceOutbox := &models.ChannelMessageOutbox{
+		ChannelType: enums.ChannelTypeWxWorkProtocol, ConversationID: conversation.ID, MessageID: serviceNotice.ID,
+		Payload: `{}`, SendStatus: string(enums.ChannelMessageOutboxStatusPending), AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(ordinaryOutbox).Error; err != nil {
+		t.Fatalf("create ordinary outbox: %v", err)
+	}
+	if err := db.Create(serviceOutbox).Error; err != nil {
+		t.Fatalf("create service outbox: %v", err)
+	}
+
+	echo, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversation.ID, "wx-self-echo-outbox", enums.IMMessageTypeText, "我来处理。", "", "req-self-echo-outbox")
+	if err != nil {
+		t.Fatalf("create external echo: %v", err)
+	}
+	if echo == nil {
+		t.Fatal("expected external echo")
+	}
+	if err := db.First(ordinaryOutbox, ordinaryOutbox.ID).Error; err != nil {
+		t.Fatalf("reload ordinary outbox: %v", err)
+	}
+	if ordinaryOutbox.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) {
+		t.Fatalf("ordinary outbox status=%q want cancelled", ordinaryOutbox.SendStatus)
+	}
+	if err := db.First(serviceOutbox, serviceOutbox.ID).Error; err != nil {
+		t.Fatalf("reload service outbox: %v", err)
+	}
+	if serviceOutbox.SendStatus != string(enums.ChannelMessageOutboxStatusPending) {
+		t.Fatalf("service notice outbox status=%q want pending", serviceOutbox.SendStatus)
+	}
+	state := ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.ManualExpireAt == nil || state.NeedHumanFollowUp {
+		t.Fatalf("expected trusted echo to atomically enter idle manual route, got %+v", state)
+	}
+	if remaining := time.Until(*state.ManualExpireAt); remaining < 9*time.Minute || remaining > 11*time.Minute {
+		t.Fatalf("manual timeout=%v want about 10 minutes", remaining)
+	}
+}
+
+func TestClaimExpiredManualRouteRejectsStaleSnapshot(t *testing.T) {
+	setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, sqls.DB(), "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("manual-timeout-cas-user"), 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	now := time.Now()
+	state, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待人工", now.Add(-20*time.Minute))
+	if err != nil {
+		t.Fatalf("enter manual route: %v", err)
+	}
+	if err := sqls.DB().Model(&models.ConversationRouteState{}).Where("id = ?", state.ID).Update("manual_expire_at", now.Add(-time.Minute)).Error; err != nil {
+		t.Fatalf("expire manual route: %v", err)
+	}
+	stale := ConversationRouteService.GetByConversationID(conversation.ID)
+	if err := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); err != nil {
+		t.Fatalf("extend manual route: %v", err)
+	}
+	if _, claimed, err := ConversationRouteService.ClaimExpiredManualRoute(*stale, now); err != nil || claimed {
+		t.Fatalf("stale timeout snapshot claimed=%v err=%v", claimed, err)
+	}
+}
+
+func TestHQAssignedManualResumeCanCommitAIReply(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("hq-manual-resume-user"), 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	now := time.Now()
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]any{
+		"status":              enums.IMConversationStatusActive,
+		"current_team_id":     int64(1),
+		"current_assignee_id": int64(99),
+	}).Error; err != nil {
+		t.Fatalf("assign conversation: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "HQ人工接待", now); err != nil {
+		t.Fatalf("EnterHQAgentDeskServing() error = %v", err)
+	}
+	source := &models.Message{
+		ConversationID: conversation.ID,
+		SessionNo:      1,
+		ClientMsgID:    "hq-manual-resume-source",
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "还有一个问题没处理",
+		SeqNo:          1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+		AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(source).Error; err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+	if err := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); err != nil {
+		t.Fatalf("MarkCustomerMessage() error = %v", err)
+	}
+	token := "hqassignedresume"
+	task := &models.AIManualResumeTask{
+		TaskKey:                "manual_resume:" + token,
+		HandoffToken:           token,
+		ConversationID:         conversation.ID,
+		OriginMessageID:        source.ID,
+		LatestWaitingMessageID: source.ID,
+		RouteStatus:            string(enums.ConversationRouteStatusHQAgentDeskServing),
+		TaskStatus:             aiManualResumeTaskRunning,
+		AuditFields:            models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatalf("create manual resume task: %v", err)
+	}
+	requestID := "manual_resume_" + token
+	if !MessageService.CanSendAIReply(conversation.ID, requestID, source.ID) {
+		t.Fatal("expected assigned HQ conversation to allow its running manual resume")
+	}
+	reply, err := MessageService.SendAIMessageWithRequestID(
+		conversation.ID,
+		aiAgent.ID,
+		"hq-manual-resume-reply",
+		enums.IMMessageTypeText,
+		"我继续帮你处理。",
+		"",
+		&dto.AuthPrincipal{Username: "AI"},
+		requestID,
+	)
+	if err != nil {
+		t.Fatalf("SendAIMessageWithRequestID() error = %v", err)
+	}
+	if reply == nil || reply.RequestID != requestID {
+		t.Fatalf("expected committed manual resume reply, got %+v", reply)
+	}
+}
+
+func TestManualRouteCustomerMessageCreatesResumeTaskBeforeReturn(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("manual-resume-atomic-create")
+	conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待门店同事", time.Now()); err != nil {
+		t.Fatalf("EnterStoreWecomManual() error = %v", err)
+	}
+
+	message, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID,
+		"manual-resume-atomic-create-message",
+		enums.IMMessageTypeText,
+		"还有一个问题没处理",
+		"",
+		external,
+		"req-manual-resume-atomic-create",
+	)
+	if err != nil {
+		t.Fatalf("SendCustomerMessageWithRequestID() error = %v", err)
+	}
+	task := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+	if task == nil {
+		t.Fatal("expected manual resume task to exist when customer message returns")
+	}
+	if task.OriginMessageID != message.ID || task.LatestWaitingMessageID != message.ID {
+		t.Fatalf("expected task to bind customer message %d, got origin=%d latest=%d", message.ID, task.OriginMessageID, task.LatestWaitingMessageID)
+	}
+}
+
+func TestManualResumeScheduleReusesFollowupCreatedInInitialHandoffWindow(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("manual-resume-initial-handoff-window")
+	conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	origin, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID,
+		"manual-resume-initial-origin",
+		enums.IMMessageTypeText,
+		"帮我转人工",
+		"",
+		external,
+		"req-manual-resume-initial-origin",
+	)
+	if err != nil {
+		t.Fatalf("send origin customer message: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "客户明确要求人工接待", time.Now()); err != nil {
+		t.Fatalf("EnterStoreWecomManual() error = %v", err)
+	}
+	followup, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID,
+		"manual-resume-initial-followup",
+		enums.IMMessageTypeText,
+		"我再补充一个新问题",
+		"",
+		external,
+		"req-manual-resume-initial-followup",
+	)
+	if err != nil {
+		t.Fatalf("send follow-up customer message: %v", err)
+	}
+	createdDuringWindow := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+	if createdDuringWindow == nil || createdDuringWindow.LatestWaitingMessageID != followup.ID {
+		t.Fatalf("expected follow-up task before original schedule, got %+v", createdDuringWindow)
+	}
+
+	scheduled, err := AIManualResumeTaskService.Schedule(conversation.ID, origin.ID, "direct-initial-handoff")
+	if err != nil {
+		t.Fatalf("Schedule() error = %v", err)
+	}
+	if scheduled == nil || scheduled.ID != createdDuringWindow.ID || scheduled.LatestWaitingMessageID != followup.ID {
+		t.Fatalf("expected original schedule to reuse follow-up task and keep latest message %d, got %+v", followup.ID, scheduled)
+	}
+	var total int64
+	if err := db.Model(&models.AIManualResumeTask{}).Where("conversation_id = ?", conversation.ID).Count(&total).Error; err != nil {
+		t.Fatalf("count manual resume tasks: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("expected one manual resume task after interleaved schedule, got %d", total)
+	}
+}
+
+func TestManualRouteCustomerMessageRequeuesActiveResumeTask(t *testing.T) {
+	for _, taskStatus := range []string{aiManualResumeTaskReady, aiManualResumeTaskRetry, aiManualResumeTaskRunning} {
+		t.Run(taskStatus, func(t *testing.T) {
+			db := setupMessageWelcomeTestDB(t)
+			aiAgent := createWelcomeTestAIAgent(t, db, "")
+			external := welcomeTestExternalUser("manual-resume-requeue-" + taskStatus)
+			conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+			if err != nil {
+				t.Fatalf("create conversation: %v", err)
+			}
+			if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待门店同事", time.Now()); err != nil {
+				t.Fatalf("EnterStoreWecomManual() error = %v", err)
+			}
+			origin, err := MessageService.SendCustomerMessageWithRequestID(
+				conversation.ID,
+				"manual-resume-requeue-origin-"+taskStatus,
+				enums.IMMessageTypeText,
+				"第一个未解决问题",
+				"",
+				external,
+				"req-manual-resume-requeue-origin-"+taskStatus,
+			)
+			if err != nil {
+				t.Fatalf("send origin customer message: %v", err)
+			}
+			task := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+			if task == nil {
+				t.Fatal("expected initial waiting task")
+			}
+			now := time.Now()
+			if err := db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+				"task_status":    taskStatus,
+				"ready_at":       now,
+				"next_retry_at":  now,
+				"retry_count":    3,
+				"completed_at":   now,
+				"last_error":     "old run failed",
+				"notice_sent_at": now,
+			}).Error; err != nil {
+				t.Fatalf("prepare %s task: %v", taskStatus, err)
+			}
+			latest, err := MessageService.SendCustomerMessageWithRequestID(
+				conversation.ID,
+				"manual-resume-requeue-latest-"+taskStatus,
+				enums.IMMessageTypeText,
+				"刚刚又补充了一个问题",
+				"",
+				external,
+				"req-manual-resume-requeue-latest-"+taskStatus,
+			)
+			if err != nil {
+				t.Fatalf("send latest customer message: %v", err)
+			}
+			if err := db.First(task, task.ID).Error; err != nil {
+				t.Fatalf("reload manual resume task: %v", err)
+			}
+			if task.TaskStatus != aiManualResumeTaskWaiting || task.OriginMessageID != origin.ID || task.LatestWaitingMessageID != latest.ID {
+				t.Fatalf("unexpected requeued task: %+v", task)
+			}
+			if task.ReadyAt != nil || task.NextRetryAt != nil || task.RetryCount != 0 || task.CompletedAt != nil || task.NoticeSentAt != nil || task.LastError != "" {
+				t.Fatalf("expected stale execution fields to be cleared, got %+v", task)
+			}
+			if task.NextReminderAt == nil || time.Until(*task.NextReminderAt) < 90*time.Second || time.Until(*task.NextReminderAt) > 150*time.Second {
+				t.Fatalf("expected normal store reminder to be recalculated near two minutes, got %+v", task.NextReminderAt)
+			}
+		})
+	}
+}
+
+func TestManualResumeRequeueResetsReminderForSafetyAndHQRoutings(t *testing.T) {
+	tests := []struct {
+		name          string
+		routeStatus   enums.ConversationRouteStatus
+		reason        string
+		minimumDelay  time.Duration
+		maximumDelay  time.Duration
+		expectsNotice bool
+	}{
+		{name: "store safety", routeStatus: enums.ConversationRouteStatusStoreWecomManual, reason: "客人摔倒，属于安全问题", minimumDelay: 45 * time.Second, maximumDelay: 75 * time.Second, expectsNotice: true},
+		{name: "hq pending", routeStatus: enums.ConversationRouteStatusHQAgentDeskPending, reason: "等待总部接入"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupMessageWelcomeTestDB(t)
+			aiAgent := createWelcomeTestAIAgent(t, db, "")
+			external := welcomeTestExternalUser("manual-resume-reminder-" + strings.ReplaceAll(test.name, " ", "-"))
+			conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+			if err != nil {
+				t.Fatalf("create conversation: %v", err)
+			}
+			now := time.Now()
+			if test.routeStatus == enums.ConversationRouteStatusStoreWecomManual {
+				_, err = ConversationRouteService.EnterStoreWecomManual(conversation.ID, test.reason, now)
+			} else {
+				_, err = ConversationRouteService.EnterHQAgentDeskPending(conversation.ID, test.reason, now)
+			}
+			if err != nil {
+				t.Fatalf("enter manual route: %v", err)
+			}
+			origin, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-reminder-origin-"+test.name, enums.IMMessageTypeText, "第一个问题", "", external, "req-manual-reminder-origin-"+test.name)
+			if err != nil {
+				t.Fatalf("send origin message: %v", err)
+			}
+			task := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+			if task == nil || task.OriginMessageID != origin.ID {
+				t.Fatalf("expected initial task, got %+v", task)
+			}
+			farFuture := now.Add(time.Hour)
+			if err := db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+				"task_status":      aiManualResumeTaskRunning,
+				"next_reminder_at": farFuture,
+			}).Error; err != nil {
+				t.Fatalf("prepare task reminder: %v", err)
+			}
+			if _, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-reminder-latest-"+test.name, enums.IMMessageTypeText, "最新补充", "", external, "req-manual-reminder-latest-"+test.name); err != nil {
+				t.Fatalf("send latest message: %v", err)
+			}
+			if err := db.First(task, task.ID).Error; err != nil {
+				t.Fatalf("reload task: %v", err)
+			}
+			if test.expectsNotice {
+				if task.NextReminderAt == nil {
+					t.Fatal("expected store safety reminder to be scheduled")
+				}
+				delay := time.Until(*task.NextReminderAt)
+				if delay < test.minimumDelay || delay > test.maximumDelay {
+					t.Fatalf("unexpected safety reminder delay %v", delay)
+				}
+			} else if task.NextReminderAt != nil {
+				t.Fatalf("expected HQ route to clear store reminder, got %v", task.NextReminderAt)
+			}
+		})
+	}
+}
+
+func TestOldRunningManualResumeDoesNotMutateReclaimedLatestRun(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("manual-resume-running-requeue")
+	conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待门店同事", time.Now()); err != nil {
+		t.Fatalf("EnterStoreWecomManual() error = %v", err)
+	}
+	if _, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-running-origin", enums.IMMessageTypeText, "原来的问题", "", external, "req-manual-running-origin"); err != nil {
+		t.Fatalf("send origin message: %v", err)
+	}
+	task := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+	if task == nil {
+		t.Fatal("expected initial waiting task")
+	}
+	readyAt := time.Now().Add(-time.Second)
+	if err := db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Updates(map[string]any{
+		"task_status":   aiManualResumeTaskReady,
+		"ready_at":      readyAt,
+		"next_retry_at": readyAt,
+	}).Error; err != nil {
+		t.Fatalf("mark task ready: %v", err)
+	}
+	if err := db.First(task, task.ID).Error; err != nil {
+		t.Fatalf("reload ready task: %v", err)
+	}
+	previousHook := TriggerAIReplySyncHook
+	defer func() { TriggerAIReplySyncHook = previousHook }()
+	var latest *models.Message
+	TriggerAIReplySyncHook = func(_ context.Context, _ models.Conversation, _ models.Message) error {
+		latest, err = MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-running-latest", enums.IMMessageTypeText, "运行期间的新问题", "", external, "req-manual-running-latest")
+		if err != nil {
+			return err
+		}
+		return db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Update("task_status", aiManualResumeTaskRunning).Error
+	}
+	if !AIManualResumeTaskService.processOne(*task, time.Now()) {
+		t.Fatal("expected ready task to be claimed")
+	}
+	if latest == nil {
+		t.Fatal("expected customer follow-up during running hook")
+	}
+	if err := db.First(task, task.ID).Error; err != nil {
+		t.Fatalf("reload requeued task: %v", err)
+	}
+	if task.TaskStatus != aiManualResumeTaskRunning || task.LatestWaitingMessageID != latest.ID || task.RetryCount != 0 {
+		t.Fatalf("expected old run to leave the reclaimed latest run untouched, got %+v", task)
+	}
+	requestID := manualResumeRequestID(task)
+	var replyCount int64
+	if err := db.Model(&models.Message{}).Where("conversation_id = ? AND sender_type = ? AND request_id = ?", conversation.ID, enums.IMSenderTypeAI, requestID).Count(&replyCount).Error; err != nil {
+		t.Fatalf("count stale resume replies: %v", err)
+	}
+	if replyCount != 0 {
+		t.Fatalf("expected old running process to exit without committing, got %d replies", replyCount)
+	}
+}
+
+func TestManualResumeRejectsOldSourceAfterCustomerFollowUp(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("manual-resume-stale-source")
+	conversation, err := ConversationService.Create(external, 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待门店同事", time.Now()); err != nil {
+		t.Fatalf("EnterStoreWecomManual() error = %v", err)
+	}
+	origin, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-resume-stale-origin", enums.IMMessageTypeText, "原来的问题", "", external, "req-manual-resume-stale-origin")
+	if err != nil {
+		t.Fatalf("send origin customer message: %v", err)
+	}
+	task := AIManualResumeTaskService.latestActiveTask(conversation.ID, []string{aiManualResumeTaskWaiting})
+	if task == nil {
+		t.Fatal("expected initial waiting task")
+	}
+	if err := db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Update("task_status", aiManualResumeTaskRunning).Error; err != nil {
+		t.Fatalf("mark old run running: %v", err)
+	}
+	latest, err := MessageService.SendCustomerMessageWithRequestID(conversation.ID, "manual-resume-stale-latest", enums.IMMessageTypeText, "这是最新补充", "", external, "req-manual-resume-stale-latest")
+	if err != nil {
+		t.Fatalf("send latest customer message: %v", err)
+	}
+	if err := db.Model(&models.AIManualResumeTask{}).Where("id = ?", task.ID).Update("task_status", aiManualResumeTaskRunning).Error; err != nil {
+		t.Fatalf("mark latest run running: %v", err)
+	}
+	requestID := manualResumeRequestID(task)
+	if _, err := MessageService.SendAIMessageWithRequestIDAndSourceMessageID(
+		conversation.ID,
+		aiAgent.ID,
+		"manual-resume-old-source-reply",
+		enums.IMMessageTypeText,
+		"这条旧回复不应提交",
+		"",
+		&dto.AuthPrincipal{Username: "AI"},
+		requestID,
+		origin.ID,
+	); err == nil {
+		t.Fatal("expected stale source message to be rejected")
+	}
+	if _, err := MessageService.SendAIMessageWithRequestIDAndSourceMessageID(
+		conversation.ID,
+		aiAgent.ID,
+		"manual-resume-latest-source-reply",
+		enums.IMMessageTypeText,
+		"我继续处理最新问题。",
+		"",
+		&dto.AuthPrincipal{Username: "AI"},
+		requestID,
+		latest.ID,
+	); err != nil {
+		t.Fatalf("expected latest source message to commit: %v", err)
+	}
+}
+
+func TestExternalAgentTakeoverBlocksLaterOrdinaryAICommit(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("agent-wins-ai-race"), 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	staleConversation := *conversation
+	if _, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversation.ID, "agent-wins-echo", enums.IMMessageTypeText, "我来处理。", "", "req-agent-wins"); err != nil {
+		t.Fatalf("CreateExternalAgentMessageWithoutOutbox() error = %v", err)
+	}
+	if _, err := MessageService.sendValidatedMessageWithOptions(
+		&staleConversation,
+		enums.IMSenderTypeAI,
+		aiAgent.ID,
+		"ordinary-ai-after-takeover",
+		enums.IMMessageTypeText,
+		"这条不应提交",
+		"",
+		&dto.AuthPrincipal{Username: "AI"},
+		nil,
+		"req-ordinary-ai-after-takeover",
+		sendMessageOptions{},
+	); err == nil {
+		t.Fatal("expected lock-time route recheck to reject stale ordinary AI commit")
+	}
+	var count int64
+	if err := db.Model(&models.Message{}).
+		Where("conversation_id = ? AND client_msg_id = ?", conversation.ID, "ordinary-ai-after-takeover").
+		Count(&count).Error; err != nil {
+		t.Fatalf("count blocked AI messages: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no ordinary AI message after takeover, got %d", count)
+	}
+}
+
+func TestAIServiceNoticeCanSendDuringManualRoute(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          14,
+		Name:        "企微客服测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkKF,
+		ChannelID:   "wxwork-kf-service-notice-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("manual-service-notice-user"), 14, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "需要人工", time.Now()); err != nil {
+		t.Fatalf("EnterStoreWecomManual() error = %v", err)
+	}
+	message, err := MessageService.sendValidatedMessageWithOptions(
+		conversation,
+		enums.IMSenderTypeAI,
+		aiAgent.ID,
+		"ai_handoff_success_manual_notice",
+		enums.IMMessageTypeText,
+		DirectHandoffSuccessMessage,
+		`{"serviceEvent":"human_handoff_dispatched"}`,
+		&dto.AuthPrincipal{Username: "system"},
+		nil,
+		"req-manual-service-notice",
+		sendMessageOptions{skipOutbound: true, aiServiceNotice: true},
+	)
+	if err != nil {
+		t.Fatalf("SendAIServiceNoticeWithClientMsgIDAndRequestID() error = %v", err)
+	}
+	if message == nil || message.Content != DirectHandoffSuccessMessage {
+		t.Fatalf("expected service notice during manual route, got %+v", message)
+	}
+	if handled, err := MessageService.ensureOutboundChannelMessageWithOptions(conversation, message, true); err != nil || !handled {
+		t.Fatalf("enqueue service notice outbox handled=%v err=%v", handled, err)
+	}
+	outbox := ChannelMessageOutboxService.GetByMessageID(enums.ChannelTypeWxWorkKF, message.ID)
+	if outbox == nil || !ChannelMessageOutboxService.isAIServiceNotice(*outbox) {
+		t.Fatalf("expected service notice outbox marker, got %+v", outbox)
+	}
+	if allowed, reason := ChannelMessageOutboxService.CanDispatch(*outbox, message); !allowed {
+		t.Fatalf("expected service notice dispatch during manual route, reason=%q", reason)
+	}
+}
+
+func TestClaimForDispatchCancelsOrdinaryAIUnderManualRoute(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	if err := db.Create(&models.Channel{
+		ID:          15,
+		Name:        "企微客服领取测试渠道",
+		ChannelType: enums.ChannelTypeWxWorkKF,
+		ChannelID:   "wxwork-kf-claim-test",
+		Status:      enums.StatusOk,
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("manual-claim-user"), 15, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message, err := MessageService.sendValidatedMessageWithOptions(
+		conversation,
+		enums.IMSenderTypeAI,
+		aiAgent.ID,
+		"ordinary-ai-before-manual-claim",
+		enums.IMMessageTypeText,
+		"这条不应发送",
+		"",
+		&dto.AuthPrincipal{Username: "AI"},
+		nil,
+		"req-ordinary-before-manual-claim",
+		sendMessageOptions{skipOutbound: true},
+	)
+	if err != nil {
+		t.Fatalf("create ordinary AI message: %v", err)
+	}
+	if handled, err := MessageService.ensureOutboundChannelMessage(conversation, message); err != nil || !handled {
+		t.Fatalf("enqueue ordinary AI outbox handled=%v err=%v", handled, err)
+	}
+	outbox := ChannelMessageOutboxService.GetByMessageID(enums.ChannelTypeWxWorkKF, message.ID)
+	if outbox == nil {
+		t.Fatal("expected ordinary AI outbox")
+	}
+	if _, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "员工接管", now); err != nil {
+		t.Fatalf("enter manual route: %v", err)
+	}
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("id = ?", outbox.ID).Updates(map[string]any{
+		"send_status": string(enums.ChannelMessageOutboxStatusPending),
+		"last_error":  "",
+	}).Error; err != nil {
+		t.Fatalf("restore stale pending outbox: %v", err)
+	}
+	claimed, err := ChannelMessageOutboxService.ClaimForDispatch(*outbox, message)
+	if err != nil {
+		t.Fatalf("ClaimForDispatch() error = %v", err)
+	}
+	if claimed {
+		t.Fatal("ordinary AI outbox must not be claimed after manual takeover")
+	}
+	if err := db.First(outbox, outbox.ID).Error; err != nil {
+		t.Fatalf("reload outbox: %v", err)
+	}
+	if outbox.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) {
+		t.Fatalf("outbox status=%q want cancelled", outbox.SendStatus)
+	}
+}
+
+func TestExternalAgentEchoTakesOverHQServingAndClearsAssignment(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("hq-to-store-self-echo"), 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	now := time.Now()
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]any{
+		"status":              enums.IMConversationStatusActive,
+		"current_team_id":     int64(1),
+		"current_assignee_id": int64(101),
+	}).Error; err != nil {
+		t.Fatalf("assign conversation: %v", err)
+	}
+	assignment := &models.ConversationAssignment{
+		ConversationID: conversation.ID,
+		ToUserID:       101,
+		Status:         enums.IMAssignmentStatusActive,
+		CreatedAt:      now,
+	}
+	if err := db.Create(assignment).Error; err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if _, err := ConversationRouteService.EnterHQAgentDeskServing(conversation.ID, "HQ人工接待", now); err != nil {
+		t.Fatalf("EnterHQAgentDeskServing() error = %v", err)
+	}
+	if _, err := MessageService.CreateExternalAgentMessageWithoutOutbox(conversation.ID, "hq-store-self-echo", enums.IMMessageTypeText, "门店同事已接手。", "", "req-hq-store-self-echo"); err != nil {
+		t.Fatalf("CreateExternalAgentMessageWithoutOutbox() error = %v", err)
+	}
+	state := ConversationRouteService.GetByConversationID(conversation.ID)
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.NeedHumanFollowUp || state.ManualExpireAt == nil {
+		t.Fatalf("expected trusted employee echo to own the store manual route, got %+v", state)
+	}
+	current := ConversationService.Get(conversation.ID)
+	if current == nil || current.Status != enums.IMConversationStatusAIServing || current.CurrentAssigneeID != 0 || current.CurrentTeamID != 0 {
+		t.Fatalf("expected old HQ assignment cleared, got %+v", current)
+	}
+	if err := db.First(assignment, assignment.ID).Error; err != nil {
+		t.Fatalf("reload assignment: %v", err)
+	}
+	if assignment.Status != enums.IMAssignmentStatusInactive || assignment.FinishedAt == nil {
+		t.Fatalf("expected old assignment finished, got %+v", assignment)
 	}
 }
 

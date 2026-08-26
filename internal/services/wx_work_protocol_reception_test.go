@@ -44,15 +44,39 @@ func TestAppendWxWorkReceptionContextScheduledUsesCurrentWindow(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeAIAgentUsesNeutralReceptionIdentity(t *testing.T) {
+func TestBuildRuntimeAIAgentUsesDefaultXiaoQiPersona(t *testing.T) {
 	agent := WxWorkProtocolInstanceService.BuildRuntimeAIAgent(&models.WxWorkProtocolInstance{
-		PersonaPrompt: DefaultWxWorkProtocolPersonaPrompt,
 		FrontDeskMode: wxWorkFrontDeskModeUnmanned,
 	})
-	if strings.Contains(agent.SystemPrompt, "你是酒店前台同事") {
-		t.Fatalf("legacy front desk identity leaked: %s", agent.SystemPrompt)
+	for _, expected := range []string{
+		"酒店前台同事小七",
+		"礼貌、温和、有耐心",
+		"您、为您、这边、呀、啦、～",
+		"没有真实工具、资源提交或接待结果时",
+		"不得承诺已经通知、安排、处理或稍后完成",
+	} {
+		if !strings.Contains(agent.SystemPrompt, expected) {
+			t.Fatalf("default persona missing %q: %s", expected, agent.SystemPrompt)
+		}
 	}
-	if !strings.Contains(agent.SystemPrompt, "你是线上酒店接待") {
-		t.Fatalf("neutral identity missing: %s", agent.SystemPrompt)
+}
+
+func TestNormalizeWxWorkPersonaPromptFallsBackToDefault(t *testing.T) {
+	if got := normalizeWxWorkPersonaPrompt(" \n\t "); got != DefaultWxWorkProtocolPersonaPrompt {
+		t.Fatalf("blank persona must fall back to the default, got %q", got)
+	}
+}
+
+func TestMergeWxWorkPersonaIntoSystemPromptKeepsCustomPersona(t *testing.T) {
+	custom := "客人问早餐时优先给出明确时间。"
+	got := mergeWxWorkPersonaIntoSystemPrompt(DefaultWxWorkProtocolPersonaPrompt, custom)
+	if !strings.Contains(got, DefaultWxWorkProtocolPersonaPrompt) || !strings.Contains(got, custom) {
+		t.Fatalf("custom persona must extend the default prompt, got %q", got)
+	}
+	if strings.Count(got, custom) != 1 {
+		t.Fatalf("custom persona must only be merged once, got %q", got)
+	}
+	if again := mergeWxWorkPersonaIntoSystemPrompt(got, custom); again != got {
+		t.Fatalf("merging the same custom persona must remain idempotent, got %q", again)
 	}
 }

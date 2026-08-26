@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -48,54 +51,80 @@ func (s *aiManualResumeTaskService) Schedule(conversationID int64, originMessage
 	if db == nil || !db.Migrator().HasTable(&models.AIManualResumeTask{}) {
 		return nil, fmt.Errorf("AI manual resume task table is unavailable")
 	}
-	state := ConversationRouteService.GetByConversationID(conversationID)
-	if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
-		return nil, fmt.Errorf("conversation is not in a manual route")
-	}
-	if originMessageID <= 0 {
-		if message := s.latestCustomerMessage(conversationID); message != nil {
-			originMessageID = message.ID
-		}
-	}
 	handoffToken = strings.TrimSpace(handoffToken)
 	if handoffToken == "" {
 		handoffToken = s.NewHandoffToken()
 	}
 	taskKey := fmt.Sprintf("manual_resume:%d:%s", conversationID, handoffToken)
-	if existing := repositories.AIManualResumeTaskRepository.Take(db, "task_key = ?", taskKey); existing != nil {
-		return existing, nil
-	}
-	now := time.Now()
-	var nextReminderAt *time.Time
-	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
-		delay := 2 * time.Minute
-		if isSafetyHandoffReason(state.HandoffReason) {
-			delay = time.Minute
+	var scheduled *models.AIManualResumeTask
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := ConversationRouteService.lockByConversationIDWithDB(ctx.Tx, conversationID)
+		if err != nil {
+			return err
 		}
-		value := now.Add(delay)
-		nextReminderAt = &value
-	}
-	item := &models.AIManualResumeTask{
-		TaskKey:                taskKey,
-		HandoffToken:           handoffToken,
-		ConversationID:         conversationID,
-		WxWorkInstanceID:       state.WxWorkInstanceID,
-		OriginMessageID:        originMessageID,
-		LatestWaitingMessageID: originMessageID,
-		RouteStatus:            string(state.RouteStatus),
-		TaskStatus:             aiManualResumeTaskWaiting,
-		NextReminderAt:         nextReminderAt,
-		AuditFields: models.AuditFields{
-			CreatedAt:      now,
-			CreateUserName: "system",
-			UpdatedAt:      now,
-			UpdateUserName: "system",
-		},
-	}
-	if err := repositories.AIManualResumeTaskRepository.Create(db, item); err != nil {
-		return nil, err
-	}
-	return item, nil
+		if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
+			return fmt.Errorf("conversation is not in a manual route")
+		}
+		if originMessageID <= 0 {
+			if message := s.latestCustomerMessageWithDB(ctx.Tx, conversationID); message != nil {
+				originMessageID = message.ID
+			}
+		}
+
+		active := s.latestActiveTaskWithDB(ctx.Tx, conversationID, []string{
+			aiManualResumeTaskWaiting,
+			aiManualResumeTaskReady,
+			aiManualResumeTaskRunning,
+			aiManualResumeTaskRetry,
+			aiManualResumeTaskBlockedAIDisabled,
+		})
+		if active != nil {
+			latestWaitingMessageID := active.LatestWaitingMessageID
+			if latestWaitingMessageID <= 0 {
+				latestWaitingMessageID = active.OriginMessageID
+			}
+			if originMessageID > latestWaitingMessageID {
+				if err := s.recordWaitingCustomerMessageWithDB(ctx.Tx, state, originMessageID, time.Now()); err != nil {
+					return err
+				}
+				active = repositories.AIManualResumeTaskRepository.Get(ctx.Tx, active.ID)
+				if active == nil {
+					return fmt.Errorf("cannot reload AI manual resume task %d", conversationID)
+				}
+			}
+			scheduled = active
+			return nil
+		}
+		if existing := repositories.AIManualResumeTaskRepository.Take(ctx.Tx, "task_key = ?", taskKey); existing != nil {
+			scheduled = existing
+			return nil
+		}
+
+		now := time.Now()
+		item := &models.AIManualResumeTask{
+			TaskKey:                taskKey,
+			HandoffToken:           handoffToken,
+			ConversationID:         conversationID,
+			WxWorkInstanceID:       state.WxWorkInstanceID,
+			OriginMessageID:        originMessageID,
+			LatestWaitingMessageID: originMessageID,
+			RouteStatus:            string(state.RouteStatus),
+			TaskStatus:             aiManualResumeTaskWaiting,
+			NextReminderAt:         nextManualResumeReminderAt(state, now),
+			AuditFields: models.AuditFields{
+				CreatedAt:      now,
+				CreateUserName: "system",
+				UpdatedAt:      now,
+				UpdateUserName: "system",
+			},
+		}
+		if err := repositories.AIManualResumeTaskRepository.Create(ctx.Tx, item); err != nil {
+			return err
+		}
+		scheduled = item
+		return nil
+	})
+	return scheduled, err
 }
 
 func (s *aiManualResumeTaskService) EnsureForTimeout(conversationID int64) bool {
@@ -123,15 +152,84 @@ func (s *aiManualResumeTaskService) RecordWaitingCustomerMessage(conversationID 
 	if conversationID <= 0 || messageID <= 0 {
 		return
 	}
-	task := s.latestActiveTask(conversationID, []string{aiManualResumeTaskWaiting})
-	if task == nil {
-		return
+	if err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := ConversationRouteService.lockByConversationIDWithDB(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		return s.recordWaitingCustomerMessageWithDB(ctx.Tx, state, messageID, time.Now())
+	}); err != nil {
+		slog.Warn("record waiting customer message failed", "conversation_id", conversationID, "message_id", messageID, "error", err)
 	}
-	_ = repositories.AIManualResumeTaskRepository.Updates(sqls.DB(), task.ID, map[string]any{
+}
+
+func (s *aiManualResumeTaskService) recordWaitingCustomerMessageWithDB(db *gorm.DB, state *models.ConversationRouteState, messageID int64, now time.Time) error {
+	if db == nil || state == nil || state.ConversationID <= 0 || messageID <= 0 {
+		return fmt.Errorf("manual resume route and message are required")
+	}
+	if !routeStatusBlocksManualResume(state.RouteStatus) || !db.Migrator().HasTable(&models.AIManualResumeTask{}) {
+		return nil
+	}
+	statuses := []string{
+		aiManualResumeTaskWaiting,
+		aiManualResumeTaskReady,
+		aiManualResumeTaskRetry,
+		aiManualResumeTaskRunning,
+		aiManualResumeTaskBlockedAIDisabled,
+	}
+	task := &models.AIManualResumeTask{}
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("conversation_id = ? AND task_status IN ?", state.ConversationID, statuses).
+		Order("id DESC").
+		Take(task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		handoffToken := fmt.Sprintf("followup_%d", messageID)
+		return repositories.AIManualResumeTaskRepository.Create(db, &models.AIManualResumeTask{
+			TaskKey:                fmt.Sprintf("manual_resume:%d:%s", state.ConversationID, handoffToken),
+			HandoffToken:           handoffToken,
+			ConversationID:         state.ConversationID,
+			WxWorkInstanceID:       state.WxWorkInstanceID,
+			OriginMessageID:        messageID,
+			LatestWaitingMessageID: messageID,
+			RouteStatus:            string(state.RouteStatus),
+			TaskStatus:             aiManualResumeTaskWaiting,
+			NextReminderAt:         nextManualResumeReminderAt(state, now),
+			AuditFields: models.AuditFields{
+				CreatedAt:      now,
+				CreateUserName: "system",
+				UpdatedAt:      now,
+				UpdateUserName: "system",
+			},
+		})
+	}
+	if err != nil {
+		return err
+	}
+	return repositories.AIManualResumeTaskRepository.Updates(db, task.ID, map[string]any{
+		"task_status":               aiManualResumeTaskWaiting,
 		"latest_waiting_message_id": messageID,
-		"updated_at":                time.Now(),
+		"ready_at":                  nil,
+		"next_retry_at":             nil,
+		"retry_count":               0,
+		"completed_at":              nil,
+		"last_error":                "",
+		"notice_sent_at":            nil,
+		"next_reminder_at":          nextManualResumeReminderAt(state, now),
+		"updated_at":                now,
 		"update_user_name":          "system",
 	})
+}
+
+func nextManualResumeReminderAt(state *models.ConversationRouteState, now time.Time) *time.Time {
+	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
+		return nil
+	}
+	delay := 2 * time.Minute
+	if isSafetyHandoffReason(state.HandoffReason) {
+		delay = time.Minute
+	}
+	value := now.Add(delay)
+	return &value
 }
 
 func (s *aiManualResumeTaskService) CancelActive(conversationID int64, reason string) {
@@ -332,6 +430,26 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	err = TriggerAIReplySyncHook(ctx, *conversation, messageCopy)
 	cancel()
+	current = repositories.AIManualResumeTaskRepository.Get(sqls.DB(), task.ID)
+	if current == nil || current.TaskStatus != aiManualResumeTaskRunning {
+		return true
+	}
+	currentSourceMessageID := current.LatestWaitingMessageID
+	if currentSourceMessageID <= 0 {
+		currentSourceMessageID = current.OriginMessageID
+	}
+	if currentSourceMessageID != message.ID {
+		return true
+	}
+	state = ConversationRouteService.GetByConversationID(current.ConversationID)
+	if state == nil || !s.CanCommitRequest(current.ConversationID, requestID, message.ID) {
+		if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) {
+			s.cancelTask(current, "conversation left the waiting manual route during resume")
+		} else {
+			s.failOrRetry(current, fmt.Errorf("manual resume state changed while AI was running"), time.Now())
+		}
+		return true
+	}
 	if err == nil {
 		if reply := MessageService.FindOne(sqls.NewCnd().
 			Eq("conversation_id", current.ConversationID).
@@ -369,23 +487,101 @@ func (s *aiManualResumeTaskService) finalizeResumeRoute(task *models.AIManualRes
 	if task == nil || state == nil {
 		return fmt.Errorf("manual resume task or route state is unavailable")
 	}
-	if err := ManualSessionTimeoutService.restoreConversationShell(task.ConversationID, now, "manual_wait_resume_committed", "人工等待超时，AI已提交实际续答", state.RouteStatus); err != nil {
-		return err
+	requestID := manualResumeRequestID(task)
+	message := s.resolveResumeMessage(task)
+	if message == nil {
+		return fmt.Errorf("manual resume is no longer eligible to restore AI")
 	}
-	keepFollowUp := isSafetyHandoffReason(state.HandoffReason)
-	if err := ConversationRouteService.RestoreAIWithFollowUp(task.ConversationID, "人工等待超时，AI已恢复接待", now, keepFollowUp); err != nil {
-		return err
-	}
-	return repositories.AIManualResumeTaskRepository.Updates(sqls.DB(), task.ID, map[string]any{
-		"notice_sent_at":   now,
-		"updated_at":       now,
-		"update_user_name": "system",
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		lockedState, err := ConversationRouteService.lockByConversationIDWithDB(ctx.Tx, task.ConversationID)
+		if err != nil {
+			return err
+		}
+		if !s.canCommitRequestWithDB(ctx.Tx, lockedState, task.ConversationID, requestID, message.ID) {
+			return fmt.Errorf("manual resume is no longer eligible to restore AI")
+		}
+		if err := ManualSessionTimeoutService.restoreConversationShellWithDB(ctx, task.ConversationID, now, "manual_wait_resume_committed", "人工等待超时，AI已提交实际续答", lockedState.RouteStatus); err != nil {
+			return err
+		}
+		keepFollowUp := isSafetyHandoffReason(lockedState.HandoffReason)
+		if err := repositories.ConversationRouteStateRepository.Updates(ctx.Tx, lockedState.ID, map[string]any{
+			"route_status":             enums.ConversationRouteStatusAIServing,
+			"route_target":             "ai",
+			"manual_expire_at":         nil,
+			"pending_action":           "",
+			"pending_action_payload":   "",
+			"pending_action_expire_at": nil,
+			"need_human_follow_up":     keepFollowUp,
+			"handoff_reason":           "人工等待超时，AI已恢复接待",
+			"updated_at":               now,
+			"update_user_name":         "system",
+		}); err != nil {
+			return err
+		}
+		return repositories.AIManualResumeTaskRepository.Updates(ctx.Tx, task.ID, map[string]any{
+			"task_status":      aiManualResumeTaskSucceeded,
+			"notice_sent_at":   now,
+			"completed_at":     now,
+			"next_retry_at":    nil,
+			"last_error":       "",
+			"updated_at":       now,
+			"update_user_name": "system",
+		})
 	})
+}
+
+func manualResumeRequestID(task *models.AIManualResumeTask) string {
+	if task == nil {
+		return ""
+	}
+	return "manual_resume_" + strings.ReplaceAll(task.HandoffToken, "-", "")
+}
+
+func (s *aiManualResumeTaskService) CanCommitRequest(conversationID int64, requestID string, sourceMessageID int64) bool {
+	return s.canCommitRequestWithDB(sqls.DB(), nil, conversationID, requestID, sourceMessageID)
+}
+
+func (s *aiManualResumeTaskService) canCommitRequestWithDB(db *gorm.DB, state *models.ConversationRouteState, conversationID int64, requestID string, sourceMessageID int64) bool {
+	requestID = strings.TrimSpace(requestID)
+	if db == nil || conversationID <= 0 || !strings.HasPrefix(requestID, "manual_resume_") {
+		return false
+	}
+	task := s.latestActiveTaskWithDB(db, conversationID, []string{aiManualResumeTaskRunning})
+	if task == nil || manualResumeRequestID(task) != requestID {
+		return false
+	}
+	if state == nil {
+		state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", conversationID)
+	}
+	if state == nil || !routeStatusBlocksManualResume(state.RouteStatus) || !state.NeedHumanFollowUp {
+		return false
+	}
+	latestWaitingMessageID := task.LatestWaitingMessageID
+	if latestWaitingMessageID <= 0 {
+		latestWaitingMessageID = task.OriginMessageID
+	}
+	if sourceMessageID > 0 && latestWaitingMessageID != sourceMessageID {
+		return false
+	}
+	latestAgent := repositories.MessageRepository.FindOne(db, sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeAgent).
+		Where("recalled_at IS NULL AND send_status <> ?", enums.IMMessageStatusRecalled).
+		Desc("seq_no").
+		Desc("id"))
+	return latestAgent == nil || latestAgent.ID < latestWaitingMessageID
 }
 
 func (s *aiManualResumeTaskService) latestActiveTask(conversationID int64, statuses []string) *models.AIManualResumeTask {
 	db := sqls.DB()
 	if db == nil || !db.Migrator().HasTable(&models.AIManualResumeTask{}) {
+		return nil
+	}
+	return s.latestActiveTaskWithDB(db, conversationID, statuses)
+}
+
+func (s *aiManualResumeTaskService) latestActiveTaskWithDB(db *gorm.DB, conversationID int64, statuses []string) *models.AIManualResumeTask {
+	if db == nil {
 		return nil
 	}
 	items := repositories.AIManualResumeTaskRepository.Find(db, sqls.NewCnd().
@@ -400,7 +596,14 @@ func (s *aiManualResumeTaskService) latestActiveTask(conversationID int64, statu
 }
 
 func (s *aiManualResumeTaskService) latestCustomerMessage(conversationID int64) *models.Message {
-	return MessageService.FindOne(sqls.NewCnd().
+	return s.latestCustomerMessageWithDB(sqls.DB(), conversationID)
+}
+
+func (s *aiManualResumeTaskService) latestCustomerMessageWithDB(db *gorm.DB, conversationID int64) *models.Message {
+	if db == nil {
+		return nil
+	}
+	return repositories.MessageRepository.FindOne(db, sqls.NewCnd().
 		Eq("conversation_id", conversationID).
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		Where("recalled_at IS NULL AND send_status <> ?", enums.IMMessageStatusRecalled).

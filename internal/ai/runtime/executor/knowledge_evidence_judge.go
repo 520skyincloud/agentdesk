@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	knowledgeEvidenceJudgeSchemaVersion = "knowledge_evidence_judge.v1"
+	knowledgeEvidenceJudgeSchemaVersion = "knowledge_evidence_judge.v2"
 
-	knowledgeEvidenceClassificationDirect     = "direct"
-	knowledgeEvidenceClassificationSupporting = "supporting"
-	knowledgeEvidenceClassificationUnrelated  = "unrelated"
+	knowledgeEvidenceDecisionDirectSingle   = "direct_single"
+	knowledgeEvidenceDecisionDirectCombined = "direct_combined"
+	knowledgeEvidenceDecisionInsufficient   = "insufficient"
 
 	knowledgeEvidenceLayerStore   = "store"
 	knowledgeEvidenceLayerGeneral = "general"
@@ -37,9 +37,15 @@ type knowledgeEvidenceJudge interface {
 }
 
 type knowledgeEvidenceJudgeTask struct {
-	TaskID     string
-	Query      string
-	Candidates []knowledgeEvidenceJudgeCandidate
+	TaskID        string
+	Query         string
+	SourceContext []knowledgeEvidenceJudgeSourceMessage
+	Candidates    []knowledgeEvidenceJudgeCandidate
+}
+
+type knowledgeEvidenceJudgeSourceMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type knowledgeEvidenceJudgeCandidate struct {
@@ -49,9 +55,14 @@ type knowledgeEvidenceJudgeCandidate struct {
 }
 
 type knowledgeEvidenceJudgeOutcome struct {
-	Applied         bool
-	Classifications map[string]map[string]string
-	Trace           callbacks.KnowledgeEvidenceJudgeTraceData
+	Applied    bool
+	Selections map[string]map[string]knowledgeEvidenceLayerSelection
+	Trace      callbacks.KnowledgeEvidenceJudgeTraceData
+}
+
+type knowledgeEvidenceLayerSelection struct {
+	Decision             string
+	SelectedCandidateIDs []string
 }
 
 type modelKnowledgeEvidenceJudge struct{}
@@ -62,17 +73,19 @@ type knowledgeEvidenceJudgePrompt struct {
 }
 
 type knowledgeEvidenceJudgePromptTask struct {
-	TaskID     string                                  `json:"taskId"`
-	Question   string                                  `json:"question"`
-	Candidates []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
+	TaskID        string                                  `json:"taskId"`
+	Question      string                                  `json:"question"`
+	SourceContext []knowledgeEvidenceJudgeSourceMessage   `json:"sourceContext,omitempty"`
+	Candidates    []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
 }
 
 type knowledgeEvidenceJudgePromptCandidate struct {
 	CandidateID string  `json:"candidateId"`
 	Layer       string  `json:"layer"`
 	FAQQuestion string  `json:"faqQuestion,omitempty"`
+	FAQAnswer   string  `json:"faqAnswer,omitempty"`
 	Title       string  `json:"title,omitempty"`
-	Content     string  `json:"content"`
+	RawContent  string  `json:"rawContent"`
 	Score       float32 `json:"score"`
 }
 
@@ -82,13 +95,14 @@ type knowledgeEvidenceJudgeResponse struct {
 }
 
 type knowledgeEvidenceJudgeResponseTask struct {
-	TaskID     string                                    `json:"taskId"`
-	Candidates []knowledgeEvidenceJudgeResponseCandidate `json:"candidates"`
+	TaskID string                                `json:"taskId"`
+	Layers []knowledgeEvidenceJudgeResponseLayer `json:"layers"`
 }
 
-type knowledgeEvidenceJudgeResponseCandidate struct {
-	CandidateID    string `json:"candidateId"`
-	Classification string `json:"classification"`
+type knowledgeEvidenceJudgeResponseLayer struct {
+	Layer                string   `json:"layer"`
+	Decision             string   `json:"decision"`
+	SelectedCandidateIDs []string `json:"selectedCandidateIds"`
 }
 
 func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
@@ -143,18 +157,18 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		return knowledgeEvidenceJudgeOutcome{Trace: trace}
 	}
 
-	classifications, parseErr := parseKnowledgeEvidenceJudgeResponse(result.Content, tasks)
+	selections, parseErr := parseKnowledgeEvidenceJudgeResponse(result.Content, tasks)
 	if parseErr != nil {
 		trace.Reason = "knowledge judge returned an invalid protocol response; deterministic retrieval selection was preserved"
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return knowledgeEvidenceJudgeOutcome{Trace: trace}
 	}
 	trace.Status = "completed"
-	trace.Reason = "knowledge candidates were classified once before deterministic layer selection"
+	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
 	return knowledgeEvidenceJudgeOutcome{
-		Applied:         true,
-		Classifications: classifications,
-		Trace:           trace,
+		Applied:    true,
+		Selections: selections,
+		Trace:      trace,
 	}
 }
 
@@ -163,8 +177,9 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 	prompt.Tasks = make([]knowledgeEvidenceJudgePromptTask, 0, len(tasks))
 	for _, task := range tasks {
 		item := knowledgeEvidenceJudgePromptTask{
-			TaskID:   strings.TrimSpace(task.TaskID),
-			Question: strings.TrimSpace(task.Query),
+			TaskID:        strings.TrimSpace(task.TaskID),
+			Question:      strings.TrimSpace(task.Query),
+			SourceContext: append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
 		}
 		item.Candidates = make([]knowledgeEvidenceJudgePromptCandidate, 0, len(task.Candidates))
 		for _, candidate := range task.Candidates {
@@ -172,12 +187,14 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 			if title == "" {
 				title = strings.TrimSpace(candidate.Hit.DocumentTitle)
 			}
+			faqQuestion, faqAnswer := splitKnowledgeEvidenceFAQ(candidate.Hit)
 			item.Candidates = append(item.Candidates, knowledgeEvidenceJudgePromptCandidate{
 				CandidateID: strings.TrimSpace(candidate.CandidateID),
 				Layer:       strings.TrimSpace(candidate.Layer),
-				FAQQuestion: strings.TrimSpace(candidate.Hit.FaqQuestion),
+				FAQQuestion: faqQuestion,
+				FAQAnswer:   faqAnswer,
 				Title:       title,
-				Content:     strings.TrimSpace(candidate.Hit.Content),
+				RawContent:  strings.TrimSpace(candidate.Hit.Content),
 				Score:       candidate.Hit.Score,
 			})
 		}
@@ -186,23 +203,73 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 	return prompt
 }
 
-func knowledgeEvidenceJudgeSystemPrompt() string {
-	return strings.TrimSpace(`你是酒店客服知识证据裁判。你不回答客户，不决定是否转人工，只判断每条候选知识与对应客户问题的关系。
-
-对每个候选只能标记一种分类：
-- direct：候选正文自身直接、明确且足以回答当前问题。问题条件、对象和答案必须一致。
-- supporting：候选与问题相关，但单独不足以直接回答，只能补充 direct 证据。
-- unrelated：候选答的是别的问题、条件不一致、对象不一致，或无法支持客户所问事实。
-
-否定答案也可以是完整直接答案。客户询问某项服务的时间、地点、价格、方式或是否提供时，如果候选明确说明“不提供、没有、不支持”，它已经直接回答了问题，必须标记 direct。例如“早餐几点”对应“酒店不提供早餐”是 direct，不能标记 supporting。
-
-必须区分能力/存在性与故障/执行请求。例如“有空调吗”不能把“空调不制冷需要处理”判为 direct；“谁是汤东强”不能把用品、人员无关内容判为 direct。检索分数、候选顺序和 store/general 层级都不能替代语义判断。
-
-严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId，并且每个 candidateId 恰好出现一次。输出格式：
-{"schemaVersion":"knowledge_evidence_judge.v1","tasks":[{"taskId":"T1","candidates":[{"candidateId":"T1C1","classification":"direct"}]}]}`)
+func splitKnowledgeEvidenceFAQ(hit rag.RetrieveResult) (string, string) {
+	raw := strings.TrimSpace(hit.Content)
+	question := strings.TrimSpace(hit.FaqQuestion)
+	answer := ""
+	if parsedQuestion, parsedAnswer, ok := parseQuestionAnswerContent(raw); ok {
+		if question == "" {
+			question = parsedQuestion
+		}
+		answer = parsedAnswer
+	} else if question != "" {
+		answer = raw
+	}
+	return question, answer
 }
 
-func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]string, error) {
+func parseQuestionAnswerContent(raw string) (string, string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", false
+	}
+	answerIndex := -1
+	answerPrefixLength := 0
+	for _, marker := range []string{"\n答案：", "\n答案:", "答案：", "答案:"} {
+		if index := strings.Index(raw, marker); index >= 0 && (answerIndex < 0 || index < answerIndex) {
+			answerIndex = index
+			answerPrefixLength = len(marker)
+		}
+	}
+	if answerIndex < 0 {
+		return "", "", false
+	}
+	question := strings.TrimSpace(raw[:answerIndex])
+	question = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(question, "问题："), "问题:"))
+	answer := strings.TrimSpace(raw[answerIndex+answerPrefixLength:])
+	if question == "" || answer == "" {
+		return "", "", false
+	}
+	return question, answer, true
+}
+
+func knowledgeEvidenceJudgeSystemPrompt() string {
+	return strings.TrimSpace(`你是酒店客服知识证据裁判。你不回答客户，不决定是否转人工，只为每个客户任务在每个知识层选择足以回答的证据。
+
+每个 task 会提供当前原子问题、紧邻会话 sourceContext，以及带 layer 的候选。sourceContext 只用于理解“这几个、上面那种、都”等指代，不能当作酒店事实来源。
+
+必须分别裁决 store 和 general 两层，每层只能输出一种 decision：
+- direct_single：单条候选的完整语义足以回答当前问题，只选择这一条。
+- direct_combined：同一层内至少两条候选指向同一门店、同一实体和同一适用范围，合在一起足以回答当前问题，只选择必要的候选。
+- insufficient：该层没有足够证据，selectedCandidateIds 必须为空。
+
+严禁跨 store/general 拼接证据，也不能把不同门店、不同房型对象、不同时间条件或互相矛盾的内容组合。检索分数和候选顺序不能替代语义判断。
+
+FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。rawContent 只用于核对原文。
+
+例如 FAQ 问题“问下房间的两瓶矿泉水是免费的吗？”、答案“是的，房间内的矿泉水都是免费的”，完整语义已经确认“房间内有两瓶矿泉水，并且免费”。它足以回答“房间里有几瓶矿泉水”，应判 direct_single；不能因为数量只写在 faqQuestion 中就丢掉这个已被肯定回答确认的事实。这个规则同样适用于其他 FAQ 中被肯定或否定答案确认的对象、数量与条件。
+
+候选答案如果只是“转接”，它是流程指令，不是酒店事实。只有 FAQ 问题与当前任务语义直接匹配时，才可以把该候选作为单条流程指令选择；绝不能把 FAQ 问题文字当作已经确认的事实，也不能让“转接”候选参与 direct_combined。
+
+同层组合示例：客户问“既有沙发又有办公桌的房型有哪些”，一条候选列出有沙发的房型，另一条候选列出有办公桌的房型，两条属于同一门店和房型范围时，可以判 direct_combined，让后续生成阶段计算交集。只知道沙发或只知道办公桌时必须判 insufficient。
+
+否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
+
+严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。输出格式：
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[]}]}]}`)
+}
+
+func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
 	parsed := knowledgeEvidenceJudgeResponse{}
 	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
 	decoder.DisallowUnknownFields()
@@ -218,57 +285,92 @@ func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJu
 	if len(parsed.Tasks) != len(tasks) {
 		return nil, fmt.Errorf("knowledge judge task count mismatch: got %d want %d", len(parsed.Tasks), len(tasks))
 	}
-	expected := make(map[string]map[string]struct{}, len(tasks))
+	expected := make(map[string]map[string]map[string]struct{}, len(tasks))
 	for _, task := range tasks {
 		taskID := strings.TrimSpace(task.TaskID)
 		if taskID == "" {
 			return nil, fmt.Errorf("knowledge judge task id is empty")
 		}
-		candidateIDs := make(map[string]struct{}, len(task.Candidates))
+		layerCandidates := make(map[string]map[string]struct{}, 2)
 		for _, candidate := range task.Candidates {
 			candidateID := strings.TrimSpace(candidate.CandidateID)
 			if candidateID == "" {
 				return nil, fmt.Errorf("knowledge judge candidate id is empty for task %s", taskID)
 			}
-			if _, exists := candidateIDs[candidateID]; exists {
+			layer := strings.TrimSpace(candidate.Layer)
+			if layer != knowledgeEvidenceLayerStore && layer != knowledgeEvidenceLayerGeneral {
+				return nil, fmt.Errorf("invalid knowledge judge layer %q for candidate %s", layer, candidateID)
+			}
+			if layerCandidates[layer] == nil {
+				layerCandidates[layer] = make(map[string]struct{})
+			}
+			if _, exists := layerCandidates[layer][candidateID]; exists {
 				return nil, fmt.Errorf("duplicate expected candidate id %s", candidateID)
 			}
-			candidateIDs[candidateID] = struct{}{}
+			layerCandidates[layer][candidateID] = struct{}{}
 		}
-		expected[taskID] = candidateIDs
+		expected[taskID] = layerCandidates
 	}
 
-	ret := make(map[string]map[string]string, len(tasks))
+	ret := make(map[string]map[string]knowledgeEvidenceLayerSelection, len(tasks))
 	for _, task := range parsed.Tasks {
 		taskID := strings.TrimSpace(task.TaskID)
-		expectedCandidates, ok := expected[taskID]
+		expectedLayers, ok := expected[taskID]
 		if !ok {
 			return nil, fmt.Errorf("unknown knowledge judge task id %s", taskID)
 		}
 		if _, exists := ret[taskID]; exists {
 			return nil, fmt.Errorf("duplicate knowledge judge task id %s", taskID)
 		}
-		if len(task.Candidates) != len(expectedCandidates) {
-			return nil, fmt.Errorf("knowledge judge candidate count mismatch for task %s", taskID)
+		if len(task.Layers) != len(expectedLayers) {
+			return nil, fmt.Errorf("knowledge judge layer count mismatch for task %s", taskID)
 		}
-		classifications := make(map[string]string, len(task.Candidates))
-		for _, candidate := range task.Candidates {
-			candidateID := strings.TrimSpace(candidate.CandidateID)
-			if _, ok := expectedCandidates[candidateID]; !ok {
-				return nil, fmt.Errorf("unknown knowledge judge candidate id %s", candidateID)
+		selections := make(map[string]knowledgeEvidenceLayerSelection, len(task.Layers))
+		for _, layerResult := range task.Layers {
+			layer := strings.TrimSpace(layerResult.Layer)
+			expectedCandidates, ok := expectedLayers[layer]
+			if !ok {
+				return nil, fmt.Errorf("unknown knowledge judge layer %s for task %s", layer, taskID)
 			}
-			if _, exists := classifications[candidateID]; exists {
-				return nil, fmt.Errorf("duplicate knowledge judge candidate id %s", candidateID)
+			if _, exists := selections[layer]; exists {
+				return nil, fmt.Errorf("duplicate knowledge judge layer %s for task %s", layer, taskID)
 			}
-			classification := strings.TrimSpace(candidate.Classification)
-			switch classification {
-			case knowledgeEvidenceClassificationDirect, knowledgeEvidenceClassificationSupporting, knowledgeEvidenceClassificationUnrelated:
+			decision := strings.TrimSpace(layerResult.Decision)
+			switch decision {
+			case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined, knowledgeEvidenceDecisionInsufficient:
 			default:
-				return nil, fmt.Errorf("invalid knowledge judge classification %q", classification)
+				return nil, fmt.Errorf("invalid knowledge judge decision %q", decision)
 			}
-			classifications[candidateID] = classification
+			selectedIDs := make([]string, 0, len(layerResult.SelectedCandidateIDs))
+			seenSelected := make(map[string]struct{}, len(layerResult.SelectedCandidateIDs))
+			for _, rawCandidateID := range layerResult.SelectedCandidateIDs {
+				candidateID := strings.TrimSpace(rawCandidateID)
+				if _, ok := expectedCandidates[candidateID]; !ok {
+					return nil, fmt.Errorf("candidate %s does not belong to task %s layer %s", candidateID, taskID, layer)
+				}
+				if _, exists := seenSelected[candidateID]; exists {
+					return nil, fmt.Errorf("duplicate selected candidate id %s", candidateID)
+				}
+				seenSelected[candidateID] = struct{}{}
+				selectedIDs = append(selectedIDs, candidateID)
+			}
+			switch decision {
+			case knowledgeEvidenceDecisionInsufficient:
+				if len(selectedIDs) != 0 {
+					return nil, fmt.Errorf("insufficient decision must not select candidates for task %s layer %s", taskID, layer)
+				}
+			case knowledgeEvidenceDecisionDirectSingle:
+				if len(selectedIDs) != 1 {
+					return nil, fmt.Errorf("direct_single must select exactly one candidate for task %s layer %s", taskID, layer)
+				}
+			case knowledgeEvidenceDecisionDirectCombined:
+				if len(selectedIDs) < 2 {
+					return nil, fmt.Errorf("direct_combined must select at least two candidates for task %s layer %s", taskID, layer)
+				}
+			}
+			selections[layer] = knowledgeEvidenceLayerSelection{Decision: decision, SelectedCandidateIDs: selectedIDs}
 		}
-		ret[taskID] = classifications
+		ret[taskID] = selections
 	}
 	return ret, nil
 }

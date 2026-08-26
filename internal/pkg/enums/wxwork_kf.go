@@ -10,10 +10,11 @@ const (
 type ChannelMessageOutboxStatus string
 
 const (
-	ChannelMessageOutboxStatusPending ChannelMessageOutboxStatus = "pending"
-	ChannelMessageOutboxStatusSending ChannelMessageOutboxStatus = "sending"
-	ChannelMessageOutboxStatusSent    ChannelMessageOutboxStatus = "sent"
-	ChannelMessageOutboxStatusFailed  ChannelMessageOutboxStatus = "failed"
+	ChannelMessageOutboxStatusPending   ChannelMessageOutboxStatus = "pending"
+	ChannelMessageOutboxStatusSending   ChannelMessageOutboxStatus = "sending"
+	ChannelMessageOutboxStatusSent      ChannelMessageOutboxStatus = "sent"
+	ChannelMessageOutboxStatusFailed    ChannelMessageOutboxStatus = "failed"
+	ChannelMessageOutboxStatusCancelled ChannelMessageOutboxStatus = "cancelled"
 )
 
 const (

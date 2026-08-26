@@ -96,13 +96,18 @@ type KnowledgeEvidenceJudgeTraceData struct {
 }
 
 type KnowledgeEvidenceJudgeTaskTraceData struct {
-	TaskID                 string   `json:"taskId,omitempty"`
-	QueryPreview           string   `json:"queryPreview,omitempty"`
-	SelectedLayer          string   `json:"selectedLayer,omitempty"`
-	SelectedCandidateIDs   []string `json:"selectedCandidateIds,omitempty"`
-	DirectCandidateIDs     []string `json:"directCandidateIds,omitempty"`
-	SupportingCandidateIDs []string `json:"supportingCandidateIds,omitempty"`
-	Decision               string   `json:"decision,omitempty"`
+	TaskID               string                                 `json:"taskId,omitempty"`
+	QueryPreview         string                                 `json:"queryPreview,omitempty"`
+	SelectedLayer        string                                 `json:"selectedLayer,omitempty"`
+	SelectedCandidateIDs []string                               `json:"selectedCandidateIds,omitempty"`
+	Decision             string                                 `json:"decision,omitempty"`
+	Layers               []KnowledgeEvidenceJudgeLayerTraceData `json:"layers,omitempty"`
+}
+
+type KnowledgeEvidenceJudgeLayerTraceData struct {
+	Layer                string   `json:"layer,omitempty"`
+	Decision             string   `json:"decision,omitempty"`
+	SelectedCandidateIDs []string `json:"selectedCandidateIds,omitempty"`
 }
 
 type RetrieverPolicyTraceItem struct {

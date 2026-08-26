@@ -24,6 +24,10 @@ const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 const standaloneOneReplyMaxAttempts = 3
 const deferredKnowledgeHandoffMaxAttempts = 3
+const generatedReplyProtocolMaxAttempts = 3
+const generatedReplyProtocolRetryBackoff = 500 * time.Millisecond
+
+type triggerReplyAttemptFunc func(context.Context, models.Conversation, models.Message, models.AIAgent) error
 
 func (s *aiReplyService) TriggerStandaloneOneReplyAsync(conversation models.Conversation, message models.Message) {
 	go func() {
@@ -129,15 +133,84 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 		timeout := s.resolveReplyTimeout(aiAgent)
 		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), timeout)
 		defer cancel()
-		if err := s.TriggerReply(ctx, conversation, message, aiAgent); err != nil {
+		attempts, err := s.triggerReplyWithProtocolRetry(
+			ctx,
+			conversation.ID,
+			message.ID,
+			timeout,
+			generatedReplyProtocolRetryBackoff,
+			s.TriggerReply,
+		)
+		if err != nil {
 			slog.Error("failed to trigger ai reply",
 				"requestId", message.RequestID,
 				"message_id", message.ID,
+				"attempts", attempts,
 				"timeout_ms", timeout.Milliseconds(),
 				"elapsed_ms", time.Since(startedAt).Milliseconds(),
 				"error", err)
 		}
 	}()
+}
+
+func (s *aiReplyService) triggerReplyWithProtocolRetry(
+	ctx context.Context,
+	conversationID int64,
+	messageID int64,
+	attemptTimeout time.Duration,
+	retryBackoff time.Duration,
+	run triggerReplyAttemptFunc,
+) (int, error) {
+	if run == nil {
+		return 0, fmt.Errorf("reply attempt runner is required")
+	}
+	attempts := 0
+	for attempt := 1; attempt <= generatedReplyProtocolMaxAttempts; attempt++ {
+		conversation, message, aiAgent, ok := s.resolveAsyncReplyAttempt(conversationID, messageID)
+		if !ok {
+			return attempts, nil
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		attempts++
+		err := run(attemptCtx, conversation, message, aiAgent)
+		cancel()
+		if err == nil {
+			return attempts, nil
+		}
+		if !applicationruntime.IsGeneratedReplyProtocolError(err) || attempt == generatedReplyProtocolMaxAttempts {
+			return attempts, err
+		}
+		slog.Warn("retry ai reply after generated reply protocol validation failed",
+			"requestId", message.RequestID,
+			"conversation_id", conversation.ID,
+			"message_id", message.ID,
+			"attempt", attempt,
+			"max_attempts", generatedReplyProtocolMaxAttempts,
+		)
+		if !sleepWithContext(ctx, time.Duration(attempt)*retryBackoff) {
+			return attempts, ctx.Err()
+		}
+	}
+	return attempts, nil
+}
+
+func (s *aiReplyService) resolveAsyncReplyAttempt(conversationID int64, messageID int64) (models.Conversation, models.Message, models.AIAgent, bool) {
+	conversation := svc.ConversationService.Get(conversationID)
+	message := svc.MessageService.Get(messageID)
+	if conversation == nil || message == nil || message.ConversationID != conversationID {
+		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
+	}
+	aiAgent, ok := s.resolveRuntimeAIAgent(*conversation)
+	if !ok || aiAgent.Status != enums.StatusOk {
+		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
+	}
+	if !svc.MessageService.CanSendAIReply(conversation.ID, message.RequestID, message.ID) {
+		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
+	}
+	if s.eligibility != nil && !s.eligibility.CanReply(*conversation, *message, aiAgent) {
+		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
+	}
+	return *conversation, *message, aiAgent, true
 }
 
 func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) error {
@@ -190,6 +263,9 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		return nil
 	}
 	trace.SettleMs = time.Since(settleStartedAt).Milliseconds()
+	if !svc.MessageService.CanSendAIReply(conversation.ID, message.RequestID, message.ID) {
+		return nil
+	}
 	if s.eligibility != nil && !s.eligibility.CanReply(conversation, message, aiAgent) {
 		return nil
 	}
@@ -450,7 +526,7 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 		return s.interrupts.HandleInterruptedSummary(s, replyCtx, summary)
 	}
 	hasCommitPayload, hasDeferredKnowledge := resolveReplyExecutionActions(summary, s.commit.HasStructuredVariableReply(replyCtx.Trace))
-	if summary != nil && (hasCommitPayload || hasDeferredKnowledge) && !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID) {
+	if summary != nil && (hasCommitPayload || hasDeferredKnowledge) && !s.canCommitReplyForMessage(replyCtx.Conversation.ID, replyCtx.Message.ID, replyCtx.Message.RequestID) {
 		slog.Info("skip stale ai reply because newer customer message arrived",
 			"conversation_id", replyCtx.Conversation.ID,
 			"message_id", replyCtx.Message.ID,
@@ -557,7 +633,14 @@ func committedReplyText(message models.Message) string {
 	}
 }
 
-func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64) bool {
+func (s *aiReplyService) canCommitReplyForMessage(conversationID int64, messageID int64, requestIDs ...string) bool {
+	requestID := ""
+	if len(requestIDs) > 0 {
+		requestID = strings.TrimSpace(requestIDs[0])
+		if !svc.MessageService.CanSendAIReply(conversationID, requestID, messageID) {
+			return false
+		}
+	}
 	latest := s.latestNonStandaloneConversationMessage(conversationID)
 	if latest == nil {
 		return true

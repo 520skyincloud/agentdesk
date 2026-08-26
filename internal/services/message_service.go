@@ -18,6 +18,7 @@ import (
 
 	"github.com/mlogclub/simple/common/strs"
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var MessageService = newMessageService()
@@ -33,6 +34,8 @@ type sendMessageOptions struct {
 	skipOutbound                bool
 	skipOutboundMediaValidation bool
 	externalAgentReply          bool
+	aiServiceNotice             bool
+	sourceMessageID             int64
 	eventContent                string
 }
 
@@ -309,7 +312,13 @@ func (s *messageService) SendAIMessage(conversationID int64, aiAgentID int64, cl
 }
 
 func (s *messageService) SendAIMessageWithRequestID(conversationID int64, aiAgentID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, requestID string) (*models.Message, error) {
-	return s.sendMessage(conversationID, enums.IMSenderTypeAI, aiAgentID, clientMsgID, messageType, content, payload, operator, nil, requestID)
+	return s.SendAIMessageWithRequestIDAndSourceMessageID(conversationID, aiAgentID, clientMsgID, messageType, content, payload, operator, requestID, 0)
+}
+
+func (s *messageService) SendAIMessageWithRequestIDAndSourceMessageID(conversationID int64, aiAgentID int64, clientMsgID string, messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, requestID string, sourceMessageID int64) (*models.Message, error) {
+	return s.sendMessageWithOptions(conversationID, enums.IMSenderTypeAI, aiAgentID, clientMsgID, messageType, content, payload, operator, nil, requestID, sendMessageOptions{
+		sourceMessageID: sourceMessageID,
+	})
 }
 
 func (s *messageService) SendAIServiceNotice(conversationID int64, aiAgentID int64, content string) (*models.Message, error) {
@@ -332,11 +341,11 @@ func (s *messageService) SendAIServiceNoticeWithClientMsgIDAndRequestID(conversa
 	if conversation.Status == enums.IMConversationStatusClosed {
 		return nil, errorsx.InvalidParam("会话已关闭")
 	}
-	return s.sendValidatedMessage(conversation, enums.IMSenderTypeAI, aiAgentID, clientMsgID, enums.IMMessageTypeText, content, payload, &dto.AuthPrincipal{
+	return s.sendValidatedMessageWithOptions(conversation, enums.IMSenderTypeAI, aiAgentID, clientMsgID, enums.IMMessageTypeText, content, payload, &dto.AuthPrincipal{
 		UserID:   0,
 		Username: "system",
 		Nickname: "system",
-	}, nil, requestID)
+	}, nil, requestID, sendMessageOptions{aiServiceNotice: true})
 }
 
 func (s *messageService) createAIWelcomeMessage(ctx *sqls.TxContext, conversation *models.Conversation, aiAgent *models.AIAgent, now time.Time) (*models.Message, error) {
@@ -442,6 +451,11 @@ func (s *messageService) SendCustomerMessageWithRequestID(conversationID int64, 
 
 func (s *messageService) sendMessage(conversationID int64, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string,
 	messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, external *openidentity.ExternalUser, requestID string) (*models.Message, error) {
+	return s.sendMessageWithOptions(conversationID, senderType, reqSenderID, clientMsgID, messageType, content, payload, operator, external, requestID, sendMessageOptions{})
+}
+
+func (s *messageService) sendMessageWithOptions(conversationID int64, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string,
+	messageType enums.IMMessageType, content, payload string, operator *dto.AuthPrincipal, external *openidentity.ExternalUser, requestID string, options sendMessageOptions) (*models.Message, error) {
 
 	if senderType == enums.IMSenderTypeCustomer {
 		if external == nil || strings.TrimSpace(external.ExternalID) == "" {
@@ -458,7 +472,10 @@ func (s *messageService) sendMessage(conversationID int64, senderType enums.IMSe
 	if err != nil {
 		return nil, err
 	}
-	return s.sendValidatedMessage(conversation, senderType, reqSenderID, clientMsgID, messageType, content, payload, operator, external, requestID)
+	if senderType == enums.IMSenderTypeAI && !s.CanSendAIReply(conversationID, requestID, options.sourceMessageID) {
+		return nil, errorsx.Forbidden("当前会话已由人工接管")
+	}
+	return s.sendValidatedMessageWithOptions(conversation, senderType, reqSenderID, clientMsgID, messageType, content, payload, operator, external, requestID, options)
 }
 
 func (s *messageService) sendValidatedMessage(conversation *models.Conversation, senderType enums.IMSenderType, reqSenderID int64, clientMsgID string,
@@ -555,6 +572,16 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	}
 
 	err = sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		var lockedRoute *models.ConversationRouteState
+		if options.externalAgentReply || senderType == enums.IMSenderTypeCustomer || senderType == enums.IMSenderTypeAgent || (senderType == enums.IMSenderTypeAI && !options.aiServiceNotice) {
+			lockedRoute, err = ConversationRouteService.lockByConversationIDWithDB(ctx.Tx, conversation.ID)
+			if err != nil {
+				return err
+			}
+		}
+		if senderType == enums.IMSenderTypeAI && !options.aiServiceNotice && !s.canSendAIReplyWithDB(ctx.Tx, conversation.ID, requestID, options.sourceMessageID, lockedRoute) {
+			return errorsx.Forbidden("当前会话已由人工接管")
+		}
 		if err := repositories.MessageRepository.Create(ctx.Tx, message); err != nil {
 			return err
 		}
@@ -595,6 +622,41 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 		}); err != nil {
 			return err
 		}
+		switch {
+		case options.externalAgentReply:
+			if err := ConversationRouteService.markExternalAgentMessageWithDB(ctx, lockedRoute, now); err != nil {
+				return err
+			}
+		case senderType == enums.IMSenderTypeCustomer:
+			if err := ConversationRouteService.markCustomerMessageWithDB(ctx.Tx, lockedRoute, now); err != nil {
+				return err
+			}
+			if !utils.IsStandaloneOneTextControl(message.MessageType, message.Content) && routeStatusBlocksManualResume(lockedRoute.RouteStatus) {
+				if err := AIManualResumeTaskService.recordWaitingCustomerMessageWithDB(ctx.Tx, lockedRoute, message.ID, now); err != nil {
+					return err
+				}
+			}
+		case senderType == enums.IMSenderTypeAgent:
+			if err := ConversationRouteService.markAgentMessageWithDB(ctx.Tx, lockedRoute, now); err != nil {
+				return err
+			}
+		}
+		if options.externalAgentReply || senderType == enums.IMSenderTypeAgent {
+			if ctx.Tx.Migrator().HasTable(&models.AIManualResumeTask{}) {
+				if err := repositories.AIManualResumeTaskRepository.CancelActiveByConversation(ctx.Tx, conversation.ID, map[string]any{
+					"task_status":      aiManualResumeTaskCancelled,
+					"completed_at":     now,
+					"last_error":       "human agent replied",
+					"updated_at":       now,
+					"update_user_name": "system",
+				}); err != nil {
+					return err
+				}
+			}
+			if _, err := ChannelMessageOutboxService.cancelPendingOrdinaryAIWithDB(ctx.Tx, conversation.ID, message.ID, "cancelled because human agent replied"); err != nil {
+				return err
+			}
+		}
 
 		eventContent := options.eventContent
 		if eventContent == "" {
@@ -625,19 +687,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	WsService.PublishMessageCreated(conversation, message)
 	WsService.PublishConversationChanged(conversation, enums.IMRealtimeEventConversationUpdated)
 
-	if !options.skipOutbound && s.enqueueOutboundChannelMessage(conversation, message) && conversation.ChannelID > 0 && (message.SenderType == enums.IMSenderTypeAgent || message.SenderType == enums.IMSenderTypeAI) {
+	if !options.skipOutbound && s.enqueueOutboundChannelMessageWithOptions(conversation, message, options.aiServiceNotice) && conversation.ChannelID > 0 && (message.SenderType == enums.IMSenderTypeAgent || message.SenderType == enums.IMSenderTypeAI) {
 		go WxWorkProtocolService.DispatchPendingOutbox(10)
 	}
 
 	if senderType == enums.IMSenderTypeAgent {
-		markRouteMessage := ConversationRouteService.MarkAgentMessage
-		if options.externalAgentReply {
-			markRouteMessage = ConversationRouteService.MarkExternalAgentMessage
-		}
-		if markErr := markRouteMessage(conversation.ID, now); markErr != nil {
-			slog.Warn("mark agent route message failed", "conversation_id", conversation.ID, "error", markErr)
-		}
-		AIManualResumeTaskService.CancelActive(conversation.ID, "human agent replied")
 		if options.externalAgentReply {
 			if updatedConversation := ConversationService.Get(conversation.ID); updatedConversation != nil {
 				WsService.PublishConversationChanged(updatedConversation, enums.IMRealtimeEventConversationUpdated)
@@ -652,9 +706,6 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 				slog.Warn("touch customer store relation failed", "conversation_id", conversation.ID, "customer_id", conversation.CustomerID, "store_id", routeState.StoreID, "error", err)
 			}
 		}
-		if markErr := ConversationRouteService.MarkCustomerMessage(conversation.ID, now); markErr != nil {
-			slog.Warn("mark customer route message failed", "conversation_id", conversation.ID, "error", markErr)
-		}
 		if utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
 			if TriggerStandaloneOneReplyAsyncHook != nil {
 				TriggerStandaloneOneReplyAsyncHook(*conversation, *message)
@@ -668,9 +719,6 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 					return message, handleErr
 				} else if handled {
 					return message, err
-				}
-				if routeState.NeedHumanFollowUp {
-					AIManualResumeTaskService.RecordWaitingCustomerMessage(conversation.ID, message.ID)
 				}
 				return message, err
 			}
@@ -731,6 +779,30 @@ func routeStatusBlocksAIReply(routeStatus enums.ConversationRouteStatus) bool {
 	}
 }
 
+func (s *messageService) CanSendAIReply(conversationID int64, requestID string, sourceMessageID int64) bool {
+	return s.canSendAIReplyWithDB(sqls.DB(), conversationID, requestID, sourceMessageID, nil)
+}
+
+func (s *messageService) canSendAIReplyWithDB(db *gorm.DB, conversationID int64, requestID string, sourceMessageID int64, state *models.ConversationRouteState) bool {
+	if db == nil {
+		return false
+	}
+	conversation := repositories.ConversationRepository.Get(db, conversationID)
+	if conversation == nil || conversation.Status == enums.IMConversationStatusClosed {
+		return false
+	}
+	if state == nil {
+		state = repositories.ConversationRouteStateRepository.Take(db, "conversation_id = ?", conversationID)
+	}
+	if state != nil && routeStatusBlocksAIReply(state.RouteStatus) {
+		return AIManualResumeTaskService.canCommitRequestWithDB(db, state, conversationID, requestID, sourceMessageID)
+	}
+	if conversation.CurrentAssigneeID > 0 {
+		return false
+	}
+	return conversation.Status == enums.IMConversationStatusAIServing
+}
+
 func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
 	switch messageType {
 	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeAttachment:
@@ -741,7 +813,11 @@ func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {
 }
 
 func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conversation, message *models.Message) bool {
-	handled, err := s.ensureOutboundChannelMessage(conversation, message)
+	return s.enqueueOutboundChannelMessageWithOptions(conversation, message, isAIServiceNoticeMessage(message))
+}
+
+func (s *messageService) enqueueOutboundChannelMessageWithOptions(conversation *models.Conversation, message *models.Message, aiServiceNotice bool) bool {
+	handled, err := s.ensureOutboundChannelMessageWithOptions(conversation, message, aiServiceNotice)
 	if err != nil {
 		channelType := ""
 		if conversation != nil {
@@ -761,6 +837,10 @@ func (s *messageService) enqueueOutboundChannelMessage(conversation *models.Conv
 }
 
 func (s *messageService) ensureOutboundChannelMessage(conversation *models.Conversation, message *models.Message) (bool, error) {
+	return s.ensureOutboundChannelMessageWithOptions(conversation, message, isAIServiceNoticeMessage(message))
+}
+
+func (s *messageService) ensureOutboundChannelMessageWithOptions(conversation *models.Conversation, message *models.Message, aiServiceNotice bool) (bool, error) {
 	if conversation == nil || message == nil || conversation.ChannelID <= 0 {
 		return false, nil
 	}
@@ -771,11 +851,11 @@ func (s *messageService) ensureOutboundChannelMessage(conversation *models.Conve
 	var err error
 	switch channel.ChannelType {
 	case enums.ChannelTypeWxWorkProtocol:
-		err = ChannelMessageOutboxService.EnqueueWxWorkProtocolMessage(conversation, message)
+		err = ChannelMessageOutboxService.enqueueExternalMessage(enums.ChannelTypeWxWorkProtocol, conversation, message, true, aiServiceNotice)
 	case enums.ChannelTypeWxWorkKF:
-		err = ChannelMessageOutboxService.EnqueueWxWorkKFMessage(conversation, message)
+		err = ChannelMessageOutboxService.enqueueExternalTextMessage(enums.ChannelTypeWxWorkKF, conversation, message, aiServiceNotice)
 	case enums.ChannelTypeWxWorkCLI:
-		err = ChannelMessageOutboxService.EnqueueWxWorkCLIMessage(conversation, message)
+		err = ChannelMessageOutboxService.enqueueExternalTextMessage(enums.ChannelTypeWxWorkCLI, conversation, message, aiServiceNotice)
 	default:
 		return false, nil
 	}
@@ -783,6 +863,17 @@ func (s *messageService) ensureOutboundChannelMessage(conversation *models.Conve
 		return true, err
 	}
 	return true, nil
+}
+
+func isAIServiceNoticeMessage(message *models.Message) bool {
+	if message == nil || message.SenderType != enums.IMSenderTypeAI {
+		return false
+	}
+	clientMsgID := strings.TrimSpace(message.ClientMsgID)
+	if strings.HasPrefix(clientMsgID, "ai_handoff_success_") {
+		return true
+	}
+	return strings.Contains(strings.TrimSpace(message.Payload), `"serviceEvent"`)
 }
 
 // handleReadState 根据发送者类型更新会话已读状态，并返回更新后的客服和客户未读消息数。
@@ -920,10 +1011,12 @@ func (s *messageService) ValidateConversationSender(conversationID int64, sender
 		if operator == nil {
 			return nil, errorsx.Unauthorized("未登录或登录已过期")
 		}
-		if conversation.Status != enums.IMConversationStatusAIServing && !s.allowAIMessageOnPendingHandoff(conversation) {
+		route := ConversationRouteService.GetByConversationID(conversation.ID)
+		manualResumeCandidate := route != nil && routeStatusBlocksAIReply(route.RouteStatus)
+		if conversation.Status != enums.IMConversationStatusAIServing && !s.allowAIMessageOnPendingHandoff(conversation) && !manualResumeCandidate {
 			return nil, errorsx.Forbidden("当前会话不处于 AI 接待状态")
 		}
-		if conversation.CurrentAssigneeID != 0 {
+		if conversation.CurrentAssigneeID != 0 && !manualResumeCandidate {
 			return nil, errorsx.Forbidden("当前会话已由人工客服接管")
 		}
 	case enums.IMSenderTypeCustomer:

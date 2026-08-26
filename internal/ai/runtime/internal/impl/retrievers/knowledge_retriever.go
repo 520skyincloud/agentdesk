@@ -211,6 +211,10 @@ func RebuildKnowledgeRetrieveSelection(result *KnowledgeRetrieveResult, hits []r
 	if maxContextItems <= 0 {
 		maxContextItems = defaultRuntimeKnowledgeMaxContextItems
 	}
+	if len(hits) > maxContextItems {
+		maxContextItems = len(hits)
+		result.Options.MaxContextItems = maxContextItems
+	}
 	result.ContextResults = rag.Retrieve.SelectContextResults(result.Hits, contextMaxTokens)
 	result.ContextResults = limitContextResults(result.ContextResults, maxContextItems)
 	result.ContextText = strings.TrimSpace(buildContextText(result.ContextResults))

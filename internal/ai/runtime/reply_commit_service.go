@@ -46,6 +46,9 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	structuredReplies := s.buildStructuredVariableReplies(input)
 	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
+	if containsInternalReplyProtocolShape(replyText) {
+		return nil, fmt.Errorf("refusing to commit internal reply protocol payload")
+	}
 	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
 	if isManualResume {
 		if replyText == "" {
@@ -113,10 +116,18 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	return replyMessage, nil
 }
 
+func containsInternalReplyProtocolShape(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(normalized, "replyparts") {
+		return true
+	}
+	return strings.Contains(normalized, `"taskid"`) && strings.Contains(normalized, `"content"`)
+}
+
 const manualResumeCustomerNotice = "同事暂时没能接入，接下来我先继续帮你处理。"
 
 func (s *replyCommitService) sendAIMessage(input replyCommitInput, clientMessageID string, messageType enums.IMMessageType, content string, payload string) (*models.Message, error) {
-	return svc.MessageService.SendAIMessageWithRequestID(
+	return svc.MessageService.SendAIMessageWithRequestIDAndSourceMessageID(
 		input.Conversation.ID,
 		input.AIAgent.ID,
 		clientMessageID,
@@ -125,6 +136,7 @@ func (s *replyCommitService) sendAIMessage(input replyCommitInput, clientMessage
 		payload,
 		s.buildAIPrincipal(input.AIAgent),
 		input.Message.RequestID,
+		input.Message.ID,
 	)
 }
 
@@ -157,7 +169,7 @@ func (s *replyCommitService) sendStructuredVariableReply(input replyCommitInput,
 		return nil, nil
 	}
 	commitStartedAt := time.Now()
-	replyMessage, err := svc.MessageService.SendAIMessageWithRequestID(
+	replyMessage, err := svc.MessageService.SendAIMessageWithRequestIDAndSourceMessageID(
 		input.Conversation.ID,
 		input.AIAgent.ID,
 		fmt.Sprintf("%s_%s_%d", strings.TrimSpace(input.ClientPrefix), strings.TrimSpace(structured.ResourceType), input.Message.ID),
@@ -166,6 +178,7 @@ func (s *replyCommitService) sendStructuredVariableReply(input replyCommitInput,
 		structured.Payload,
 		s.buildAIPrincipal(input.AIAgent),
 		input.Message.RequestID,
+		input.Message.ID,
 	)
 	structuredReplyText := structuredRunLogReplyText(structured)
 	if input.Trace != nil {

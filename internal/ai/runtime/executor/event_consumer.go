@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"errors"
 	"strings"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -12,14 +13,15 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) {
+func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) error {
 	if summary == nil {
-		return
+		return nil
 	}
 	if collector == nil {
 		collector = callbacks.NewRuntimeTraceCollector()
 	}
 	suppressAssistantReply := false
+	var protocolErr error
 	for {
 		event, ok := events.Next()
 		if !ok {
@@ -51,11 +53,19 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
-			replyText = normalizeGeneratedReplyParts(
+			replyText, err := normalizeGeneratedReplyPartsResult(
 				replyText,
 				collector.Data.Pipeline.ReplyPlan,
 				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff,
 			)
+			if err != nil {
+				if errors.Is(err, errGeneratedReplyProtocol) && protocolErr == nil {
+					protocolErr = err
+				}
+				summary.Status = "error"
+				summary.ErrorMessage = err.Error()
+				continue
+			}
 			if looksLikeBareToolCallText(replyText) {
 				continue
 			}
@@ -100,6 +110,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 		}
 	}
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
+	return protocolErr
 }
 
 func collectTokenUsage(message *schema.Message, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {

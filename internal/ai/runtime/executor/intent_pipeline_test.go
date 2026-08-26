@@ -180,6 +180,24 @@ func TestRuntimeIntentDetectSystemPromptUsesFiveCleanTopLevelIntents(t *testing.
 	}
 }
 
+func TestRuntimeIntentDetectSystemPromptRoutesShortExplicitHandoffDirectly(t *testing.T) {
+	prompt := runtimeIntentDetectSystemPrompt()
+	for _, expected := range []string{
+		"单独或只用极短表达",
+		"“转接”“人工”“找客服”“接同事”",
+		"human_complaint_risk/explicit_handoff",
+		"needsHumanRoute=true",
+		"直接进入已有接待路由",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("intent prompt missing direct handoff rule %q: %s", expected, prompt)
+		}
+	}
+	if strings.Contains(prompt, "其他 human_complaint_risk 由系统先做二次确认") {
+		t.Fatalf("intent prompt must not retain the removed handoff confirmation rule: %s", prompt)
+	}
+}
+
 func TestRuntimeIntentDetectSystemPromptDefinesHotelInfoServiceRequestBoundary(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, expected := range []string{

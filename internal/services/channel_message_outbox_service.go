@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/pkg/httpx/params"
 
 	"github.com/mlogclub/simple/sqls"
+	"gorm.io/gorm"
 )
 
 var ChannelMessageOutboxService = newChannelMessageOutboxService()
@@ -21,6 +22,10 @@ func newChannelMessageOutboxService() *channelMessageOutboxService {
 }
 
 type channelMessageOutboxService struct {
+}
+
+type channelMessageOutboxPayload struct {
+	AIServiceNotice bool `json:"aiServiceNotice,omitempty"`
 }
 
 func (s *channelMessageOutboxService) Get(id int64) *models.ChannelMessageOutbox {
@@ -82,6 +87,50 @@ func (s *channelMessageOutboxService) TryMarkSending(id int64) (bool, error) {
 	return result.RowsAffected > 0, nil
 }
 
+func (s *channelMessageOutboxService) ClaimForDispatch(outbox models.ChannelMessageOutbox, message *models.Message) (bool, error) {
+	if outbox.ID <= 0 {
+		return false, nil
+	}
+	claimed := false
+	err := sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if message != nil && message.SenderType == enums.IMSenderTypeAI && !s.isAIServiceNotice(outbox) && !isAIServiceNoticeMessage(message) {
+			state, err := ConversationRouteService.lockByConversationIDWithDB(ctx.Tx, message.ConversationID)
+			if err != nil {
+				return err
+			}
+			if !MessageService.canSendAIReplyWithDB(ctx.Tx, message.ConversationID, message.RequestID, 0, state) {
+				result := ctx.Tx.Model(&models.ChannelMessageOutbox{}).
+					Where("id = ? AND send_status IN ?", outbox.ID, []string{
+						string(enums.ChannelMessageOutboxStatusPending),
+						string(enums.ChannelMessageOutboxStatusFailed),
+					}).
+					Updates(map[string]any{
+						"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+						"next_retry_at": nil,
+						"last_error":    "cancelled because conversation entered human service",
+						"updated_at":    time.Now(),
+					})
+				return result.Error
+			}
+		}
+		result := ctx.Tx.Model(&models.ChannelMessageOutbox{}).
+			Where("id = ? AND send_status IN ?", outbox.ID, []string{
+				string(enums.ChannelMessageOutboxStatusPending),
+				string(enums.ChannelMessageOutboxStatusFailed),
+			}).
+			Updates(map[string]any{
+				"send_status": string(enums.ChannelMessageOutboxStatusSending),
+				"updated_at":  time.Now(),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		claimed = result.RowsAffected > 0
+		return nil
+	})
+	return claimed, err
+}
+
 func (s *channelMessageOutboxService) UpdateColumn(id int64, name string, value interface{}) error {
 	return repositories.ChannelMessageOutboxRepository.UpdateColumn(sqls.DB(), id, name, value)
 }
@@ -96,15 +145,15 @@ func (s *channelMessageOutboxService) GetByMessageID(channelType string, message
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkKFMessage(conversation *models.Conversation, message *models.Message) error {
-	return s.enqueueExternalTextMessage(enums.ChannelTypeWxWorkKF, conversation, message)
+	return s.enqueueExternalTextMessage(enums.ChannelTypeWxWorkKF, conversation, message, false)
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkCLIMessage(conversation *models.Conversation, message *models.Message) error {
-	return s.enqueueExternalTextMessage(enums.ChannelTypeWxWorkCLI, conversation, message)
+	return s.enqueueExternalTextMessage(enums.ChannelTypeWxWorkCLI, conversation, message, false)
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkProtocolMessage(conversation *models.Conversation, message *models.Message) error {
-	return s.enqueueExternalMessage(enums.ChannelTypeWxWorkProtocol, conversation, message, true)
+	return s.enqueueExternalMessage(enums.ChannelTypeWxWorkProtocol, conversation, message, true, false)
 }
 
 func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNotice(conversationID int64, wxWorkInstanceID int64, roomConversationID string, content string, atList []string) error {
@@ -154,11 +203,11 @@ func (s *channelMessageOutboxService) EnqueueWxWorkProtocolStoreRoomNoticeWithKe
 	})
 }
 
-func (s *channelMessageOutboxService) enqueueExternalTextMessage(channelType string, conversation *models.Conversation, message *models.Message) error {
-	return s.enqueueExternalMessage(channelType, conversation, message, false)
+func (s *channelMessageOutboxService) enqueueExternalTextMessage(channelType string, conversation *models.Conversation, message *models.Message, aiServiceNotice bool) error {
+	return s.enqueueExternalMessage(channelType, conversation, message, false, aiServiceNotice)
 }
 
-func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string, conversation *models.Conversation, message *models.Message, richMedia bool) error {
+func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string, conversation *models.Conversation, message *models.Message, richMedia bool, aiServiceNotice bool) error {
 	if conversation == nil || message == nil {
 		return nil
 	}
@@ -197,12 +246,13 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"conversationId": conversation.ID,
-		"messageId":      message.ID,
-		"messageType":    message.MessageType,
-		"content":        strings.TrimSpace(message.Content),
-		"payload":        strings.TrimSpace(message.Payload),
-		"senderId":       message.SenderID,
+		"conversationId":  conversation.ID,
+		"messageId":       message.ID,
+		"messageType":     message.MessageType,
+		"content":         strings.TrimSpace(message.Content),
+		"payload":         strings.TrimSpace(message.Payload),
+		"senderId":        message.SenderID,
+		"aiServiceNotice": aiServiceNotice,
 	})
 	if err != nil {
 		return err
@@ -224,6 +274,87 @@ func (s *channelMessageOutboxService) enqueueExternalMessage(channelType string,
 			UpdateUserName: message.UpdateUserName,
 		},
 	})
+}
+
+func (s *channelMessageOutboxService) cancelPendingOrdinaryAIWithDB(db *gorm.DB, conversationID int64, beforeMessageID int64, reason string) (int64, error) {
+	if db == nil || conversationID <= 0 {
+		return 0, nil
+	}
+	items := repositories.ChannelMessageOutboxRepository.Find(db, sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		In("send_status", []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}).
+		Asc("id"))
+	var cancelled int64
+	now := time.Now()
+	for i := range items {
+		item := items[i]
+		if item.MessageID <= 0 || (beforeMessageID > 0 && item.MessageID >= beforeMessageID) {
+			continue
+		}
+		message := repositories.MessageRepository.Get(db, item.MessageID)
+		if message == nil || message.SenderType != enums.IMSenderTypeAI {
+			continue
+		}
+		if s.isAIServiceNotice(item) || isAIServiceNoticeMessage(message) {
+			continue
+		}
+		result := db.Model(&models.ChannelMessageOutbox{}).
+			Where("id = ? AND send_status IN ?", item.ID, []string{
+				string(enums.ChannelMessageOutboxStatusPending),
+				string(enums.ChannelMessageOutboxStatusFailed),
+			}).
+			Updates(map[string]any{
+				"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+				"next_retry_at": nil,
+				"last_error":    strings.TrimSpace(reason),
+				"updated_at":    now,
+			})
+		if result.Error != nil {
+			return cancelled, result.Error
+		}
+		cancelled += result.RowsAffected
+	}
+	return cancelled, nil
+}
+
+func (s *channelMessageOutboxService) CancelPendingOrdinaryAI(conversationID int64, beforeMessageID int64, reason string) (int64, error) {
+	return s.cancelPendingOrdinaryAIWithDB(sqls.DB(), conversationID, beforeMessageID, reason)
+}
+
+func (s *channelMessageOutboxService) Cancel(id int64, reason string) error {
+	if id <= 0 {
+		return nil
+	}
+	now := time.Now()
+	return sqls.DB().Model(&models.ChannelMessageOutbox{}).
+		Where("id = ? AND send_status IN ?", id, []string{
+			string(enums.ChannelMessageOutboxStatusPending),
+			string(enums.ChannelMessageOutboxStatusFailed),
+		}).
+		Updates(map[string]any{
+			"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+			"next_retry_at": nil,
+			"last_error":    strings.TrimSpace(reason),
+			"updated_at":    now,
+		}).Error
+}
+
+func (s *channelMessageOutboxService) isAIServiceNotice(outbox models.ChannelMessageOutbox) bool {
+	payload := channelMessageOutboxPayload{}
+	return json.Unmarshal([]byte(strings.TrimSpace(outbox.Payload)), &payload) == nil && payload.AIServiceNotice
+}
+
+func (s *channelMessageOutboxService) CanDispatch(outbox models.ChannelMessageOutbox, message *models.Message) (bool, string) {
+	if message == nil || message.SenderType != enums.IMSenderTypeAI || s.isAIServiceNotice(outbox) || isAIServiceNoticeMessage(message) {
+		return true, ""
+	}
+	if MessageService.CanSendAIReply(message.ConversationID, message.RequestID, 0) {
+		return true, ""
+	}
+	return false, "cancelled because conversation entered human service"
 }
 
 func (s *channelMessageOutboxService) ListPending(channelType string, limit int) []models.ChannelMessageOutbox {

@@ -1355,6 +1355,9 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if message == nil {
 		return s.markOutboxFailed(outbox, "消息不存在")
 	}
+	if allowed, reason := ChannelMessageOutboxService.CanDispatch(outbox, message); !allowed {
+		return ChannelMessageOutboxService.Cancel(outbox.ID, reason)
+	}
 	mapping := WxWorkKFConversationService.Take("conversation_id = ?", conversation.ID)
 	if mapping == nil {
 		return s.markOutboxFailed(outbox, "企微协议会话映射不存在")
@@ -1371,15 +1374,15 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if protocolConversationID == "" {
 		return s.markOutboxFailed(outbox, "企微协议 conversation_id 为空")
 	}
-	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID)
+	if err := s.prepareOutboundMessageMedia(cfg, instance, message); err != nil {
+		return s.markOutboxFailed(outbox, err.Error())
+	}
+	claimed, err := ChannelMessageOutboxService.ClaimForDispatch(outbox, message)
 	if err != nil {
 		return err
 	}
 	if !claimed {
 		return nil
-	}
-	if err := s.prepareOutboundMessageMedia(cfg, instance, message); err != nil {
-		return s.markOutboxFailed(outbox, err.Error())
 	}
 	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
 	if err != nil {

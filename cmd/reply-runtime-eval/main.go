@@ -1530,6 +1530,7 @@ func (r *runner) cleanupData() map[string]int64 {
 			"t_message_sync_log",
 			"t_conversation_interrupt",
 			"t_conversation_session_summary",
+			"t_ai_manual_resume_task",
 			"t_conversation_route_state",
 			"t_conversation_event_log",
 			"t_conversation_read_state",

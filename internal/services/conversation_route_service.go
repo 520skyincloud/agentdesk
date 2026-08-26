@@ -10,6 +10,7 @@ import (
 
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -59,6 +60,22 @@ func (s *conversationRouteService) ensureWithDB(db *gorm.DB, conversationID int6
 		return nil, err
 	}
 	return item, nil
+}
+
+func (s *conversationRouteService) lockByConversationIDWithDB(db *gorm.DB, conversationID int64) (*models.ConversationRouteState, error) {
+	if db == nil || conversationID <= 0 {
+		return nil, errorsx.InvalidParam("会话不存在")
+	}
+	if _, err := s.ensureWithDB(db, conversationID); err != nil {
+		return nil, err
+	}
+	state := &models.ConversationRouteState{}
+	if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("conversation_id = ?", conversationID).
+		Take(state).Error; err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func (s *conversationRouteService) CurrentSessionNo(conversationID int64) int {
@@ -122,9 +139,18 @@ func routeTimePtr(t time.Time) *time.Time {
 }
 
 func (s *conversationRouteService) MarkCustomerMessage(conversationID int64, at time.Time) error {
-	state, err := s.Ensure(conversationID)
-	if err != nil {
-		return err
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := s.lockByConversationIDWithDB(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		return s.markCustomerMessageWithDB(ctx.Tx, state, at)
+	})
+}
+
+func (s *conversationRouteService) markCustomerMessageWithDB(db *gorm.DB, state *models.ConversationRouteState, at time.Time) error {
+	if db == nil || state == nil {
+		return errorsx.InvalidParam("会话路由不存在")
 	}
 	updates := map[string]any{
 		"last_customer_message_at": at,
@@ -133,17 +159,31 @@ func (s *conversationRouteService) MarkCustomerMessage(conversationID int64, at 
 	}
 	if state.RouteStatus == enums.ConversationRouteStatusHQAgentDeskServing {
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
+		updates["need_human_follow_up"] = true
 	}
-	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual && !state.NeedHumanFollowUp {
+	if state.RouteStatus == enums.ConversationRouteStatusStoreWecomManual {
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
+		updates["need_human_follow_up"] = true
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
+	if state.RouteStatus == enums.ConversationRouteStatusHQAgentDeskPending {
+		updates["need_human_follow_up"] = true
+	}
+	return repositories.ConversationRouteStateRepository.Updates(db, state.ID, updates)
 }
 
 func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at time.Time) error {
-	state, err := s.Ensure(conversationID)
-	if err != nil {
-		return err
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := s.lockByConversationIDWithDB(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		return s.markAgentMessageWithDB(ctx.Tx, state, at)
+	})
+}
+
+func (s *conversationRouteService) markAgentMessageWithDB(db *gorm.DB, state *models.ConversationRouteState, at time.Time) error {
+	if db == nil || state == nil {
+		return errorsx.InvalidParam("会话路由不存在")
 	}
 	updates := map[string]any{
 		"updated_at":       time.Now(),
@@ -151,6 +191,7 @@ func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at tim
 	}
 	switch state.RouteStatus {
 	case enums.ConversationRouteStatusHQAgentDeskServing:
+		updates["need_human_follow_up"] = false
 		updates["manual_expire_at"] = at.Add(DefaultManualTimeoutMinutes * time.Minute)
 	case enums.ConversationRouteStatusStoreWecomManual:
 		updates["need_human_follow_up"] = false
@@ -158,45 +199,47 @@ func (s *conversationRouteService) MarkAgentMessage(conversationID int64, at tim
 	default:
 		return nil
 	}
-	return repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates)
+	return repositories.ConversationRouteStateRepository.Updates(db, state.ID, updates)
 }
 
 // MarkExternalAgentMessage records a real reply sent from the bound WeCom employee account.
 // A local reply is a human takeover even when the previous route had already returned to AI.
 func (s *conversationRouteService) MarkExternalAgentMessage(conversationID int64, at time.Time) error {
-	state, err := s.Ensure(conversationID)
-	if err != nil {
-		return err
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		state, err := s.lockByConversationIDWithDB(ctx.Tx, conversationID)
+		if err != nil {
+			return err
+		}
+		return s.markExternalAgentMessageWithDB(ctx, state, at)
+	})
+}
+
+func (s *conversationRouteService) markExternalAgentMessageWithDB(ctx *sqls.TxContext, state *models.ConversationRouteState, at time.Time) error {
+	if ctx == nil || ctx.Tx == nil || state == nil {
+		return errorsx.InvalidParam("会话路由不存在")
 	}
 	updates := map[string]any{
-		"manual_expire_at":     at.Add(DefaultManualTimeoutMinutes * time.Minute),
-		"need_human_follow_up": false,
-		"updated_at":           time.Now(),
-		"update_user_name":     "system",
+		"route_status":             enums.ConversationRouteStatusStoreWecomManual,
+		"route_target":             "store_wecom",
+		"manual_expire_at":         at.Add(DefaultManualTimeoutMinutes * time.Minute),
+		"need_human_follow_up":     false,
+		"pending_action":           "",
+		"pending_action_payload":   "",
+		"pending_action_expire_at": nil,
+		"handoff_reason":           "企微员工号人工接待",
+		"updated_at":               time.Now(),
+		"update_user_name":         "system",
 	}
-	enteredStoreManual := false
-	switch state.RouteStatus {
-	case enums.ConversationRouteStatusHQAgentDeskServing:
-		// Headquarters is already actively serving this conversation; keep its ownership.
-	case enums.ConversationRouteStatusStoreWecomManual:
-		// A store employee replied to an existing store-manual route; only extend the idle timer.
-	default:
-		enteredStoreManual = true
-		updates["route_status"] = enums.ConversationRouteStatusStoreWecomManual
-		updates["route_target"] = "store_wecom"
-		updates["pending_action"] = ""
-		updates["pending_action_payload"] = ""
-		updates["pending_action_expire_at"] = nil
-		updates["handoff_reason"] = "企微员工号人工接待"
+	if state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual {
 		updates["last_manual_handoff_at"] = at
 	}
-	if err := repositories.ConversationRouteStateRepository.Updates(sqls.DB(), state.ID, updates); err != nil {
+	if err := repositories.ConversationRouteStateRepository.Updates(ctx.Tx, state.ID, updates); err != nil {
 		return err
 	}
-	if !enteredStoreManual {
-		return nil
+	if err := ConversationAssignmentService.FinishActiveAssignments(ctx, state.ConversationID, at); err != nil {
+		return err
 	}
-	return repositories.ConversationRepository.Updates(sqls.DB(), conversationID, map[string]any{
+	return repositories.ConversationRepository.Updates(ctx.Tx, state.ConversationID, map[string]any{
 		"status":              enums.IMConversationStatusAIServing,
 		"current_team_id":     int64(0),
 		"current_assignee_id": int64(0),
@@ -289,6 +332,7 @@ func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered pending human service")
 	return s.GetByConversationID(conversationID), nil
 }
 
@@ -312,6 +356,7 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 	}); err != nil {
 		return nil, err
 	}
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered store human service")
 	return s.GetByConversationID(conversationID), nil
 }
 
@@ -342,6 +387,39 @@ func (s *conversationRouteService) HoldManualRouteForAIResume(conversationID int
 	})
 }
 
+func (s *conversationRouteService) ClaimExpiredManualRoute(state models.ConversationRouteState, now time.Time) (*models.ConversationRouteState, bool, error) {
+	if state.ID <= 0 || state.ManualExpireAt == nil || state.ManualExpireAt.After(now) || !routeStatusBlocksAIReply(state.RouteStatus) {
+		return nil, false, nil
+	}
+	leaseExpireAt := now.Add(time.Minute)
+	result := sqls.DB().Model(&models.ConversationRouteState{}).
+		Where("id = ? AND route_status = ? AND need_human_follow_up = ? AND manual_expire_at = ? AND manual_expire_at <= ?", state.ID, state.RouteStatus, state.NeedHumanFollowUp, *state.ManualExpireAt, now).
+		Updates(map[string]any{
+			"manual_expire_at": leaseExpireAt,
+			"updated_at":       now,
+			"update_user_name": "system",
+		})
+	if result.Error != nil || result.RowsAffected != 1 {
+		return nil, false, result.Error
+	}
+	state.ManualExpireAt = &leaseExpireAt
+	return &state, true, nil
+}
+
+func (s *conversationRouteService) HoldManualRouteForAIResumeClaimed(state models.ConversationRouteState, now time.Time) (bool, error) {
+	if state.ID <= 0 || state.ManualExpireAt == nil || !routeStatusBlocksAIReply(state.RouteStatus) {
+		return false, nil
+	}
+	result := sqls.DB().Model(&models.ConversationRouteState{}).
+		Where("id = ? AND route_status = ? AND need_human_follow_up = ? AND manual_expire_at = ?", state.ID, state.RouteStatus, state.NeedHumanFollowUp, *state.ManualExpireAt).
+		Updates(map[string]any{
+			"manual_expire_at": nil,
+			"updated_at":       now,
+			"update_user_name": "system",
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64, reason string, now time.Time) (*models.ConversationRouteState, error) {
 	state, err := s.Ensure(conversationID)
 	if err != nil {
@@ -365,11 +443,37 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered assigned human service")
 	return s.GetByConversationID(conversationID), nil
 }
 
 func (s *conversationRouteService) RestoreAI(conversationID int64, reason string, now time.Time) error {
 	return s.RestoreAIWithFollowUp(conversationID, reason, now, false)
+}
+
+func (s *conversationRouteService) RestoreAIFromTimeoutClaim(state models.ConversationRouteState, reason string, now time.Time, needHumanFollowUp bool) (bool, error) {
+	return s.restoreAIFromTimeoutClaimWithDB(sqls.DB(), state, reason, now, needHumanFollowUp)
+}
+
+func (s *conversationRouteService) restoreAIFromTimeoutClaimWithDB(db *gorm.DB, state models.ConversationRouteState, reason string, now time.Time, needHumanFollowUp bool) (bool, error) {
+	if state.ID <= 0 || state.ManualExpireAt == nil || !routeStatusBlocksAIReply(state.RouteStatus) {
+		return false, nil
+	}
+	result := db.Model(&models.ConversationRouteState{}).
+		Where("id = ? AND route_status = ? AND need_human_follow_up = ? AND manual_expire_at = ?", state.ID, state.RouteStatus, state.NeedHumanFollowUp, *state.ManualExpireAt).
+		Updates(map[string]any{
+			"route_status":             enums.ConversationRouteStatusAIServing,
+			"route_target":             "ai",
+			"manual_expire_at":         nil,
+			"pending_action":           "",
+			"pending_action_payload":   "",
+			"pending_action_expire_at": nil,
+			"need_human_follow_up":     needHumanFollowUp,
+			"handoff_reason":           reason,
+			"updated_at":               now,
+			"update_user_name":         "system",
+		})
+	return result.RowsAffected == 1, result.Error
 }
 
 func (s *conversationRouteService) RestoreAIWithFollowUp(conversationID int64, reason string, now time.Time, needHumanFollowUp bool) error {

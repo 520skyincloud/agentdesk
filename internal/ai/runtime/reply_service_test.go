@@ -17,10 +17,22 @@ import (
 )
 
 func TestReplyEligibilityCanReply(t *testing.T) {
+	db := setupRuntimeReplyMessageTestDB(t)
 	eligibility := newReplyEligibility()
 	conversation := newConversationFixture()
 	message := newCustomerMessageFixture("hello")
 	aiAgent := newAIAgentFixture()
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID: conversation.ID,
+		RouteStatus:    enums.ConversationRouteStatusAIServing,
+		RouteTarget:    "ai",
+		SessionNo:      1,
+	}).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
 
 	if !eligibility.CanReply(conversation, message, aiAgent) {
 		t.Fatalf("expected customer message to be replyable")
@@ -39,11 +51,17 @@ func TestReplyEligibilityCanReply(t *testing.T) {
 
 	conversation = newConversationFixture()
 	conversation.CurrentAssigneeID = 1
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Update("current_assignee_id", 1).Error; err != nil {
+		t.Fatalf("assign conversation: %v", err)
+	}
 	if eligibility.CanReply(conversation, message, aiAgent) {
 		t.Fatalf("expected assigned conversation to be rejected")
 	}
 
 	conversation = newConversationFixture()
+	if err := db.Model(&models.Conversation{}).Where("id = ?", conversation.ID).Update("current_assignee_id", 0).Error; err != nil {
+		t.Fatalf("clear conversation assignment: %v", err)
+	}
 	aiAgent.ServiceMode = enums.IMConversationServiceModeHumanOnly
 	if eligibility.CanReply(conversation, message, aiAgent) {
 		t.Fatalf("expected human-only agent to be rejected")
@@ -53,6 +71,128 @@ func TestReplyEligibilityCanReply(t *testing.T) {
 	message.Content = "   "
 	if eligibility.CanReply(conversation, message, aiAgent) {
 		t.Fatalf("expected blank message to be rejected")
+	}
+}
+
+func TestReplyEligibilityAllowsAssignedManualResume(t *testing.T) {
+	db := setupRuntimeReplyMessageTestDB(t)
+	conversation := models.Conversation{
+		ID:                9002,
+		Status:            enums.IMConversationStatusActive,
+		CurrentTeamID:     1,
+		CurrentAssigneeID: 101,
+	}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create assigned conversation: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID:    conversation.ID,
+		RouteStatus:       enums.ConversationRouteStatusHQAgentDeskServing,
+		RouteTarget:       "agentdesk_hq",
+		NeedHumanFollowUp: true,
+		SessionNo:         1,
+	}).Error; err != nil {
+		t.Fatalf("create manual route: %v", err)
+	}
+	token := "runtimeeligibility"
+	if err := db.Create(&models.AIManualResumeTask{
+		TaskKey:                "manual_resume:" + token,
+		HandoffToken:           token,
+		ConversationID:         conversation.ID,
+		OriginMessageID:        10,
+		LatestWaitingMessageID: 10,
+		RouteStatus:            string(enums.ConversationRouteStatusHQAgentDeskServing),
+		TaskStatus:             "running",
+	}).Error; err != nil {
+		t.Fatalf("create running manual resume task: %v", err)
+	}
+	message := models.Message{
+		ID:             10,
+		ConversationID: conversation.ID,
+		RequestID:      "manual_resume_" + token,
+		SenderType:     enums.IMSenderTypeCustomer,
+		Content:        "刚才的问题还没处理",
+	}
+	if !newReplyEligibility().CanReply(conversation, message, newAIAgentFixture()) {
+		t.Fatal("expected runtime eligibility to allow the assigned conversation's legal manual resume")
+	}
+}
+
+func TestReplyCommitRejectsStaleManualResumeSource(t *testing.T) {
+	db := setupRuntimeReplyMessageTestDB(t)
+	now := time.Now()
+	conversation := models.Conversation{
+		ID:     9010,
+		Status: enums.IMConversationStatusActive,
+	}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID:    conversation.ID,
+		RouteStatus:       enums.ConversationRouteStatusStoreWecomManual,
+		RouteTarget:       "store_wecom",
+		NeedHumanFollowUp: true,
+		SessionNo:         1,
+	}).Error; err != nil {
+		t.Fatalf("create manual route: %v", err)
+	}
+	origin := models.Message{
+		ID:             101,
+		ConversationID: conversation.ID,
+		SessionNo:      1,
+		ClientMsgID:    "runtime-manual-resume-origin",
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "原来的问题",
+		SeqNo:          1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+	}
+	latest := origin
+	latest.ID = 102
+	latest.ClientMsgID = "runtime-manual-resume-latest"
+	latest.Content = "最新补充的问题"
+	latest.SeqNo = 2
+	if err := db.Create(&origin).Error; err != nil {
+		t.Fatalf("create origin message: %v", err)
+	}
+	if err := db.Create(&latest).Error; err != nil {
+		t.Fatalf("create latest message: %v", err)
+	}
+	token := "runtimecommitstalesource"
+	if err := db.Create(&models.AIManualResumeTask{
+		TaskKey:                "manual_resume:" + token,
+		HandoffToken:           token,
+		ConversationID:         conversation.ID,
+		OriginMessageID:        origin.ID,
+		LatestWaitingMessageID: latest.ID,
+		RouteStatus:            string(enums.ConversationRouteStatusStoreWecomManual),
+		TaskStatus:             "running",
+	}).Error; err != nil {
+		t.Fatalf("create running manual resume task: %v", err)
+	}
+	service := newReplyCommitService()
+	aiAgent := models.AIAgent{ID: 77, Name: "runtime-test-ai"}
+	origin.RequestID = "manual_resume_" + token
+	if _, err := service.SendAIReply(replyCommitInput{
+		Conversation: conversation,
+		Message:      origin,
+		AIAgent:      aiAgent,
+		ReplyText:    "这条旧回复不应提交",
+		ClientPrefix: "runtime_manual_resume_stale",
+	}); err == nil {
+		t.Fatal("expected reply commit to pass the stale source ID and be rejected")
+	}
+	latest.RequestID = origin.RequestID
+	if _, err := service.SendAIReply(replyCommitInput{
+		Conversation: conversation,
+		Message:      latest,
+		AIAgent:      aiAgent,
+		ReplyText:    "我继续处理最新问题。",
+		ClientPrefix: "runtime_manual_resume_latest",
+	}); err != nil {
+		t.Fatalf("expected latest manual resume source to commit: %v", err)
 	}
 }
 
@@ -245,10 +385,11 @@ func TestMergeRecentCustomerBurstMessageStartsAfterLastOutbound(t *testing.T) {
 }
 
 func TestCanCommitReplySkipsMediaFollowUpWhenTrailingMediaArrives(t *testing.T) {
-	setupRuntimeReplyMessageTestDB(t)
+	db := setupRuntimeReplyMessageTestDB(t)
 	service := newAIReplyService()
 	now := time.Now()
 	conversationID := int64(1002)
+	seedRuntimeAIServingConversation(t, db, conversationID)
 	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "这是干嘛的", SentAt: &now}
 	imageTime := now.Add(time.Second)
 	image := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "img-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage, Content: "funny.jpg", Payload: `{"mediaText":"图片是一只幽默摆拍的小动物，无实际酒店服务相关信息。","mediaUnderstandingStatus":"understood"}`, SentAt: &imageTime}
@@ -264,10 +405,11 @@ func TestCanCommitReplySkipsMediaFollowUpWhenTrailingMediaArrives(t *testing.T) 
 }
 
 func TestCanCommitReplyAllowsTrailingPlainMediaForIndependentText(t *testing.T) {
-	setupRuntimeReplyMessageTestDB(t)
+	db := setupRuntimeReplyMessageTestDB(t)
 	service := newAIReplyService()
 	now := time.Now()
 	conversationID := int64(1003)
+	seedRuntimeAIServingConversation(t, db, conversationID)
 	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点", SentAt: &now}
 	imageTime := now.Add(time.Second)
 	image := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "img-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeImage, Content: "funny.jpg", Payload: `{"mediaText":"图片是一只幽默摆拍的小动物，无实际酒店服务相关信息。","mediaUnderstandingStatus":"understood"}`, SentAt: &imageTime}
@@ -283,10 +425,11 @@ func TestCanCommitReplyAllowsTrailingPlainMediaForIndependentText(t *testing.T) 
 }
 
 func TestCanCommitReplySkipsWhenTrailingUnderstoodVoiceArrives(t *testing.T) {
-	setupRuntimeReplyMessageTestDB(t)
+	db := setupRuntimeReplyMessageTestDB(t)
 	service := newAIReplyService()
 	now := time.Now()
 	conversationID := int64(1004)
+	seedRuntimeAIServingConversation(t, db, conversationID)
 	question := models.Message{ID: 1, ConversationID: conversationID, ClientMsgID: "q-1", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "你现在呢", SentAt: &now}
 	voiceTime := now.Add(time.Second)
 	voice := models.Message{ID: 2, ConversationID: conversationID, ClientMsgID: "voice-2", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeVoice, Content: "wx_protocol_1003259.mp3", Payload: `{"mediaText":"我没给你发语音大哥。","mediaUnderstandingStatus":"understood"}`, SentAt: &voiceTime}
@@ -317,11 +460,36 @@ func setupRuntimeReplyMessageTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() {
 		_ = sqlDB.Close()
 	})
-	if err := db.AutoMigrate(&models.Message{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.Conversation{},
+		&models.ConversationRouteState{},
+		&models.AIManualResumeTask{},
+		&models.ConversationReadState{},
+		&models.ConversationEventLog{},
+		&models.Message{},
+	); err != nil {
 		t.Fatalf("migrate message: %v", err)
 	}
 	sqls.SetDB(db)
 	return db
+}
+
+func seedRuntimeAIServingConversation(t *testing.T, db *gorm.DB, conversationID int64) {
+	t.Helper()
+	if err := db.Create(&models.Conversation{
+		ID:     conversationID,
+		Status: enums.IMConversationStatusAIServing,
+	}).Error; err != nil {
+		t.Fatalf("create conversation %d: %v", conversationID, err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID: conversationID,
+		RouteStatus:    enums.ConversationRouteStatusAIServing,
+		RouteTarget:    "ai",
+		SessionNo:      1,
+	}).Error; err != nil {
+		t.Fatalf("create route %d: %v", conversationID, err)
+	}
 }
 
 func TestBuildRunLogPlan(t *testing.T) {
@@ -398,13 +566,15 @@ func TestResolveInterruptPrompt(t *testing.T) {
 }
 
 func newConversationFixture() models.Conversation {
-	return models.Conversation{}
+	return models.Conversation{ID: 9001, Status: enums.IMConversationStatusAIServing}
 }
 
 func newCustomerMessageFixture(content string) models.Message {
 	return models.Message{
-		SenderType: enums.IMSenderTypeCustomer,
-		Content:    content,
+		ID:             1,
+		ConversationID: 9001,
+		SenderType:     enums.IMSenderTypeCustomer,
+		Content:        content,
 	}
 }
 

@@ -313,6 +313,23 @@ func TestSplitReplyTextForCommitCapsMessagesAtThree(t *testing.T) {
 	}
 }
 
+func TestContainsInternalReplyProtocolShape(t *testing.T) {
+	for _, text := range []string{
+		`{"replyParts":[{"taskId":"task-1","content":"房间有空调。"}]}`,
+		"```json\n{\"replyParts\":[{\"taskId\":\"task-1\",\"content\":\"房间有空调。\"}]}\n```",
+		`{"taskId":"task-1","content":"房间有空调。"}`,
+		`[{"taskId":"task-1","content":"房间有空调。"}]`,
+		`{"replyParts":[]}`,
+	} {
+		if !containsInternalReplyProtocolShape(text) {
+			t.Fatalf("expected internal protocol payload to be rejected: %s", text)
+		}
+	}
+	if containsInternalReplyProtocolShape("房间有空调，可以正常使用。") {
+		t.Fatal("ordinary customer reply must not be rejected")
+	}
+}
+
 func TestExtractInterruptMessageAndCheckpointError(t *testing.T) {
 	if got := extractInterruptMessage(`{"message":"请补充订单号"}`); got != "请补充订单号" {
 		t.Fatalf("unexpected interrupt message: %q", got)

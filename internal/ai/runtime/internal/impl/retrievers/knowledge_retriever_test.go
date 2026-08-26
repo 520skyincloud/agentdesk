@@ -1,6 +1,7 @@
 package retrievers
 
 import (
+	"strings"
 	"testing"
 
 	"agent-desk/internal/ai/rag"
@@ -90,6 +91,31 @@ func TestApplyKnowledgeBasePriorityKeepsAllExistingStoreKnowledgeBasesInOneLayer
 	for _, hit := range result.Hits {
 		if hit.KnowledgeBaseID == 5 {
 			t.Fatalf("general hit leaked into winning store layer: %#v", result.Hits)
+		}
+	}
+}
+
+func TestRebuildKnowledgeRetrieveSelectionKeepsEveryJudgeAuthorizedHit(t *testing.T) {
+	hits := []rag.RetrieveResult{
+		{KnowledgeBaseID: 3, SourceRecordID: "store-1", Content: "合柴房型有办公桌。", Score: 0.9},
+		{KnowledgeBaseID: 3, SourceRecordID: "store-2", Content: "艺林房型有办公桌。", Score: 0.8},
+		{KnowledgeBaseID: 3, SourceRecordID: "store-3", Content: "塔川房型有办公桌。", Score: 0.7},
+	}
+	result := &KnowledgeRetrieveResult{
+		Options: KnowledgeRetrieveOptions{ContextMaxTokens: 1000, MaxContextItems: 2},
+	}
+
+	RebuildKnowledgeRetrieveSelection(result, hits)
+
+	if len(result.ContextResults) != len(hits) {
+		t.Fatalf("judge-authorized combined evidence was truncated: %#v", result.ContextResults)
+	}
+	if result.Options.MaxContextItems != len(hits) {
+		t.Fatalf("effective context item cap was not updated, got %d", result.Options.MaxContextItems)
+	}
+	for _, expected := range []string{"合柴房型", "艺林房型", "塔川房型"} {
+		if !strings.Contains(result.ContextText, expected) {
+			t.Fatalf("selected evidence %q missing from context: %q", expected, result.ContextText)
 		}
 	}
 }

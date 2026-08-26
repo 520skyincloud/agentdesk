@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"strings"
+
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 
@@ -17,10 +19,9 @@ func (e *replyEligibility) CanReply(conversation models.Conversation, message mo
 	if message.SenderType != enums.IMSenderTypeCustomer {
 		return false
 	}
-	// HandoffAt is historical audit data. The active route state and assignee own
-	// whether AI is paused; treating this timestamp as active state permanently
-	// disabled AI after the first completed manual handoff.
-	if conversation.CurrentAssigneeID > 0 {
+	// HandoffAt is historical audit data. Active assignment and route state own
+	// whether AI is paused; the route is checked immediately before execution.
+	if conversation.CurrentAssigneeID > 0 && !strings.HasPrefix(strings.TrimSpace(message.RequestID), "manual_resume_") {
 		return false
 	}
 	if aiAgent.ServiceMode == enums.IMConversationServiceModeHumanOnly {
