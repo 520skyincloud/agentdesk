@@ -204,6 +204,9 @@ func isStandaloneOneHistoryMessage(message *models.Message) bool {
 	if message == nil {
 		return false
 	}
+	if utils.IsAIServiceNoticeMessage(message) {
+		return true
+	}
 	if message.SenderType == enums.IMSenderTypeCustomer &&
 		utils.IsStandaloneOneTextControl(message.MessageType, message.Content) {
 		return true

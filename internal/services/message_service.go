@@ -866,14 +866,7 @@ func (s *messageService) ensureOutboundChannelMessageWithOptions(conversation *m
 }
 
 func isAIServiceNoticeMessage(message *models.Message) bool {
-	if message == nil || message.SenderType != enums.IMSenderTypeAI {
-		return false
-	}
-	clientMsgID := strings.TrimSpace(message.ClientMsgID)
-	if strings.HasPrefix(clientMsgID, "ai_handoff_success_") {
-		return true
-	}
-	return strings.Contains(strings.TrimSpace(message.Payload), `"serviceEvent"`)
+	return utils.IsAIServiceNoticeMessage(message)
 }
 
 // handleReadState 根据发送者类型更新会话已读状态，并返回更新后的客服和客户未读消息数。

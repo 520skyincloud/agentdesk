@@ -444,3 +444,24 @@ go test -p=1 \
 `codex/customer-audit` 存在同文件修改，合并时必须同时保留本分支的 Burst/重试
 语义和审计分支的租户范围读取；当前没有修改 `codex/ai-billing` 的计费语义。
 回滚代码可恢复 `18b1999`，若上线时更新了生产 Intent Profile，需独立恢复其备份。
+
+## 2026-08-27 AI 服务通知阻塞续答修复
+
+生产会话 `1890` 暴露出人工超时恢复的真实竞态：客户消息后已发送的
+`ai_handoff_success_*` 转接成功通知被 Runtime 当成普通 AI 回答，导致 debounce
+和 Commit 都误判为“已有更新回复”，恢复任务最终以“未提交回复”失败。
+
+本轮将现有 AI 服务通知识别收敛到 `utils.IsAIServiceNoticeMessage`。明确的转接
+成功通知和带 `serviceEvent` 的系统通知不再参与 Runtime 最新业务消息判断，也不
+进入 Intent 历史；普通 AI 回答、员工回复和更新的客户消息仍会阻止旧任务提交。
+实时人工路由检查保持不变，人工状态未合法恢复前不会放行普通 AI 回复。
+
+涉及 `internal/pkg/utils/message.go`、`internal/services/message_service.go`、
+`internal/ai/runtime/reply_trigger_service.go` 和 Runtime history adapter。无数据库
+结构、Migration、外部 API、DTO、枚举、WebSocket、前端、模型、计费或 Token
+统计变化。聚焦测试覆盖服务通知后允许续答、普通 AI 回答仍阻止旧提交及服务通知
+不进入模型历史。
+
+本轮与 `codex/customer-audit` 在上述三个非 adapter 文件存在同文件演进，后续
+合并需保留双方语义；与 `codex/ai-billing` 无同文件交集。回滚只需切回
+`f6ca7b7` release，不涉及数据库回滚。

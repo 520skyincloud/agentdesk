@@ -32,6 +32,16 @@ func IsStandaloneOneTextControl(messageType enums.IMMessageType, content string)
 	return messageType == enums.IMMessageTypeText && strings.TrimSpace(content) == "1"
 }
 
+func IsAIServiceNoticeMessage(message *models.Message) bool {
+	if message == nil || message.SenderType != enums.IMSenderTypeAI {
+		return false
+	}
+	if strings.HasPrefix(strings.TrimSpace(message.ClientMsgID), "ai_handoff_success_") {
+		return true
+	}
+	return strings.Contains(strings.TrimSpace(message.Payload), `"serviceEvent"`)
+}
+
 func SanitizeMessageHTML(content string) string {
 	policy := bluemonday.UGCPolicy()
 	policy.AllowElements("img")

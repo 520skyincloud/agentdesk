@@ -197,6 +197,66 @@ func TestReplyCommitRejectsStaleManualResumeSource(t *testing.T) {
 	}
 }
 
+func TestReplyLatestMessageIgnoresAIServiceNotice(t *testing.T) {
+	db := setupRuntimeReplyMessageTestDB(t)
+	now := time.Now()
+	conversationID := int64(9011)
+	customer := models.Message{
+		ID:             201,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "manual-resume-customer",
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "刚才的问题还没回答",
+		SeqNo:          1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+	}
+	serviceNotice := models.Message{
+		ID:             202,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "ai_handoff_success_direct_9011_201",
+		RequestID:      "handoff_direct_9011_201",
+		SenderType:     enums.IMSenderTypeAI,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "帮您转接同事啦～",
+		SeqNo:          2,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now.Add(time.Second)),
+	}
+	for _, item := range []models.Message{customer, serviceNotice} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", item.ID, err)
+		}
+	}
+	service := newAIReplyService()
+	if !service.isStillLatestCustomerMessage(conversationID, customer.ID) {
+		t.Fatal("AI service notice must not look like a newer customer message")
+	}
+	if !service.canCommitReplyForMessage(conversationID, customer.ID) {
+		t.Fatal("AI service notice must not block the pending customer reply")
+	}
+
+	ordinaryReply := serviceNotice
+	ordinaryReply.ID = 203
+	ordinaryReply.SeqNo = 3
+	ordinaryReply.ClientMsgID = "ordinary-ai-reply"
+	ordinaryReply.RequestID = "ordinary-request"
+	ordinaryReply.Content = "这是一条真实回答。"
+	ordinaryReply.SentAt = ptrTime(now.Add(2 * time.Second))
+	if err := db.Create(&ordinaryReply).Error; err != nil {
+		t.Fatalf("create ordinary AI reply: %v", err)
+	}
+	if service.isStillLatestCustomerMessage(conversationID, customer.ID) {
+		t.Fatal("ordinary newer AI reply must still block the stale customer reply")
+	}
+	if service.canCommitReplyForMessage(conversationID, customer.ID) {
+		t.Fatal("ordinary newer AI reply must still block commit")
+	}
+}
+
 func TestResolveReplyTimeout(t *testing.T) {
 	service := newAIReplyService()
 	aiAgent := newAIAgentFixture()

@@ -60,6 +60,24 @@ func TestRuntimeHistoryMessageContentExcludesStandaloneOneExchange(t *testing.T)
 	}
 }
 
+func TestRuntimeHistoryMessageContentExcludesAIServiceNotice(t *testing.T) {
+	serviceNotice := models.Message{
+		SenderType:  enums.IMSenderTypeAI,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "帮您转接同事啦～",
+		ClientMsgID: "ai_handoff_success_direct_1890_15923",
+	}
+	if got := RuntimeHistoryMessageContent(&serviceNotice); got != "" {
+		t.Fatalf("AI service notice leaked into runtime history: %q", got)
+	}
+	ordinary := serviceNotice
+	ordinary.ClientMsgID = "ordinary-ai-reply"
+	ordinary.Content = "这是正常客服回答。"
+	if got := RuntimeHistoryMessageContent(&ordinary); !strings.Contains(got, ordinary.Content) {
+		t.Fatalf("ordinary AI reply was removed from history: %q", got)
+	}
+}
+
 func TestRuntimeHistoryMessageContentRejectsUnfinishedVoiceText(t *testing.T) {
 	for _, status := range []string{"", "pending", "failed", "empty"} {
 		message := models.Message{
