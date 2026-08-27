@@ -384,6 +384,81 @@ func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeneratedReplyPartsRejectsCapabilityExpansionBeyondExistenceFact(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		ResolvedText:  "有外卖机器人吗",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "task-1F1", Aspect: "existence", Statement: "酒店有外卖机器人。",
+		}},
+	}}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"酒店有外卖机器人，可以送到房间。","coveredFactIds":["task-1F1"]}]}`
+
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if got != "" || !errors.Is(err, errGeneratedReplyProtocol) || !strings.Contains(err.Error(), "unsupported scope claim") {
+		t.Fatalf("existence-only evidence must reject an invented delivery scope, got=%q err=%v", got, err)
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesRejectsUnsupportedDimensions(t *testing.T) {
+	facts := []replyFactRequirement{{
+		FactID: "task-1F1", Aspect: "existence", Statement: "酒店有外卖机器人。",
+	}}
+	for name, content := range map[string]string{
+		"method":              "酒店有外卖机器人，可以通过小程序操作。",
+		"location":            "酒店有外卖机器人，机器人位于一楼。",
+		"time":                "酒店有外卖机器人，服务时间是10:00。",
+		"delivery_commitment": "酒店有外卖机器人，已经安排给您送过去。",
+		"no_comma_delivery":   "酒店有外卖机器人可以送到房间。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateGeneratedReplyFactAspectBoundaries(content, facts); err == nil {
+				t.Fatalf("unsupported %s expansion must be rejected: %q", name, content)
+			}
+		})
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsAllowsNaturalExistenceReply(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "task-1F1", Aspect: "existence", Statement: "酒店有外卖机器人。",
+		}},
+	}}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"有的，我们酒店有外卖机器人。","coveredFactIds":["task-1F1"]}]}`
+
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "有的，我们酒店有外卖机器人。" {
+		t.Fatalf("natural existence-only reply should pass, got=%q err=%v", got, err)
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsAllowsDeliveryScopeWhenFactSupportsIt(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "task-1F1", Aspect: "existence", Statement: "酒店有外卖机器人。"},
+			{FactID: "task-1F2", Aspect: "scope", Statement: "外卖机器人可以送到房门口。", CriticalValues: []string{"房门口"}},
+		},
+	}}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"酒店有外卖机器人，可以送到房门口。","coveredFactIds":["task-1F1","task-1F2"]}]}`
+
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "酒店有外卖机器人，可以送到房门口。" {
+		t.Fatalf("explicitly supported delivery scope should pass, got=%q err=%v", got, err)
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsAcceptsUniqueTaskLocalFactID(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{

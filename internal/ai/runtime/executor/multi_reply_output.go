@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -30,6 +31,7 @@ type textReplyTaskGroup struct {
 
 type replyFactRequirement struct {
 	FactID         string
+	Aspect         string
 	Statement      string
 	CriticalValues []string
 }
@@ -78,7 +80,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	var b strings.Builder
 	b.WriteString("【任务输出契约】本轮只允许回答下面列出的文本任务。只输出一个 JSON 对象，不要输出 Markdown 代码块或 JSON 之外的文字。格式为：")
 	b.WriteString(`{"replyParts":[{"taskId":"task-1","content":"给客户的自然回复","coveredFactIds":["task-1F1"]}]}`)
-	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。程序会在校验全部任务后再合并为最多三条客户消息。\n")
+	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会在校验全部任务后再合并为最多三条客户消息。\n")
 	for _, group := range groups {
 		b.WriteString("- ")
 		b.WriteString(group.TaskID)
@@ -90,6 +92,10 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 			b.WriteString(fact.FactID)
 			b.WriteString("：")
 			b.WriteString(fact.Statement)
+			if strings.TrimSpace(fact.Aspect) != "" {
+				b.WriteString("；事实维度：")
+				b.WriteString(strings.TrimSpace(fact.Aspect))
+			}
 			if len(fact.CriticalValues) > 0 {
 				b.WriteString("；回复中必须原样包含：")
 				b.WriteString(strings.Join(fact.CriticalValues, "、"))
@@ -215,8 +221,125 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 			}
 		}
 	}
+	if err := validateGeneratedReplyFactAspectBoundaries(part.Content, group.Facts); err != nil {
+		return fmt.Errorf("%w: %v for %s", errGeneratedReplyProtocol, err, group.TaskID)
+	}
 	return nil
 }
+
+func validateGeneratedReplyFactAspectBoundaries(content string, facts []replyFactRequirement) error {
+	if len(facts) == 0 {
+		return nil
+	}
+	allowed := make(map[string]bool, len(facts))
+	evidence := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		if aspect := strings.TrimSpace(fact.Aspect); aspect != "" {
+			allowed[aspect] = true
+		}
+		if statement := strings.TrimSpace(fact.Statement); statement != "" {
+			evidence = append(evidence, statement)
+		}
+	}
+	if len(evidence) == 0 || len(allowed) == 0 {
+		return nil
+	}
+	for _, clause := range splitGeneratedReplyFactClauses(content) {
+		if generatedReplyClauseIsUncertaintyBoundary(clause) {
+			continue
+		}
+		for _, boundary := range generatedReplyFactAspectBoundaries() {
+			if allowed[boundary.Aspect] || !containsAny(normalizeCriticalValueText(clause), boundary.Markers) {
+				continue
+			}
+			if generatedReplyBoundaryClaimGroundedByFacts(clause, evidence, boundary.Markers) {
+				continue
+			}
+			return fmt.Errorf("content adds unsupported %s claim", boundary.Aspect)
+		}
+		if !allowed["time"] && generatedReplyTimeClaimPattern.MatchString(normalizeCriticalValueText(clause)) && !generatedReplyTimeClaimGroundedByFacts(clause, evidence) {
+			return fmt.Errorf("content adds unsupported time claim")
+		}
+	}
+	return nil
+}
+
+type generatedReplyFactAspectBoundary struct {
+	Aspect  string
+	Markers []string
+}
+
+func generatedReplyFactAspectBoundaries() []generatedReplyFactAspectBoundary {
+	return []generatedReplyFactAspectBoundary{
+		{Aspect: "scope", Markers: []string{"送到", "送至", "送上", "送进", "送达", "配送", "送房", "房门口", "所有房间", "全部房间", "每个房间", "任何房间", "都能", "都可以", "均可"}},
+		{Aspect: "method", Markers: []string{"通过", "使用", "扫码", "点击", "输入", "操作", "办理", "联系", "自动送", "帮您送", "帮你送", "给您送", "给你送", "已安排", "已经安排", "马上送", "稍后送"}},
+		{Aspect: "location", Markers: []string{"位于", "地址是", "地址为", "一楼", "前台", "在房间里", "在房间内", "门口", "楼层", "旁边", "对面"}},
+	}
+}
+
+func splitGeneratedReplyFactClauses(content string) []string {
+	parts := strings.FieldsFunc(content, func(r rune) bool {
+		switch r {
+		case '\n', '\r', '。', '！', '!', '？', '?', '；', ';', '，', ',':
+			return true
+		default:
+			return false
+		}
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			ret = append(ret, part)
+		}
+	}
+	return ret
+}
+
+func generatedReplyClauseIsUncertaintyBoundary(clause string) bool {
+	return containsAny(normalizeCriticalValueText(clause), []string{
+		"不清楚", "不确定", "无法确认", "没法确认", "暂时不能确认", "资料没写", "资料未写", "没有写明", "未说明", "需要确认", "要问门店", "以门店实际为准",
+	})
+}
+
+func generatedReplyBoundaryClaimGroundedByFacts(clause string, evidence []string, markers []string) bool {
+	normalizedClause := normalizeRuntimeKnowledgeQuery(clause)
+	if normalizedClause == "" {
+		return false
+	}
+	clauseNegative := knowledgeEvidenceTextHasNegativeBoundary(normalizedClause)
+	for _, fact := range evidence {
+		normalizedFact := normalizeRuntimeKnowledgeQuery(fact)
+		if normalizedFact == "" || !containsAny(normalizedFact, markers) || clauseNegative != knowledgeEvidenceTextHasNegativeBoundary(normalizedFact) {
+			continue
+		}
+		if strings.Contains(normalizedFact, normalizedClause) || strings.Contains(normalizedClause, normalizedFact) || knowledgeEvidenceTextNGramSimilarity(normalizedClause, normalizedFact) >= 0.72 {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedReplyTimeClaimGroundedByFacts(clause string, evidence []string) bool {
+	claims := generatedReplyTimeClaimPattern.FindAllString(normalizeCriticalValueText(clause), -1)
+	if len(claims) == 0 {
+		return false
+	}
+	for _, claim := range claims {
+		grounded := false
+		for _, fact := range evidence {
+			if strings.Contains(normalizeCriticalValueText(fact), claim) {
+				grounded = true
+				break
+			}
+		}
+		if !grounded {
+			return false
+		}
+	}
+	return true
+}
+
+var generatedReplyTimeClaimPattern = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十两]+)(?:分钟|小时|天|工作日)|[0-9]{1,2}[:：][0-9]{2}`)
 
 func normalizeCoveredFactID(rawFactID string, group textReplyTaskGroup) (string, error) {
 	rawFactID = strings.TrimSpace(rawFactID)
@@ -508,6 +631,7 @@ func replyFactRequirements(facts []callbacks.KnowledgeEvidenceFactTraceData) []r
 		seen[factID] = struct{}{}
 		ret = append(ret, replyFactRequirement{
 			FactID:         factID,
+			Aspect:         strings.TrimSpace(fact.Aspect),
 			Statement:      strings.TrimSpace(fact.Statement),
 			CriticalValues: append([]string(nil), fact.CriticalValues...),
 		})

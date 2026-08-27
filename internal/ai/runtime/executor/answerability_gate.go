@@ -1112,32 +1112,11 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		return trace
 	}
 	if !outcome.Applied {
-		trace.Tasks = make([]callbacks.KnowledgeEvidenceJudgeTaskTraceData, 0, len(tasks))
-		questionByTaskID := make(map[string]*runtimeKnowledgeQuestionResult, len(batch.Questions))
-		for index := range batch.Questions {
-			questionByTaskID[batch.Questions[index].TaskID] = &batch.Questions[index]
-		}
-		for _, task := range tasks {
-			question := questionByTaskID[task.TaskID]
-			if question == nil || question.Result == nil {
-				continue
-			}
-			question.Decision = knowledgeEvidenceDecisionInsufficient
-			question.MissingAspects = []string{"知识证据裁决暂时不可用"}
-			if _, handoff := topKnowledgeHandoffDirective(question.Result); !handoff {
-				question.Result.Hits = nil
-				question.Result.ContextResults = nil
-				question.Result.ContextText = ""
-			}
-			trace.Tasks = append(trace.Tasks, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
-				TaskID:         task.TaskID,
-				QueryPreview:   preview(task.Query, 120),
-				Decision:       "judge_unavailable",
-				MissingAspects: []string{"知识证据裁决暂时不可用"},
-			})
-		}
-		batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
-		return trace
+		selections, repaired, handoffs := deterministicKnowledgeEvidenceJudgeFallbackSelections(tasks)
+		outcome.Applied = true
+		outcome.Selections = selections
+		trace.Status = "fallback"
+		trace.Reason = strings.TrimSpace(trace.Reason + fmt.Sprintf("; deterministic per-task fallback kept %d grounded answer(s) and %d handoff directive(s)", repaired, handoffs))
 	}
 	questionByTaskID := make(map[string]*runtimeKnowledgeQuestionResult, len(batch.Questions))
 	for index := range batch.Questions {
@@ -1155,13 +1134,13 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			candidateByID[candidate.CandidateID] = candidate
 		}
 		for layer, selection := range selections {
-			selections[layer] = reconcileSelectedFAQGuidanceFacts(task.TaskID, layer, selection, candidateByID)
+			selections[layer] = reconcileSelectedFAQGuidanceFactsForQuery(task.TaskID, task.Query, layer, selection, candidateByID)
 		}
 		taskTrace := callbacks.KnowledgeEvidenceJudgeTaskTraceData{
 			TaskID:       task.TaskID,
 			QueryPreview: preview(task.Query, 120),
 		}
-		selectedLayer := selectKnowledgeEvidenceLayer(selections, candidateByID)
+		selectedLayer := selectKnowledgeEvidenceLayer(selections, candidateByID, task.Query)
 		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
 			selection, ok := selections[layer]
 			if !ok {
@@ -1188,7 +1167,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 				if !ok || candidate.Layer != selectedLayer {
 					continue
 				}
-				selectedHits = append(selectedHits, candidate.Hit)
+				selectedHits = append(selectedHits, knowledgeEvidenceHitForQuery(candidate.Hit, task.Query))
 				taskTrace.SelectedCandidateIDs = append(taskTrace.SelectedCandidateIDs, candidateID)
 			}
 		}
@@ -1219,10 +1198,10 @@ func knowledgeEvidenceFactsToTrace(facts []knowledgeEvidenceFact) []callbacks.Kn
 	return ret
 }
 
-func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSelection, candidates map[string]knowledgeEvidenceJudgeCandidate) string {
+func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSelection, candidates map[string]knowledgeEvidenceJudgeCandidate, query string) string {
 	storeSelection := selections[knowledgeEvidenceLayerStore]
 	generalSelection := selections[knowledgeEvidenceLayerGeneral]
-	if selectionHasHandoffDirective(storeSelection, knowledgeEvidenceLayerStore, candidates) {
+	if selectionHasHandoffDirective(storeSelection, knowledgeEvidenceLayerStore, candidates, query) {
 		return knowledgeEvidenceLayerStore
 	}
 	if selectionHasCompleteEvidence(storeSelection) {
@@ -1240,13 +1219,17 @@ func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSe
 	return ""
 }
 
-func selectionHasHandoffDirective(selection knowledgeEvidenceLayerSelection, layer string, candidates map[string]knowledgeEvidenceJudgeCandidate) bool {
+func selectionHasHandoffDirective(selection knowledgeEvidenceLayerSelection, layer string, candidates map[string]knowledgeEvidenceJudgeCandidate, query string) bool {
 	if !selectionHasCompleteEvidence(selection) {
 		return false
 	}
 	for _, candidateID := range selection.SelectedCandidateIDs {
 		candidate, ok := candidates[candidateID]
-		if ok && candidate.Layer == layer && isKnowledgeHandoffDirectiveContent(candidate.Hit.Content) {
+		if !ok || candidate.Layer != layer {
+			continue
+		}
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, query)
+		if isKnowledgeHandoffDirectiveContent(answer) {
 			return true
 		}
 	}

@@ -31,7 +31,7 @@ const (
 	knowledgeEvidenceLayerGeneral = "general"
 
 	knowledgeEvidenceJudgeMaxTimeout      = 15 * time.Second
-	knowledgeEvidenceJudgeMaxOutputTokens = 2048
+	knowledgeEvidenceJudgeMaxOutputTokens = 4096
 )
 
 type knowledgeEvidenceJudge interface {
@@ -148,7 +148,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(err)
 		return knowledgeEvidenceJudgeOutcome{Trace: trace}
 	}
-	config := normalizeKnowledgeEvidenceJudgeConfig(resolved.Config)
+	config := normalizeKnowledgeEvidenceJudgeConfig(resolved.Config, len(prompt.Tasks))
 	trace.Model = config.ModelName
 	if strings.TrimSpace(config.ModelName) == "" || strings.TrimSpace(string(config.Provider)) == "" {
 		trace.Reason = "knowledge judge model configuration is incomplete; unselected retrieval will be withheld and existing handoff routing will be used"
@@ -211,14 +211,18 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 			if title == "" {
 				title = strings.TrimSpace(candidate.Hit.DocumentTitle)
 			}
-			faqQuestion, faqAnswer := splitKnowledgeEvidenceFAQ(candidate.Hit)
+			faqQuestion, faqAnswer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			rawContent := strings.TrimSpace(candidate.Hit.Content)
+			if faqQuestion != "" && faqAnswer != "" {
+				rawContent = "问题：" + faqQuestion + "\n答案：" + faqAnswer
+			}
 			item.Candidates = append(item.Candidates, knowledgeEvidenceJudgePromptCandidate{
 				CandidateID: strings.TrimSpace(candidate.CandidateID),
 				Layer:       strings.TrimSpace(candidate.Layer),
 				FAQQuestion: faqQuestion,
 				FAQAnswer:   faqAnswer,
 				Title:       title,
-				RawContent:  strings.TrimSpace(candidate.Hit.Content),
+				RawContent:  rawContent,
 				Score:       candidate.Hit.Score,
 			})
 		}
@@ -228,43 +232,140 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 }
 
 func splitKnowledgeEvidenceFAQ(hit rag.RetrieveResult) (string, string) {
+	return splitKnowledgeEvidenceFAQForQuery(hit, strings.TrimSpace(hit.FaqQuestion))
+}
+
+type knowledgeEvidenceFAQUnit struct {
+	Question string
+	Answer   string
+}
+
+func splitKnowledgeEvidenceFAQForQuery(hit rag.RetrieveResult, query string) (string, string) {
 	raw := strings.TrimSpace(hit.Content)
-	question := strings.TrimSpace(hit.FaqQuestion)
-	answer := ""
-	if parsedQuestion, parsedAnswer, ok := parseQuestionAnswerContent(raw); ok {
-		if question == "" {
-			question = parsedQuestion
+	units := parseKnowledgeEvidenceFAQUnits(raw)
+	if len(units) > 0 {
+		if preferred := strings.TrimSpace(hit.FaqQuestion); preferred != "" {
+			if index := bestKnowledgeEvidenceFAQUnitIndex(units, preferred); index >= 0 && knowledgeEvidenceFAQQuestionMatchScore(units[index].Question, preferred) >= 0.82 {
+				return units[index].Question, units[index].Answer
+			}
 		}
-		answer = parsedAnswer
-	} else if question != "" {
-		answer = raw
+		if index := bestKnowledgeEvidenceFAQUnitIndex(units, query); index >= 0 {
+			return units[index].Question, units[index].Answer
+		}
+		return units[0].Question, units[0].Answer
 	}
-	return question, answer
+	question := strings.TrimSpace(hit.FaqQuestion)
+	if question != "" {
+		return question, raw
+	}
+	return "", ""
+}
+
+func knowledgeEvidenceHitForQuery(hit rag.RetrieveResult, query string) rag.RetrieveResult {
+	question, answer := splitKnowledgeEvidenceFAQForQuery(hit, query)
+	if question == "" || answer == "" {
+		return hit
+	}
+	hit.FaqQuestion = question
+	hit.Content = "问题：" + question + "\n答案：" + answer
+	return hit
 }
 
 func parseQuestionAnswerContent(raw string) (string, string, bool) {
+	units := parseKnowledgeEvidenceFAQUnits(raw)
+	if len(units) == 0 {
+		return "", "", false
+	}
+	return units[0].Question, units[0].Answer, true
+}
+
+var knowledgeEvidenceFAQQuestionMarkerPattern = regexp.MustCompile(`(?m)(?:^|\n)[ \t]*(?:问题|问|Q|q)[ \t]*[:：][ \t]*`)
+var knowledgeEvidenceFAQAnswerMarkerPattern = regexp.MustCompile(`(?m)(?:^|\n)?[ \t]*(?:答案|答|A|a)[ \t]*[:：][ \t]*`)
+
+func parseKnowledgeEvidenceFAQUnits(raw string) []knowledgeEvidenceFAQUnit {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", "", false
+		return nil
 	}
-	answerIndex := -1
-	answerPrefixLength := 0
-	for _, marker := range []string{"\n答案：", "\n答案:", "答案：", "答案:"} {
-		if index := strings.Index(raw, marker); index >= 0 && (answerIndex < 0 || index < answerIndex) {
-			answerIndex = index
-			answerPrefixLength = len(marker)
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	questionMarkers := knowledgeEvidenceFAQQuestionMarkerPattern.FindAllStringIndex(raw, -1)
+	units := make([]knowledgeEvidenceFAQUnit, 0, len(questionMarkers))
+	for index, marker := range questionMarkers {
+		blockEnd := len(raw)
+		if index+1 < len(questionMarkers) {
+			blockEnd = questionMarkers[index+1][0]
+		}
+		block := raw[marker[1]:blockEnd]
+		answerMarker := knowledgeEvidenceFAQAnswerMarkerPattern.FindStringIndex(block)
+		if answerMarker == nil {
+			continue
+		}
+		question := strings.TrimSpace(block[:answerMarker[0]])
+		answer := strings.TrimSpace(block[answerMarker[1]:])
+		if question != "" && answer != "" {
+			units = append(units, knowledgeEvidenceFAQUnit{Question: question, Answer: answer})
 		}
 	}
-	if answerIndex < 0 {
-		return "", "", false
+	for index := 0; index+1 < len(units); index++ {
+		units[index].Answer = trimKnowledgeEvidenceFAQTrailingHeading(units[index].Answer, units[index+1].Question)
 	}
-	question := strings.TrimSpace(raw[:answerIndex])
-	question = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(question, "问题："), "问题:"))
-	answer := strings.TrimSpace(raw[answerIndex+answerPrefixLength:])
-	if question == "" || answer == "" {
-		return "", "", false
+	return units
+}
+
+func trimKnowledgeEvidenceFAQTrailingHeading(answer string, nextQuestion string) string {
+	lines := strings.Split(strings.TrimSpace(answer), "\n")
+	for len(lines) > 0 {
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if last == "" {
+			lines = lines[:len(lines)-1]
+			continue
+		}
+		trimmedHeading := strings.TrimSpace(strings.TrimLeft(last, "#-* "))
+		if strings.HasPrefix(last, "#") || knowledgeEvidenceFAQQuestionMatchScore(trimmedHeading, nextQuestion) >= 0.72 {
+			lines = lines[:len(lines)-1]
+			continue
+		}
+		break
 	}
-	return question, answer, true
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func bestKnowledgeEvidenceFAQUnitIndex(units []knowledgeEvidenceFAQUnit, query string) int {
+	query = strings.TrimSpace(query)
+	if len(units) == 0 || query == "" {
+		return -1
+	}
+	bestIndex := -1
+	bestScore := 0.0
+	for index, unit := range units {
+		score := knowledgeEvidenceFAQQuestionMatchScore(unit.Question, query)
+		if score > bestScore {
+			bestScore = score
+			bestIndex = index
+		}
+	}
+	return bestIndex
+}
+
+func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float64 {
+	question = normalizeRuntimeKnowledgeQuery(question)
+	query = normalizeRuntimeKnowledgeQuery(query)
+	if question == "" || query == "" {
+		return 0
+	}
+	if question == query {
+		return 1
+	}
+	questionLen := len([]rune(question))
+	queryLen := len([]rune(query))
+	shorter, longer := questionLen, queryLen
+	if shorter > longer {
+		shorter, longer = longer, shorter
+	}
+	if shorter >= 4 && (strings.Contains(question, query) || strings.Contains(query, question)) {
+		return 0.9 * float64(shorter) / float64(longer)
+	}
+	return knowledgeEvidenceTextNGramSimilarity(question, query)
 }
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
@@ -504,7 +605,7 @@ func groundedKnowledgeEvidenceFacts(task knowledgeEvidenceJudgeTask, layer strin
 	for _, candidateID := range selectedCandidateIDs {
 		selected[strings.TrimSpace(candidateID)] = struct{}{}
 	}
-	evidenceParts := make([]string, 0, len(selectedCandidateIDs)*3)
+	evidenceUnits := make([][]string, 0, len(selectedCandidateIDs))
 	for _, candidate := range task.Candidates {
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
@@ -512,28 +613,35 @@ func groundedKnowledgeEvidenceFacts(task knowledgeEvidenceJudgeTask, layer strin
 		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
 			continue
 		}
-		question, answer := splitKnowledgeEvidenceFAQ(candidate.Hit)
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		parts := []string{answer}
 		if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
 			parts = append(parts, strings.TrimSpace(question+" "+answer))
 		}
 		if strings.TrimSpace(question) == "" || strings.TrimSpace(answer) == "" {
-			parts = append(parts, candidate.Hit.Content)
+			parts = []string{candidate.Hit.Content}
 		}
+		unit := make([]string, 0, len(parts))
 		for _, part := range parts {
 			if part = strings.TrimSpace(part); part != "" {
-				evidenceParts = append(evidenceParts, part)
+				unit = append(unit, part)
 			}
 		}
+		if len(unit) > 0 {
+			evidenceUnits = append(evidenceUnits, unit)
+		}
 	}
-	if len(evidenceParts) == 0 {
+	if len(evidenceUnits) == 0 {
 		return nil
 	}
 
 	grounded := make([]knowledgeEvidenceFact, 0, len(facts))
 	for _, fact := range facts {
-		if knowledgeEvidenceFactGroundedByText(fact, evidenceParts) {
-			grounded = append(grounded, fact)
+		for _, evidenceUnit := range evidenceUnits {
+			if knowledgeEvidenceFactGroundedByText(fact, evidenceUnit) {
+				grounded = append(grounded, fact)
+				break
+			}
 		}
 	}
 	return grounded
@@ -561,7 +669,10 @@ func knowledgeEvidenceFactGroundedByText(fact knowledgeEvidenceFact, evidencePar
 				continue
 			}
 			if strings.Contains(normalizedUnit, statement) || strings.Contains(statement, normalizedUnit) {
-				return statementNegative == knowledgeEvidenceTextHasNegativeBoundary(normalizedUnit)
+				if statementNegative == knowledgeEvidenceTextHasNegativeBoundary(normalizedUnit) {
+					return true
+				}
+				continue
 			}
 			similarity := knowledgeEvidenceTextNGramSimilarity(statement, normalizedUnit)
 			if similarity > bestSimilarity {
@@ -599,25 +710,206 @@ func knowledgeEvidenceFAQAnswerConfirmsQuestion(answer string) bool {
 func repairHighConfidenceInsufficientKnowledgeSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
 	repaired := 0
 	for _, task := range tasks {
-		if semanticGateNormalizeObjective(task.Objective) != "availability" {
-			continue
-		}
 		requiredEntities := normalizedKnowledgeEvidenceEntities(task.Entities)
-		if len(requiredEntities) < 2 {
-			continue
-		}
 		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
 			selection, ok := selections[task.TaskID][layer]
 			if !ok || selection.Decision != knowledgeEvidenceDecisionInsufficient {
 				continue
 			}
-			if repairedSelection, ok := highConfidenceKnowledgeConsensusSelection(task, layer, requiredEntities); ok {
+			if semanticGateNormalizeObjective(task.Objective) == "availability" && len(requiredEntities) >= 2 {
+				if repairedSelection, ok := highConfidenceKnowledgeConsensusSelection(task, layer, requiredEntities); ok {
+					selections[task.TaskID][layer] = repairedSelection
+					repaired++
+					continue
+				}
+			}
+			if repairedSelection, ok := highConfidenceDirectFAQSelection(task, layer); ok {
 				selections[task.TaskID][layer] = repairedSelection
 				repaired++
 			}
 		}
 	}
 	return repaired
+}
+
+func deterministicKnowledgeEvidenceJudgeFallbackSelections(tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, int, int) {
+	selections := make(map[string]map[string]knowledgeEvidenceLayerSelection, len(tasks))
+	handoffs := 0
+	for _, task := range tasks {
+		layers := make(map[string]map[string]struct{}, 2)
+		for _, candidate := range task.Candidates {
+			layer := strings.TrimSpace(candidate.Layer)
+			if layer == knowledgeEvidenceLayerStore || layer == knowledgeEvidenceLayerGeneral {
+				if layers[layer] == nil {
+					layers[layer] = make(map[string]struct{})
+				}
+				layers[layer][strings.TrimSpace(candidate.CandidateID)] = struct{}{}
+			}
+		}
+		taskSelections := defaultKnowledgeEvidenceLayerSelections(layers)
+		for layer := range layers {
+			if selection, ok := deterministicKnowledgeEvidenceHandoffSelection(task, layer); ok {
+				taskSelections[layer] = selection
+				handoffs++
+			}
+		}
+		selections[task.TaskID] = taskSelections
+	}
+	repairHighConfidenceInsufficientKnowledgeSelections(tasks, selections)
+	groundedAnswers := 0
+	for _, task := range tasks {
+		taskSelections := selections[task.TaskID]
+		if knowledgeEvidenceTaskHasLayerCandidates(task, knowledgeEvidenceLayerStore) && !selectionHasCompleteEvidence(taskSelections[knowledgeEvidenceLayerStore]) {
+			// When the store layer returned candidates but none can be proven safe
+			// locally, do not let a general fallback silently override it.
+			taskSelections[knowledgeEvidenceLayerGeneral] = insufficientKnowledgeEvidenceLayerSelection()
+		}
+		for _, selection := range taskSelections {
+			if selectionHasCompleteEvidence(selection) && len(selection.SupportedFacts) > 0 {
+				groundedAnswers++
+			}
+		}
+	}
+	return selections, groundedAnswers, handoffs
+}
+
+func knowledgeEvidenceTaskHasLayerCandidates(task knowledgeEvidenceJudgeTask, layer string) bool {
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) == strings.TrimSpace(layer) {
+			return true
+		}
+	}
+	return false
+}
+
+func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
+	var best *knowledgeEvidenceJudgeCandidate
+	for index := range task.Candidates {
+		candidate := &task.Candidates[index]
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if best == nil || candidate.Hit.Score > best.Hit.Score {
+			best = candidate
+		}
+	}
+	if best == nil {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	_, answer := splitKnowledgeEvidenceFAQForQuery(best.Hit, task.Query)
+	if !isKnowledgeHandoffDirectiveContent(answer) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	return knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		SelectedCandidateIDs: []string{best.CandidateID},
+	}, true
+}
+
+func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
+	const minimumScore = float32(0.85)
+	const minimumQuestionMatch = 0.82
+	type matchedFAQ struct {
+		candidate knowledgeEvidenceJudgeCandidate
+		question  string
+		answer    string
+	}
+	matches := make([]matchedFAQ, 0, 2)
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < minimumScore {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || knowledgeEvidenceFAQQuestionMatchScore(question, task.Query) < minimumQuestionMatch {
+			continue
+		}
+		matches = append(matches, matchedFAQ{candidate: candidate, question: question, answer: answer})
+	}
+	if len(matches) == 0 {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	best := matches[0]
+	for _, match := range matches[1:] {
+		if match.candidate.Hit.Score > best.candidate.Hit.Score {
+			best = match
+		}
+	}
+	if knowledgeEvidenceDirectFAQHasConflict(task, layer, best.candidate.CandidateID, best.answer) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, best.answer)
+	facts = groundedKnowledgeEvidenceFacts(task, layer, []string{best.candidate.CandidateID}, facts)
+	if len(facts) == 0 {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	return knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		SelectedCandidateIDs: []string{best.candidate.CandidateID},
+		SupportedFacts:       facts,
+	}, true
+}
+
+func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateID string, selectedAnswer string) bool {
+	for _, candidate := range task.Candidates {
+		if candidate.CandidateID == selectedCandidateID || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < 0.7 {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if knowledgeEvidenceFAQQuestionMatchScore(question, task.Query) < 0.78 {
+			continue
+		}
+		if isKnowledgeHandoffDirectiveContent(answer) || knowledgeEvidenceFAQAnswersConflict(selectedAnswer, answer) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQAnswersConflict(left string, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	if knowledgeEvidenceTextHasNegativeBoundary(left) != knowledgeEvidenceTextHasNegativeBoundary(right) {
+		return true
+	}
+	leftNumbers := knowledgeEvidenceAnswerNumberPattern.FindAllString(normalizeRuntimeKnowledgeQuery(left), -1)
+	rightNumbers := knowledgeEvidenceAnswerNumberPattern.FindAllString(normalizeRuntimeKnowledgeQuery(right), -1)
+	return len(leftNumbers) > 0 && len(rightNumbers) > 0 && strings.Join(leftNumbers, "|") != strings.Join(rightNumbers, "|")
+}
+
+func deterministicKnowledgeEvidenceFactsFromFAQ(taskID string, answer string) []knowledgeEvidenceFact {
+	clauses := splitKnowledgeEvidenceAnswerClauses(answer)
+	facts := make([]knowledgeEvidenceFact, 0, len(clauses))
+	seen := make(map[string]struct{}, len(clauses))
+	for _, clause := range clauses {
+		if !knowledgeEvidenceAnswerClauseIsGroundedFact(clause) {
+			continue
+		}
+		aspect, criticalValue := knowledgeEvidenceAnswerClauseAspect(clause)
+		criticalValues := knowledgeEvidenceAnswerClauseCriticalValues(clause, criticalValue)
+		if aspect == "method" {
+			for _, cue := range []string{"通过", "使用", "扫码", "点击", "输入", "操作", "办理", "联系", "回复", "选择", "对比", "比较", "申请", "下载", "登记"} {
+				if strings.Contains(clause, cue) {
+					criticalValues = appendIfMissing(criticalValues, cue)
+				}
+			}
+			for _, channel := range []string{"小程序", "入住机", "短信链接", "二维码", "房卡", "人脸", "电话", "微信", "支付宝", "银行卡", "APP", "app"} {
+				if strings.Contains(clause, channel) {
+					criticalValues = appendIfMissing(criticalValues, channel)
+				}
+			}
+		}
+		factID := nextKnowledgeEvidenceFactID(taskID, seen)
+		seen[factID] = struct{}{}
+		statement := strings.TrimSpace(clause)
+		if !strings.HasSuffix(statement, "。") && !strings.HasSuffix(statement, "！") && !strings.HasSuffix(statement, "？") {
+			statement += "。"
+		}
+		facts = append(facts, knowledgeEvidenceFact{FactID: factID, Aspect: aspect, Statement: statement, CriticalValues: criticalValues})
+	}
+	return facts
 }
 
 func normalizedKnowledgeEvidenceEntities(entities []knowledgeEvidenceJudgeEntity) []string {
@@ -643,10 +935,13 @@ func highConfidenceKnowledgeConsensusSelection(task knowledgeEvidenceJudgeTask, 
 	bestTarget := ""
 	bestPredicate := ""
 	for _, candidate := range task.Candidates {
-		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < minimumScore || isKnowledgeHandoffDirectiveContent(candidate.Hit.Content) {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < minimumScore {
 			continue
 		}
-		question, answer := splitKnowledgeEvidenceFAQ(candidate.Hit)
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
 		if strings.TrimSpace(question) == "" || strings.TrimSpace(answer) == "" {
 			continue
 		}
@@ -757,7 +1052,7 @@ func knowledgeEvidenceEnumerationHasConflict(task knowledgeEvidenceJudgeTask, la
 		if candidate.Layer != layer || candidate.Hit.Score < minimumScore {
 			continue
 		}
-		_, answer := splitKnowledgeEvidenceFAQ(candidate.Hit)
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		compact := normalizeRuntimeKnowledgeQuery(answer)
 		if strings.Contains(compact, target) && strings.Contains(compact, predicate) && knowledgeEvidenceTextHasNegativeBoundary(compact) {
 			return true
@@ -897,6 +1192,16 @@ func reconcileSelectedFAQGuidanceFacts(
 	selection knowledgeEvidenceLayerSelection,
 	candidates map[string]knowledgeEvidenceJudgeCandidate,
 ) knowledgeEvidenceLayerSelection {
+	return reconcileSelectedFAQGuidanceFactsForQuery(taskID, "", layer, selection, candidates)
+}
+
+func reconcileSelectedFAQGuidanceFactsForQuery(
+	taskID string,
+	query string,
+	layer string,
+	selection knowledgeEvidenceLayerSelection,
+	candidates map[string]knowledgeEvidenceJudgeCandidate,
+) knowledgeEvidenceLayerSelection {
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle && selection.Decision != knowledgeEvidenceDecisionDirectCombined {
 		return selection
 	}
@@ -906,10 +1211,13 @@ func reconcileSelectedFAQGuidanceFacts(
 	}
 	for _, candidateID := range selection.SelectedCandidateIDs {
 		candidate, ok := candidates[strings.TrimSpace(candidateID)]
-		if !ok || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || isKnowledgeHandoffDirectiveContent(candidate.Hit.Content) {
+		if !ok || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		_, answer := splitKnowledgeEvidenceFAQ(candidate.Hit)
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, query)
+		if isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
 		for _, clause := range splitKnowledgeEvidenceAnswerClauses(answer) {
 			if !knowledgeEvidenceAnswerClauseIsGroundedFact(clause) {
 				continue
@@ -972,7 +1280,7 @@ func knowledgeEvidenceAnswerClauseAspect(clause string) (string, string) {
 	if knowledgeEvidenceNegativeBoundaryAnchor(clause) != "" {
 		return "existence", ""
 	}
-	if knowledgeEvidenceAnswerTimePattern.MatchString(compact) || strings.Contains(compact, "时间") || strings.Contains(compact, "几点") {
+	if knowledgeEvidenceAnswerTimePattern.MatchString(clause) || strings.Contains(compact, "时间") || strings.Contains(compact, "几点") {
 		return "time", ""
 	}
 	if containsAny(compact, []string{"免费", "收费", "价格", "费用", "金额"}) {
@@ -1034,15 +1342,21 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 	if anchor := knowledgeEvidenceNegativeBoundaryAnchor(clause); anchor != "" {
 		values = appendIfMissing(values, anchor)
 	}
-	for _, pattern := range []*regexp.Regexp{
-		knowledgeEvidenceGuidanceNumberPattern,
-		knowledgeEvidenceAnswerTimePattern,
-		knowledgeEvidenceAnswerNumberPattern,
-		knowledgeEvidenceAnswerChineseQuantityPattern,
-	} {
-		for _, match := range pattern.FindAllString(clause, -1) {
-			values = appendIfMissing(values, strings.TrimSpace(match))
+	for _, match := range knowledgeEvidenceGuidanceNumberPattern.FindAllString(clause, -1) {
+		values = appendIfMissing(values, strings.TrimSpace(match))
+	}
+	timeMatches := knowledgeEvidenceAnswerTimePattern.FindAllString(clause, -1)
+	for _, match := range timeMatches {
+		values = appendIfMissing(values, strings.TrimSpace(match))
+	}
+	for _, match := range knowledgeEvidenceAnswerNumberPattern.FindAllString(clause, -1) {
+		if knowledgeEvidenceNumberIsPartOfTime(match, timeMatches) {
+			continue
 		}
+		values = appendIfMissing(values, strings.TrimSpace(match))
+	}
+	for _, match := range knowledgeEvidenceAnswerChineseQuantityPattern.FindAllString(clause, -1) {
+		values = appendIfMissing(values, strings.TrimSpace(match))
 	}
 	if anchor := knowledgeEvidenceLocationAnchor(clause); anchor != "" {
 		values = appendIfMissing(values, anchor)
@@ -1054,6 +1368,19 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 		}
 	}
 	return values
+}
+
+func knowledgeEvidenceNumberIsPartOfTime(number string, timeMatches []string) bool {
+	number = strings.TrimSpace(number)
+	if number == "" {
+		return false
+	}
+	for _, timeMatch := range timeMatches {
+		if strings.Contains(strings.TrimSpace(timeMatch), number) {
+			return true
+		}
+	}
+	return false
 }
 
 func knowledgeEvidenceTextHasNegativeBoundary(text string) bool {
@@ -1231,18 +1558,46 @@ func selectedKnowledgeEvidenceIsHandoffDirective(task knowledgeEvidenceJudgeTask
 		if candidate.Layer != layer {
 			continue
 		}
-		if _, ok := selected[candidate.CandidateID]; ok && isKnowledgeHandoffDirectiveContent(candidate.Hit.Content) {
-			return true
+		if _, ok := selected[candidate.CandidateID]; ok {
+			_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if isKnowledgeHandoffDirectiveContent(answer) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig) models.AIConfig {
-	if config.TimeoutMS <= 0 || time.Duration(config.TimeoutMS)*time.Millisecond > knowledgeEvidenceJudgeMaxTimeout {
-		config.TimeoutMS = int(knowledgeEvidenceJudgeMaxTimeout / time.Millisecond)
+func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int) models.AIConfig {
+	if taskCount < 1 {
+		taskCount = 1
 	}
-	if config.MaxOutputTokens <= 0 || config.MaxOutputTokens > knowledgeEvidenceJudgeMaxOutputTokens {
+	requiredTimeout := 4*time.Second + time.Duration(taskCount)*time.Second
+	if requiredTimeout > knowledgeEvidenceJudgeMaxTimeout {
+		requiredTimeout = knowledgeEvidenceJudgeMaxTimeout
+	}
+	configuredTimeout := time.Duration(config.TimeoutMS) * time.Millisecond
+	if config.TimeoutMS <= 0 {
+		configuredTimeout = knowledgeEvidenceJudgeMaxTimeout
+	} else if configuredTimeout < requiredTimeout {
+		configuredTimeout = requiredTimeout
+	} else if configuredTimeout > knowledgeEvidenceJudgeMaxTimeout {
+		configuredTimeout = knowledgeEvidenceJudgeMaxTimeout
+	}
+	config.TimeoutMS = int(configuredTimeout / time.Millisecond)
+
+	requiredOutputTokens := 512 + taskCount*256
+	if requiredOutputTokens < 1024 {
+		requiredOutputTokens = 1024
+	}
+	if requiredOutputTokens > knowledgeEvidenceJudgeMaxOutputTokens {
+		requiredOutputTokens = knowledgeEvidenceJudgeMaxOutputTokens
+	}
+	if config.MaxOutputTokens <= 0 {
+		config.MaxOutputTokens = requiredOutputTokens
+	} else if config.MaxOutputTokens < requiredOutputTokens {
+		config.MaxOutputTokens = requiredOutputTokens
+	} else if config.MaxOutputTokens > knowledgeEvidenceJudgeMaxOutputTokens {
 		config.MaxOutputTokens = knowledgeEvidenceJudgeMaxOutputTokens
 	}
 	config.MaxRetryCount = 0

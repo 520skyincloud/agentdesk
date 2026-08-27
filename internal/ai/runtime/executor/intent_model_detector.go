@@ -215,16 +215,23 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
+	if err == nil {
+		err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
+	}
 	if err != nil {
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
-		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage("上一版 IntentDetect 输出不是合法 JSON。请严格按照当前系统消息声明的字段重新输出 JSON；intentTasks 必须是数组且是唯一事实来源，顶层字段只能汇总 intentTasks。不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。")))
+		repairInstruction := "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(err.Error(), 240) + "。请严格按照当前系统消息声明的字段重新输出完整 JSON；intentTasks 必须从头到尾覆盖当前轮每个原子问题，且是唯一事实来源。每个任务都必须输出 text、resolvedText、sourceRefs、objective、relationToPrevious、resolutionState 和 entities；顶层字段只能汇总 intentTasks。不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage(repairInstruction)))
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
 		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
+		if err == nil {
+			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
+		}
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
 		}
