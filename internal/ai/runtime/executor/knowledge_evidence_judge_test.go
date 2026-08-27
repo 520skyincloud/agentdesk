@@ -1210,13 +1210,20 @@ func TestReconcileSelectedFAQFactsUsesTaskObjectiveBoundary(t *testing.T) {
 func TestHighConfidenceExternalAddressFAQTreatsHowToFillAsLocation(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",
-		Query:     "外卖地址应该怎么填？",
+		Query:     "酒店外卖地址应该怎么填？",
 		Objective: "method",
-		Candidates: []knowledgeEvidenceJudgeCandidate{{
-			CandidateID: "T1C1",
-			Layer:       knowledgeEvidenceLayerStore,
-			Hit:         judgeTestHit(3, 301, "外卖地址", "问题：# 外卖地址\n问：外卖地址填哪些？\n答：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.884),
-		}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(3, 301, "外卖地址", "问题：# 外卖地址\n问：外卖地址填哪些？\n答：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.9047),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(3, 302, "订单修改", "问题：怎么改订单？\n答案：转接", 0.6726),
+			},
+		},
 	}
 
 	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)

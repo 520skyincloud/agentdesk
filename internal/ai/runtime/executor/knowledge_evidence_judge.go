@@ -394,6 +394,12 @@ func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float
 
 func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
+	for _, prefix := range []string{"你们酒店的", "你们酒店", "咱们酒店的", "咱们酒店", "本酒店的", "本酒店", "酒店的", "酒店", "门店的", "门店"} {
+		if remainder := strings.TrimPrefix(compact, prefix); remainder != compact && len([]rune(remainder)) >= 4 {
+			compact = remainder
+			break
+		}
+	}
 	for _, phrase := range []string{"应该怎么填写", "应该怎么填", "要怎么填写", "要怎么填", "如何填写", "如何填", "怎么填写", "怎么填", "填写哪些", "填写什么", "填哪些", "填什么"} {
 		compact = strings.ReplaceAll(compact, phrase, "填写内容")
 	}
