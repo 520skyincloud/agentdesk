@@ -1008,6 +1008,39 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesSingleEntityAvail
 	}
 }
 
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesComparisonGuidanceFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "task-1",
+		Query:     "携程、抖音、美团的价格是一样的吗？",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "携程", Type: "company"},
+			{Text: "抖音", Type: "company"},
+			{Text: "美团", Type: "company"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "task-1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "平台价格", "问题：问题：携程，抖音，美团的价格是一样的吗\n答案：每个客户在不同平台享受的平台权益是不一样的，建议您可以对比价格后选择合适您的。", 0.9630),
+			},
+		},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"task-1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		question, answer := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+		facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, answer)
+		facts = filterKnowledgeEvidenceFactsForTask(task, facts)
+		t.Fatalf("expected comparison FAQ repair, repaired=%d question=%q match=%.3f answer=%q facts=%#v missing=%#v", repaired, question, knowledgeEvidenceFAQQuestionMatchScore(question, task.Query), answer, facts, missingRequiredKnowledgeEvidenceAspects(task, facts))
+	}
+	selection := selections["task-1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SupportedFacts) == 0 {
+		t.Fatalf("expected direct comparison guidance facts: %#v", selection)
+	}
+}
+
 func TestSingleEntityAvailabilityRepairRejectsDifferentEntityAnswer(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "task-1",

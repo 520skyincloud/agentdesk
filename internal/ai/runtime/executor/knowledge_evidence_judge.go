@@ -394,6 +394,7 @@ func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float
 
 func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
+	compact = strings.ReplaceAll(compact, "、", "")
 	compact = strings.NewReplacer(
 		"wi-fi", "wifi",
 		"无线网络", "wifi",
