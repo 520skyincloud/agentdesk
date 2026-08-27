@@ -81,6 +81,14 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText)
 		resolution := semanticGateNormalizeResolution(task.ResolutionState)
 		if resolution == runtimeIntentResolutionResolvedFromContext && !candidateRequiresContext {
+			candidateIndex := taskCandidates[taskIndex]
+			if candidateIndex >= 0 && candidateIndex < len(candidates) {
+				originalText := strings.TrimSpace(candidates[candidateIndex])
+				tasks[taskIndex].Text = originalText
+				tasks[taskIndex].ResolvedText = originalText
+				tasks[taskIndex].ResolutionState = runtimeIntentResolutionClear
+				continue
+			}
 			return fmt.Errorf("intentTasks[%d].resolutionState resolved_from_context requires context-dependent original text", taskIndex)
 		}
 		if candidateRequiresContext && runtimeIntentProtocolTaskHasExecutableBusiness(task) {

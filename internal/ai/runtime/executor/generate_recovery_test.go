@@ -158,6 +158,45 @@ func TestDeterministicGeneratedReplyFallbackKeepsDistinctSubstringFacts(t *testi
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackDropsContainedFactWhenCriticalValuesCovered(t *testing.T) {
+	longFact := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F1",
+		Aspect:         "method",
+		Statement:      "酒店没有传统前台，可以通过入住机或小程序线上智能化方式办理入住。",
+		CriticalValues: []string{"传统前台", "入住机", "小程序"},
+	}
+	shortFact := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F2",
+		Aspect:         "existence",
+		Statement:      "酒店没有传统前台。",
+		CriticalValues: []string{"传统前台"},
+	}
+
+	for _, facts := range [][]callbacks.KnowledgeEvidenceFactTraceData{
+		{longFact, shortFact},
+		{shortFact, longFact},
+		{
+			shortFact,
+			{FactID: "F3", Aspect: "method", Statement: longFact.Statement, CriticalValues: []string{"入住机", "小程序"}},
+			{FactID: "F4", Aspect: "existence", Statement: longFact.Statement, CriticalValues: []string{"传统前台"}},
+		},
+	} {
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID:         "task-1",
+			Intent:         "hotel_info",
+			OutputKind:     "text",
+			ReplyRequired:  true,
+			SupportedFacts: facts,
+		}}})
+
+		got := deterministicGeneratedReplyFallback(collector)
+		if got != longFact.Statement || strings.Count(got, "传统前台") != 1 {
+			t.Fatalf("covered contained fact must be emitted once regardless of input order, got %q", got)
+		}
+	}
+}
+
 func TestRunGeneratedReplyWithRecoveryFallsBackToSupportedFacts(t *testing.T) {
 	summary := &RunResult{Status: "started"}
 	collector := callbacks.NewRuntimeTraceCollector()

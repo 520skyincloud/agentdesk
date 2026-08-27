@@ -448,14 +448,8 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 	}
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
-		statements := make([]string, 0, len(group.Facts))
-		for _, fact := range group.Facts {
-			statement := strings.TrimSpace(fact.Statement)
-			if statement != "" {
-				statements = appendGeneratedReplyFallbackStatement(statements, statement)
-			}
-		}
-		if len(statements) == 0 {
+		fallbackFacts := compactGeneratedReplyFallbackFacts(group.Facts)
+		if len(fallbackFacts) == 0 {
 			if text := deterministicInteractionFallback(plan, group.TaskID); text != "" {
 				parts = append(parts, text)
 				continue
@@ -467,20 +461,78 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 			parts = append(parts, "不好意思，我刚才没理解完整，麻烦您把要问的内容再发我一下。")
 			continue
 		}
+		statements := make([]string, 0, len(fallbackFacts))
+		for _, fact := range fallbackFacts {
+			statements = append(statements, strings.TrimSpace(fact.Statement))
+		}
 		parts = append(parts, joinGeneratedReplyFactStatements(statements))
 	}
 	return composeGeneratedReplyContents(parts, 3)
 }
 
-func appendGeneratedReplyFallbackStatement(statements []string, statement string) []string {
-	normalized := normalizeRuntimeKnowledgeQuery(statement)
-	for _, existing := range statements {
-		normalizedExisting := normalizeRuntimeKnowledgeQuery(existing)
-		if normalized == normalizedExisting {
-			return statements
+func compactGeneratedReplyFallbackFacts(facts []replyFactRequirement) []replyFactRequirement {
+	deduplicated := make([]replyFactRequirement, 0, len(facts))
+	byStatement := make(map[string]int, len(facts))
+	for _, fact := range facts {
+		fact.Statement = strings.TrimSpace(fact.Statement)
+		normalized := normalizeRuntimeKnowledgeQuery(fact.Statement)
+		if normalized == "" {
+			continue
+		}
+		if index, ok := byStatement[normalized]; ok {
+			deduplicated[index].CriticalValues = appendKnowledgeEvidenceCriticalValues(deduplicated[index].CriticalValues, fact.CriticalValues)
+			continue
+		}
+		byStatement[normalized] = len(deduplicated)
+		deduplicated = append(deduplicated, fact)
+	}
+
+	ret := make([]replyFactRequirement, 0, len(deduplicated))
+	for containedIndex, contained := range deduplicated {
+		redundant := false
+		for containerIndex, container := range deduplicated {
+			if containerIndex != containedIndex && generatedReplyFallbackFactContains(container, contained) {
+				redundant = true
+				break
+			}
+		}
+		if !redundant {
+			ret = append(ret, contained)
 		}
 	}
-	return append(statements, statement)
+	return ret
+}
+
+func generatedReplyFallbackFactContains(container replyFactRequirement, contained replyFactRequirement) bool {
+	containerStatement := normalizeRuntimeKnowledgeQuery(container.Statement)
+	containedStatement := normalizeRuntimeKnowledgeQuery(contained.Statement)
+	if containerStatement == "" || containedStatement == "" || containerStatement == containedStatement || !strings.Contains(containerStatement, containedStatement) {
+		return false
+	}
+	return generatedReplyFallbackCriticalValuesCovered(container, contained.CriticalValues)
+}
+
+func generatedReplyFallbackCriticalValuesCovered(container replyFactRequirement, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	containerValues := make(map[string]struct{}, len(container.CriticalValues))
+	for _, value := range container.CriticalValues {
+		if normalized := normalizeRuntimeKnowledgeQuery(value); normalized != "" {
+			containerValues[normalized] = struct{}{}
+		}
+	}
+	containerStatement := normalizeRuntimeKnowledgeQuery(container.Statement)
+	for _, value := range required {
+		normalized := normalizeRuntimeKnowledgeQuery(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := containerValues[normalized]; !ok || !strings.Contains(containerStatement, normalized) {
+			return false
+		}
+	}
+	return true
 }
 
 func deterministicKnowledgeFallback(plan callbacks.ReplyPlanTraceData, taskID string) string {

@@ -52,6 +52,32 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	if parsed.IntentTasks[0].Text != "那麦田呢" {
 		t.Fatalf("protocol validation must restore customer text while preserving resolvedText, got %#v", parsed.IntentTasks[0])
 	}
+
+	parsed.IntentTasks[0].ResolutionState = "clear"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err == nil || !strings.Contains(err.Error(), "must be resolved_from_context") {
+		t.Fatalf("genuinely context-dependent text must still require resolved_from_context, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolClearsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "delivery_address",
+		Objective:          "method",
+		RelationToPrevious: "reference_previous",
+		ResolutionState:    "resolved_from_context",
+		Text:               "外卖地址怎么填？",
+		ResolvedText:       "麦田房型的外卖地址怎么填",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "外卖地址怎么填？"); err != nil {
+		t.Fatalf("self-contained current question must be repaired instead of rejecting the whole intent: %v", err)
+	}
+	task := parsed.IntentTasks[0]
+	if task.Text != "外卖地址怎么填" || task.ResolvedText != "外卖地址怎么填" || task.ResolutionState != runtimeIntentResolutionClear {
+		t.Fatalf("false context resolution must be cleared without old-topic leakage, got %#v", task)
+	}
 }
 
 func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCandidates(t *testing.T) {
@@ -156,7 +182,6 @@ func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaim
 		resolvedText string
 		wantError    string
 	}{
-		{name: "self contained original", text: "早餐几点", resolvedText: "酒店早餐几点", wantError: "context-dependent original text"},
 		{name: "confirmation remains dependent", text: "对吗", resolvedText: "对吗", wantError: "self-contained"},
 		{name: "demonstrative remains dependent", text: "那呢", resolvedText: "那呢", wantError: "self-contained"},
 		{name: "recent reference remains dependent", text: "刚才那个再说一遍", resolvedText: "刚才那个", wantError: "self-contained"},
@@ -172,6 +197,23 @@ func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaim
 				t.Fatalf("expected %q validation error, got %v", tt.wantError, err)
 			}
 		})
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAcceptsCountedQuestionLead(t *testing.T) {
+	currentText := "我一次问五个：WiFi账号密码是什么、停车收费吗、早餐几点、外卖地址怎么填、发票怎么开？"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("WiFi账号密码是什么", "general_guidance"),
+		validRuntimeIntentProtocolTask("停车收费吗", "price"),
+		validRuntimeIntentProtocolTask("早餐几点", "time"),
+		validRuntimeIntentProtocolTask("外卖地址怎么填", "method"),
+		validRuntimeIntentProtocolTask("发票怎么开", "method"),
+	}}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("counted question lead must not pollute first-task ownership: %v", err)
+	}
+	if parsed.IntentTasks[0].Text != "WiFi账号密码是什么" {
+		t.Fatalf("first task text must contain only the first atomic question, got %#v", parsed.IntentTasks[0])
 	}
 }
 

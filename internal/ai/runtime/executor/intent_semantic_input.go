@@ -92,11 +92,44 @@ func trimRuntimeTaskCandidateLead(text string) string {
 			continue
 		}
 		prefix := normalizeRuntimeKnowledgeQuery(text[:index])
-		if containsAny(prefix, []string{"分别回答", "逐个回答", "逐项回答", "一起问", "几个问题", "这些问题", "以下问题", "请问", "想问"}) {
+		if runtimeIntentTaskCandidateLeadIsInstruction(prefix) {
 			return strings.TrimSpace(text[index+len(delimiter):])
 		}
 	}
 	return text
+}
+
+func runtimeIntentTaskCandidateLeadIsInstruction(prefix string) bool {
+	if containsAny(prefix, []string{
+		"分别回答", "逐个回答", "逐项回答", "一起问",
+		"几个问题", "这些问题", "以下问题", "下面问题", "下列问题",
+		"请问", "想问",
+	}) {
+		return true
+	}
+	for _, lead := range []string{"我想一次问", "我一次问", "一次问", "我有", "以下", "下面", "下列"} {
+		if strings.HasPrefix(prefix, lead) && runtimeIntentCountedTaskLeadSuffix(strings.TrimPrefix(prefix, lead)) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentCountedTaskLeadSuffix(text string) bool {
+	runes := []rune(strings.TrimSpace(strings.ToLower(text)))
+	countEnd := 0
+	for countEnd < len(runes) && strings.ContainsRune("0123456789零〇一二两三四五六七八九十百千万几n", runes[countEnd]) {
+		countEnd++
+	}
+	if countEnd == 0 {
+		return false
+	}
+	switch string(runes[countEnd:]) {
+	case "个", "个问题", "项", "项问题", "条", "条问题":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitRuntimeTaskCandidateClause(text string) []string {

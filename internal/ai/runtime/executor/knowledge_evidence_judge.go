@@ -31,6 +31,8 @@ const (
 	knowledgeEvidenceLayerStore   = "store"
 	knowledgeEvidenceLayerGeneral = "general"
 
+	knowledgeEvidenceDirectFAQMinimumScore = float32(0.85)
+
 	knowledgeEvidenceJudgeMaxTimeout      = 15 * time.Second
 	knowledgeEvidenceJudgeMaxOutputTokens = 4096
 )
@@ -457,6 +459,42 @@ func knowledgeEvidenceConfigurationAnswerCoversQuery(query string, question stri
 	return true
 }
 
+func knowledgeEvidenceConfigurationFAQQuestionHighlyRelated(query string, question string) bool {
+	queryTopic := knowledgeEvidenceConfigurationTopic(query)
+	if queryTopic == "" || knowledgeEvidenceConfigurationTopic(question) != queryTopic {
+		return false
+	}
+	queryFields := knowledgeEvidenceConfigurationFields(query)
+	questionFields := knowledgeEvidenceConfigurationFields(question)
+	if len(queryFields) == 0 || len(questionFields) == 0 {
+		return false
+	}
+	for _, field := range questionFields {
+		if !knowledgeEvidenceContainsString(queryFields, field) {
+			return false
+		}
+	}
+	compact := normalizeKnowledgeEvidenceQuestionForMatch(question)
+	return !containsAny(compact, []string{"连不上", "无法连接", "连接失败", "不能用", "用不了", "忘记", "忘了", "修改", "更换", "重置", "故障"})
+}
+
+func knowledgeEvidenceConfigurationCandidateCoversTask(task knowledgeEvidenceJudgeTask, question string, answer string) bool {
+	return knowledgeEvidenceConfigurationFAQQuestionHighlyRelated(task.Query, question) &&
+		knowledgeEvidenceConfigurationAnswerCoversQuery(task.Query, question, answer)
+}
+
+func knowledgeEvidenceConfigurationCandidateMatchesTask(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate, question string, answer string) bool {
+	if !knowledgeEvidenceConfigurationCandidateCoversTask(task, question, answer) {
+		return false
+	}
+	return knowledgeEvidenceConfigurationScopeMatches(task.Query, strings.Join([]string{question, answer, candidate.Hit.Title}, " "))
+}
+
+func knowledgeEvidenceStrictConfigurationCandidateMatches(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate, question string, answer string) bool {
+	return candidate.Hit.Score >= knowledgeEvidenceDirectFAQMinimumScore &&
+		knowledgeEvidenceConfigurationCandidateMatchesTask(task, candidate, question, answer)
+}
+
 func knowledgeEvidenceConfigurationScope(text string) string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
 	scopes := make([]string, 0, 3)
@@ -493,11 +531,11 @@ func knowledgeEvidenceConfigurationLayerHasAmbiguousScope(task knowledgeEvidence
 	}
 	scopes := make(map[string]struct{}, 3)
 	for _, candidate := range task.Candidates {
-		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < 0.7 {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
-		if !knowledgeEvidenceConfigurationAnswerCoversQuery(task.Query, question, answer) {
+		if !knowledgeEvidenceConfigurationCandidateCoversTask(task, question, answer) {
 			continue
 		}
 		scope := knowledgeEvidenceConfigurationScope(strings.Join([]string{question, answer, candidate.Hit.Title}, " "))
@@ -1584,7 +1622,6 @@ func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeT
 
 func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
 	const (
-		minimumScore               = float32(0.85)
 		minimumRescueScore         = float32(0.65)
 		minimumRescueQuestionMatch = 0.94
 	)
@@ -1604,9 +1641,11 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		questionMatch, matched := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
-		rescuedByQuestion := candidate.Hit.Score >= minimumRescueScore && questionMatch >= minimumRescueQuestionMatch
-		if (candidate.Hit.Score < minimumScore && !rescuedByQuestion) ||
-			question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || !matched {
+		configurationTask := knowledgeEvidenceConfigurationTopic(task.Query) != ""
+		strictConfigurationMatch := configurationTask && knowledgeEvidenceStrictConfigurationCandidateMatches(task, candidate, question, answer)
+		rescuedByQuestion := !configurationTask && candidate.Hit.Score >= minimumRescueScore && questionMatch >= minimumRescueQuestionMatch
+		if (candidate.Hit.Score < knowledgeEvidenceDirectFAQMinimumScore && !rescuedByQuestion) ||
+			question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || (!matched && !strictConfigurationMatch) {
 			continue
 		}
 		if knowledgeEvidenceConfigurationTopic(task.Query) != "" &&
@@ -1648,6 +1687,9 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 func knowledgeEvidenceJudgeCandidateCompletesTask(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate) (float64, bool) {
 	question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 	questionMatch, matched := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
+	if knowledgeEvidenceConfigurationTopic(task.Query) != "" {
+		matched = knowledgeEvidenceStrictConfigurationCandidateMatches(task, candidate, question, answer)
+	}
 	if question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || !matched {
 		return questionMatch, false
 	}
@@ -1674,15 +1716,12 @@ func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, laye
 	configurationTopic := knowledgeEvidenceConfigurationTopic(task.Query)
 	selectedConfigurationScope := knowledgeEvidenceConfigurationScope(selectedQuestion + " " + selectedAnswer)
 	for _, candidate := range task.Candidates {
-		if candidate.CandidateID == selectedCandidateID || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < 0.7 {
+		if candidate.CandidateID == selectedCandidateID || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
-		if questionMatch < 0.78 || questionMatch+0.08 < selectedQuestionMatch {
-			continue
-		}
-		if configurationTopic != "" && knowledgeEvidenceConfigurationAnswerCoversQuery(task.Query, question, answer) {
+		if configurationTopic != "" && knowledgeEvidenceConfigurationCandidateMatchesTask(task, candidate, question, answer) {
 			candidateScope := knowledgeEvidenceConfigurationScope(strings.Join([]string{question, answer, candidate.Hit.Title}, " "))
 			if knowledgeEvidenceConfigurationScope(task.Query) == "" && candidateScope != selectedConfigurationScope {
 				return true
@@ -1690,6 +1729,12 @@ func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, laye
 			if knowledgeEvidenceConfigurationValuesConflict(task.Query, selectedAnswer, answer) {
 				return true
 			}
+		}
+		if candidate.Hit.Score < 0.7 {
+			continue
+		}
+		if questionMatch < 0.78 || questionMatch+0.08 < selectedQuestionMatch {
+			continue
 		}
 		if isKnowledgeHandoffDirectiveContent(answer) || knowledgeEvidenceFAQAnswersConflict(selectedAnswer, answer) {
 			return true
@@ -2271,8 +2316,11 @@ func splitKnowledgeEvidenceEnumerationMembers(raw string, label string) ([]strin
 	raw, trailingPartial := trimKnowledgeEvidenceEnumerationNonExhaustiveMarkers(raw)
 	raw = strings.NewReplacer("以及", "、", "和", "、", "及", "、", "与", "、", "，", "、", ",", "、", "/", "、").Replace(raw)
 	ret := make([]string, 0, 4)
-	for _, rawMember := range strings.Split(raw, "、") {
+	for index, rawMember := range strings.Split(raw, "、") {
 		member := strings.TrimSpace(normalizeRuntimeKnowledgeQuery(rawMember))
+		if index == 0 {
+			member = trimKnowledgeEvidenceEnumerationLead(member)
+		}
 		member = knowledgeEvidenceRoomTypeCountSuffixPattern.ReplaceAllString(member, "")
 		member = strings.TrimSuffix(member, "房型")
 		if member == "" || strings.HasSuffix(member, "等") || len([]rune(member)) > 10 ||
@@ -2283,6 +2331,23 @@ func splitKnowledgeEvidenceEnumerationMembers(raw string, label string) ([]strin
 		ret = appendIfMissing(ret, member)
 	}
 	return ret, trailingPartial, len(ret) >= 2
+}
+
+func trimKnowledgeEvidenceEnumerationLead(member string) string {
+	for {
+		before := member
+		for _, prefix := range []string{
+			"目前我们酒店的", "目前我们酒店", "目前我们店的", "目前我们店", "目前我们的", "目前我们", "目前本酒店的", "目前本酒店", "目前本店的", "目前本店",
+			"我们酒店的", "我们酒店", "我们店的", "我们店", "我们的", "我们", "咱们酒店的", "咱们酒店", "咱们店的", "咱们店", "咱们的", "咱们",
+			"本酒店的", "本酒店", "本门店的", "本门店", "本店的", "本店", "酒店的", "酒店", "门店的", "门店", "现有的", "现有", "目前的", "目前",
+		} {
+			member = strings.TrimPrefix(member, prefix)
+		}
+		member = strings.TrimLeft(member, "：:，,")
+		if member == before {
+			return member
+		}
+	}
 }
 
 func trimKnowledgeEvidenceEnumerationNonExhaustiveMarkers(raw string) (string, bool) {

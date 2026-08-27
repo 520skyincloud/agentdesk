@@ -837,16 +837,16 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesGroundedConsensus
 	}
 }
 
-func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotUseConfigurationCoverageAsQuestionMatch(t *testing.T) {
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesStrictHighScoreConfigurationMatch(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",
-		Query:     "WiFi账号密码多少",
-		Objective: "general_guidance",
+		Query:     "酒店WiFi账号和密码是什么",
+		Objective: "compound_information",
 		Candidates: []knowledgeEvidenceJudgeCandidate{
 			{
 				CandidateID: "T1C1",
 				Layer:       knowledgeEvidenceLayerStore,
-				Hit:         judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 LISI，密码是 lis888888。", 0.94),
+				Hit:         judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 alilys，密码是 yzbh8888。", 0.94),
 			},
 		},
 	}
@@ -857,12 +857,22 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotUseConfigurati
 	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
 		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
 	}
-	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
-		t.Fatalf("configuration fields must not override weak FAQ question matching, repaired=%d selections=%#v", repaired, selections)
+	if match, complete := knowledgeEvidenceJudgeCandidateCompletesTask(task, task.Candidates[0]); !complete || match >= 0.82 {
+		t.Fatalf("strict high-score configuration FAQ must be retained without pretending its question is an exact match, complete=%v match=%.3f", complete, match)
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("expected strict high-score configuration repair, repaired=%d selections=%#v", repaired, selections)
 	}
 	selection := selections["T1"][knowledgeEvidenceLayerStore]
-	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
-		t.Fatalf("weakly matched configuration FAQ must remain insufficient, got %#v", selection)
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("strict configuration FAQ must become a direct single selection, got %#v", selection)
+	}
+	criticalValues := make([]string, 0, 2)
+	for _, fact := range selection.SupportedFacts {
+		criticalValues = append(criticalValues, fact.CriticalValues...)
+	}
+	if !containsString(criticalValues, "alilys") || !containsString(criticalValues, "yzbh8888") {
+		t.Fatalf("configuration repair must preserve both requested values: %#v", selection.SupportedFacts)
 	}
 }
 
@@ -925,11 +935,53 @@ func TestHighConfidenceConfigurationSelectionRejectsAmbiguousUnscopedConfigurati
 		Objective: "compound_information",
 		Candidates: []knowledgeEvidenceJudgeCandidate{
 			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "客房WiFi", "问题：客房WiFi账号密码是多少\n答案：客房WiFi账号是 ROOM，密码是 room888。", 0.98)},
-			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "大堂WiFi", "问题：大堂WiFi账号密码是多少\n答案：大堂WiFi账号是 LOBBY，密码是 lobby888。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "大堂WiFi", "问题：大堂WiFi账号密码是多少\n答案：大堂WiFi账号是 LOBBY，密码是 lobby888。", 0.84)},
 		},
 	}
 	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
-		t.Fatalf("unscoped query must not choose between multiple scoped configurations: %#v", selection)
+		t.Fatalf("unscoped query must not choose between multiple scoped configurations, even when one conflict is below the rescue threshold: %#v", selection)
+	}
+}
+
+func TestHighConfidenceConfigurationSelectionRejectsConflictingSameScopeValues(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "酒店WiFi账号和密码是什么",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 alilys，密码是 yzbh8888。", 0.94)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 other，密码是 other8888。", 0.84)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("conflicting same-layer configuration values must block deterministic rescue, even below the rescue threshold: %#v", selection)
+	}
+}
+
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotOverrideValidJudgeSelection(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "酒店WiFi账号和密码是什么",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 alilys，密码是 yzbh8888。", 0.94),
+		}},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: {
+			Decision:             knowledgeEvidenceDecisionDirectSingle,
+			SelectedCandidateIDs: []string{"T1C1"},
+			SupportedFacts: []knowledgeEvidenceFact{{
+				FactID: "T1F1", Aspect: "other", Statement: "Judge 已确认的有效答案。",
+			}},
+		}},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("valid Judge selection must not be overwritten, repaired=%d selections=%#v", repaired, selections)
+	}
+	if got := selections["T1"][knowledgeEvidenceLayerStore]; len(got.SupportedFacts) != 1 || got.SupportedFacts[0].Statement != "Judge 已确认的有效答案。" {
+		t.Fatalf("valid Judge selection changed unexpectedly: %#v", got)
 	}
 }
 
@@ -1957,7 +2009,7 @@ func TestReconcileSelectedFAQFactsComputesIntersectionFromRealKnowledgePhrasing(
 		},
 	}
 	candidates := map[string]knowledgeEvidenceJudgeCandidate{
-		"T1C1": {CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：合柴、艺林、塔川、岭南四种房型配备沙发。", 0.91)},
+		"T1C1": {CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：我们合柴、艺林、塔川、岭南四种房型是配备沙发的。", 0.91)},
 		"T1C2": {CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：酒店部分房型配备办公桌，如合柴、麦田和艺林。", 0.89)},
 	}
 	task.Candidates = []knowledgeEvidenceJudgeCandidate{candidates["T1C1"], candidates["T1C2"]}
@@ -1981,6 +2033,7 @@ func TestKnowledgeEvidenceEnumerationCompletenessClassification(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
 		answer       string
+		label        string
 		completeness knowledgeEvidenceEnumerationCompleteness
 		members      []string
 	}{
@@ -1993,10 +2046,15 @@ func TestKnowledgeEvidenceEnumerationCompletenessClassification(t *testing.T) {
 		{name: "partial examples", answer: "酒店部分房型配备办公桌，例如合柴、麦田。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
 		{name: "following list", answer: "有办公桌的房型如下：合柴、麦田。", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "麦田"}},
 		{name: "matching declared count", answer: "共2种房型，分别是合柴、麦田。", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "麦田"}},
+		{name: "spoken lead with declared count", answer: "我们合柴、艺林、塔川、岭南四种房型是配备沙发的。", label: "沙发", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "艺林", "塔川", "岭南"}},
 		{name: "mismatched declared count", answer: "共3种房型，分别是合柴、麦田。", completeness: knowledgeEvidenceEnumerationInvalid},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseKnowledgeEvidenceIntersectionEnumeration(tt.answer, "办公桌")
+			label := tt.label
+			if label == "" {
+				label = "办公桌"
+			}
+			got := parseKnowledgeEvidenceIntersectionEnumeration(tt.answer, label)
 			if got.Completeness != tt.completeness {
 				t.Fatalf("unexpected completeness for %q: got %s want %s (%#v)", tt.answer, got.Completeness, tt.completeness, got)
 			}

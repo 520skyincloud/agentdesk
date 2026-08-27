@@ -139,6 +139,39 @@ func TestCurrentTurnTaskCandidatesSplitsExplicitSeparateLabels(t *testing.T) {
 	}
 }
 
+func TestCurrentTurnTaskCandidatesTrimsCountedQuestionLeadBeforeColon(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  []string
+	}{
+		{
+			input: "我一次问五个：WiFi账号密码是什么、停车收费吗、早餐几点、外卖地址怎么填、发票怎么开？",
+			want:  []string{"WiFi账号密码是什么", "停车收费吗", "早餐几点", "外卖地址怎么填", "发票怎么开"},
+		},
+		{
+			input: "以下3项：早餐几点、停车收费吗、发票怎么开？",
+			want:  []string{"早餐几点", "停车收费吗", "发票怎么开"},
+		},
+		{
+			input: "我有几个问题：早餐几点、停车收费吗？",
+			want:  []string{"早餐几点", "停车收费吗"},
+		},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want %#v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCurrentTurnTaskCandidatesKeepsBusinessColon(t *testing.T) {
+	got := currentTurnTaskCandidates("WiFi账号：密码是什么？")
+	want := []string{"WiFi账号：密码是什么"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("business colon must remain part of the atomic question, got %#v", got)
+	}
+}
+
 func TestCurrentTurnTaskCandidatesSplitsIndependentLabelsButKeepsSharedSubjectFacts(t *testing.T) {
 	for _, tt := range []struct {
 		input string
