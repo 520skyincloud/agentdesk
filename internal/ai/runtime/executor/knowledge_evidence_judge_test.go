@@ -976,6 +976,53 @@ func TestDeterministicKnowledgeFallbackKeepsSemanticallyMatchedHandoff(t *testin
 	}
 }
 
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesSingleEntityAvailabilityFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "task-1",
+		Query:     "你们有外卖机器人吗？",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "外卖机器人", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "task-1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "外卖机器人", "问题：你们家有外卖机器人吗？\n答案：有外卖机器人的。", 0.9508),
+			},
+		},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"task-1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("expected one availability FAQ repair, got %d: %#v", repaired, selections)
+	}
+	selection := selections["task-1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SupportedFacts) != 1 {
+		t.Fatalf("expected one direct existence fact: %#v", selection)
+	}
+	fact := selection.SupportedFacts[0]
+	if fact.Aspect != "existence" || !strings.Contains(fact.Statement, "外卖机器人") || !containsString(fact.CriticalValues, "外卖机器人") {
+		t.Fatalf("unexpected availability fact: %#v", fact)
+	}
+}
+
+func TestSingleEntityAvailabilityRepairRejectsDifferentEntityAnswer(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "task-1",
+		Query:     "你们有外卖机器人吗？",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "外卖机器人", Type: "facility"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "task-1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "外卖机器人", "问题：你们家有外卖机器人吗？\n答案：有早餐的。", 0.96)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("a different entity answer must not repair availability: %#v", selection)
+	}
+}
+
 func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotInferMissingScope(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "task-1",

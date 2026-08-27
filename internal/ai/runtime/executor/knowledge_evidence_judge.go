@@ -406,7 +406,10 @@ func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
 		"wifi名称", "wifi账号",
 		"wifi名字", "wifi账号",
 	).Replace(compact)
-	for _, prefix := range []string{"你们酒店的", "你们酒店", "咱们酒店的", "咱们酒店", "本酒店的", "本酒店", "酒店的", "酒店", "门店的", "门店"} {
+	for _, prefix := range []string{
+		"你们酒店的", "你们酒店", "咱们酒店的", "咱们酒店", "本酒店的", "本酒店", "酒店的", "酒店", "门店的", "门店",
+		"你们家的", "你们家", "你们的", "你们", "咱们家的", "咱们家", "咱们的", "咱们",
+	} {
 		if remainder := strings.TrimPrefix(compact, prefix); remainder != compact && len([]rune(remainder)) >= 4 {
 			compact = remainder
 			break
@@ -916,6 +919,27 @@ func knowledgeEvidenceFAQAnswerConfirmsQuestion(answer string) bool {
 	return false
 }
 
+func knowledgeEvidenceFAQAnswerSupportsQuestion(task knowledgeEvidenceJudgeTask, question string, answer string) bool {
+	if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+		return true
+	}
+	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "existence") || knowledgeEvidenceTextHasNegativeBoundary(answer) {
+		return false
+	}
+	compactAnswer := normalizeRuntimeKnowledgeQuery(answer)
+	if !containsAny(compactAnswer, []string{"有", "配有", "配备", "提供", "设有", "配置"}) {
+		return false
+	}
+	compactQuestion := normalizeRuntimeKnowledgeQuery(question)
+	for _, entity := range task.Entities {
+		value := normalizeRuntimeKnowledgeQuery(entity.Text)
+		if len([]rune(value)) >= 2 && strings.Contains(compactQuestion, value) && strings.Contains(compactAnswer, value) {
+			return true
+		}
+	}
+	return false
+}
+
 func enrichKnowledgeEvidenceFactsFromSelectedFAQs(
 	task knowledgeEvidenceJudgeTask,
 	layer string,
@@ -944,7 +968,7 @@ func enrichKnowledgeEvidenceFactsFromSelectedFAQs(
 }
 
 func enrichKnowledgeEvidenceFactsFromFAQUnit(task knowledgeEvidenceJudgeTask, question string, answer string, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
-	if !knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+	if !knowledgeEvidenceFAQAnswerSupportsQuestion(task, question, answer) {
 		return facts
 	}
 	statement := affirmativeKnowledgeEvidenceQuestionStatement(question)
@@ -959,7 +983,7 @@ func enrichKnowledgeEvidenceFactsFromFAQUnit(task knowledgeEvidenceJudgeTask, qu
 		if knowledgeEvidenceFactsCoverRequiredAspect(task, facts, aspect) {
 			continue
 		}
-		criticalValues := confirmedKnowledgeEvidenceQuestionCriticalValues(aspect, question, answer)
+		criticalValues := confirmedKnowledgeEvidenceQuestionCriticalValues(task, aspect, question, answer)
 		if len(criticalValues) == 0 {
 			continue
 		}
@@ -996,10 +1020,22 @@ func affirmativeKnowledgeEvidenceQuestionStatement(question string) string {
 	return statement + "。"
 }
 
-func confirmedKnowledgeEvidenceQuestionCriticalValues(aspect string, question string, answer string) []string {
+func confirmedKnowledgeEvidenceQuestionCriticalValues(task knowledgeEvidenceJudgeTask, aspect string, question string, answer string) []string {
 	combined := strings.TrimSpace(question + " " + answer)
 	values := make([]string, 0, 2)
 	switch aspect {
+	case "existence":
+		compactQuestion := normalizeRuntimeKnowledgeQuery(question)
+		compactAnswer := normalizeRuntimeKnowledgeQuery(answer)
+		for _, entity := range task.Entities {
+			value := normalizeRuntimeKnowledgeQuery(entity.Text)
+			if len([]rune(value)) < 2 || !strings.Contains(compactQuestion, value) {
+				continue
+			}
+			if strings.Contains(compactAnswer, value) || knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+				values = appendIfMissing(values, strings.TrimSpace(entity.Text))
+			}
+		}
 	case "quantity":
 		for _, match := range knowledgeEvidenceStrictQuantityPattern.FindAllString(question, -1) {
 			values = appendIfMissing(values, strings.TrimSpace(match))
