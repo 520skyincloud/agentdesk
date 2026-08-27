@@ -689,10 +689,26 @@ func applyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON) {
 	}
 	for index := range parsed.IntentTasks {
 		task := &parsed.IntentTasks[index]
-		if strings.TrimSpace(task.Objective) != "" || canonicalIntentCode(task.Intent) != "hotel_variable" {
+		if strings.TrimSpace(task.Objective) != "" {
 			continue
 		}
-		if !task.NeedsResource && !semanticGateAllowedResourceAction(task.ResourceAction) {
+
+		intent := canonicalIntentCode(task.Intent)
+		rawAction := strings.TrimSpace(task.ResourceAction)
+		resourceType, resourceAction := normalizeHotelVariableResourceAction(rawAction, "", task.SubIntent)
+		hasExplicitResourceAction := rawAction != "" && semanticGateAllowedResourceAction(resourceAction)
+		if hasExplicitResourceAction && intent != "human_complaint_risk" && !task.NeedsHumanRoute && !task.NeedsTool {
+			task.Intent = "hotel_variable"
+			task.NeedsResource = true
+			task.ResourceAction = resourceAction
+			if strings.TrimSpace(task.SubIntent) == "" {
+				task.SubIntent = resourceType
+			}
+			task.Objective = "action_request"
+			continue
+		}
+
+		if intent != "hotel_variable" || !task.NeedsResource {
 			continue
 		}
 		task.Objective = "action_request"

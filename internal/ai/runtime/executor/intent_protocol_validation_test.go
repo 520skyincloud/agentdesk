@@ -47,6 +47,57 @@ func TestParseRuntimeIntentDetectJSONDefaultsMissingResourceTaskObjective(t *tes
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONRepairsExplicitResourceTaskInsideMultipleTasks(t *testing.T) {
+	parsed, err := parseRuntimeIntentDetectJSON(`{
+		"primaryIntent":"hotel_info",
+		"intentTasks":[
+			{
+				"intent":"hotel_info",
+				"subIntent":"checkin_process",
+				"objective":"method",
+				"relationToPrevious":"independent",
+				"resolutionState":"clear",
+				"entities":[],
+				"text":"怎么办理入住",
+				"resolvedText":"怎么办理入住",
+				"sourceRefs":["U1"],
+				"needsKnowledge":true
+			},
+			{
+				"intent":"interaction",
+				"subIntent":"mini_program",
+				"objective":"",
+				"relationToPrevious":"independent",
+				"resolutionState":"clear",
+				"entities":[{"text":"小程序","type":"resource"}],
+				"text":"小程序也发我一下",
+				"resolvedText":"发送入住小程序",
+				"sourceRefs":["U1"],
+				"needsResource":true,
+				"resourceAction":"send_miniprogram"
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("parse multi-task intent: %v", err)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "怎么办理入住？小程序也发我一下。"); err != nil {
+		t.Fatalf("repaired multi-task intent must pass strict protocol validation: %v", err)
+	}
+	if len(parsed.IntentTasks) != 2 {
+		t.Fatalf("expected two intent tasks, got %#v", parsed.IntentTasks)
+	}
+	resourceTask := parsed.IntentTasks[1]
+	if resourceTask.Intent != "hotel_variable" || resourceTask.Objective != "action_request" || !resourceTask.NeedsResource || resourceTask.ResourceAction != "provide_mini_program" {
+		t.Fatalf("expected explicit resource task to be normalized, got %#v", resourceTask)
+	}
+
+	converted := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks))
+	if len(converted) != 2 || converted[1].Intent != "hotel_variable" || !converted[1].NeedsResource || converted[1].ResourceAction != "provide_mini_program" {
+		t.Fatalf("normalized resource task must survive conversion, got %#v", converted)
+	}
+}
+
 func TestApplyRuntimeIntentProtocolDefaultsUsesOnlyExplicitResourceSignals(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -66,6 +117,14 @@ func TestApplyRuntimeIntentProtocolDefaultsUsesOnlyExplicitResourceSignals(t *te
 			task: runtimeIntentTaskJSON{
 				Intent:        "hotel_info",
 				NeedsResource: true,
+			},
+		},
+		{
+			name: "handoff intent is not rewritten by resource action",
+			task: runtimeIntentTaskJSON{
+				Intent:          "human_complaint_risk",
+				NeedsHumanRoute: true,
+				ResourceAction:  "provide_mini_program",
 			},
 		},
 		{
