@@ -689,27 +689,44 @@ func applyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON) {
 	}
 	for index := range parsed.IntentTasks {
 		task := &parsed.IntentTasks[index]
-		if strings.TrimSpace(task.Objective) != "" {
+		rawObjective := strings.TrimSpace(task.Objective)
+		if semanticGateValidObjective(semanticGateNormalizeObjective(rawObjective)) {
+			continue
+		}
+		switch semanticGateNormalizeValue(rawObjective) {
+		case "", "resource", "resource_action":
+		default:
 			continue
 		}
 
 		intent := canonicalIntentCode(task.Intent)
 		rawAction := strings.TrimSpace(task.ResourceAction)
-		resourceType, resourceAction := normalizeHotelVariableResourceAction(rawAction, "", task.SubIntent)
-		hasExplicitResourceAction := rawAction != "" && semanticGateAllowedResourceAction(resourceAction)
-		if hasExplicitResourceAction && intent != "human_complaint_risk" && !task.NeedsHumanRoute && !task.NeedsTool {
-			task.Intent = "hotel_variable"
-			task.NeedsResource = true
-			task.ResourceAction = resourceAction
-			if strings.TrimSpace(task.SubIntent) == "" {
-				task.SubIntent = resourceType
+		resourceType := ""
+		resourceAction := ""
+		if rawAction != "" {
+			resourceType, resourceAction = normalizeHotelVariableResourceAction(rawAction, "", "")
+			if !semanticGateAllowedResourceAction(resourceAction) {
+				continue
 			}
-			task.Objective = "action_request"
+		} else {
+			resourceType, resourceAction = normalizeHotelVariableResourceAction("", "", task.SubIntent)
+		}
+		if !semanticGateAllowedResourceAction(resourceAction) {
 			continue
 		}
-
-		if intent != "hotel_variable" || !task.NeedsResource {
+		if intent != "hotel_variable" {
+			if rawAction == "" || intent == "human_complaint_risk" || task.NeedsHumanRoute || task.NeedsTool {
+				continue
+			}
+			task.Intent = "hotel_variable"
+		}
+		if resourceType == "" {
 			continue
+		}
+		task.NeedsResource = true
+		task.ResourceAction = resourceAction
+		if strings.TrimSpace(task.SubIntent) == "" {
+			task.SubIntent = resourceType
 		}
 		task.Objective = "action_request"
 	}

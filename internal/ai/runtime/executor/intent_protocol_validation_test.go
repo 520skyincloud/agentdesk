@@ -98,6 +98,32 @@ func TestParseRuntimeIntentDetectJSONRepairsExplicitResourceTaskInsideMultipleTa
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONRepairsBoundedResourceObjectiveAlias(t *testing.T) {
+	parsed, err := parseRuntimeIntentDetectJSON(`{
+		"intentTasks":[{
+			"intent":"hotel_variable",
+			"subIntent":"mini_program",
+			"objective":"resource",
+			"relationToPrevious":"independent",
+			"resolutionState":"clear",
+			"entities":[{"text":"小程序","type":"resource"}],
+			"text":"小程序也发我一下",
+			"resolvedText":"发送入住小程序",
+			"sourceRefs":["U1"]
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parse bounded resource alias: %v", err)
+	}
+	resourceTask := parsed.IntentTasks[0]
+	if resourceTask.Objective != "action_request" || resourceTask.ResourceAction != "provide_mini_program" || !resourceTask.NeedsResource {
+		t.Fatalf("expected bounded resource alias to be normalized, got %#v", resourceTask)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "小程序也发我一下"); err != nil {
+		t.Fatalf("normalized bounded resource alias must pass strict validation: %v", err)
+	}
+}
+
 func TestApplyRuntimeIntentProtocolDefaultsUsesOnlyExplicitResourceSignals(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -137,6 +163,7 @@ func TestApplyRuntimeIntentProtocolDefaultsUsesOnlyExplicitResourceSignals(t *te
 			name: "unknown action without needs resource",
 			task: runtimeIntentTaskJSON{
 				Intent:         "hotel_variable",
+				SubIntent:      "mini_program",
 				ResourceAction: "provide_unknown",
 			},
 		},
