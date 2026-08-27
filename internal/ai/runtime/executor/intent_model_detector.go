@@ -55,7 +55,7 @@ type runtimeIntentTaskJSON struct {
 	Objective          string                     `json:"objective"`
 	RelationToPrevious string                     `json:"relationToPrevious"`
 	ResolutionState    string                     `json:"resolutionState"`
-	Entities           []runtimeIntentEntityJSON  `json:"entities"`
+	Entities           runtimeIntentEntityList    `json:"entities"`
 	Text               string                     `json:"text"`
 	ResolvedText       string                     `json:"resolvedText"`
 	SourceRefs         runtimeIntentSourceRefList `json:"sourceRefs"`
@@ -72,9 +72,47 @@ type runtimeIntentEntityJSON struct {
 	Type string `json:"type"`
 }
 
+type runtimeIntentEntityList []runtimeIntentEntityJSON
+
 type runtimeIntentStringList []string
 
 type runtimeIntentSourceRefList []string
+
+func (list *runtimeIntentEntityList) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" || trimmed == "false" || trimmed == "true" {
+		*list = nil
+		return nil
+	}
+	var rawItems []any
+	if err := json.Unmarshal(data, &rawItems); err != nil {
+		var single any
+		if singleErr := json.Unmarshal(data, &single); singleErr != nil {
+			return err
+		}
+		rawItems = []any{single}
+	}
+	entities := make([]runtimeIntentEntityJSON, 0, len(rawItems))
+	for _, item := range rawItems {
+		entity := runtimeIntentEntityJSON{Type: "other"}
+		switch typed := item.(type) {
+		case string:
+			entity.Text = strings.TrimSpace(typed)
+		case map[string]any:
+			if text, ok := typed["text"].(string); ok {
+				entity.Text = strings.TrimSpace(text)
+			}
+			if entityType, ok := typed["type"].(string); ok && strings.TrimSpace(entityType) != "" {
+				entity.Type = strings.TrimSpace(entityType)
+			}
+		}
+		if entity.Text != "" {
+			entities = append(entities, entity)
+		}
+	}
+	*list = entities
+	return nil
+}
 
 func (list *runtimeIntentStringList) UnmarshalJSON(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))

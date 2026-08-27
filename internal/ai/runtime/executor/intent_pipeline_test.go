@@ -1083,6 +1083,46 @@ func TestParseRuntimeIntentDetectJSONToleratesLooseListFields(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONToleratesLooseEntityForms(t *testing.T) {
+	parsed, err := parseRuntimeIntentDetectJSON(`{
+		"primaryIntent":"hotel_info",
+		"subIntent":"compound_information",
+		"confidence":0.91,
+		"needsKnowledge":true,
+		"needsTool":false,
+		"needsResource":false,
+		"needsHumanRoute":false,
+		"needsClarification":false,
+		"resourceType":"",
+		"resourceAction":"",
+		"resourceActions":[],
+		"secondaryIntents":[],
+		"mixedSubTasks":[],
+		"intentTasks":[
+			{"intent":"hotel_info","subIntent":"room_facilities","text":"有没有空调","entities":"空调","needsKnowledge":true},
+			{"intent":"hotel_info","subIntent":"room_supplies","text":"矿泉水几瓶","entities":{"text":"矿泉水","type":"supply"},"needsKnowledge":true},
+			{"intent":"hotel_info","subIntent":"checkin_process","text":"怎么办入住","entities":[{"text":"入住","type":"service"},"小程序",7],"needsKnowledge":true}
+		],
+		"reason":"三个问题"
+	}`)
+	if err != nil {
+		t.Fatalf("expected loose entity forms to parse, got %v", err)
+	}
+	tasks := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks))
+	if len(tasks) != 3 {
+		t.Fatalf("expected three tasks, got %#v", tasks)
+	}
+	if len(tasks[0].Entities) != 1 || tasks[0].Entities[0].Text != "空调" || tasks[0].Entities[0].Type != "other" {
+		t.Fatalf("string entity must normalize to other, got %#v", tasks[0].Entities)
+	}
+	if len(tasks[1].Entities) != 1 || tasks[1].Entities[0].Text != "矿泉水" || tasks[1].Entities[0].Type != "supply" {
+		t.Fatalf("object entity must survive, got %#v", tasks[1].Entities)
+	}
+	if len(tasks[2].Entities) != 2 || tasks[2].Entities[1].Text != "小程序" || tasks[2].Entities[1].Type != "other" {
+		t.Fatalf("mixed entity array must retain supported values, got %#v", tasks[2].Entities)
+	}
+}
+
 func TestRuntimeIntentTaskResolvedTextAndSourceRefsAreBackwardCompatible(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"primaryIntent":"hotel_info",
@@ -1152,6 +1192,33 @@ func TestRuntimePipelineNoReplyForPlainMediaOnly(t *testing.T) {
 	}
 	if plan.Intent.ShouldReply {
 		t.Fatal("expected no reply for plain media-only message")
+	}
+}
+
+func TestRuntimePipelineUnderstoodVoiceAlwaysEntersIntent(t *testing.T) {
+	req := RunInput{
+		Conversation: models.Conversation{ID: 7},
+		UserMessage: models.Message{
+			ID:             10,
+			ConversationID: 7,
+			MessageType:    enums.IMMessageTypeVoice,
+			Content:        "voice.amr",
+			Payload:        `{"assetId":88,"mediaText":"麻烦分别告诉我，房间空调有没有，矿泉水配几瓶收不收费，入住要怎么操作。","mediaSummary":"客户咨询多项酒店信息。","mediaUnderstandingStatus":"understood","wxMedia":{"msgType":34}}`,
+		},
+	}
+	modelIntent := callbacks.IntentTraceData{
+		PrimaryIntent:    "hotel_info",
+		SubIntent:        "compound_information",
+		IntentConfidence: 0.91,
+		ShouldReply:      true,
+		NeedsKnowledge:   true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "room_facilities", Text: "房间空调有没有", NeedsKnowledge: true,
+		}},
+	}
+	intent, _, handled := detectRuntimeIntentWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: modelIntent})
+	if !handled || intent.DetectedIntent == "media_gate" || intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge {
+		t.Fatalf("understood voice transcript must use normal IntentDetect, got %#v", intent)
 	}
 }
 

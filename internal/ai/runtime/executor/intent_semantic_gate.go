@@ -60,17 +60,26 @@ func applyRuntimeIntentSemanticConsistencyGate(
 		TaskSemantics: normalizeRuntimeIntentTaskSemantics(semantics),
 		ContractMode:  runtimeIntentSemanticContractLegacy,
 	}
+	mode := runtimeIntentSemanticContractMode(result.Intent.IntentTasks, result.TaskSemantics, context.RequireSemanticContract)
+	result.ContractMode = mode
+	if mode == runtimeIntentSemanticContractLegacy {
+		if !semanticGateAllTaskSemanticsEmpty(result.TaskSemantics) {
+			for index := range result.Intent.IntentTasks {
+				result.Intent.IntentTasks[index].Objective = ""
+				result.Intent.IntentTasks[index].RelationToPrevious = ""
+				result.Intent.IntentTasks[index].ResolutionState = ""
+			}
+			result.TaskSemantics = nil
+		}
+		return result
+	}
 	result.Intent.IntentTasks, result.TaskSemantics, result.Violations = semanticGateDropRedundantInvalidResourceTasks(
 		result.Intent.IntentTasks,
 		result.TaskSemantics,
 		result.Violations,
 	)
-
-	mode := runtimeIntentSemanticContractMode(result.Intent.IntentTasks, result.TaskSemantics, context.RequireSemanticContract)
+	mode = runtimeIntentSemanticContractMode(result.Intent.IntentTasks, result.TaskSemantics, context.RequireSemanticContract)
 	result.ContractMode = mode
-	if mode == runtimeIntentSemanticContractLegacy {
-		return result
-	}
 
 	if mode == runtimeIntentSemanticContractInvalid {
 		result.Violations = append(result.Violations, runtimeIntentSemanticViolation{
@@ -393,6 +402,14 @@ func runtimeIntentSemanticContractMode(tasks []callbacks.IntentTaskTraceData, se
 			return runtimeIntentSemanticContractInvalid
 		}
 		return runtimeIntentSemanticContractLegacy
+	}
+	if !required {
+		for _, semantic := range semantics {
+			if semantic.Objective == "" || semantic.RelationToPrevious == "" || semantic.ResolutionState == "" ||
+				!semanticGateValidObjective(semantic.Objective) || !semanticGateValidRelation(semantic.RelationToPrevious) || !semanticGateValidResolution(semantic.ResolutionState) {
+				return runtimeIntentSemanticContractLegacy
+			}
+		}
 	}
 	if len(tasks) != len(semantics) {
 		return runtimeIntentSemanticContractInvalid

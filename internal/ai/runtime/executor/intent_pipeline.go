@@ -680,6 +680,12 @@ func isMediaOnlyWithoutActionableIntent(message models.Message) bool {
 	if text == "" {
 		return false
 	}
+	// An understood voice transcript is already customer text. Let IntentDetect
+	// classify it exactly like a typed message instead of applying image/file
+	// heuristics that can miss natural multi-question phrasing.
+	if message.MessageType == enums.IMMessageTypeVoice {
+		return false
+	}
 	if replyengine.MediaUnderstandingExplicitlyNoIntent(text) {
 		return true
 	}

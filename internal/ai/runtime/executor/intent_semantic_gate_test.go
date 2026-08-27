@@ -352,13 +352,42 @@ func TestIntentSemanticGateIncompleteNewContractFailsClosed(t *testing.T) {
 	}
 	semantics := []runtimeIntentTaskSemantics{{Objective: "resource_request"}}
 
-	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{})
+	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{RequireSemanticContract: true})
 	if got.ContractMode != runtimeIntentSemanticContractInvalid {
 		t.Fatalf("expected invalid contract, got %q", got.ContractMode)
 	}
 	task := got.Intent.IntentTasks[0]
 	if task.Intent != "interaction" || task.SubIntent != "clarify" || task.NeedsResource || task.ResourceAction != "" {
 		t.Fatalf("partial semantic contract must fail closed, got %#v", task)
+	}
+}
+
+func TestIntentSemanticGateLegacyProfileIgnoresPartialSemanticFields(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:  "hotel_info",
+		NeedsKnowledge: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:             "hotel_info",
+			SubIntent:          "checkin_process",
+			Objective:          "method",
+			RelationToPrevious: "independent",
+			Text:               "怎么办理入住",
+			ResolvedText:       "怎么办理入住",
+			NeedsKnowledge:     true,
+		}},
+	}
+	semantics := []runtimeIntentTaskSemantics{{Objective: "method", RelationToPrevious: "independent"}}
+
+	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{})
+	if got.ContractMode != runtimeIntentSemanticContractLegacy {
+		t.Fatalf("old Profile partial semantics must use legacy mode, got %q", got.ContractMode)
+	}
+	task := got.Intent.IntentTasks[0]
+	if task.Intent != "hotel_info" || !task.NeedsKnowledge || task.SubIntent != "checkin_process" {
+		t.Fatalf("legacy compatibility must retain the valid business task, got %#v", task)
+	}
+	if task.Objective != "" || task.RelationToPrevious != "" || task.ResolutionState != "" || len(got.TaskSemantics) != 0 {
+		t.Fatalf("partial semantic fields must be ignored in legacy mode, got task=%#v semantics=%#v", task, got.TaskSemantics)
 	}
 }
 
@@ -375,7 +404,7 @@ func TestIntentSemanticGateIncompleteTaskDoesNotEraseOtherClearTasks(t *testing.
 		{Objective: "availability"},
 	}
 
-	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{})
+	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{RequireSemanticContract: true})
 	if got.ContractMode != runtimeIntentSemanticContractInvalid {
 		t.Fatalf("expected partially invalid contract, got %q", got.ContractMode)
 	}
