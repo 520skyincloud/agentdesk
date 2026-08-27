@@ -20,6 +20,110 @@ func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testi
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONDefaultsMissingResourceTaskObjective(t *testing.T) {
+	parsed, err := parseRuntimeIntentDetectJSON(`{
+		"intentTasks":[{
+			"intent":"hotel_variable",
+			"subIntent":"mini_program",
+			"objective":"",
+			"relationToPrevious":"independent",
+			"resolutionState":"clear",
+			"entities":[],
+			"text":"入住小程序发我",
+			"resolvedText":"发送入住小程序",
+			"sourceRefs":["U1"],
+			"needsResource":true,
+			"resourceAction":"provide_mini_program"
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("parse resource task: %v", err)
+	}
+	if got := parsed.IntentTasks[0].Objective; got != "action_request" {
+		t.Fatalf("expected resource task objective default, got %q", got)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "入住小程序发我"); err != nil {
+		t.Fatalf("defaulted resource task must pass strict protocol validation: %v", err)
+	}
+}
+
+func TestApplyRuntimeIntentProtocolDefaultsUsesOnlyExplicitResourceSignals(t *testing.T) {
+	tests := []struct {
+		name          string
+		task          runtimeIntentTaskJSON
+		wantObjective string
+	}{
+		{
+			name: "recognized action without needs resource",
+			task: runtimeIntentTaskJSON{
+				Intent:         "hotel_variable",
+				ResourceAction: "provide_location",
+			},
+			wantObjective: "action_request",
+		},
+		{
+			name: "non resource intent",
+			task: runtimeIntentTaskJSON{
+				Intent:        "hotel_info",
+				NeedsResource: true,
+			},
+		},
+		{
+			name: "hotel variable without resource signal",
+			task: runtimeIntentTaskJSON{
+				Intent: "hotel_variable",
+			},
+		},
+		{
+			name: "unknown action without needs resource",
+			task: runtimeIntentTaskJSON{
+				Intent:         "hotel_variable",
+				ResourceAction: "provide_unknown",
+			},
+		},
+		{
+			name: "invalid nonempty objective is not overwritten",
+			task: runtimeIntentTaskJSON{
+				Intent:        "hotel_variable",
+				Objective:     "not_valid",
+				NeedsResource: true,
+			},
+			wantObjective: "not_valid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{tt.task}}
+			applyRuntimeIntentProtocolDefaults(&parsed)
+			if got := parsed.IntentTasks[0].Objective; got != tt.wantObjective {
+				t.Fatalf("expected objective %q, got %q", tt.wantObjective, got)
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolKeepsOtherFieldsStrictAfterResourceDefault(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_variable",
+		RelationToPrevious: "independent",
+		ResolutionState:    "",
+		Text:               "定位发我",
+		ResolvedText:       "发送酒店定位",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsResource:      true,
+		ResourceAction:     "provide_location",
+	}}}
+	applyRuntimeIntentProtocolDefaults(&parsed)
+	if parsed.IntentTasks[0].Objective != "action_request" {
+		t.Fatalf("expected resource objective default, got %q", parsed.IntentTasks[0].Objective)
+	}
+	err := validateRuntimeIntentDetectProtocol(parsed, nil, "定位发我")
+	if err == nil || !strings.Contains(err.Error(), "resolutionState") {
+		t.Fatalf("expected remaining protocol error, got %v", err)
+	}
+}
+
 func TestValidateRuntimeIntentDetectProtocolRejectsMissingSourceRefs(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",

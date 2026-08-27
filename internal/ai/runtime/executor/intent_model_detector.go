@@ -679,7 +679,24 @@ func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, erro
 		}
 		return parsed, err
 	}
+	applyRuntimeIntentProtocolDefaults(&parsed)
 	return parsed, nil
+}
+
+func applyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON) {
+	if parsed == nil {
+		return
+	}
+	for index := range parsed.IntentTasks {
+		task := &parsed.IntentTasks[index]
+		if strings.TrimSpace(task.Objective) != "" || canonicalIntentCode(task.Intent) != "hotel_variable" {
+			continue
+		}
+		if !task.NeedsResource && !semanticGateAllowedResourceAction(task.ResourceAction) {
+			continue
+		}
+		task.Objective = "action_request"
+	}
 }
 
 func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {

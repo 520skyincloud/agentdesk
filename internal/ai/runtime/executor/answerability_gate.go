@@ -1146,7 +1146,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			candidateByID[candidate.CandidateID] = candidate
 		}
 		for layer, selection := range selections {
-			selections[layer] = reconcileSelectedFAQGuidanceFactsForQuery(task.TaskID, task.Query, layer, selection, candidateByID)
+			selections[layer] = reconcileSelectedFAQGuidanceFactsForTask(task, layer, selection, candidateByID)
 		}
 		taskTrace := callbacks.KnowledgeEvidenceJudgeTaskTraceData{
 			TaskID:       task.TaskID,

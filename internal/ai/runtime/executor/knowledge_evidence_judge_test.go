@@ -1184,6 +1184,50 @@ func TestDeterministicKnowledgeEvidenceHotelAspectCues(t *testing.T) {
 	}
 }
 
+func TestReconcileSelectedFAQFactsUsesTaskObjectiveBoundary(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "房间里有空调吗？", Objective: "availability"}
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		SelectedCandidateIDs: []string{"T1C1"},
+		SupportedFacts: []knowledgeEvidenceFact{{
+			FactID: "T1F1", Aspect: "existence", Statement: "酒店所有房间均配有空调。", CriticalValues: []string{"空调"},
+		}},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerGeneral,
+			Hit:         judgeTestHit(7, 701, "空调", "问题：房间里有空调吗\n答案：酒店所有房间均配有空调。您可以使用控制面板或者遥控器自由调节温度和风速。同时也可以通过呼唤房内的智能语音操控空调。", 0.91),
+		},
+	}
+
+	got := reconcileSelectedFAQGuidanceFactsForTask(task, knowledgeEvidenceLayerGeneral, selection, candidates)
+	if len(got.SupportedFacts) != 1 || got.SupportedFacts[0].Aspect != "existence" || !strings.Contains(got.SupportedFacts[0].Statement, "配有空调") {
+		t.Fatalf("availability task must not restore unasked control methods: %#v", got.SupportedFacts)
+	}
+}
+
+func TestHighConfidenceExternalAddressFAQTreatsHowToFillAsLocation(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "外卖地址应该怎么填？",
+		Objective: "method",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(3, 301, "外卖地址", "问题：# 外卖地址\n问：外卖地址填哪些？\n答：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.884),
+		}},
+	}
+
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("exact address-format FAQ must repair to a direct answer: %#v ok=%v", selection, ok)
+	}
+	if len(selection.SupportedFacts) != 1 || selection.SupportedFacts[0].Aspect != "location" || !strings.Contains(selection.SupportedFacts[0].Statement, "房间号") {
+		t.Fatalf("address-format FAQ must provide the location value: %#v", selection.SupportedFacts)
+	}
+}
+
 func TestBuildKnowledgeEvidenceJudgeTasksCarriesIntentObjectiveAndEntities(t *testing.T) {
 	hit := judgeTestHit(1, 101, "麦田办公桌", "问题：麦田房型有办公桌吗\n答案：麦田房型配备办公桌。", 0.95)
 	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{

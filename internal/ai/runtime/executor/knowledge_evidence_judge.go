@@ -372,8 +372,8 @@ func bestKnowledgeEvidenceFAQUnitIndex(units []knowledgeEvidenceFAQUnit, query s
 }
 
 func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float64 {
-	question = normalizeRuntimeKnowledgeQuery(question)
-	query = normalizeRuntimeKnowledgeQuery(query)
+	question = normalizeKnowledgeEvidenceQuestionForMatch(question)
+	query = normalizeKnowledgeEvidenceQuestionForMatch(query)
 	if question == "" || query == "" {
 		return 0
 	}
@@ -390,6 +390,14 @@ func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float
 		return 0.9 * float64(shorter) / float64(longer)
 	}
 	return knowledgeEvidenceTextNGramSimilarity(question, query)
+}
+
+func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	for _, phrase := range []string{"应该怎么填写", "应该怎么填", "要怎么填写", "要怎么填", "如何填写", "如何填", "怎么填写", "怎么填", "填写哪些", "填写什么", "填哪些", "填什么"} {
+		compact = strings.ReplaceAll(compact, phrase, "填写内容")
+	}
+	return compact
 }
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
@@ -955,7 +963,11 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	case "location":
 		appendAspect("location")
 	case "method":
-		appendAspect("method")
+		if strings.Contains(query, "怎么填") {
+			appendAspect("location")
+		} else {
+			appendAspect("method")
+		}
 	}
 	if containsAny(query, []string{"几瓶", "几个", "几间", "几台", "几条", "几套", "几双", "几把", "几包", "几盒", "几袋", "几件", "几支", "几只", "几辆", "几杯", "几桶", "几卷", "多少瓶", "多少个", "多少台", "多少条", "多少套", "多少双", "多少把", "多少包", "多少盒", "多少袋", "多少件", "多少支", "多少只", "多少辆", "多少杯", "多少桶", "多少卷", "数量"}) {
 		appendAspect("quantity")
@@ -1674,9 +1686,24 @@ func reconcileSelectedFAQGuidanceFactsForQuery(
 	selection knowledgeEvidenceLayerSelection,
 	candidates map[string]knowledgeEvidenceJudgeCandidate,
 ) knowledgeEvidenceLayerSelection {
+	return reconcileSelectedFAQGuidanceFactsForTask(
+		knowledgeEvidenceJudgeTask{TaskID: taskID, Query: query},
+		layer,
+		selection,
+		candidates,
+	)
+}
+
+func reconcileSelectedFAQGuidanceFactsForTask(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selection knowledgeEvidenceLayerSelection,
+	candidates map[string]knowledgeEvidenceJudgeCandidate,
+) knowledgeEvidenceLayerSelection {
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle && selection.Decision != knowledgeEvidenceDecisionDirectCombined {
 		return selection
 	}
+	taskID := task.TaskID
 	seenFactIDs := make(map[string]struct{}, len(selection.SupportedFacts))
 	for _, fact := range selection.SupportedFacts {
 		seenFactIDs[strings.TrimSpace(fact.FactID)] = struct{}{}
@@ -1686,7 +1713,7 @@ func reconcileSelectedFAQGuidanceFactsForQuery(
 		if !ok || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, query)
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		if isKnowledgeHandoffDirectiveContent(answer) {
 			continue
 		}
@@ -1717,7 +1744,7 @@ func reconcileSelectedFAQGuidanceFactsForQuery(
 			})
 		}
 	}
-	selection.SupportedFacts = filterKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{TaskID: taskID, Query: query}, selection.SupportedFacts)
+	selection.SupportedFacts = filterKnowledgeEvidenceFactsForTask(task, selection.SupportedFacts)
 	return selection
 }
 
