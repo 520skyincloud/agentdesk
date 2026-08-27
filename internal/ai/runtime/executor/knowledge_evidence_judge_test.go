@@ -842,6 +842,9 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesStrictHighScoreCo
 		TaskID:    "T1",
 		Query:     "酒店WiFi账号和密码是什么",
 		Objective: "compound_information",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "WiFi", Type: "network"},
+		},
 		Candidates: []knowledgeEvidenceJudgeCandidate{
 			{
 				CandidateID: "T1C1",
@@ -873,6 +876,36 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesStrictHighScoreCo
 	}
 	if !containsString(criticalValues, "alilys") || !containsString(criticalValues, "yzbh8888") {
 		t.Fatalf("configuration repair must preserve both requested values: %#v", selection.SupportedFacts)
+	}
+}
+
+func TestHighConfidenceConfigurationSelectionAllowsEquivalentSameScopeDuplicates(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "酒店WiFi账号和密码是什么",
+		Objective: "compound_information",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "Wi-Fi", Type: "network"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 alilys，密码是 yzbh8888。", 0.8946)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "无线网络信息", "问题：无线网络密码是什么\n答案：无线网络账号是 alilys，密码是 yzbh8888。", 0.8792)},
+		},
+	}
+
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok {
+		t.Fatal("equivalent same-scope configuration FAQs must not block deterministic rescue")
+	}
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 {
+		t.Fatalf("unexpected configuration selection: %#v", selection)
+	}
+	criticalValues := make([]string, 0, 2)
+	for _, fact := range selection.SupportedFacts {
+		criticalValues = append(criticalValues, fact.CriticalValues...)
+	}
+	if !containsString(criticalValues, "alilys") || !containsString(criticalValues, "yzbh8888") {
+		t.Fatalf("equivalent FAQ rescue must keep both requested values: %#v", selection.SupportedFacts)
 	}
 }
 
@@ -1427,6 +1460,208 @@ func TestParseKnowledgeEvidenceJudgeResponseDoesNotJoinOneFactAcrossSelectedFAQs
 	selection := parsed["T1"][knowledgeEvidenceLayerStore]
 	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SupportedFacts) != 0 {
 		t.Fatalf("one fact must be grounded by one selected FAQ unit, not values pooled across FAQs: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseComputesSelectedEnumerationIntersectionBeforeGrounding(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林、塔川和岭南。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、麦田和艺林。", 0.89)},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"同时有沙发和办公桌的房型是合柴、艺林。","criticalValues":["合柴","艺林"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectCombined || len(selection.SupportedFacts) != 1 {
+		t.Fatalf("selected complete enumerations must be intersected before single-FAQ grounding: %#v", selection)
+	}
+	fact := selection.SupportedFacts[0]
+	if fact.Aspect != "scope" || !strings.Contains(fact.Statement, "合柴、艺林") || strings.Contains(fact.Statement, "麦田") || strings.Contains(fact.Statement, "塔川") {
+		t.Fatalf("unexpected deterministic intersection fact: %#v", fact)
+	}
+	if len(selection.SelectedCandidateIDs) != 2 || selection.SelectedCandidateIDs[0] != "T1C1" || selection.SelectedCandidateIDs[1] != "T1C2" {
+		t.Fatalf("intersection must use only the Judge-selected candidates: %#v", selection.SelectedCandidateIDs)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponsePreservesPartialEnumerationIntersection(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：部分房型配备办公桌，例如合柴、麦田。", 0.89)},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"当前资料能确认同时有沙发和办公桌的房型包括合柴。","criticalValues":["合柴"]}],"missingAspects":["完整房型范围"]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || len(selection.SupportedFacts) != 1 || !containsString(selection.MissingAspects, "完整房型范围") {
+		t.Fatalf("partial enumeration must remain explicitly partial: %#v", selection)
+	}
+	if !strings.Contains(selection.SupportedFacts[0].Statement, "当前资料能确认") || !containsString(selection.SupportedFacts[0].CriticalValues, "合柴") {
+		t.Fatalf("unexpected partial intersection fact: %#v", selection.SupportedFacts)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsUnsafeEnumerationIntersection(t *testing.T) {
+	baseTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"同时有沙发和办公桌的房型是合柴。","criticalValues":["合柴"]}],"missingAspects":[]}]}]}`
+
+	for _, tt := range []struct {
+		name       string
+		candidates []knowledgeEvidenceJudgeCandidate
+	}{
+		{
+			name: "empty intersection",
+			candidates: []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴。", 0.91)},
+				{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括麦田。", 0.89)},
+			},
+		},
+		{
+			name: "invalid enumeration",
+			candidates: []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+				{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：共3种房型，分别是合柴、麦田。", 0.89)},
+			},
+		},
+		{
+			name: "different object",
+			candidates: []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+				{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌会议室", "问题：哪些会议室有办公桌\n答案：有办公桌的会议室包括合柴、麦田。", 0.89)},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			task := baseTask
+			task.Candidates = tt.candidates
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse response: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+				t.Fatalf("unsafe intersection must remain insufficient: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingDuplicateIntersectionOperand(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型一", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "沙发房型二", "问题：哪些房型有沙发\n答案：有沙发的房型包括塔川、岭南。", 0.90)},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 103, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、塔川。", 0.89)},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2","T1C3"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"同时有沙发和办公桌的房型是合柴。","criticalValues":["合柴"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("conflicting duplicate operands must fail closed: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAllowsEquivalentDuplicateIntersectionOperand(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型一", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "沙发房型二", "问题：哪些房型有沙发\n答案：有沙发的房型包括艺林、合柴。", 0.90)},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 103, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、麦田。", 0.89)},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2","T1C3"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"同时有沙发和办公桌的房型是合柴。","criticalValues":["合柴"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectCombined || len(selection.SelectedCandidateIDs) != 3 ||
+		len(selection.SupportedFacts) != 1 || !containsString(selection.SupportedFacts[0].CriticalValues, "合柴") {
+		t.Fatalf("equivalent duplicate operands may be collapsed without losing provenance: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsNegativeIntersectionOperand(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "无沙发房型", "问题：哪些房型没有沙发\n答案：没有沙发的房型包括合柴、艺林。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、麦田。", 0.89)},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"scope","statement":"同时有沙发和办公桌的房型是合柴。","criticalValues":["合柴"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("negative enumeration must not be converted into an affirmative intersection: %#v", selection)
 	}
 }
 

@@ -80,6 +80,151 @@ func TestValidateRuntimeIntentDetectProtocolClearsFalseContextResolutionForSelfC
 	}
 }
 
+func TestRepairRuntimeIntentDetectProtocolRepairsAdjacentRepeatReference(t *testing.T) {
+	currentText := "再说一遍，只要正确地址。"
+	adjacentAIReply := models.Message{
+		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
+		Content: "外卖地址填写酒店名加楼层房间号。",
+	}
+	history := adapter.HistoryBuildResult{
+		RawItems: []models.Message{
+			{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "外卖地址怎么填？"},
+			adjacentAIReply,
+		},
+		LatestRawItem: &adjacentAIReply,
+	}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "delivery_address",
+		Objective:          "method",
+		RelationToPrevious: "independent",
+		ResolutionState:    "clear",
+		Entities:           runtimeIntentEntityList{{Text: "外卖地址", Type: "location"}},
+		Text:               "再说一遍，只要正确地址",
+		ResolvedText:       "再说一遍，只要正确地址",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, buildRuntimeIntentProtocolRepairContext(history), true)
+
+	task := parsed.IntentTasks[0]
+	if task.Text != "再说一遍，只要正确地址" || task.ResolvedText != "外卖地址怎么填" ||
+		task.RelationToPrevious != "reference_previous" || task.ResolutionState != runtimeIntentResolutionResolvedFromContext {
+		t.Fatalf("bounded repeat repair produced unexpected task: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("repaired repeat reference must pass protocol validation: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolDoesNotInventRepeatContext(t *testing.T) {
+	currentText := "再说一遍，只要正确地址。"
+	base := runtimeIntentTaskJSON{
+		Intent:             "hotel_info",
+		SubIntent:          "delivery_address",
+		Objective:          "method",
+		RelationToPrevious: "independent",
+		ResolutionState:    "clear",
+		Entities:           runtimeIntentEntityList{{Text: "外卖地址", Type: "location"}},
+		Text:               "再说一遍，只要正确地址",
+		ResolvedText:       "再说一遍，只要正确地址",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}
+	for _, tt := range []struct {
+		name    string
+		context runtimeIntentProtocolRepairContext
+	}{
+		{name: "no adjacent AI", context: runtimeIntentProtocolRepairContext{PreviousCustomerText: "外卖地址怎么填？"}},
+		{name: "no previous customer question", context: runtimeIntentProtocolRepairContext{AdjacentAIReply: "酒店名加房间号。"}},
+		{name: "dependent previous customer text", context: runtimeIntentProtocolRepairContext{AdjacentAIReply: "好的。", PreviousCustomerText: "那地址呢？"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{base}}
+			repairRuntimeIntentDetectProtocol(&parsed, currentText, tt.context, true)
+			if parsed.IntentTasks[0].ResolutionState != "clear" || parsed.IntentTasks[0].ResolvedText != base.ResolvedText {
+				t.Fatalf("unsafe repeat context must remain untouched: %#v", parsed.IntentTasks[0])
+			}
+			if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil || !strings.Contains(err.Error(), "must be resolved_from_context") {
+				t.Fatalf("unrepaired repeat reference must retain the protocol error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRejectsConflictingExplicitRepeatSubject(t *testing.T) {
+	currentText := "地址再说一遍。"
+	adjacentAIReply := models.Message{
+		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
+		Content: "早餐时间是早上7点到10点。",
+	}
+	history := adapter.HistoryBuildResult{
+		RawItems: []models.Message{
+			{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点？"},
+			adjacentAIReply,
+		},
+		LatestRawItem: &adjacentAIReply,
+	}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "delivery_address",
+		Objective:          "location",
+		RelationToPrevious: "independent",
+		ResolutionState:    "clear",
+		Entities:           runtimeIntentEntityList{{Text: "地址", Type: "location"}},
+		Text:               "地址再说一遍",
+		ResolvedText:       "这个再说一遍",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, buildRuntimeIntentProtocolRepairContext(history), true)
+
+	if task := parsed.IntentTasks[0]; task.ResolvedText != "这个再说一遍" || task.ResolutionState != "clear" {
+		t.Fatalf("conflicting explicit repeat subject must not inherit the previous topic: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil || !strings.Contains(err.Error(), "must be resolved_from_context") {
+		t.Fatalf("conflicting repeat subject must retain a protocol error for retry, got %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSubject(t *testing.T) {
+	currentText := "停车怎么走再说一遍。"
+	adjacentAIReply := models.Message{
+		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
+		Content: "可以通过入住机或小程序办理入住。",
+	}
+	history := adapter.HistoryBuildResult{
+		RawItems: []models.Message{
+			{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "怎么办入住？"},
+			adjacentAIReply,
+		},
+		LatestRawItem: &adjacentAIReply,
+	}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "parking_route",
+		Objective:          "method",
+		RelationToPrevious: "independent",
+		ResolutionState:    "clear",
+		Entities:           runtimeIntentEntityList{{Text: "停车", Type: "facility"}},
+		Text:               "停车怎么走再说一遍",
+		ResolvedText:       "这个怎么走",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, buildRuntimeIntentProtocolRepairContext(history), true)
+
+	if task := parsed.IntentTasks[0]; task.ResolvedText != "这个怎么走" || task.ResolutionState != "clear" {
+		t.Fatalf("same objective must not override an explicit subject mismatch: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil || !strings.Contains(err.Error(), "must be resolved_from_context") {
+		t.Fatalf("same-objective subject mismatch must retain a protocol error for retry, got %v", err)
+	}
+}
+
 func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCandidates(t *testing.T) {
 	currentText := "入住方式和开门方式分别说，不要混在一起。"
 	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
@@ -138,6 +283,137 @@ func TestValidateRuntimeIntentDetectProtocolUsesExactTextOwnershipForOverlapping
 	}}
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
 		t.Fatalf("overlapping but distinct original questions must pass one-to-one ownership: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRestoresUniqueDuplicateGap(t *testing.T) {
+	currentText := "我一次问五个：WiFi账号密码是什么、怎么办入住、房门怎么开、发票怎么开、停车收费吗？"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("WiFi账号密码是什么", "general_guidance"),
+		validRuntimeIntentProtocolTask("怎么办入住", "method"),
+		{
+			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Entities: runtimeIntentEntityList{{Text: "房门", Type: "facility"}},
+			Text:     "怎么办入住", ResolvedText: "酒店房门怎么开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+		validRuntimeIntentProtocolTask("发票怎么开", "method"),
+		validRuntimeIntentProtocolTask("停车收费吗", "price"),
+	}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
+
+	if len(parsed.IntentTasks) != 5 || parsed.IntentTasks[2].Text != "房门怎么开" || parsed.IntentTasks[2].ResolvedText != "酒店房门怎么开" {
+		t.Fatalf("unique duplicate gap must restore only task text: %#v", parsed.IntentTasks)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("repaired five-question ownership must pass validation: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolUsesUniqueTaskSemanticsForDependentResolvedText(t *testing.T) {
+	currentText := "早餐几点？房门怎么开？发票怎么开？"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("早餐几点", "time"),
+		{
+			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Entities: runtimeIntentEntityList{{Text: "房门", Type: "facility"}},
+			Text:     "早餐几点", ResolvedText: "这个怎么开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+		validRuntimeIntentProtocolTask("发票怎么开", "method"),
+	}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
+
+	task := parsed.IntentTasks[1]
+	if task.Text != "房门怎么开" || task.ResolvedText != "房门怎么开" {
+		t.Fatalf("unique entity and objective must restore a dependent resolvedText safely: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("semantically repaired ownership must pass validation: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolKeepsAmbiguousDuplicateStrict(t *testing.T) {
+	currentText := "早餐几点？停车收费吗？发票怎么开？"
+	for _, tt := range []struct {
+		name  string
+		tasks runtimeIntentTaskList
+	}{
+		{
+			name: "duplicated task semantics also point to duplicate",
+			tasks: runtimeIntentTaskList{
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+				validRuntimeIntentProtocolTask("发票怎么开", "method"),
+			},
+		},
+		{
+			name: "replacement would break task order",
+			tasks: runtimeIntentTaskList{
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+				validRuntimeIntentProtocolTask("发票怎么开", "method"),
+				{
+					Intent: "hotel_info", SubIntent: "parking", Objective: "price",
+					RelationToPrevious: "independent", ResolutionState: "clear",
+					Entities: runtimeIntentEntityList{{Text: "停车", Type: "service"}},
+					Text:     "发票怎么开", ResolvedText: "停车收费吗", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: append(runtimeIntentTaskList(nil), tt.tasks...)}
+			repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
+			if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil {
+				t.Fatalf("ambiguous duplicate ownership must remain a protocol error: %#v", parsed.IntentTasks)
+			}
+		})
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolNormalizesRoomFeatureIntersectionObjective(t *testing.T) {
+	currentText := "哪些房型既有沙发又有办公桌？"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_type_features", Objective: "recommendation",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Entities: runtimeIntentEntityList{
+			{Text: "房型", Type: "room_type"},
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: "哪些房型既有沙发又有办公桌", ResolvedText: "哪些房型既有沙发又有办公桌",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
+
+	if got := parsed.IntentTasks[0].Objective; got != "compound_information" {
+		t.Fatalf("room-feature intersection must use compound_information, got %q", got)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("normalized room-feature intersection must pass validation: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolPreservesRealRecommendationObjective(t *testing.T) {
+	currentText := "推荐一个既有沙发又有办公桌的房型。"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_type_features", Objective: "recommendation",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Entities: runtimeIntentEntityList{
+			{Text: "房型", Type: "room_type"},
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
+
+	if got := parsed.IntentTasks[0].Objective; got != "recommendation" {
+		t.Fatalf("real recommendation must keep recommendation objective, got %q", got)
 	}
 }
 

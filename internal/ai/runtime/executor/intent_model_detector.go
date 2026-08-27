@@ -254,6 +254,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err == nil {
+		repairRuntimeIntentDetectProtocol(
+			&parsed,
+			currentRuntimeIntentSemanticText(req),
+			buildRuntimeIntentProtocolRepairContext(history),
+			runtimeIntentProfileExpectsTaskSemantics(profile),
+		)
 		err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
 	}
 	if err != nil {
@@ -268,6 +274,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err == nil {
+			repairRuntimeIntentDetectProtocol(
+				&parsed,
+				currentRuntimeIntentSemanticText(req),
+				buildRuntimeIntentProtocolRepairContext(history),
+				runtimeIntentProfileExpectsTaskSemantics(profile),
+			)
 			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
 		}
 		if err != nil {
@@ -296,6 +308,17 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		HumanRoutePolicy:         parsed.SubIntent,
 		Reason:                   strings.TrimSpace("model IntentDetect JSON: " + parsed.Reason),
 	}, nil
+}
+
+func buildRuntimeIntentProtocolRepairContext(history adapter.HistoryBuildResult) runtimeIntentProtocolRepairContext {
+	adjacentAIReply, ok := immediatelyPreviousAIReply(history)
+	if !ok {
+		return runtimeIntentProtocolRepairContext{}
+	}
+	return runtimeIntentProtocolRepairContext{
+		AdjacentAIReply:      adjacentAIReply,
+		PreviousCustomerText: customerMessageBeforeAdjacentAIReply(history),
+	}
 }
 
 func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, credentialRevision int64, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {

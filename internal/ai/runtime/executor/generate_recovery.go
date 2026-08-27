@@ -504,31 +504,100 @@ func compactGeneratedReplyFallbackFacts(facts []replyFactRequirement) []replyFac
 }
 
 func generatedReplyFallbackFactContains(container replyFactRequirement, contained replyFactRequirement) bool {
-	containerStatement := normalizeRuntimeKnowledgeQuery(container.Statement)
-	containedStatement := normalizeRuntimeKnowledgeQuery(contained.Statement)
-	if containerStatement == "" || containedStatement == "" || containerStatement == containedStatement || !strings.Contains(containerStatement, containedStatement) {
+	if !generatedReplyFallbackStatementContains(container.Statement, contained.Statement) {
 		return false
 	}
-	return generatedReplyFallbackCriticalValuesCovered(container, contained.CriticalValues)
+	if knowledgeEvidenceFactContextSignature(container.Statement) != knowledgeEvidenceFactContextSignature(contained.Statement) {
+		return false
+	}
+	return generatedReplyFallbackCriticalValuesCovered(container, contained)
 }
 
-func generatedReplyFallbackCriticalValuesCovered(container replyFactRequirement, required []string) bool {
-	if len(required) == 0 {
-		return true
+func generatedReplyFallbackStatementContains(containerStatement string, containedStatement string) bool {
+	containerClauses := generatedReplyFallbackNormalizedClauses(containerStatement)
+	containedClauses := generatedReplyFallbackNormalizedClauses(containedStatement)
+	if len(containerClauses) <= len(containedClauses) || len(containedClauses) == 0 {
+		return false
 	}
-	containerValues := make(map[string]struct{}, len(container.CriticalValues))
-	for _, value := range container.CriticalValues {
-		if normalized := normalizeRuntimeKnowledgeQuery(value); normalized != "" {
-			containerValues[normalized] = struct{}{}
+
+	available := make(map[string]int, len(containerClauses))
+	for _, clause := range containerClauses {
+		available[clause]++
+	}
+	for _, clause := range containedClauses {
+		if available[clause] == 0 {
+			return false
+		}
+		available[clause]--
+	}
+	return true
+}
+
+func generatedReplyFallbackNormalizedClauses(statement string) []string {
+	clauses := splitGeneratedReplyFactClauses(statement)
+	ret := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		normalized := normalizeRuntimeKnowledgeQuery(clause)
+		for _, prefix := range []string{"我们的", "咱们的", "你们的", "您的", "你的", "我们", "咱们", "你们", "您", "你"} {
+			if strings.HasPrefix(normalized, prefix) {
+				normalized = strings.TrimPrefix(normalized, prefix)
+				break
+			}
+		}
+		normalized = strings.ReplaceAll(normalized, "完成登记后", "完成登记")
+		for {
+			trimmed := normalized
+			for _, suffix := range []string{"啦", "呀", "啊", "哦"} {
+				if strings.HasSuffix(trimmed, suffix) {
+					trimmed = strings.TrimSuffix(trimmed, suffix)
+					break
+				}
+			}
+			if trimmed == normalized {
+				break
+			}
+			normalized = trimmed
+		}
+		if normalized != "" {
+			ret = append(ret, normalized)
 		}
 	}
+	return ret
+}
+
+func generatedReplyFallbackCriticalValuesCovered(container replyFactRequirement, contained replyFactRequirement) bool {
+	if len(contained.CriticalValues) == 0 {
+		return true
+	}
 	containerStatement := normalizeRuntimeKnowledgeQuery(container.Statement)
-	for _, value := range required {
+	containedStatement := normalizeRuntimeKnowledgeQuery(contained.Statement)
+	if containerStatement == "" || containedStatement == "" {
+		return false
+	}
+
+	requireContainerValueOwnership := strings.TrimSpace(container.Aspect) == "" ||
+		strings.TrimSpace(contained.Aspect) == "" ||
+		strings.TrimSpace(container.Aspect) != strings.TrimSpace(contained.Aspect)
+	containerValues := make(map[string]struct{}, len(container.CriticalValues))
+	if requireContainerValueOwnership {
+		for _, value := range container.CriticalValues {
+			if normalized := normalizeRuntimeKnowledgeQuery(value); normalized != "" {
+				containerValues[normalized] = struct{}{}
+			}
+		}
+	}
+	for _, value := range contained.CriticalValues {
 		normalized := normalizeRuntimeKnowledgeQuery(value)
 		if normalized == "" {
 			continue
 		}
-		if _, ok := containerValues[normalized]; !ok || !strings.Contains(containerStatement, normalized) {
+		if !strings.Contains(containedStatement, normalized) || !strings.Contains(containerStatement, normalized) {
+			return false
+		}
+		if !criticalValuePolarityMatches(container.Statement, contained.Statement, value) {
+			return false
+		}
+		if _, ok := containerValues[normalized]; requireContainerValueOwnership && !ok {
 			return false
 		}
 	}

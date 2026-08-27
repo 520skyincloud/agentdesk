@@ -197,6 +197,55 @@ func TestDeterministicGeneratedReplyFallbackDropsContainedFactWhenCriticalValues
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackCompactsPoliteClauseVariantsWithoutLosingDistinctFacts(t *testing.T) {
+	checkIn := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F1",
+		Aspect:         "method",
+		Statement:      "酒店没有传统前台，可以通过入住机或小程序线上智能化方式办理入住。",
+		CriticalValues: []string{"传统前台", "入住机", "小程序"},
+	}
+	doorAccess := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F4",
+		Aspect:         "method",
+		Statement:      "完成登记后扫人脸就可以开门，无需房卡。",
+		CriticalValues: []string{"完成登记", "扫人脸", "房卡"},
+	}
+	waterQuantity := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F7",
+		Aspect:         "quantity",
+		Statement:      "房间内有两瓶矿泉水。",
+		CriticalValues: []string{"两瓶"},
+	}
+	waterPrice := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID:         "F8",
+		Aspect:         "price",
+		Statement:      "房间内的矿泉水免费。",
+		CriticalValues: []string{"免费"},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			checkIn,
+			{FactID: "F2", Aspect: "existence", Statement: "我们酒店没有传统前台。", CriticalValues: []string{"传统前台"}},
+			{FactID: "F3", Aspect: "method", Statement: "你可以通过入住机或小程序线上智能化方式办理入住。"},
+			doorAccess,
+			{FactID: "F5", Aspect: "method", Statement: "完成登记扫人脸就可以开门啦。"},
+			{FactID: "F6", Aspect: "condition", Statement: "无需房卡。", CriticalValues: []string{"房卡"}},
+			waterQuantity,
+			waterPrice,
+		},
+	}}})
+
+	want := strings.Join([]string{checkIn.Statement, doorAccess.Statement, waterQuantity.Statement, waterPrice.Statement}, " ")
+	if got := deterministicGeneratedReplyFallback(collector); got != want {
+		t.Fatalf("fallback must keep complete sentences and distinct quantity/price facts: got %q want %q", got, want)
+	}
+}
+
 func TestRunGeneratedReplyWithRecoveryFallsBackToSupportedFacts(t *testing.T) {
 	summary := &RunResult{Status: "started"}
 	collector := callbacks.NewRuntimeTraceCollector()

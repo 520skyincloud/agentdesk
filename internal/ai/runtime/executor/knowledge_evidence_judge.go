@@ -863,15 +863,23 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	if err != nil {
 		return insufficient
 	}
+	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
+	if err != nil {
+		return insufficient
+	}
+	intersectionDecision := decision == knowledgeEvidenceDecisionDirectCombined || decision == knowledgeEvidenceDecisionPartial
+	if intersectionDecision && len(selectedIDs) >= 2 && knowledgeEvidenceQueryAsksIntersection(expectedTask.Query) {
+		intersection, ok := deterministicKnowledgeEvidenceIntersectionSelection(expectedTask, layer, selectedIDs)
+		if !ok {
+			return insufficient
+		}
+		return intersection
+	}
 	if len(selectedIDs) > 0 {
 		supportedFacts = groundedKnowledgeEvidenceFacts(expectedTask, layer, selectedIDs, supportedFacts)
 		supportedFacts = enrichKnowledgeEvidenceFactsFromSelectedFAQs(expectedTask, layer, selectedIDs, supportedFacts)
 	}
 	supportedFacts = canonicalizeKnowledgeEvidenceFacts(filterKnowledgeEvidenceFactsForTask(expectedTask, supportedFacts))
-	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
-	if err != nil {
-		return insufficient
-	}
 	if decision == knowledgeEvidenceDecisionDirectCombined && len(selectedIDs) == 1 {
 		decision = knowledgeEvidenceDecisionDirectSingle
 	}
@@ -1824,16 +1832,24 @@ func normalizedKnowledgeEvidenceEntities(entities []knowledgeEvidenceJudgeEntity
 }
 
 func requiredKnowledgeEvidenceSubjectEntities(task knowledgeEvidenceJudgeTask) []string {
-	query := normalizeRuntimeKnowledgeQuery(task.Query)
+	query := normalizeKnowledgeEvidenceSubjectForMatch(task.Query)
 	ret := make([]string, 0, len(task.Entities))
 	for _, entity := range task.Entities {
-		value := normalizeRuntimeKnowledgeQuery(entity.Text)
+		value := normalizeKnowledgeEvidenceSubjectForMatch(entity.Text)
 		if len([]rune(value)) < 2 || !strings.Contains(query, value) || knowledgeEvidenceContainsString([]string{"酒店", "门店", "房间", "客房", "房型", "客户", "服务", "问题", "地址", "位置"}, value) {
 			continue
 		}
 		ret = appendIfMissing(ret, value)
 	}
 	return ret
+}
+
+func normalizeKnowledgeEvidenceSubjectForMatch(text string) string {
+	return strings.NewReplacer(
+		"wi-fi", "wifi",
+		"无线网络", "wifi",
+		"无线网", "wifi",
+	).Replace(normalizeRuntimeKnowledgeQuery(text))
 }
 
 func knowledgeEvidenceCandidateMatchesTaskSubjects(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate, question string, answer string) bool {
@@ -1845,7 +1861,7 @@ func knowledgeEvidenceCandidateMatchesTaskSubjects(task knowledgeEvidenceJudgeTa
 	if len(required) == 0 {
 		return true
 	}
-	text := normalizeRuntimeKnowledgeQuery(strings.Join([]string{question, answer, candidate.Hit.Content}, " "))
+	text := normalizeKnowledgeEvidenceSubjectForMatch(strings.Join([]string{question, answer, candidate.Hit.Content}, " "))
 	for _, subject := range required {
 		if !strings.Contains(text, subject) {
 			return false
@@ -1872,7 +1888,7 @@ func knowledgeEvidenceSelectedCandidatesMatchTaskSubjects(task knowledgeEvidence
 			continue
 		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
-		text := normalizeRuntimeKnowledgeQuery(strings.Join([]string{question, answer, candidate.Hit.Content}, " "))
+		text := normalizeKnowledgeEvidenceSubjectForMatch(strings.Join([]string{question, answer, candidate.Hit.Content}, " "))
 		matched := false
 		for _, subject := range required {
 			if strings.Contains(text, subject) {
@@ -2026,7 +2042,11 @@ func knowledgeEvidenceEnumerationHasConflict(task knowledgeEvidenceJudgeTask, la
 
 func deterministicKnowledgeEvidenceIntersectionSelection(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) (knowledgeEvidenceLayerSelection, bool) {
 	query := normalizeRuntimeKnowledgeQuery(task.Query)
-	if len(selectedCandidateIDs) < 2 || !(strings.Contains(query, "同时") || (strings.Contains(query, "既") && strings.Contains(query, "又"))) {
+	if len(selectedCandidateIDs) < 2 || !knowledgeEvidenceQueryAsksIntersection(query) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	queryObject := knowledgeEvidenceIntersectionObject(query)
+	if queryObject == "" {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	selected := make(map[string]struct{}, len(selectedCandidateIDs))
@@ -2034,11 +2054,12 @@ func deterministicKnowledgeEvidenceIntersectionSelection(task knowledgeEvidenceJ
 		selected[strings.TrimSpace(candidateID)] = struct{}{}
 	}
 	type operand struct {
-		label       string
-		candidateID string
-		enumeration knowledgeEvidenceEnumeration
+		label        string
+		candidateIDs []string
+		enumeration  knowledgeEvidenceEnumeration
 	}
 	operands := make([]operand, 0, 2)
+	operandByLabel := make(map[string]int, 2)
 	for _, candidate := range task.Candidates {
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || !hasStringKey(selected, candidate.CandidateID) {
 			continue
@@ -2047,7 +2068,13 @@ func deterministicKnowledgeEvidenceIntersectionSelection(task knowledgeEvidenceJ
 		if answer == "" {
 			answer = strings.TrimSpace(candidate.Hit.Content)
 		}
+		if knowledgeEvidenceTextHasNegativeBoundary(question + " " + answer) {
+			return knowledgeEvidenceLayerSelection{}, false
+		}
 		text := normalizeRuntimeKnowledgeQuery(question + " " + answer + " " + candidate.Hit.Title)
+		if knowledgeEvidenceIntersectionObject(text) != queryObject {
+			return knowledgeEvidenceLayerSelection{}, false
+		}
 		label := ""
 		for _, entity := range task.Entities {
 			value := normalizeRuntimeKnowledgeQuery(entity.Text)
@@ -2060,31 +2087,38 @@ func deterministicKnowledgeEvidenceIntersectionSelection(task knowledgeEvidenceJ
 			}
 		}
 		if label == "" {
-			continue
+			return knowledgeEvidenceLayerSelection{}, false
 		}
 		enumeration := parseKnowledgeEvidenceIntersectionEnumeration(answer, label)
 		if enumeration.Completeness == knowledgeEvidenceEnumerationInvalid {
+			return knowledgeEvidenceLayerSelection{}, false
+		}
+		if existingIndex, exists := operandByLabel[label]; exists {
+			if !knowledgeEvidenceEnumerationsEquivalent(operands[existingIndex].enumeration, enumeration) {
+				return knowledgeEvidenceLayerSelection{}, false
+			}
+			operands[existingIndex].candidateIDs = appendIfMissing(operands[existingIndex].candidateIDs, strings.TrimSpace(candidate.CandidateID))
 			continue
 		}
+		operandByLabel[label] = len(operands)
 		operands = append(operands, operand{
-			label:       label,
-			candidateID: strings.TrimSpace(candidate.CandidateID),
-			enumeration: enumeration,
+			label:        label,
+			candidateIDs: []string{strings.TrimSpace(candidate.CandidateID)},
+			enumeration:  enumeration,
 		})
 	}
 	if len(operands) < 2 {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	intersection := append([]string(nil), operands[0].enumeration.Members...)
-	usedIDs := []string{operands[0].candidateID}
+	usedIDs := append([]string(nil), operands[0].candidateIDs...)
 	labels := []string{operands[0].label}
 	complete := operands[0].enumeration.Completeness == knowledgeEvidenceEnumerationComplete
 	for _, item := range operands[1:] {
-		if knowledgeEvidenceContainsString(labels, item.label) {
-			continue
-		}
 		labels = append(labels, item.label)
-		usedIDs = appendIfMissing(usedIDs, item.candidateID)
+		for _, candidateID := range item.candidateIDs {
+			usedIDs = appendIfMissing(usedIDs, candidateID)
+		}
 		complete = complete && item.enumeration.Completeness == knowledgeEvidenceEnumerationComplete
 		memberSet := make(map[string]struct{}, len(item.enumeration.Members))
 		for _, member := range item.enumeration.Members {
@@ -2120,6 +2154,34 @@ func deterministicKnowledgeEvidenceIntersectionSelection(task knowledgeEvidenceJ
 		}},
 		MissingAspects: missingAspects,
 	}, true
+}
+
+func knowledgeEvidenceEnumerationsEquivalent(left knowledgeEvidenceEnumeration, right knowledgeEvidenceEnumeration) bool {
+	if left.Completeness != right.Completeness || len(left.Members) != len(right.Members) {
+		return false
+	}
+	for _, member := range left.Members {
+		if !knowledgeEvidenceContainsString(right.Members, member) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceQueryAsksIntersection(query string) bool {
+	query = normalizeRuntimeKnowledgeQuery(query)
+	return strings.Contains(query, "同时") || (strings.Contains(query, "既") && strings.Contains(query, "又"))
+}
+
+func knowledgeEvidenceIntersectionObject(text string) string {
+	text = normalizeRuntimeKnowledgeQuery(text)
+	if containsAny(text, []string{"会议室", "会议厅", "会场"}) {
+		return "meeting_room"
+	}
+	if containsAny(text, []string{"房型", "客房", "房间"}) {
+		return "room_type"
+	}
+	return ""
 }
 
 func hasStringKey(values map[string]struct{}, key string) bool {
