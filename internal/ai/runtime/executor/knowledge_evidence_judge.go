@@ -394,6 +394,18 @@ func knowledgeEvidenceFAQQuestionMatchScore(question string, query string) float
 
 func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
+	compact = strings.NewReplacer(
+		"wi-fi", "wifi",
+		"无线网络", "wifi",
+		"无线网", "wifi",
+	).Replace(compact)
+	compact = strings.NewReplacer(
+		"帐号", "账号",
+		"用户名", "账号",
+		"ssid", "账号",
+		"wifi名称", "wifi账号",
+		"wifi名字", "wifi账号",
+	).Replace(compact)
 	for _, prefix := range []string{"你们酒店的", "你们酒店", "咱们酒店的", "咱们酒店", "本酒店的", "本酒店", "酒店的", "酒店", "门店的", "门店"} {
 		if remainder := strings.TrimPrefix(compact, prefix); remainder != compact && len([]rune(remainder)) >= 4 {
 			compact = remainder
@@ -404,6 +416,149 @@ func normalizeKnowledgeEvidenceQuestionForMatch(text string) string {
 		compact = strings.ReplaceAll(compact, phrase, "填写内容")
 	}
 	return compact
+}
+
+func knowledgeEvidenceFAQDirectMatchScore(question string, answer string, query string) (float64, bool) {
+	const minimumQuestionMatch = 0.82
+	questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, query)
+	if questionMatch >= minimumQuestionMatch {
+		return questionMatch, true
+	}
+	if knowledgeEvidenceConfigurationAnswerCoversQuery(query, question, answer) {
+		return minimumQuestionMatch, true
+	}
+	return questionMatch, false
+}
+
+func knowledgeEvidenceConfigurationAnswerCoversQuery(query string, question string, answer string) bool {
+	queryTopic := knowledgeEvidenceConfigurationTopic(query)
+	if queryTopic == "" || knowledgeEvidenceConfigurationTopic(question+" "+answer) != queryTopic {
+		return false
+	}
+	requestedFields := knowledgeEvidenceConfigurationFields(query)
+	if len(requestedFields) == 0 {
+		return false
+	}
+	coveredValues := knowledgeEvidenceConfigurationValues(answer)
+	for _, requested := range requestedFields {
+		if len(coveredValues[requested]) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceConfigurationTopic(text string) string {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	if containsAny(compact, []string{"wifi", "wi-fi", "无线网", "无线网络"}) {
+		return "wifi"
+	}
+	if containsAny(compact, []string{"网络密码", "网络账号", "网络帐号", "网络名称", "网络ssid"}) {
+		return "wifi"
+	}
+	return ""
+}
+
+func knowledgeEvidenceConfigurationFields(text string) []string {
+	if knowledgeEvidenceConfigurationTopic(text) == "" {
+		return nil
+	}
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	fields := make([]string, 0, 2)
+	if containsAny(compact, []string{"账号", "帐号", "用户名", "名称", "名字", "ssid", "热点名"}) ||
+		containsAny(compact, []string{"wifi是哪个", "wi-fi是哪个", "无线网是哪个", "无线网络是哪个"}) {
+		fields = append(fields, "account")
+	}
+	if containsAny(compact, []string{"密码", "口令"}) {
+		fields = append(fields, "password")
+	}
+	return fields
+}
+
+func knowledgeEvidenceConfigurationValues(text string) map[string][]string {
+	values := make(map[string][]string, 2)
+	matches := knowledgeEvidenceConfigurationFieldMarkerPattern.FindAllStringSubmatchIndex(text, -1)
+	for index, match := range matches {
+		if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+			continue
+		}
+		valueEnd := len(text)
+		if index+1 < len(matches) {
+			valueEnd = matches[index+1][0]
+		}
+		value := strings.TrimSpace(text[match[1]:valueEnd])
+		if delimiter := strings.IndexAny(value, "\r\n，,；;。"); delimiter >= 0 {
+			value = value[:delimiter]
+		}
+		value = strings.TrimSpace(strings.Trim(value, "：:"))
+		if !knowledgeEvidenceConfigurationValueIsConcrete(value) {
+			continue
+		}
+		field := knowledgeEvidenceConfigurationFieldName(text[match[2]:match[3]])
+		if field != "" {
+			values[field] = appendIfMissing(values[field], value)
+		}
+	}
+	return values
+}
+
+func knowledgeEvidenceConfigurationFieldName(label string) string {
+	compact := strings.ToLower(strings.TrimSpace(label))
+	if containsAny(compact, []string{"密码", "口令"}) {
+		return "password"
+	}
+	if containsAny(compact, []string{"账号", "帐号", "用户名", "名称", "名字", "ssid"}) {
+		return "account"
+	}
+	return ""
+}
+
+func knowledgeEvidenceConfigurationValueIsConcrete(value string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(value)
+	if len([]rune(compact)) < 2 {
+		return false
+	}
+	return !containsAny(compact, []string{
+		"请联系", "联系门店", "联系同事", "联系客服", "咨询门店", "咨询客服", "转接", "人工确认",
+		"请确认", "待确认", "不清楚", "不知道", "资料没写", "以门店为准", "以现场为准", "是多少", "是什么",
+	})
+}
+
+func knowledgeEvidenceConfigurationFactAnswersTask(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact) bool {
+	requested := knowledgeEvidenceConfigurationFields(task.Query)
+	if len(requested) == 0 {
+		return false
+	}
+	values := knowledgeEvidenceConfigurationValues(fact.Statement)
+	for _, field := range requested {
+		if len(values[field]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceHandoffFAQMatchesQuery(question string, query string) bool {
+	const minimumQuestionMatch = 0.78
+	if strings.TrimSpace(question) == "" || strings.TrimSpace(query) == "" {
+		return false
+	}
+	if knowledgeEvidenceFAQQuestionMatchScore(question, query) >= minimumQuestionMatch {
+		return true
+	}
+	question = trimKnowledgeEvidenceHandoffQuestionSuffix(question)
+	query = trimKnowledgeEvidenceHandoffQuestionSuffix(query)
+	return question != "" && query != "" && knowledgeEvidenceFAQQuestionMatchScore(question, query) >= minimumQuestionMatch
+}
+
+func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
+	text = normalizeKnowledgeEvidenceQuestionForMatch(text)
+	for _, suffix := range []string{"应该怎么办", "要怎么办", "怎么办", "怎么处理", "如何处理", "怎么解决", "如何解决", "咋办"} {
+		if remainder := strings.TrimSuffix(text, suffix); remainder != text && len([]rune(remainder)) >= 3 {
+			return strings.TrimSpace(remainder)
+		}
+	}
+	return strings.TrimSpace(text)
 }
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
@@ -879,7 +1034,7 @@ func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts 
 			continue
 		}
 		if len(required) == 0 {
-			if fact.Aspect != "other" {
+			if fact.Aspect != "other" || knowledgeEvidenceConfigurationFactAnswersTask(task, fact) {
 				ret = append(ret, fact)
 			}
 			continue
@@ -1098,7 +1253,30 @@ func missingRequiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask, fa
 		}
 		ret = append(ret, knowledgeEvidenceAspectLabel(aspect))
 	}
+	configurationValues := make(map[string][]string, 2)
+	for _, fact := range facts {
+		for field, values := range knowledgeEvidenceConfigurationValues(fact.Statement) {
+			for _, value := range values {
+				configurationValues[field] = appendIfMissing(configurationValues[field], value)
+			}
+		}
+	}
+	for _, field := range knowledgeEvidenceConfigurationFields(task.Query) {
+		if len(configurationValues[field]) == 0 {
+			ret = append(ret, knowledgeEvidenceConfigurationFieldLabel(field))
+		}
+	}
 	return ret
+}
+
+func knowledgeEvidenceConfigurationFieldLabel(field string) string {
+	if field == "account" {
+		return "WiFi账号"
+	}
+	if field == "password" {
+		return "WiFi密码"
+	}
+	return field
 }
 
 func knowledgeEvidenceAspectLabel(aspect string) string {
@@ -1269,20 +1447,23 @@ func knowledgeEvidenceTaskHasLayerCandidates(task knowledgeEvidenceJudgeTask, la
 
 func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
 	var best *knowledgeEvidenceJudgeCandidate
+	bestQuestionMatch := 0.0
 	for index := range task.Candidates {
 		candidate := &task.Candidates[index]
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		if best == nil || candidate.Hit.Score > best.Hit.Score {
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if !isKnowledgeHandoffDirectiveContent(answer) || !knowledgeEvidenceHandoffFAQMatchesQuery(question, task.Query) {
+			continue
+		}
+		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
+		if best == nil || questionMatch > bestQuestionMatch+0.02 || (questionMatch >= bestQuestionMatch-0.02 && candidate.Hit.Score > best.Hit.Score) {
 			best = candidate
+			bestQuestionMatch = questionMatch
 		}
 	}
 	if best == nil {
-		return knowledgeEvidenceLayerSelection{}, false
-	}
-	_, answer := splitKnowledgeEvidenceFAQForQuery(best.Hit, task.Query)
-	if !isKnowledgeHandoffDirectiveContent(answer) {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	return knowledgeEvidenceLayerSelection{
@@ -1293,7 +1474,6 @@ func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeT
 
 func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
 	const minimumScore = float32(0.85)
-	const minimumQuestionMatch = 0.82
 	type matchedFAQ struct {
 		candidate knowledgeEvidenceJudgeCandidate
 		question  string
@@ -1306,8 +1486,8 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 			continue
 		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
-		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
-		if question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || questionMatch < minimumQuestionMatch {
+		questionMatch, matched := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
+		if question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) || !matched {
 			continue
 		}
 		matches = append(matches, matchedFAQ{candidate: candidate, question: question, answer: answer, match: questionMatch})
@@ -1879,6 +2059,11 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 			values = appendIfMissing(values, value)
 		}
 	}
+	for _, fieldValues := range knowledgeEvidenceConfigurationValues(clause) {
+		for _, value := range fieldValues {
+			values = appendIfMissing(values, value)
+		}
+	}
 	return values
 }
 
@@ -2020,6 +2205,7 @@ var knowledgeEvidenceAnswerNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+
 var knowledgeEvidenceAnswerChineseQuantityPattern = regexp.MustCompile(`[零〇一二三四五六七八九十百千万两]+(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|天|晚|小时|分钟|元|块|折|层|楼|号|公里|米|工作日)`)
 var knowledgeEvidenceStrictQuantityPattern = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]+)?|[零〇一二三四五六七八九十百千万两]+)(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|天|晚|小时|分钟|元|块|折|公里|米|工作日)`)
 var knowledgeEvidencePriceValuePattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?(?:元|块|折)`)
+var knowledgeEvidenceConfigurationFieldMarkerPattern = regexp.MustCompile(`(?i)(?:wifi|wi-fi|无线网|无线网络)?\s*(账号|帐号|用户名|名称|名字|ssid|密码|口令)\s*(?:是|为|[:：])?\s*`)
 
 func knowledgeEvidenceGuidanceCriticalValues(clause string, criticalValue string) []string {
 	values := []string{criticalValue}

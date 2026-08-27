@@ -837,6 +837,145 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesGroundedConsensus
 	}
 }
 
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesConfigurationAnswerCoverage(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "WiFi账号密码多少",
+		Objective: "general_guidance",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 LISI，密码是 lis888888。", 0.94),
+			},
+		},
+	}
+	question, _ := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+	if match := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query); match >= 0.82 {
+		t.Fatalf("test must exercise answer coverage beyond plain question similarity, got %.3f", match)
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("expected configuration FAQ repair, got %d", repaired)
+	}
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("expected WiFi configuration FAQ to be selected, got %#v", selection)
+	}
+	combinedFacts := ""
+	for _, fact := range selection.SupportedFacts {
+		combinedFacts += fact.Statement
+	}
+	if !strings.Contains(combinedFacts, "账号") || !strings.Contains(combinedFacts, "密码") {
+		t.Fatalf("selected WiFi facts must cover both requested fields: %#v", selection.SupportedFacts)
+	}
+	criticalValues := make([]string, 0, 2)
+	for _, fact := range selection.SupportedFacts {
+		criticalValues = append(criticalValues, fact.CriticalValues...)
+	}
+	if !containsString(criticalValues, "LISI") || !containsString(criticalValues, "lis888888") {
+		t.Fatalf("WiFi account and password must be mandatory reply values: %#v", selection.SupportedFacts)
+	}
+}
+
+func TestConfigurationAnswerCoverageRequiresEveryRequestedField(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "无线网络的登录账号和连接口令分别是多少",
+		Objective: "general_guidance",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "无线网密码", "问题：WiFi密码是什么\n答案：密码是 lis888888。", 0.96),
+			},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("password-only answer must not satisfy an account-and-password query: %#v", selection)
+	}
+}
+
+func TestConfigurationAnswerCoverageRequiresConcreteValues(t *testing.T) {
+	if knowledgeEvidenceConfigurationAnswerCoversQuery(
+		"WiFi账号密码多少",
+		"WiFi账号密码是多少",
+		"请联系门店确认。",
+	) {
+		t.Fatal("field names without concrete values must not become a direct answer")
+	}
+}
+
+func TestConfigurationValuesKeepChineseSpacesAndPasswordSymbols(t *testing.T) {
+	values := knowledgeEvidenceConfigurationValues("WiFi名称：丽斯 南七，密码：ab!^=/?:()#9。")
+	if got := values["account"]; len(got) != 1 || got[0] != "丽斯 南七" {
+		t.Fatalf("unexpected account values: %#v", got)
+	}
+	if got := values["password"]; len(got) != 1 || got[0] != "ab!^=/?:()#9" {
+		t.Fatalf("unexpected password values: %#v", got)
+	}
+}
+
+func TestFilterKnowledgeEvidenceFactsKeepsOnlyRelevantConfigurationOtherFacts(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "WiFi账号密码多少"}
+	facts := []knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "other", Statement: "WiFi账号：LISI，密码：lis888888。"},
+		{FactID: "T1F2", Aspect: "other", Statement: "如有问题请联系门店。"},
+	}
+	filtered := filterKnowledgeEvidenceFactsForTask(task, facts)
+	if len(filtered) != 1 || filtered[0].FactID != "T1F1" {
+		t.Fatalf("only concrete requested configuration facts should remain: %#v", filtered)
+	}
+}
+
+func TestDeterministicKnowledgeFallbackIgnoresUnrelatedHandoffAndKeepsDirectFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "WiFi账号密码多少",
+		Objective: "general_guidance",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "网络故障", "问题：网络连接不上怎么办\n答案：转接", 0.99),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 LISI，密码是 lis888888。", 0.94),
+			},
+		},
+	}
+	selections, grounded, handoffs := deterministicKnowledgeEvidenceJudgeFallbackSelections([]knowledgeEvidenceJudgeTask{task})
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if handoffs != 0 || grounded != 1 {
+		t.Fatalf("unrelated transfer must not override the grounded FAQ, grounded=%d handoffs=%d", grounded, handoffs)
+	}
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C2" {
+		t.Fatalf("expected the direct WiFi FAQ, got %#v", selection)
+	}
+}
+
+func TestDeterministicKnowledgeFallbackKeepsSemanticallyMatchedHandoff(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "马桶堵了",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "马桶故障", "问题：马桶堵了怎么办\n答案：转接", 0.82),
+			},
+		},
+	}
+	selection, ok := deterministicKnowledgeEvidenceHandoffSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 {
+		t.Fatalf("matched store handoff must remain authoritative: %#v ok=%v", selection, ok)
+	}
+}
+
 func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotInferMissingScope(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "task-1",
