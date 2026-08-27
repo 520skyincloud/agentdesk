@@ -139,6 +139,25 @@ func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackKeepsDistinctSubstringFacts(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "F1", Aspect: "quantity", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+			{FactID: "F2", Aspect: "price", Statement: "房间内有两瓶矿泉水，都是免费的。", CriticalValues: []string{"免费"}},
+		},
+	}}})
+
+	got := deterministicGeneratedReplyFallback(collector)
+	if strings.Count(got, "两瓶矿泉水") != 2 || !strings.Contains(got, "免费") {
+		t.Fatalf("fallback must preserve distinct fact statements even when one contains the other, got %q", got)
+	}
+}
+
 func TestRunGeneratedReplyWithRecoveryFallsBackToSupportedFacts(t *testing.T) {
 	summary := &RunResult{Status: "started"}
 	collector := callbacks.NewRuntimeTraceCollector()

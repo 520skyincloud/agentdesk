@@ -837,7 +837,7 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesGroundedConsensus
 	}
 }
 
-func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesConfigurationAnswerCoverage(t *testing.T) {
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionDoesNotUseConfigurationCoverageAsQuestionMatch(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",
 		Query:     "WiFi账号密码多少",
@@ -857,26 +857,79 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesConfigurationAnsw
 	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
 		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
 	}
-	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
-		t.Fatalf("expected configuration FAQ repair, got %d", repaired)
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("configuration fields must not override weak FAQ question matching, repaired=%d selections=%#v", repaired, selections)
 	}
 	selection := selections["T1"][knowledgeEvidenceLayerStore]
-	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
-		t.Fatalf("expected WiFi configuration FAQ to be selected, got %#v", selection)
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("weakly matched configuration FAQ must remain insufficient, got %#v", selection)
 	}
-	combinedFacts := ""
-	for _, fact := range selection.SupportedFacts {
-		combinedFacts += fact.Statement
+}
+
+func TestRepairHighConfidenceInsufficientKnowledgeSelectionRejectsCompleteConfigurationBelowDirectThreshold(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "WiFi账号密码多少",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "无线网故障", "问题：WiFi连不上怎么办\n答案：可以断开后重新连接。", 0.8578),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 LISI，密码是 lis888888。", 0.8116),
+			},
+			{
+				CandidateID: "T1C3",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 103, "无线网密码", "问题：WiFi密码是什么\n答案：密码是 lis888888。", 0.8182),
+			},
+		},
 	}
-	if !strings.Contains(combinedFacts, "账号") || !strings.Contains(combinedFacts, "密码") {
-		t.Fatalf("selected WiFi facts must cover both requested fields: %#v", selection.SupportedFacts)
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
 	}
-	criticalValues := make([]string, 0, 2)
-	for _, fact := range selection.SupportedFacts {
-		criticalValues = append(criticalValues, fact.CriticalValues...)
+
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("complete fields must not lower the direct FAQ threshold, repaired=%d selections=%#v", repaired, selections)
 	}
-	if !containsString(criticalValues, "LISI") || !containsString(criticalValues, "lis888888") {
-		t.Fatalf("WiFi account and password must be mandatory reply values: %#v", selection.SupportedFacts)
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 {
+		t.Fatalf("below-threshold configuration must remain insufficient, got %#v", selection)
+	}
+}
+
+func TestHighConfidenceConfigurationSelectionRequiresMatchingUsageScope(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "客房WiFi账号密码是多少",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "大堂WiFi", "问题：大堂WiFi账号密码是多少\n答案：大堂WiFi账号是 LOBBY，密码是 lobby888。", 0.98),
+		}},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("lobby configuration must not answer a guest-room query: %#v", selection)
+	}
+}
+
+func TestHighConfidenceConfigurationSelectionRejectsAmbiguousUnscopedConfigurations(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "WiFi账号密码是多少",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "客房WiFi", "问题：客房WiFi账号密码是多少\n答案：客房WiFi账号是 ROOM，密码是 room888。", 0.98)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "大堂WiFi", "问题：大堂WiFi账号密码是多少\n答案：大堂WiFi账号是 LOBBY，密码是 lobby888。", 0.97)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("unscoped query must not choose between multiple scoped configurations: %#v", selection)
 	}
 }
 
@@ -944,7 +997,7 @@ func TestDeterministicKnowledgeFallbackIgnoresUnrelatedHandoffAndKeepsDirectFAQ(
 			{
 				CandidateID: "T1C2",
 				Layer:       knowledgeEvidenceLayerStore,
-				Hit:         judgeTestHit(1, 102, "无线网信息", "问题：无线网密码是什么\n答案：无线网账号是 LISI，密码是 lis888888。", 0.94),
+				Hit:         judgeTestHit(1, 102, "无线网信息", "问题：WiFi账号密码多少\n答案：无线网账号是 LISI，密码是 lis888888。", 0.94),
 			},
 		},
 	}
@@ -1511,11 +1564,15 @@ func TestReconcileSelectedFAQGuidanceFactsRestoresOmittedAnswerUnit(t *testing.T
 	}
 
 	got := reconcileSelectedFAQGuidanceFacts("task-4", knowledgeEvidenceLayerStore, selection, candidates)
-	if len(got.SupportedFacts) != 2 {
-		t.Fatalf("selected FAQ guidance must be restored locally, got %#v", got.SupportedFacts)
+	if len(got.SupportedFacts) != 3 {
+		t.Fatalf("selected FAQ condition and guidance must be restored as independent aspects, got %#v", got.SupportedFacts)
 	}
-	guidance := got.SupportedFacts[1]
-	if guidance.FactID != "task-4F2" || guidance.Aspect != "method" || !strings.Contains(guidance.Statement, "对比价格") || len(guidance.CriticalValues) != 1 || guidance.CriticalValues[0] != "对比" {
+	condition := got.SupportedFacts[1]
+	if condition.FactID != "task-4F2" || condition.Aspect != "condition" || !strings.Contains(condition.Statement, "平台权益") {
+		t.Fatalf("unexpected restored condition fact: %#v", condition)
+	}
+	guidance := got.SupportedFacts[2]
+	if guidance.FactID != "task-4F3" || guidance.Aspect != "method" || !strings.Contains(guidance.Statement, "对比价格") || len(guidance.CriticalValues) != 1 || guidance.CriticalValues[0] != "对比" {
 		t.Fatalf("unexpected restored guidance fact: %#v", guidance)
 	}
 }
@@ -1542,7 +1599,7 @@ func TestReconcileSelectedFAQGuidanceFactsDoesNotDuplicateCoveredGuidance(t *tes
 	}
 }
 
-func TestReconcileSelectedFAQGuidanceFactsAddsMissingCriticalToMergedFact(t *testing.T) {
+func TestReconcileSelectedFAQGuidanceFactsKeepsMissingCriticalOnMethodFact(t *testing.T) {
 	selection := knowledgeEvidenceLayerSelection{
 		Decision:             knowledgeEvidenceDecisionDirectSingle,
 		SelectedCandidateIDs: []string{"T1C1"},
@@ -1561,11 +1618,15 @@ func TestReconcileSelectedFAQGuidanceFactsAddsMissingCriticalToMergedFact(t *tes
 	}
 
 	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
-	if len(got.SupportedFacts) != 1 {
-		t.Fatalf("merged guidance fact must be enriched instead of duplicated, got %#v", got.SupportedFacts)
+	if len(got.SupportedFacts) != 3 {
+		t.Fatalf("scope, condition, and method facts must remain independent, got %#v", got.SupportedFacts)
 	}
-	if !containsString(got.SupportedFacts[0].CriticalValues, "对比") {
-		t.Fatalf("merged guidance fact must require the comparison action, got %#v", got.SupportedFacts[0])
+	method := got.SupportedFacts[2]
+	if method.Aspect != "method" || !containsString(method.CriticalValues, "对比") {
+		t.Fatalf("comparison action must remain mandatory on its method fact, got %#v", method)
+	}
+	if containsString(got.SupportedFacts[0].CriticalValues, "对比") || containsString(got.SupportedFacts[1].CriticalValues, "对比") {
+		t.Fatalf("method values must not migrate into other aspects: %#v", got.SupportedFacts)
 	}
 }
 
@@ -1802,14 +1863,14 @@ func TestParseKnowledgeEvidenceJudgeResponseRejectsDifferentExplicitSubject(t *t
 	}
 }
 
-func TestCanonicalizeKnowledgeEvidenceFactsCollapsesEquivalentCheckinAndWaterStatements(t *testing.T) {
+func TestCanonicalizeKnowledgeEvidenceFactsKeepsFactDimensionsAndPolaritySeparate(t *testing.T) {
 	checkin := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
 		{FactID: "T1F1", Aspect: "method", Statement: "酒店没有传统前台，您可以通过入住机或小程序线上智能化方式办理入住。", CriticalValues: []string{"传统前台", "入住机", "小程序"}},
 		{FactID: "T1F2", Aspect: "existence", Statement: "酒店没有传统前台。", CriticalValues: []string{"传统前台"}},
 		{FactID: "T1F3", Aspect: "method", Statement: "您可以通过入住机或小程序线上智能化方式办理入住。", CriticalValues: []string{"入住机", "小程序"}},
 	})
-	if len(checkin) != 2 || checkin[0].Statement != checkin[1].Statement {
-		t.Fatalf("equivalent check-in facts must share one canonical statement: %#v", checkin)
+	if len(checkin) != 3 || checkin[0].Statement == checkin[1].Statement || checkin[0].Statement == checkin[2].Statement {
+		t.Fatalf("method and negative existence facts must remain independent: %#v", checkin)
 	}
 
 	water := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
@@ -1817,8 +1878,37 @@ func TestCanonicalizeKnowledgeEvidenceFactsCollapsesEquivalentCheckinAndWaterSta
 		{FactID: "T2F2", Aspect: "quantity", Statement: "房间的两瓶矿泉水是免费的。", CriticalValues: []string{"两瓶", "免费"}},
 		{FactID: "T2F3", Aspect: "price", Statement: "房间内的矿泉水都是免费的。", CriticalValues: []string{"免费"}},
 	})
-	if len(water) != 2 || water[0].Statement != water[1].Statement || !containsString(water[0].CriticalValues, "两瓶") {
-		t.Fatalf("equivalent water facts must collapse while merging critical values: %#v", water)
+	if len(water) != 3 || water[0].Aspect != "price" || water[1].Aspect != "quantity" || water[2].Aspect != "price" || water[0].Statement == water[1].Statement {
+		t.Fatalf("similar wording must not collapse distinct fact records across dimensions: %#v", water)
+	}
+	if containsString(water[0].CriticalValues, "两瓶") || !containsString(water[1].CriticalValues, "两瓶") || containsString(water[2].CriticalValues, "两瓶") {
+		t.Fatalf("quantity values must not migrate into the price fact: %#v", water)
+	}
+
+	waterWithSplitCriticalValues := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
+		{FactID: "T3F1", Aspect: "price", Statement: "房间内的矿泉水是免费的。", CriticalValues: []string{"免费"}},
+		{FactID: "T3F2", Aspect: "quantity", Statement: "房间的两瓶矿泉水是免费的。", CriticalValues: []string{"两瓶"}},
+	})
+	if len(waterWithSplitCriticalValues) != 2 || waterWithSplitCriticalValues[0].Statement == waterWithSplitCriticalValues[1].Statement {
+		t.Fatalf("complementary fact dimensions must remain separate: %#v", waterWithSplitCriticalValues)
+	}
+}
+
+func TestCanonicalizeKnowledgeEvidenceFactsKeepsPositiveNegativeAndObjectsSeparate(t *testing.T) {
+	facts := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "existence", Statement: "麦田房型配备办公桌。", CriticalValues: []string{"麦田", "办公桌"}},
+		{FactID: "T1F2", Aspect: "existence", Statement: "麦田房型没有办公桌。", CriticalValues: []string{"麦田", "办公桌"}},
+		{FactID: "T1F3", Aspect: "existence", Statement: "合柴房型配备办公桌。", CriticalValues: []string{"合柴", "办公桌"}},
+	})
+	if len(facts) != 3 {
+		t.Fatalf("opposite polarity and different room types must never merge: %#v", facts)
+	}
+	for left := 0; left < len(facts); left++ {
+		for right := left + 1; right < len(facts); right++ {
+			if facts[left].Statement == facts[right].Statement {
+				t.Fatalf("independent facts must keep distinct statements: %#v", facts)
+			}
+		}
 	}
 }
 
@@ -1852,6 +1942,79 @@ func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *tes
 	}
 	if len(fact.CriticalValues) != 2 || fact.CriticalValues[0] != "合柴" || fact.CriticalValues[1] != "艺林" {
 		t.Fatalf("only intersection members may remain mandatory: %#v", fact.CriticalValues)
+	}
+}
+
+func TestReconcileSelectedFAQFactsComputesIntersectionFromRealKnowledgePhrasing(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：合柴、艺林、塔川、岭南四种房型配备沙发。", 0.91)},
+		"T1C2": {CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：酒店部分房型配备办公桌，如合柴、麦田和艺林。", 0.89)},
+	}
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{candidates["T1C1"], candidates["T1C2"]}
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectCombined,
+		SelectedCandidateIDs: []string{"T1C1", "T1C2"},
+	}
+
+	got := reconcileSelectedFAQGuidanceFactsForTask(task, knowledgeEvidenceLayerStore, selection, candidates)
+	if got.Decision != knowledgeEvidenceDecisionPartial || len(got.SupportedFacts) != 1 || !containsString(got.MissingAspects, "完整房型范围") {
+		t.Fatalf("partial enumeration intersection must preserve its missing scope: %#v", got)
+	}
+	fact := got.SupportedFacts[0]
+	if !strings.Contains(fact.Statement, "当前资料能确认") || !strings.Contains(fact.Statement, "合柴、艺林") ||
+		strings.Contains(fact.Statement, "麦田") || strings.Contains(fact.Statement, "塔川") || strings.Contains(fact.Statement, "岭南") {
+		t.Fatalf("intersection must contain only confirmed shared room types: %#v", fact)
+	}
+}
+
+func TestKnowledgeEvidenceEnumerationCompletenessClassification(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		answer       string
+		completeness knowledgeEvidenceEnumerationCompleteness
+		members      []string
+	}{
+		{name: "complete include", answer: "有办公桌的房型包括合柴、麦田。", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "麦田"}},
+		{name: "partial etc", answer: "有办公桌的房型包括合柴、麦田等房型。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "partial other room types", answer: "有办公桌的房型包括合柴、麦田等其他房型。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "partial common room types", answer: "有办公桌的房型包括合柴、麦田等常见房型。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "partial including but not limited to prefix", answer: "有办公桌的房型包括但不限于合柴、麦田。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "partial including but not limited to suffix", answer: "有办公桌的房型包括合柴、麦田，但不限于其他房型。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "partial examples", answer: "酒店部分房型配备办公桌，例如合柴、麦田。", completeness: knowledgeEvidenceEnumerationPartial, members: []string{"合柴", "麦田"}},
+		{name: "following list", answer: "有办公桌的房型如下：合柴、麦田。", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "麦田"}},
+		{name: "matching declared count", answer: "共2种房型，分别是合柴、麦田。", completeness: knowledgeEvidenceEnumerationComplete, members: []string{"合柴", "麦田"}},
+		{name: "mismatched declared count", answer: "共3种房型，分别是合柴、麦田。", completeness: knowledgeEvidenceEnumerationInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseKnowledgeEvidenceIntersectionEnumeration(tt.answer, "办公桌")
+			if got.Completeness != tt.completeness {
+				t.Fatalf("unexpected completeness for %q: got %s want %s (%#v)", tt.answer, got.Completeness, tt.completeness, got)
+			}
+			if len(tt.members) == 0 {
+				if len(got.Members) != 0 {
+					t.Fatalf("invalid enumeration must not expose members: %#v", got)
+				}
+				return
+			}
+			if len(got.Members) != len(tt.members) {
+				t.Fatalf("unexpected members for %q: %#v", tt.answer, got.Members)
+			}
+			for index := range tt.members {
+				if got.Members[index] != tt.members[index] || strings.HasPrefix(got.Members[index], "下") {
+					t.Fatalf("unexpected member parsing for %q: %#v", tt.answer, got.Members)
+				}
+			}
+		})
 	}
 }
 

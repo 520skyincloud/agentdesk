@@ -474,13 +474,9 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 
 func appendGeneratedReplyFallbackStatement(statements []string, statement string) []string {
 	normalized := normalizeRuntimeKnowledgeQuery(statement)
-	for index, existing := range statements {
+	for _, existing := range statements {
 		normalizedExisting := normalizeRuntimeKnowledgeQuery(existing)
-		switch {
-		case normalized == normalizedExisting || strings.Contains(normalizedExisting, normalized):
-			return statements
-		case strings.Contains(normalized, normalizedExisting):
-			statements[index] = statement
+		if normalized == normalizedExisting {
 			return statements
 		}
 	}

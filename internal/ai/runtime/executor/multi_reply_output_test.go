@@ -576,6 +576,77 @@ func TestBuildMultiReplyOutputInstructionUsesScopedFactIDExample(t *testing.T) {
 	}
 }
 
+func TestBuildMultiReplyOutputInstructionExampleCoversAllTasksAndFacts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{}
+	for index := 1; index <= 8; index++ {
+		facts := []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID:    fmt.Sprintf("task-%dF1", index),
+			Statement: fmt.Sprintf("第%d项已确认。", index),
+		}}
+		if index == 1 || index == 8 {
+			facts = append(facts, callbacks.KnowledgeEvidenceFactTraceData{
+				FactID:    fmt.Sprintf("task-%dF2", index),
+				Statement: fmt.Sprintf("第%d项的第二个事实已确认。", index),
+			})
+		}
+		plan.TaskPlans = append(plan.TaskPlans, callbacks.ReplyTaskPlanTraceData{
+			TaskID:         fmt.Sprintf("task-%d", index),
+			Intent:         "hotel_info",
+			ResolvedText:   fmt.Sprintf("问题%d", index),
+			OutputKind:     "text",
+			ReplyRequired:  true,
+			SupportedFacts: facts,
+		})
+	}
+
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	const prefix = "格式为："
+	const suffix = "。JSON 外层"
+	start := strings.Index(instruction, prefix)
+	end := strings.Index(instruction, suffix)
+	if start < 0 || end <= start+len(prefix) {
+		t.Fatalf("could not locate protocol example: %s", instruction)
+	}
+	var example generatedReplyPartsEnvelope
+	if err := json.Unmarshal([]byte(instruction[start+len(prefix):end]), &example); err != nil {
+		t.Fatalf("decode protocol example: %v", err)
+	}
+	if len(example.ReplyParts) != 8 {
+		t.Fatalf("protocol example must demonstrate every active task, got %#v", example.ReplyParts)
+	}
+	if got := example.ReplyParts[0].CoveredFactIDs; len(got) != 2 || got[0] != "task-1F1" || got[1] != "task-1F2" {
+		t.Fatalf("WiFi-like first task must demonstrate all facts: %#v", got)
+	}
+	if got := example.ReplyParts[7].CoveredFactIDs; len(got) != 2 || got[0] != "task-8F1" || got[1] != "task-8F2" {
+		t.Fatalf("invoice-like last task must demonstrate all facts: %#v", got)
+	}
+}
+
+func TestBuildMultiReplyOutputInstructionGroupsSameStatementFactIDs(t *testing.T) {
+	statement := "酒店没有传统前台，可以通过入住机或小程序线上智能化方式办理入住。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		ResolvedText:  "怎么办理入住",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "task-1F1", Aspect: "method", Statement: statement, CriticalValues: []string{"入住机", "小程序"}},
+			{FactID: "task-1F2", Aspect: "existence", Statement: statement, CriticalValues: []string{"传统前台"}},
+		},
+	}}}
+
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	if strings.Count(instruction, statement) != 1 || !strings.Contains(instruction, "task-1F1、task-1F2（同一事实，content 只表达一次）") {
+		t.Fatalf("equivalent fact IDs must share one customer-facing statement: %s", instruction)
+	}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"酒店没有传统前台，可以通过入住机或小程序线上智能化方式办理入住。","coveredFactIds":["task-1F1","task-1F2"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil || got != statement {
+		t.Fatalf("one natural sentence must be allowed to cover equivalent fact IDs, got=%q err=%v", got, err)
+	}
+}
+
 func TestBuildMultiReplyOutputInstructionDoesNotInventFactIDForFactlessTask(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "task-1", Intent: "interaction", OutputKind: "text", ReplyRequired: true},

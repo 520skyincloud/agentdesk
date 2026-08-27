@@ -79,30 +79,34 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	}
 	var b strings.Builder
 	b.WriteString("【任务输出契约】本轮只允许回答下面列出的文本任务。只输出一个 JSON 对象，不要输出 Markdown 代码块或 JSON 之外的文字。格式为：")
-	example := generatedReplyPartsEnvelope{ReplyParts: []generatedReplyPart{{
-		TaskID:  groups[0].TaskID,
-		Content: "给客户的自然回复",
-	}}}
-	if len(groups[0].Facts) > 0 {
-		example.ReplyParts[0].CoveredFactIDs = []string{groups[0].Facts[0].FactID}
+	example := generatedReplyPartsEnvelope{ReplyParts: make([]generatedReplyPart, 0, len(groups))}
+	for _, group := range groups {
+		part := generatedReplyPart{TaskID: group.TaskID, Content: "给客户的自然回复"}
+		for _, fact := range group.Facts {
+			part.CoveredFactIDs = append(part.CoveredFactIDs, fact.FactID)
+		}
+		example.ReplyParts = append(example.ReplyParts, part)
 	}
 	exampleJSON, _ := json.Marshal(example)
 	b.Write(exampleJSON)
-	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会在校验全部任务后再合并为最多三条客户消息。\n")
+	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实可能对应多个事实 ID，此时 coveredFactIds 必须全部列出，但 content 只自然表达一次，不得重复同一句话。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会在校验全部任务后再合并为最多三条客户消息。\n")
 	for _, group := range groups {
 		b.WriteString("- ")
 		b.WriteString(group.TaskID)
 		b.WriteString("：")
 		b.WriteString(strings.Join(group.Texts, "；"))
 		b.WriteString("\n")
-		for _, fact := range group.Facts {
+		for _, fact := range groupReplyFactRequirementsForInstruction(group.Facts) {
 			b.WriteString("  - 必答事实 ")
-			b.WriteString(fact.FactID)
+			b.WriteString(strings.Join(fact.FactIDs, "、"))
+			if len(fact.FactIDs) > 1 {
+				b.WriteString("（同一事实，content 只表达一次）")
+			}
 			b.WriteString("：")
 			b.WriteString(fact.Statement)
-			if strings.TrimSpace(fact.Aspect) != "" {
+			if len(fact.Aspects) > 0 {
 				b.WriteString("；事实维度：")
-				b.WriteString(strings.TrimSpace(fact.Aspect))
+				b.WriteString(strings.Join(fact.Aspects, "、"))
 			}
 			if len(fact.CriticalValues) > 0 {
 				b.WriteString("；回复中必须原样包含：")
@@ -112,6 +116,46 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+type replyFactInstructionGroup struct {
+	FactIDs        []string
+	Aspects        []string
+	Statement      string
+	CriticalValues []string
+}
+
+func groupReplyFactRequirementsForInstruction(facts []replyFactRequirement) []replyFactInstructionGroup {
+	ret := make([]replyFactInstructionGroup, 0, len(facts))
+	byStatement := make(map[string]int, len(facts))
+	for _, fact := range facts {
+		statement := strings.TrimSpace(fact.Statement)
+		key := normalizeRuntimeKnowledgeQuery(statement)
+		if key == "" {
+			key = "fact-id:" + strings.TrimSpace(fact.FactID)
+		}
+		if index, ok := byStatement[key]; ok {
+			if factID := strings.TrimSpace(fact.FactID); factID != "" {
+				ret[index].FactIDs = appendIfMissing(ret[index].FactIDs, factID)
+			}
+			if aspect := strings.TrimSpace(fact.Aspect); aspect != "" {
+				ret[index].Aspects = appendIfMissing(ret[index].Aspects, aspect)
+			}
+			ret[index].CriticalValues = appendKnowledgeEvidenceCriticalValues(ret[index].CriticalValues, fact.CriticalValues)
+			continue
+		}
+		byStatement[key] = len(ret)
+		item := replyFactInstructionGroup{
+			FactIDs:        []string{strings.TrimSpace(fact.FactID)},
+			Statement:      statement,
+			CriticalValues: append([]string(nil), fact.CriticalValues...),
+		}
+		if aspect := strings.TrimSpace(fact.Aspect); aspect != "" {
+			item.Aspects = []string{aspect}
+		}
+		ret = append(ret, item)
+	}
+	return ret
 }
 
 func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData, requireStructured bool) string {

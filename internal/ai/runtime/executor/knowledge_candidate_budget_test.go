@@ -170,6 +170,140 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsTwoStoreCandidatesAndGeneralF
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetTenTasksKeepsLowerRankCompleteStoreFAQAtQuotaTwo(t *testing.T) {
+	tasks := make([]knowledgeEvidenceJudgeTask, 0, 10)
+	objectives := make(map[string]string, 10)
+	for index := 0; index < 10; index++ {
+		taskID := fmt.Sprintf("T%d", index+1)
+		task := candidateBudgetTask(taskID, 6)
+		objectives[taskID] = "general_guidance"
+		if index == 9 {
+			task.Query = "发票能备注入住人姓名吗"
+			task.Candidates[0].Hit = rag.RetrieveResult{Score: 0.7797, Content: "问题：发票怎么申请\n答案：退房后在小程序申请。"}
+			task.Candidates[1].Hit = rag.RetrieveResult{Score: 0.7386, Content: "问题：可以开专票吗\n答案：可以申请电子专票。"}
+			task.Candidates[2].Hit = rag.RetrieveResult{Score: 0.7096, Content: "问题：发票能备注入住人姓名吗\n答案：可以备注入住人姓名。"}
+			task.Candidates[3].Hit = rag.RetrieveResult{Score: 0.91, Content: "问题：发票能备注入住人姓名吗\n答案：通用规则允许备注入住人姓名。"}
+		}
+		tasks = append(tasks, task)
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates(tasks, objectives, knowledgeEvidenceJudgeBatchCandidateBudget)
+	total := 0
+	var target knowledgeEvidenceJudgeTask
+	for _, task := range limited {
+		total += len(task.Candidates)
+		if task.TaskID == "T10" {
+			target = task
+		}
+	}
+	if total != knowledgeEvidenceJudgeBatchCandidateBudget {
+		t.Fatalf("candidate selection must stay within the batch budget: got %d", total)
+	}
+	if len(target.Candidates) != 2 {
+		t.Fatalf("expected constrained ordinary task quota 2, got %#v", target.Candidates)
+	}
+	want := []string{"T10C1", "T10C3"}
+	for index, candidateID := range want {
+		if target.Candidates[index].CandidateID != candidateID {
+			t.Fatalf("lower-ranked complete store FAQ was displaced by general knowledge: %#v", target.Candidates)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsCompleteStoreFAQInSingleSlot(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "发票能备注入住人姓名吗",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：发票怎么申请\n答案：退房后在小程序申请。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.70, Content: "问题：发票能备注入住人姓名吗\n答案：可以备注入住人姓名。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：发票能备注入住人姓名吗\n答案：通用规则允许备注入住人姓名。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "general_guidance"}, 1)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C2" {
+		t.Fatalf("single slot must retain the complete store FAQ: %#v", limited)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCompoundBudgetKeepsLowerRankCompleteStoreFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "发票能备注入住人姓名吗",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：发票怎么申请\n答案：退房后在小程序申请。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.90, Content: "问题：发票多久开好\n答案：申请后按页面进度为准。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.68, Content: "问题：发票能备注入住人姓名吗\n答案：可以备注入住人姓名。"}},
+			{CandidateID: "T1C4", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：发票能备注入住人姓名吗\n答案：通用规则允许备注入住人姓名。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "compound_information"}, 2)
+	if len(limited) != 1 || len(limited[0].Candidates) != 2 {
+		t.Fatalf("expected compound quota 2, got %#v", limited)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range limited[0].Candidates {
+		seen[candidate.CandidateID] = true
+		if candidate.Layer == knowledgeEvidenceLayerGeneral {
+			t.Fatalf("general fallback must not displace a complete store FAQ: %#v", limited[0].Candidates)
+		}
+	}
+	if !seen["T1C3"] {
+		t.Fatalf("compound selection lost the lower-ranked complete store FAQ: %#v", limited[0].Candidates)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetUsesGeneralFallbackOnlyWithoutCompleteStoreFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "发票能备注入住人姓名吗",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：发票怎么申请\n答案：退房后在小程序申请。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.90, Content: "问题：发票多久开好\n答案：申请后按页面进度为准。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.80, Content: "问题：发票能备注入住人姓名吗\n答案：可以备注入住人姓名。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "general_guidance"}, 2)
+	if len(limited) != 1 || len(limited[0].Candidates) != 2 {
+		t.Fatalf("expected store candidate plus general fallback, got %#v", limited)
+	}
+	want := []string{"T1C1", "T1C3"}
+	for index, candidateID := range want {
+		if limited[0].Candidates[index].CandidateID != candidateID {
+			t.Fatalf("general fallback priority changed: %#v", limited[0].Candidates)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesExactStoreHandoff(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "房间门锁打不开怎么办",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：房间门锁打不开怎么办\n答案：请重新输入门锁密码。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.70, Content: "问题：房间门锁打不开怎么办\n答案：转接"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：门锁打不开怎么办\n答案：请联系工作人员。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "method"}, 1)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C2" {
+		t.Fatalf("exact store handoff must win the tightest quota: %#v", limited)
+	}
+	if index := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(knowledgeEvidenceJudgeTask{
+		TaskID: "T2",
+		Query:  "房间门锁打不开怎么办",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T2C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.90, Content: "问题：房间门锁打不开怎么办\n答案：转接"}},
+		},
+	}, knowledgeEvidenceLayerStore); index >= 0 {
+		t.Fatalf("handoff directive must not count as a complete factual FAQ, got index %d", index)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCandidateBudgetDeduplicatesIdenticalFAQUnits(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",

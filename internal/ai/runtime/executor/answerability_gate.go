@@ -1046,52 +1046,89 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	if quota <= 0 || len(task.Candidates) == 0 {
 		return nil
 	}
-	if preferDiversity {
-		return selectCompoundKnowledgeEvidenceJudgeTaskCandidates(task.Candidates, quota)
-	}
 	if quota >= len(task.Candidates) {
 		return append([]knowledgeEvidenceJudgeCandidate(nil), task.Candidates...)
 	}
 	selected := make([]bool, len(task.Candidates))
+	selectionOrder := make([]int, 0, quota)
 	selectedCount := 0
 	selectIndex := func(index int) {
 		if index < 0 || index >= len(selected) || selected[index] || selectedCount >= quota {
 			return
 		}
 		selected[index] = true
+		selectionOrder = append(selectionOrder, index)
 		selectedCount++
 	}
 
-	storeIndex := -1
-	generalIndex := -1
-	for index, candidate := range task.Candidates {
-		switch candidate.Layer {
-		case knowledgeEvidenceLayerStore:
-			if storeIndex < 0 {
-				storeIndex = index
-			}
-		case knowledgeEvidenceLayerGeneral:
-			if generalIndex < 0 {
-				generalIndex = index
+	firstLayerIndex := func(layer string) int {
+		for index, candidate := range task.Candidates {
+			if strings.TrimSpace(candidate.Layer) == layer {
+				return index
 			}
 		}
+		return -1
 	}
-	if storeIndex >= 0 {
-		selectIndex(storeIndex)
-	} else {
-		selectIndex(0)
-	}
-	if quota > 1 && storeIndex >= 0 && generalIndex >= 0 {
-		selectIndex(generalIndex)
-	}
-	for index := range task.Candidates {
-		selectIndex(index)
-		if selectedCount >= quota {
-			break
+
+	storeIndex := firstLayerIndex(knowledgeEvidenceLayerStore)
+	generalIndex := firstLayerIndex(knowledgeEvidenceLayerGeneral)
+	storeHandoffIndex := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerStore)
+	storeCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerStore)
+	generalCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerGeneral)
+
+	// A store-specific handoff is an executable rule, so it wins the tightest
+	// slot. A complete store FAQ is the next mandatory candidate and must not be
+	// displaced by a higher-ranked but incomplete hit or a general fallback.
+	selectIndex(storeHandoffIndex)
+	selectIndex(storeCompleteIndex)
+	if selectedCount == 0 {
+		if storeIndex >= 0 {
+			selectIndex(storeIndex)
+		} else if generalCompleteIndex >= 0 {
+			selectIndex(generalCompleteIndex)
+		} else {
+			selectIndex(generalIndex)
 		}
 	}
 
+	// General knowledge gets a constrained fallback slot only when the store
+	// layer has no complete factual answer. Transfer directives are deliberately
+	// not treated as complete facts by bestCompleteKnowledgeEvidenceJudgeCandidateIndex.
+	if storeCompleteIndex < 0 && selectedCount < quota && generalIndex >= 0 {
+		if generalCompleteIndex >= 0 {
+			selectIndex(generalCompleteIndex)
+		} else {
+			selectIndex(generalIndex)
+		}
+	}
+
+	fillLayer := func(layer string, limit int) {
+		for selectedCount < limit {
+			index := nextKnowledgeEvidenceJudgeCandidateIndex(task.Candidates, selected, layer, preferDiversity)
+			if index < 0 {
+				break
+			}
+			selectIndex(index)
+		}
+	}
+	storeLimit := quota
+	if storeCompleteIndex >= 0 && generalIndex >= 0 && quota >= 3 {
+		storeLimit = quota - 1
+	}
+	fillLayer(knowledgeEvidenceLayerStore, storeLimit)
+	fillLayer(knowledgeEvidenceLayerGeneral, quota)
+
 	ret := make([]knowledgeEvidenceJudgeCandidate, 0, selectedCount)
+	if preferDiversity {
+		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+			for _, index := range selectionOrder {
+				if strings.TrimSpace(task.Candidates[index].Layer) == layer {
+					ret = append(ret, task.Candidates[index])
+				}
+			}
+		}
+		return ret
+	}
 	for index, candidate := range task.Candidates {
 		if selected[index] {
 			ret = append(ret, candidate)
@@ -1100,81 +1137,99 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	return ret
 }
 
-func selectCompoundKnowledgeEvidenceJudgeTaskCandidates(candidates []knowledgeEvidenceJudgeCandidate, quota int) []knowledgeEvidenceJudgeCandidate {
-	if quota <= 0 || len(candidates) == 0 {
-		return nil
-	}
-	store := make([]knowledgeEvidenceJudgeCandidate, 0, len(candidates))
-	general := make([]knowledgeEvidenceJudgeCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		switch strings.TrimSpace(candidate.Layer) {
-		case knowledgeEvidenceLayerStore:
-			store = append(store, candidate)
-		case knowledgeEvidenceLayerGeneral:
-			general = append(general, candidate)
+func bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
+	bestIndex := -1
+	bestQuestionMatch := 0.0
+	for index, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		questionMatch, ok := knowledgeEvidenceJudgeCandidateCompletesTask(task, candidate)
+		if !ok {
+			continue
+		}
+		if bestIndex < 0 || questionMatch > bestQuestionMatch+0.02 ||
+			(questionMatch >= bestQuestionMatch-0.02 && candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score) {
+			bestIndex = index
+			bestQuestionMatch = questionMatch
 		}
 	}
-	if len(store) == 0 {
-		return selectSemanticallyDiverseKnowledgeEvidenceCandidates(general, quota)
-	}
-	if len(general) == 0 || quota == 1 {
-		return selectSemanticallyDiverseKnowledgeEvidenceCandidates(store, quota)
-	}
-	storeLimit := quota - 1
-	selected := selectSemanticallyDiverseKnowledgeEvidenceCandidates(store, storeLimit)
-	selected = append(selected, selectSemanticallyDiverseKnowledgeEvidenceCandidates(general, 1)...)
-	return selected
+	return bestIndex
 }
 
-func selectSemanticallyDiverseKnowledgeEvidenceCandidates(candidates []knowledgeEvidenceJudgeCandidate, limit int) []knowledgeEvidenceJudgeCandidate {
-	if limit <= 0 || len(candidates) == 0 {
-		return nil
-	}
-	if limit > len(candidates) {
-		limit = len(candidates)
-	}
-	selectedIndexes := make([]int, 0, limit)
-	selected := make([]bool, len(candidates))
-	firstIndex := 0
-	for index := 1; index < len(candidates); index++ {
-		if candidates[index].Hit.Score > candidates[firstIndex].Hit.Score {
-			firstIndex = index
+func bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
+	bestIndex := -1
+	bestQuestionMatch := 0.0
+	for index, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if !isKnowledgeHandoffDirectiveContent(answer) || !knowledgeEvidenceHandoffFAQMatchesQuery(question, task.Query) {
+			continue
+		}
+		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
+		if bestIndex < 0 || questionMatch > bestQuestionMatch+0.02 ||
+			(questionMatch >= bestQuestionMatch-0.02 && candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score) {
+			bestIndex = index
+			bestQuestionMatch = questionMatch
 		}
 	}
-	selected[firstIndex] = true
-	selectedIndexes = append(selectedIndexes, firstIndex)
+	return bestIndex
+}
 
-	for len(selectedIndexes) < limit {
-		bestIndex := -1
-		bestDiversity := -1.0
-		for index := range candidates {
-			if selected[index] {
+func nextKnowledgeEvidenceJudgeCandidateIndex(candidates []knowledgeEvidenceJudgeCandidate, selected []bool, layer string, preferDiversity bool) int {
+	bestIndex := -1
+	if !preferDiversity {
+		for index, candidate := range candidates {
+			if !selected[index] && strings.TrimSpace(candidate.Layer) == strings.TrimSpace(layer) {
+				return index
+			}
+		}
+		return -1
+	}
+
+	selectedIndexes := make([]int, 0, len(candidates))
+	for index, candidate := range candidates {
+		if selected[index] && strings.TrimSpace(candidate.Layer) == strings.TrimSpace(layer) {
+			selectedIndexes = append(selectedIndexes, index)
+		}
+	}
+	if len(selectedIndexes) == 0 {
+		for index, candidate := range candidates {
+			if selected[index] || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 				continue
 			}
-			minimumDiversity := 1.0
-			for _, selectedIndex := range selectedIndexes {
-				diversity := 1 - knowledgeEvidenceCandidateSemanticSimilarity(candidates[index], candidates[selectedIndex])
-				if diversity < minimumDiversity {
-					minimumDiversity = diversity
-				}
-			}
-			if bestIndex < 0 || minimumDiversity > bestDiversity || (minimumDiversity == bestDiversity && candidates[index].Hit.Score > candidates[bestIndex].Hit.Score) {
+			if bestIndex < 0 || candidate.Hit.Score > candidates[bestIndex].Hit.Score {
 				bestIndex = index
-				bestDiversity = minimumDiversity
 			}
 		}
-		if bestIndex < 0 {
-			break
-		}
-		selected[bestIndex] = true
-		selectedIndexes = append(selectedIndexes, bestIndex)
+		return bestIndex
 	}
 
-	ret := make([]knowledgeEvidenceJudgeCandidate, 0, len(selectedIndexes))
-	for _, index := range selectedIndexes {
-		ret = append(ret, candidates[index])
+	bestDiversity := -1.0
+	for index, candidate := range candidates {
+		if selected[index] || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		minimumDiversity := 1.0
+		for _, selectedIndex := range selectedIndexes {
+			diversity := 1 - knowledgeEvidenceCandidateSemanticSimilarity(candidate, candidates[selectedIndex])
+			if diversity < minimumDiversity {
+				minimumDiversity = diversity
+			}
+		}
+		if bestIndex < 0 || minimumDiversity > bestDiversity ||
+			(minimumDiversity == bestDiversity && candidate.Hit.Score > candidates[bestIndex].Hit.Score) {
+			bestIndex = index
+			bestDiversity = minimumDiversity
+		}
 	}
-	return ret
+	return bestIndex
 }
 
 func knowledgeEvidenceCandidateSemanticSimilarity(left knowledgeEvidenceJudgeCandidate, right knowledgeEvidenceJudgeCandidate) float64 {
