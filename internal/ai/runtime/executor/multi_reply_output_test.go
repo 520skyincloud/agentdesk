@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -478,6 +479,32 @@ func TestNormalizeGeneratedReplyPartsAcceptsUniqueTaskLocalFactID(t *testing.T) 
 	}
 }
 
+func TestNormalizeGeneratedReplyPartsAcceptsEquivalentTaskScopedFactID(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		taskID  string
+		factID  string
+		modelID string
+	}{
+		{name: "compact model id", taskID: "task-1", factID: "task-1F1", modelID: "T1F1"},
+		{name: "verbose model id", taskID: "T1", factID: "T1F1", modelID: "task-1F1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: tt.taskID, Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+				SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+					FactID: tt.factID, Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"},
+				}},
+			}}}
+			raw := fmt.Sprintf(`{"replyParts":[{"taskId":%q,"content":"房间内有两瓶矿泉水。","coveredFactIds":[%q]}]}`, tt.taskID, tt.modelID)
+			got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+			if err != nil || got != "房间内有两瓶矿泉水。" {
+				t.Fatalf("equivalent task-scoped fact ID must normalize, got=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsScopesLocalFactIDsPerTask(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{
@@ -538,11 +565,24 @@ func TestNormalizeCoveredFactIDRejectsAmbiguousLocalSuffix(t *testing.T) {
 
 func TestBuildMultiReplyOutputInstructionUsesScopedFactIDExample(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
-		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+		{
+			TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Statement: "房间有空调。"}},
+		},
 	}}
 	instruction := buildMultiReplyOutputInstruction(plan, true)
 	if !strings.Contains(instruction, `"coveredFactIds":["task-1F1"]`) || strings.Contains(instruction, `"coveredFactIds":["F1"]`) {
 		t.Fatalf("reply protocol example must teach task-scoped fact IDs: %s", instruction)
+	}
+}
+
+func TestBuildMultiReplyOutputInstructionDoesNotInventFactIDForFactlessTask(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "interaction", OutputKind: "text", ReplyRequired: true},
+	}}
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	if strings.Contains(instruction, `"coveredFactIds"`) || strings.Contains(instruction, "task-1F1") {
+		t.Fatalf("factless task example must not teach a nonexistent fact ID: %s", instruction)
 	}
 }
 

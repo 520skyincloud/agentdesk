@@ -147,17 +147,17 @@ func runtimeIntentAtomicCandidateRequiresContext(candidate string) bool {
 	if compact == "" || isDependentIntentTaskClause(candidate) {
 		return true
 	}
-	if len([]rune(compact)) <= 6 && (strings.HasPrefix(compact, "这") || strings.HasPrefix(compact, "那")) {
+	if len([]rune(compact)) <= 10 && containsAnyPrefix(compact, []string{"这", "那", "刚才", "刚刚", "前面", "上面", "之前", "同样"}) {
 		return true
 	}
-	return containsAny(compact, []string{"再说一遍", "重新说", "上一个", "刚才那个", "前面那个", "同样呢"})
+	return containsAny(compact, []string{"再说一遍", "再复述", "重新说", "上一个", "刚才那个", "前面那个", "上面那个", "同样呢"})
 }
 
 func runtimeIntentSafeCompoundKnowledgeTask(task callbacks.IntentTaskTraceData) bool {
 	if canonicalIntentCode(task.Intent) != "hotel_info" || !task.NeedsKnowledge || task.NeedsResource || task.NeedsTool || task.NeedsHumanRoute || strings.TrimSpace(task.ResourceAction) != "" {
 		return false
 	}
-	return semanticGateNormalizeObjective(task.Objective) == "compound_information" || strings.Contains(strings.ToLower(strings.TrimSpace(task.SubIntent)), "compound")
+	return true
 }
 
 func runtimeIntentAtomicTaskMatch(task callbacks.IntentTaskTraceData, candidate string) (int, int) {
@@ -207,7 +207,7 @@ func runtimeIntentAtomicKnowledgeObjective(text string) string {
 		return "time"
 	case strings.Contains(compact, "有没有"), strings.Contains(compact, "是否有"):
 		return "availability"
-	case strings.Contains(compact, "怎么"), strings.Contains(compact, "如何"):
+	case strings.Contains(compact, "怎么"), strings.Contains(compact, "如何"), strings.Contains(compact, "方式"), strings.Contains(compact, "流程"):
 		return "method"
 	case strings.Contains(compact, "是不是"), strings.Contains(compact, "是否"), strings.Contains(compact, "规则"):
 		return "policy"

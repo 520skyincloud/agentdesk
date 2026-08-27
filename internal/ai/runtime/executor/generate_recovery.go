@@ -452,7 +452,7 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 		for _, fact := range group.Facts {
 			statement := strings.TrimSpace(fact.Statement)
 			if statement != "" {
-				statements = appendIfMissing(statements, statement)
+				statements = appendGeneratedReplyFallbackStatement(statements, statement)
 			}
 		}
 		if len(statements) == 0 {
@@ -464,11 +464,27 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 				parts = append(parts, text)
 				continue
 			}
-			return ""
+			parts = append(parts, "不好意思，我刚才没理解完整，麻烦您把要问的内容再发我一下。")
+			continue
 		}
 		parts = append(parts, joinGeneratedReplyFactStatements(statements))
 	}
 	return composeGeneratedReplyContents(parts, 3)
+}
+
+func appendGeneratedReplyFallbackStatement(statements []string, statement string) []string {
+	normalized := normalizeRuntimeKnowledgeQuery(statement)
+	for index, existing := range statements {
+		normalizedExisting := normalizeRuntimeKnowledgeQuery(existing)
+		switch {
+		case normalized == normalizedExisting || strings.Contains(normalizedExisting, normalized):
+			return statements
+		case strings.Contains(normalized, normalizedExisting):
+			statements[index] = statement
+			return statements
+		}
+	}
+	return append(statements, statement)
 }
 
 func deterministicKnowledgeFallback(plan callbacks.ReplyPlanTraceData, taskID string) string {

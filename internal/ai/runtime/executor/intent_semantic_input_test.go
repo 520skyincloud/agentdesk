@@ -109,10 +109,83 @@ func TestRuntimeIntentRetrievalQueryOnlyTrimsConversationalLead(t *testing.T) {
 		{input: "还有多少间房", want: "还有多少间房"},
 		{input: "还有两瓶矿泉水收费吗", want: "还有两瓶矿泉水收费吗"},
 		{input: "另外收费吗", want: "另外收费吗"},
+		{input: "刚才的入住方式再完整说一遍", want: "入住方式"},
+		{input: "刚才那个开门方式再说一遍", want: "开门方式"},
+		{input: "顺便问下开门方式，分别说，不要混在一起", want: "开门方式"},
+		{input: "外卖地址，只要地址不要解释", want: "外卖地址"},
+		{input: "外卖地址再说一遍，只要正确地址", want: "外卖地址"},
+		{input: "还有开门方式", want: "开门方式"},
+		{input: "另外发票流程", want: "发票流程"},
+		{input: "再说一遍开门方式", want: "开门方式"},
+		{input: "刚才那个再说一遍开门方式", want: "开门方式"},
+		{input: "开门方式再说下", want: "开门方式"},
+		{input: "开门方式重新说一下", want: "开门方式"},
+		{input: "开门方式，分别说清楚，不要混在一起", want: "开门方式"},
+		{input: "外卖地址，只回复地址", want: "外卖地址"},
+		{input: "上面说的开门方式再说一遍", want: "开门方式"},
 	}
 	for _, tt := range tests {
 		if got := runtimeIntentRetrievalQuery(tt.input); got != tt.want {
 			t.Fatalf("runtimeIntentRetrievalQuery(%q)=%q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCurrentTurnTaskCandidatesSplitsExplicitSeparateLabels(t *testing.T) {
+	got := currentTurnTaskCandidates("入住方式和开门方式分别说，不要混在一起。")
+	want := []string{"入住方式", "开门方式"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected explicit separate labels to become atomic candidates, got %#v", got)
+	}
+}
+
+func TestCurrentTurnTaskCandidatesSplitsIndependentLabelsButKeepsSharedSubjectFacts(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  []string
+	}{
+		{input: "入住方式、开门方式", want: []string{"入住方式", "开门方式"}},
+		{input: "办公桌、沙发都有吗", want: []string{"办公桌、沙发都有吗"}},
+		{input: "矿泉水数量和费用分别说", want: []string{"矿泉水数量和费用分别说"}},
+		{input: "WiFi账号和密码分别说", want: []string{"WiFi账号和密码分别说"}},
+		{input: "和平饭店地址和停车位置分别说", want: []string{"和平饭店地址", "停车位置"}},
+		{input: "早餐时间和和平广场位置分别说", want: []string{"早餐时间", "和平广场位置"}},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want %#v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCurrentTurnTaskCandidatesKeepsStandaloneReplayForContextResolution(t *testing.T) {
+	got := currentTurnTaskCandidates("刚才那个再说一遍")
+	if len(got) != 1 || got[0] != "刚才那个再说一遍" {
+		t.Fatalf("standalone replay must reach Intent for context resolution, got %#v", got)
+	}
+}
+
+func TestCurrentTurnTaskCandidatesKeepsEllipticalFollowUpsWithTheirSubject(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{input: "酒店有早餐吗？几点开始？", want: "酒店有早餐吗，几点开始"},
+		{input: "发票怎么开？多久能下载？", want: "发票怎么开，多久能下载"},
+		{input: "有早餐吗？在哪里吃？", want: "有早餐吗，在哪里吃"},
+		{input: "停车收费吗？怎么收费？", want: "停车收费吗，怎么收费"},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if len(got) != 1 || got[0] != tt.want {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want one combined subject task %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRuntimeIntentGenericFollowUpDoesNotHideSelfContainedQuestions(t *testing.T) {
+	for _, input := range []string{"几点退房", "怎么投屏", "如何开门", "早餐在哪里吃", "发票多久能下载"} {
+		if isDependentIntentTaskClause(input) {
+			t.Fatalf("self-contained question must not be treated as an elliptical follow-up: %q", input)
 		}
 	}
 }

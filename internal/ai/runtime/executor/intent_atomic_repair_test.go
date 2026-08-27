@@ -53,6 +53,24 @@ func TestRepairRuntimeIntentAtomicKnowledgeTasksSplitsOnlyMergedTask(t *testing.
 	}
 }
 
+func TestRepairRuntimeIntentAtomicKnowledgeTasksSplitsSafeMethodTask(t *testing.T) {
+	text := "入住方式和开门方式分别说，不要混在一起。"
+	task := callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Text: text, ResolvedText: text, SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+	}
+	got, repaired := repairRuntimeIntentAtomicKnowledgeTasks([]callbacks.IntentTaskTraceData{task}, text, []string{text}, true)
+	if repaired != 2 || len(got) != 2 {
+		t.Fatalf("expected safe non-compound knowledge task to split, repaired=%d tasks=%#v", repaired, got)
+	}
+	for index, want := range []string{"入住方式", "开门方式"} {
+		if got[index].Text != want || got[index].ResolvedText != want || got[index].Objective != "method" {
+			t.Fatalf("unexpected repaired method task %d: %#v", index, got[index])
+		}
+	}
+}
+
 func TestRepairRuntimeIntentAtomicKnowledgeTasksDoesNotSplitActionsOrSingleAspect(t *testing.T) {
 	for _, tt := range []struct {
 		name string

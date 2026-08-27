@@ -128,6 +128,17 @@ func TestRunGeneratedReplyWithRecoveryFallsBackWhenBothGenerateOutputsAreEmpty(t
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", OutputKind: "text", ReplyRequired: true, Text: "最终确认，对吗？",
+	}}})
+	got := deterministicGeneratedReplyFallback(collector)
+	if strings.TrimSpace(got) == "" || !strings.Contains(got, "麻烦") {
+		t.Fatalf("unknown text task must still have a customer-visible fallback, got %q", got)
+	}
+}
+
 func TestRunGeneratedReplyWithRecoveryFallsBackToSupportedFacts(t *testing.T) {
 	summary := &RunResult{Status: "started"}
 	collector := callbacks.NewRuntimeTraceCollector()

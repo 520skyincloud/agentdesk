@@ -210,6 +210,71 @@ func TestRuntimeKnowledgeRetrievalTrimsConversationalLeadButKeepsLogicalQuery(t 
 	}
 }
 
+func TestRuntimeKnowledgeShortLabelUsesOneEnrichedQueryAndCarriesMetadata(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{{
+			KnowledgeBaseID: 1,
+			ChunkID:         101,
+			Title:           "矿泉水",
+			Content:         "房间提供两瓶免费矿泉水。",
+			Score:           0.95,
+		}}},
+	}
+	intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{{
+		Intent: "hotel_info", SubIntent: "drinking_water", Objective: "compound_information",
+		Text: "矿泉水数量和费用", ResolvedText: "矿泉水数量和费用",
+		Entities: []callbacks.IntentEntityTraceData{{Text: "矿泉水", Type: "supply"}}, NeedsKnowledge: true,
+	}}}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "drinking_water", Objective: "compound_information",
+		Text: "矿泉水数量和费用", ResolvedText: "矿泉水数量和费用", Output: "knowledge_text_reply",
+	}}}
+	batch, err := retrieveContextForRuntimeQuestions(
+		context.Background(), retriever, retrievers.KnowledgeRetrieveOptions{}, "矿泉水数量和费用", intent, plan,
+	)
+	if err != nil {
+		t.Fatalf("retrieveContextForRuntimeQuestions returned error: %v", err)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0] != "房间矿泉水有几瓶，是否免费或收费" {
+		t.Fatalf("short label must issue exactly one enriched retrieval, got %#v", retriever.queries)
+	}
+	if batch == nil || len(batch.Questions) != 1 {
+		t.Fatalf("expected one knowledge question, got %#v", batch)
+	}
+	question := batch.Questions[0]
+	if question.SubIntent != "drinking_water" || question.Objective != "compound_information" || len(question.Entities) != 1 || question.Entities[0].Text != "矿泉水" {
+		t.Fatalf("question metadata was not preserved: %#v", question)
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "矿泉水数量和费用")
+	if len(tasks) != 1 || tasks[0].Objective != "compound_information" || len(tasks[0].Entities) != 1 || tasks[0].Entities[0].Text != "矿泉水" {
+		t.Fatalf("Judge task did not receive objective/entities from question metadata: %#v", tasks)
+	}
+}
+
+func TestRuntimeIntentEvidenceQueryEnrichesKnownShortLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		spec runtimeKnowledgeQuestionSpec
+		want string
+	}{
+		{name: "room access", spec: runtimeKnowledgeQuestionSpec{Query: "开门方式", SubIntent: "room_access", Objective: "method"}, want: "酒店房门怎么打开"},
+		{name: "delivery address", spec: runtimeKnowledgeQuestionSpec{Query: "外卖地址", SubIntent: "delivery_address", Objective: "location"}, want: "酒店外卖地址怎么填写"},
+		{name: "wifi credentials", spec: runtimeKnowledgeQuestionSpec{Query: "WiFi账号密码", SubIntent: "network_wifi", Objective: "general_guidance"}, want: "酒店WiFi账号和密码是什么"},
+		{name: "checkin", spec: runtimeKnowledgeQuestionSpec{Query: "入住方式", SubIntent: "checkin_process", Objective: "method"}, want: "酒店怎么办理入住"},
+		{name: "parking and charging", spec: runtimeKnowledgeQuestionSpec{Query: "停车和充电桩", SubIntent: "parking", Objective: "compound_information"}, want: "酒店停车场和充电桩情况"},
+		{name: "invoice", spec: runtimeKnowledgeQuestionSpec{Query: "发票流程", SubIntent: "invoice", Objective: "method"}, want: "酒店发票怎么申请"},
+		{name: "keeps time objective", spec: runtimeKnowledgeQuestionSpec{Query: "开门时间", SubIntent: "room_access", Objective: "time", Entities: []callbacks.IntentEntityTraceData{{Text: "房门", Type: "facility"}}}, want: "酒店开门时间是什么"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runtimeIntentEvidenceQuery(tt.spec); got != tt.want {
+				t.Fatalf("runtimeIntentEvidenceQuery(%#v)=%q, want %q", tt.spec, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeRuntimeKnowledgeQueriesFiltersResourceWhenIntentMissedKnowledgeTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})

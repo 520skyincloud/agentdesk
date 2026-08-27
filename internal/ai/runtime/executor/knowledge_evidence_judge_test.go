@@ -134,8 +134,8 @@ func TestKnowledgeEvidenceJudgeClearsQuestionWhenNeitherLayerDirectlyAnswers(t *
 	}
 }
 
-func TestKnowledgeEvidenceJudgeFailureDoesNotExposeUnselectedRetrieval(t *testing.T) {
-	storeHit := judgeTestHit(1, 101, "门店答案", "问题：早餐几点\n答案：南七店早餐时间为7:00-9:30。", 0.75)
+func TestKnowledgeEvidenceJudgeFailureDoesNotExposeLowScoreUnselectedRetrieval(t *testing.T) {
+	storeHit := judgeTestHit(1, 101, "门店答案", "问题：早餐几点\n答案：南七店早餐时间为7:00-9:30。", 0.60)
 	generalHit := judgeTestHit(2, 201, "通用答案", "问题：早餐几点\n答案：通常为7:00-10:00。", 0.99)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
 		"早餐几点": judgeTestRetrieveResult(storeHit, generalHit),
@@ -1739,6 +1739,143 @@ func TestBuildKnowledgeEvidenceJudgePromptSeparatesFastGPTFAQQuestionAnswerAndRa
 	}
 	if got.RawContent != raw {
 		t.Fatalf("raw content must remain auditable: %#v", got)
+	}
+}
+
+func TestBuildKnowledgeEvidenceJudgePromptIncludesTaskSemantics(t *testing.T) {
+	prompt := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "早餐几点",
+		SubIntent: "breakfast",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+	}})
+	if len(prompt.Tasks) != 1 {
+		t.Fatalf("expected one prompt task, got %#v", prompt.Tasks)
+	}
+	task := prompt.Tasks[0]
+	if task.SubIntent != "breakfast" || task.Objective != "time" || len(task.Entities) != 1 || task.Entities[0].Text != "早餐" || task.Entities[0].Type != "meal" {
+		t.Fatalf("task semantics must be disclosed to Judge: %#v", task)
+	}
+}
+
+func TestHighConfidenceDirectFAQSelectionRescuesExactQuestionAtMediumVectorScore(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "外卖地址怎么填",
+		SubIntent: "delivery_address",
+		Objective: "location",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "外卖地址", Type: "location"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "外卖地址", "问题：外卖地址怎么填\n答案：外卖地址填写安徽省合肥市蜀山区望江西路与肥西路交口。", 0.72),
+		}},
+	}
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SupportedFacts) == 0 {
+		t.Fatalf("exact FAQ question must rescue a medium vector score: %#v ok=%v", selection, ok)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsDifferentExplicitSubject(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "早餐几点",
+		SubIntent: "breakfast",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "退房时间", "问题：最晚几点退房\n答案：退房时间是12:00。", 0.99),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"退房时间是12:00。","criticalValues":["12:00"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("breakfast task must not select checkout evidence: %#v", selection)
+	}
+}
+
+func TestCanonicalizeKnowledgeEvidenceFactsCollapsesEquivalentCheckinAndWaterStatements(t *testing.T) {
+	checkin := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "method", Statement: "酒店没有传统前台，您可以通过入住机或小程序线上智能化方式办理入住。", CriticalValues: []string{"传统前台", "入住机", "小程序"}},
+		{FactID: "T1F2", Aspect: "existence", Statement: "酒店没有传统前台。", CriticalValues: []string{"传统前台"}},
+		{FactID: "T1F3", Aspect: "method", Statement: "您可以通过入住机或小程序线上智能化方式办理入住。", CriticalValues: []string{"入住机", "小程序"}},
+	})
+	if len(checkin) != 2 || checkin[0].Statement != checkin[1].Statement {
+		t.Fatalf("equivalent check-in facts must share one canonical statement: %#v", checkin)
+	}
+
+	water := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
+		{FactID: "T2F1", Aspect: "price", Statement: "房间内的矿泉水均免费。", CriticalValues: []string{"免费"}},
+		{FactID: "T2F2", Aspect: "quantity", Statement: "房间的两瓶矿泉水是免费的。", CriticalValues: []string{"两瓶", "免费"}},
+		{FactID: "T2F3", Aspect: "price", Statement: "房间内的矿泉水都是免费的。", CriticalValues: []string{"免费"}},
+	})
+	if len(water) != 2 || water[0].Statement != water[1].Statement || !containsString(water[0].CriticalValues, "两瓶") {
+		t.Fatalf("equivalent water facts must collapse while merging critical values: %#v", water)
+	}
+}
+
+func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "哪些房型既有沙发又有办公桌？",
+		SubIntent: "room_features",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "沙发", Type: "facility"},
+			{Text: "办公桌", Type: "facility"},
+		},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林、塔川和岭南。", 0.91)},
+		"T1C2": {CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、麦田和艺林。", 0.89)},
+	}
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{candidates["T1C1"], candidates["T1C2"]}
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectCombined,
+		SelectedCandidateIDs: []string{"T1C1", "T1C2"},
+	}
+	got := reconcileSelectedFAQGuidanceFactsForTask(task, knowledgeEvidenceLayerStore, selection, candidates)
+	if got.Decision != knowledgeEvidenceDecisionDirectCombined || len(got.SupportedFacts) != 1 {
+		t.Fatalf("complete enumerations must produce one intersection fact: %#v", got)
+	}
+	fact := got.SupportedFacts[0]
+	if fact.Aspect != "scope" || !strings.Contains(fact.Statement, "合柴、艺林") || strings.Contains(fact.Statement, "麦田") || strings.Contains(fact.Statement, "塔川") {
+		t.Fatalf("unexpected intersection fact: %#v", fact)
+	}
+	if len(fact.CriticalValues) != 2 || fact.CriticalValues[0] != "合柴" || fact.CriticalValues[1] != "艺林" {
+		t.Fatalf("only intersection members may remain mandatory: %#v", fact.CriticalValues)
+	}
+}
+
+func TestIntersectionRepairNeverUsesUnselectedCandidates(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "哪些房型既有沙发又有办公桌？",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "沙发", Type: "facility"}, {Text: "办公桌", Type: "facility"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "沙发房型", "问题：哪些房型有沙发\n答案：有沙发的房型包括合柴、艺林。", 0.91)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "办公桌房型", "问题：哪些房型有办公桌\n答案：有办公桌的房型包括合柴、麦田。", 0.20)},
+		},
+	}
+	if got, ok := deterministicKnowledgeEvidenceIntersectionSelection(task, knowledgeEvidenceLayerStore, []string{"T1C1"}); ok {
+		t.Fatalf("intersection must not consume an unselected candidate: %#v", got)
+	}
+}
+
+func TestCanonicalizeKnowledgeEvidenceFactsKeepsDifferentConditionsSeparate(t *testing.T) {
+	facts := canonicalizeKnowledgeEvidenceFacts([]knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "time", Statement: "工作日早餐时间是7:00到9:00。", CriticalValues: []string{"工作日", "7:00", "9:00"}},
+		{FactID: "T1F2", Aspect: "time", Statement: "周末早餐时间是8:00到10:00。", CriticalValues: []string{"周末", "8:00", "10:00"}},
+	})
+	if len(facts) != 2 || facts[0].Statement == facts[1].Statement {
+		t.Fatalf("facts with different conditions and values must remain separate: %#v", facts)
 	}
 }
 

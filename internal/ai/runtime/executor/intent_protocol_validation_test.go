@@ -46,6 +46,78 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCandidates(t *testing.T) {
+	currentText := "入住方式和开门方式分别说，不要混在一起。"
+	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "checkin_process",
+		Objective:          "method",
+		RelationToPrevious: "independent",
+		ResolutionState:    "clear",
+		Text:               currentText,
+		ResolvedText:       currentText,
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err == nil || !strings.Contains(err.Error(), "atomic question") {
+		t.Fatalf("one compound task must not cover two explicit candidates, got %v", err)
+	}
+
+	distinct := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		{
+			Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Text: "入住方式", ResolvedText: "酒店怎么办理入住", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+		{
+			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Text: "开门方式", ResolvedText: "酒店房门怎么打开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+	}}
+	if err := validateRuntimeIntentDetectProtocol(distinct, nil, currentText); err != nil {
+		t.Fatalf("distinct tasks must satisfy explicit candidate coverage: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaims(t *testing.T) {
+	tests := []struct {
+		name         string
+		text         string
+		resolvedText string
+		wantError    string
+	}{
+		{name: "self contained original", text: "早餐几点", resolvedText: "早餐几点", wantError: "dependent original text"},
+		{name: "confirmation remains dependent", text: "对吗", resolvedText: "对吗", wantError: "self-contained"},
+		{name: "demonstrative remains dependent", text: "那呢", resolvedText: "那呢", wantError: "self-contained"},
+		{name: "recent reference remains dependent", text: "刚才那个再说一遍", resolvedText: "刚才那个", wantError: "self-contained"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+				Intent: "hotel_info", SubIntent: "hotel_information", Objective: "general_guidance",
+				RelationToPrevious: "reference_previous", ResolutionState: "resolved_from_context",
+				Text: tt.text, ResolvedText: tt.resolvedText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+			}}}
+			if err := validateRuntimeIntentDetectProtocol(parsed, nil, tt.text); err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q validation error, got %v", tt.wantError, err)
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessInformationTarget(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "interaction", SubIntent: "clarify", Objective: "method",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Entities: runtimeIntentEntityList{{Text: "发票", Type: "service"}},
+		Text:     "发票流程", ResolvedText: "酒店发票怎么申请", SourceRefs: runtimeIntentSourceRefList{"U1"},
+	}}}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "发票流程"); err == nil || !strings.Contains(err.Error(), "business information target") {
+		t.Fatalf("business information target must not be interaction/clarify, got %v", err)
+	}
+}
+
 func TestImmediatelyPreviousAIReplySkipsServiceNotice(t *testing.T) {
 	reply := models.Message{
 		SenderType:  enums.IMSenderTypeAI,

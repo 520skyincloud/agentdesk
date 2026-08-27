@@ -54,11 +54,16 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if !semanticGateValidResolution(resolution) {
 			return fmt.Errorf("intentTasks[%d].resolutionState is missing or invalid", index)
 		}
-		if resolution == runtimeIntentResolutionResolvedFromContext &&
-			semanticGateRelationUsesPrevious(relation) &&
-			runtimeIntentAtomicCandidateRequiresContext(task.Text) &&
-			runtimeIntentAtomicCandidateRequiresContext(task.ResolvedText) {
+		textRequiresContext := runtimeIntentAtomicCandidateRequiresContext(task.Text)
+		if resolution == runtimeIntentResolutionResolvedFromContext && !textRequiresContext {
+			return fmt.Errorf("intentTasks[%d].resolutionState resolved_from_context requires dependent original text", index)
+		}
+		if (canonicalIntentCode(task.Intent) == "hotel_info" || task.NeedsKnowledge) &&
+			textRequiresContext && runtimeIntentAtomicCandidateRequiresContext(task.ResolvedText) {
 			return fmt.Errorf("intentTasks[%d].resolvedText must be a self-contained question after context resolution", index)
+		}
+		if canonicalIntentCode(task.Intent) == "interaction" && runtimeIntentTaskHasExplicitBusinessInformationTarget(task) {
+			return fmt.Errorf("intentTasks[%d] has an explicit business information target and cannot use interaction/clarify", index)
 		}
 	}
 
@@ -66,20 +71,57 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 	if len(candidates) <= 1 || !shouldDiscloseRuntimeIntentTaskCandidates(sourceTexts, candidates) {
 		return nil
 	}
-	for candidateIndex, candidate := range candidates {
-		covered := false
-		for _, task := range tasks {
-			traceTask := callbacks.IntentTaskTraceData{Text: task.Text, ResolvedText: task.ResolvedText}
-			if score, _ := runtimeIntentAtomicTaskMatch(traceTask, candidate); score > 0 {
-				covered = true
-				break
-			}
-		}
-		if !covered {
+	matchedTasks := make([]int, len(tasks))
+	for index := range matchedTasks {
+		matchedTasks[index] = -1
+	}
+	for candidateIndex := range candidates {
+		seenTasks := make([]bool, len(tasks))
+		if !matchRuntimeIntentCandidateToDistinctTask(candidateIndex, candidates, tasks, seenTasks, matchedTasks) {
 			return fmt.Errorf("intentTasks does not cover atomic question %d of %d", candidateIndex+1, len(candidates))
 		}
 	}
 	return nil
+}
+
+func matchRuntimeIntentCandidateToDistinctTask(candidateIndex int, candidates []string, tasks []runtimeIntentTaskJSON, seenTasks []bool, matchedTasks []int) bool {
+	if candidateIndex < 0 || candidateIndex >= len(candidates) {
+		return false
+	}
+	for taskIndex, task := range tasks {
+		if seenTasks[taskIndex] {
+			continue
+		}
+		traceTask := callbacks.IntentTaskTraceData{Text: task.Text, ResolvedText: task.ResolvedText}
+		if score, _ := runtimeIntentAtomicTaskMatch(traceTask, candidates[candidateIndex]); score <= 0 {
+			continue
+		}
+		seenTasks[taskIndex] = true
+		if matchedTasks[taskIndex] < 0 || matchRuntimeIntentCandidateToDistinctTask(matchedTasks[taskIndex], candidates, tasks, seenTasks, matchedTasks) {
+			matchedTasks[taskIndex] = candidateIndex
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentTaskHasExplicitBusinessInformationTarget(task runtimeIntentTaskJSON) bool {
+	objective := semanticGateNormalizeObjective(task.Objective)
+	switch objective {
+	case "availability", "quantity", "location", "price", "time", "policy", "method", "explanation", "recommendation", "identity", "general_guidance", "compound_information", "status", "confirm":
+	default:
+		return false
+	}
+	for _, entity := range task.Entities {
+		if strings.TrimSpace(entity.Text) == "" {
+			continue
+		}
+		switch strings.TrimSpace(entity.Type) {
+		case "facility", "supply", "room_type", "room", "service", "location", "order", "company":
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeIntentProfileExpectsResolvedText(profile *models.ReplyIntentProfile) bool {

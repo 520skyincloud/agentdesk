@@ -79,7 +79,15 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	}
 	var b strings.Builder
 	b.WriteString("【任务输出契约】本轮只允许回答下面列出的文本任务。只输出一个 JSON 对象，不要输出 Markdown 代码块或 JSON 之外的文字。格式为：")
-	b.WriteString(`{"replyParts":[{"taskId":"task-1","content":"给客户的自然回复","coveredFactIds":["task-1F1"]}]}`)
+	example := generatedReplyPartsEnvelope{ReplyParts: []generatedReplyPart{{
+		TaskID:  groups[0].TaskID,
+		Content: "给客户的自然回复",
+	}}}
+	if len(groups[0].Facts) > 0 {
+		example.ReplyParts[0].CoveredFactIDs = []string{groups[0].Facts[0].FactID}
+	}
+	exampleJSON, _ := json.Marshal(example)
+	b.Write(exampleJSON)
 	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会在校验全部任务后再合并为最多三条客户消息。\n")
 	for _, group := range groups {
 		b.WriteString("- ")
@@ -348,15 +356,18 @@ func normalizeCoveredFactID(rawFactID string, group textReplyTaskGroup) (string,
 			return rawFactID, nil
 		}
 	}
-	if !isLocalCoveredFactID(rawFactID) {
+	rawScope, rawSuffix := splitCoveredFactID(rawFactID)
+	if rawSuffix == "" {
 		return "", fmt.Errorf("%w: unknown coveredFactId %s for %s", errGeneratedReplyProtocol, rawFactID, group.TaskID)
 	}
-
-	taskID := strings.TrimSpace(group.TaskID)
+	if rawScope != "" && !equivalentCoveredFactTaskScope(rawScope, group.TaskID) {
+		return "", fmt.Errorf("%w: unknown coveredFactId %s for %s", errGeneratedReplyProtocol, rawFactID, group.TaskID)
+	}
 	matches := make([]string, 0, 1)
 	for _, fact := range group.Facts {
 		expectedFactID := strings.TrimSpace(fact.FactID)
-		if taskID == "" || expectedFactID != taskID+rawFactID {
+		_, expectedSuffix := splitCoveredFactID(expectedFactID)
+		if expectedSuffix == "" || expectedSuffix != rawSuffix {
 			continue
 		}
 		matches = append(matches, expectedFactID)
@@ -371,16 +382,49 @@ func normalizeCoveredFactID(rawFactID string, group textReplyTaskGroup) (string,
 	}
 }
 
-func isLocalCoveredFactID(value string) bool {
-	if len(value) < 2 || value[0] != 'F' {
-		return false
+func splitCoveredFactID(value string) (string, string) {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 {
+		return "", ""
 	}
-	for _, character := range value[1:] {
-		if character < '0' || character > '9' {
-			return false
+	digitStart := len(value)
+	for digitStart > 0 && value[digitStart-1] >= '0' && value[digitStart-1] <= '9' {
+		digitStart--
+	}
+	if digitStart == len(value) || digitStart == 0 || value[digitStart-1] != 'F' {
+		return "", ""
+	}
+	for _, character := range value[:digitStart-1] {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '-' && character != '_' {
+			return "", ""
 		}
 	}
-	return true
+	return value[:digitStart-1], value[digitStart-1:]
+}
+
+func equivalentCoveredFactTaskScope(left string, right string) bool {
+	leftIndex, leftOK := coveredFactTaskIndex(left)
+	rightIndex, rightOK := coveredFactTaskIndex(right)
+	return leftOK && rightOK && leftIndex == rightIndex
+}
+
+func coveredFactTaskIndex(value string) (string, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, prefix := range []string{"task-", "task_", "task", "t"} {
+		if strings.HasPrefix(value, prefix) {
+			value = strings.TrimPrefix(value, prefix)
+			break
+		}
+	}
+	if value == "" {
+		return "", false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return "", false
+		}
+	}
+	return strings.TrimLeft(value, "0"), true
 }
 
 func containsCriticalValue(content string, criticalValue string) bool {

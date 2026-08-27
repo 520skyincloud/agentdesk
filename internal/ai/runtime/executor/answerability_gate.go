@@ -54,14 +54,20 @@ type runtimeKnowledgeQuestionResult struct {
 	TaskID         string
 	Query          string
 	EvidenceQuery  string
+	SubIntent      string
+	Objective      string
+	Entities       []callbacks.IntentEntityTraceData
 	Result         *retrievers.KnowledgeRetrieveResult
 	Decision       string
 	MissingAspects []string
 }
 
 type runtimeKnowledgeQuestionSpec struct {
-	TaskID string
-	Query  string
+	TaskID    string
+	Query     string
+	SubIntent string
+	Objective string
+	Entities  []callbacks.IntentEntityTraceData
 }
 
 type runtimeKnowledgeRetrieveBatch struct {
@@ -186,7 +192,7 @@ func fallbackAnswerabilityPassThrough(ctx context.Context, state *answerabilityG
 
 func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledgeContextRetriever, opts retrievers.KnowledgeRetrieveOptions, query string, intent callbacks.IntentTraceData, plans ...callbacks.ReplyPlanTraceData) (*runtimeKnowledgeRetrieveBatch, error) {
 	if len(plans) > 0 {
-		if questions, ok := runtimeKnowledgeQuestionsFromReplyPlan(plans[0]); ok {
+		if questions, ok := runtimeKnowledgeQuestionsFromReplyPlan(plans[0], intent); ok {
 			return retrieveContextForRuntimeQuestionList(ctx, retriever, opts, query, questions)
 		}
 	}
@@ -205,17 +211,27 @@ func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledge
 	}
 	questions := make([]runtimeKnowledgeQuestionSpec, 0, len(queries))
 	for index, item := range queries {
-		questions = append(questions, runtimeKnowledgeQuestionSpec{
+		spec := runtimeKnowledgeQuestionSpec{
 			TaskID: fmt.Sprintf("T%d", index+1),
 			Query:  item,
-		})
+		}
+		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, item); intentTask != nil {
+			spec.SubIntent = strings.TrimSpace(intentTask.SubIntent)
+			spec.Objective = semanticGateNormalizeObjective(intentTask.Objective)
+			spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
+		}
+		questions = append(questions, spec)
 	}
 	return retrieveContextForRuntimeQuestionList(ctx, retriever, opts, query, questions)
 }
 
-func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData) ([]runtimeKnowledgeQuestionSpec, bool) {
+func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, intents ...callbacks.IntentTraceData) ([]runtimeKnowledgeQuestionSpec, bool) {
 	questions := make([]runtimeKnowledgeQuestionSpec, 0, len(plan.TaskPlans))
 	seenTaskIDs := make(map[string]struct{}, len(plan.TaskPlans))
+	intent := callbacks.IntentTraceData{}
+	if len(intents) > 0 {
+		intent = intents[0]
+	}
 	for _, task := range plan.TaskPlans {
 		if !runtimeReplyTaskUsesKnowledge(task) {
 			continue
@@ -238,7 +254,22 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData) (
 			return nil, false
 		}
 		seenTaskIDs[taskID] = struct{}{}
-		questions = append(questions, runtimeKnowledgeQuestionSpec{TaskID: taskID, Query: query})
+		spec := runtimeKnowledgeQuestionSpec{
+			TaskID:    taskID,
+			Query:     query,
+			SubIntent: strings.TrimSpace(task.SubIntent),
+			Objective: semanticGateNormalizeObjective(task.Objective),
+		}
+		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, query); intentTask != nil {
+			if spec.SubIntent == "" {
+				spec.SubIntent = strings.TrimSpace(intentTask.SubIntent)
+			}
+			if spec.Objective == "" {
+				spec.Objective = semanticGateNormalizeObjective(intentTask.Objective)
+			}
+			spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
+		}
+		questions = append(questions, spec)
 	}
 	return questions, len(questions) > 0
 }
@@ -513,11 +544,11 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 	var wg sync.WaitGroup
 	for i, question := range questions {
 		wg.Add(1)
-		go func(index int, query string) {
+		go func(index int, spec runtimeKnowledgeQuestionSpec) {
 			defer wg.Done()
-			searchQuery := runtimeIntentRetrievalQuery(query)
+			searchQuery := runtimeIntentEvidenceQuery(spec)
 			if searchQuery == "" {
-				searchQuery = strings.TrimSpace(query)
+				searchQuery = strings.TrimSpace(spec.Query)
 			}
 			evidenceQueries[index] = searchQuery
 			questionOpts := opts
@@ -536,7 +567,7 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 				return
 			}
 			results[index] = result
-		}(i, question.Query)
+		}(i, question)
 	}
 	wg.Wait()
 	close(errs)
@@ -551,11 +582,145 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 			TaskID:        strings.TrimSpace(question.TaskID),
 			Query:         strings.TrimSpace(question.Query),
 			EvidenceQuery: strings.TrimSpace(evidenceQueries[index]),
+			SubIntent:     strings.TrimSpace(question.SubIntent),
+			Objective:     semanticGateNormalizeObjective(question.Objective),
+			Entities:      append([]callbacks.IntentEntityTraceData(nil), question.Entities...),
 			Result:        results[index],
 		})
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(retriever.KnowledgeBaseIDs(), opts, originalQuery, batch.Questions)
 	return batch, nil
+}
+
+func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
+	query := runtimeIntentRetrievalQuery(spec.Query)
+	if query == "" || !runtimeIntentShortKnowledgeLabel(query) {
+		return query
+	}
+	normalizedQuery := normalizeRuntimeKnowledgeQuery(query)
+	normalizedSubIntent := strings.ToLower(strings.TrimSpace(spec.SubIntent))
+	judgeTask := knowledgeEvidenceJudgeTask{
+		Query:     query,
+		Objective: semanticGateNormalizeObjective(spec.Objective),
+		Entities:  make([]knowledgeEvidenceJudgeEntity, 0, len(spec.Entities)),
+	}
+	for _, entity := range spec.Entities {
+		judgeTask.Entities = append(judgeTask.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
+	}
+	aspects := requiredKnowledgeEvidenceAspects(judgeTask)
+	methodAspect := runtimeKnowledgeAspectsContainAll(aspects, "method")
+	switch {
+	case strings.Contains(normalizedQuery, "开门") && (strings.Contains(normalizedQuery, "方式") || methodAspect),
+		strings.Contains(normalizedSubIntent, "room_access") && methodAspect:
+		return "酒店房门怎么打开"
+	case strings.Contains(normalizedQuery, "外卖地址") || strings.Contains(normalizedSubIntent, "delivery_address"):
+		return "酒店外卖地址怎么填写"
+	case strings.Contains(normalizedQuery, "矿泉水") && runtimeKnowledgeAspectsContainAll(aspects, "quantity", "price"):
+		return "房间矿泉水有几瓶，是否免费或收费"
+	case strings.Contains(normalizedQuery, "wifi") && containsAny(normalizedQuery, []string{"账号", "密码"}):
+		return "酒店WiFi账号和密码是什么"
+	case strings.Contains(normalizedQuery, "入住") && (strings.Contains(normalizedQuery, "方式") || strings.Contains(normalizedQuery, "流程") || methodAspect),
+		(strings.Contains(normalizedSubIntent, "checkin") || strings.Contains(normalizedSubIntent, "check_in")) && methodAspect:
+		return "酒店怎么办理入住"
+	case strings.Contains(normalizedQuery, "停车") && strings.Contains(normalizedQuery, "充电桩"):
+		switch {
+		case runtimeKnowledgeAspectsContainAll(aspects, "location"):
+			return "酒店停车场和充电桩在哪里"
+		case runtimeKnowledgeAspectsContainAll(aspects, "price"):
+			return "酒店停车是否收费，是否有充电桩"
+		case runtimeKnowledgeAspectsContainAll(aspects, "existence"):
+			return "酒店是否有停车场和充电桩"
+		default:
+			return "酒店停车场和充电桩情况"
+		}
+	case strings.Contains(normalizedQuery, "发票") && (strings.Contains(normalizedQuery, "方式") || strings.Contains(normalizedQuery, "流程") || methodAspect),
+		strings.Contains(normalizedSubIntent, "invoice") && methodAspect:
+		return "酒店发票怎么申请"
+	}
+	subject := runtimeIntentEvidenceSubject(query, spec.Entities)
+	if subject == "" {
+		return query
+	}
+	switch {
+	case runtimeKnowledgeAspectsContainAll(aspects, "quantity", "price"):
+		return "酒店" + subject + "有多少，是否免费或收费"
+	case runtimeKnowledgeAspectsContainAll(aspects, "location", "method"):
+		return "酒店" + subject + "在哪里，怎么使用"
+	case runtimeKnowledgeAspectsContainAll(aspects, "location"):
+		return "酒店" + subject + "在哪里"
+	case runtimeKnowledgeAspectsContainAll(aspects, "method"):
+		return "酒店" + subject + "怎么办理或使用"
+	case runtimeKnowledgeAspectsContainAll(aspects, "existence"):
+		return "酒店是否有" + subject
+	case runtimeKnowledgeAspectsContainAll(aspects, "time"):
+		return "酒店" + subject + "时间是什么"
+	case runtimeKnowledgeAspectsContainAll(aspects, "price"):
+		return "酒店" + subject + "是否免费或收费"
+	case runtimeKnowledgeAspectsContainAll(aspects, "quantity"):
+		return "酒店" + subject + "有多少"
+	default:
+		return query
+	}
+}
+
+func runtimeIntentShortKnowledgeLabel(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	if len([]rune(compact)) < 2 || len([]rune(compact)) > 18 {
+		return false
+	}
+	if containsAny(compact, []string{"怎么", "如何", "是否", "有没有", "什么", "哪", "多少", "几", "吗", "呢", "为什么", "为何"}) {
+		return false
+	}
+	return runtimeIntentTaskLabelLooksLikeTask(compact)
+}
+
+func runtimeIntentEvidenceSubject(query string, entities []callbacks.IntentEntityTraceData) string {
+	normalizedQuery := normalizeRuntimeKnowledgeQuery(query)
+	parts := make([]string, 0, len(entities))
+	for _, entity := range entities {
+		text := strings.TrimSpace(entity.Text)
+		if text == "" || runtimeIntentEvidenceGenericEntity(text) || !strings.Contains(normalizedQuery, normalizeRuntimeKnowledgeQuery(text)) {
+			continue
+		}
+		parts = appendIfMissing(parts, text)
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "和")
+	}
+	return strings.TrimSpace(strings.NewReplacer(
+		"方式", "",
+		"流程", "",
+		"数量", "",
+		"费用", "",
+		"价格", "",
+		"时间", "",
+		"位置", "",
+	).Replace(query))
+}
+
+func runtimeIntentEvidenceGenericEntity(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "酒店", "门店", "房间", "客房", "服务":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeKnowledgeAspectsContainAll(aspects []string, required ...string) bool {
+	for _, expected := range required {
+		found := false
+		for _, aspect := range aspects {
+			if aspect == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return len(required) > 0
 }
 
 func mergeRuntimeKnowledgeQuestionResults(knowledgeBaseIDs []int64, opts retrievers.KnowledgeRetrieveOptions, originalQuery string, questions []runtimeKnowledgeQuestionResult) *retrievers.KnowledgeRetrieveResult {
@@ -650,13 +815,26 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		item := knowledgeEvidenceJudgeTask{
 			TaskID:        question.TaskID,
 			Query:         evidenceQuery,
+			SubIntent:     strings.TrimSpace(question.SubIntent),
+			Objective:     semanticGateNormalizeObjective(question.Objective),
 			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question.Query),
 		}
+		item.Entities = make([]knowledgeEvidenceJudgeEntity, 0, len(question.Entities))
+		for _, entity := range question.Entities {
+			item.Entities = append(item.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
+		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, question.Query); intentTask != nil {
-			item.Objective = semanticGateNormalizeObjective(intentTask.Objective)
-			item.Entities = make([]knowledgeEvidenceJudgeEntity, 0, len(intentTask.Entities))
-			for _, entity := range intentTask.Entities {
-				item.Entities = append(item.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
+			if item.SubIntent == "" {
+				item.SubIntent = strings.TrimSpace(intentTask.SubIntent)
+			}
+			if item.Objective == "" {
+				item.Objective = semanticGateNormalizeObjective(intentTask.Objective)
+			}
+			if len(item.Entities) == 0 {
+				item.Entities = make([]knowledgeEvidenceJudgeEntity, 0, len(intentTask.Entities))
+				for _, entity := range intentTask.Entities {
+					item.Entities = append(item.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
+				}
 			}
 		}
 		for _, hit := range rawHits {
