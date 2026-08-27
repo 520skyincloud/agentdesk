@@ -625,6 +625,22 @@ func hasImmediatelyPreviousAIReply(history adapter.HistoryBuildResult) bool {
 func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, bool) {
 	if history.LatestRawItem != nil {
 		item := *history.LatestRawItem
+		if !utils.IsAIServiceNoticeMessage(&item) {
+			if item.SenderType != enums.IMSenderTypeAI {
+				return "", false
+			}
+			content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+			if content == "" {
+				return "", false
+			}
+			return content, true
+		}
+	}
+	for index := len(history.RawItems) - 1; index >= 0; index-- {
+		item := history.RawItems[index]
+		if utils.IsAIServiceNoticeMessage(&item) {
+			continue
+		}
 		if item.SenderType != enums.IMSenderTypeAI {
 			return "", false
 		}
@@ -634,18 +650,7 @@ func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, boo
 		}
 		return content, true
 	}
-	if len(history.RawItems) == 0 {
-		return "", false
-	}
-	item := history.RawItems[len(history.RawItems)-1]
-	if item.SenderType != enums.IMSenderTypeAI {
-		return "", false
-	}
-	content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
-	if content == "" {
-		return "", false
-	}
-	return content, true
+	return "", false
 }
 
 func customerMessageBeforeAdjacentAIReply(history adapter.HistoryBuildResult) string {

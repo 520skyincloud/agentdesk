@@ -42,14 +42,23 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if !requireSemantics {
 			continue
 		}
-		if objective := semanticGateNormalizeObjective(task.Objective); !semanticGateValidObjective(objective) {
+		objective := semanticGateNormalizeObjective(task.Objective)
+		if !semanticGateValidObjective(objective) {
 			return fmt.Errorf("intentTasks[%d].objective is missing or invalid", index)
 		}
-		if relation := semanticGateNormalizeRelation(task.RelationToPrevious); !semanticGateValidRelation(relation) {
+		relation := semanticGateNormalizeRelation(task.RelationToPrevious)
+		if !semanticGateValidRelation(relation) {
 			return fmt.Errorf("intentTasks[%d].relationToPrevious is missing or invalid", index)
 		}
-		if resolution := semanticGateNormalizeResolution(task.ResolutionState); !semanticGateValidResolution(resolution) {
+		resolution := semanticGateNormalizeResolution(task.ResolutionState)
+		if !semanticGateValidResolution(resolution) {
 			return fmt.Errorf("intentTasks[%d].resolutionState is missing or invalid", index)
+		}
+		if resolution == runtimeIntentResolutionResolvedFromContext &&
+			semanticGateRelationUsesPrevious(relation) &&
+			runtimeIntentAtomicCandidateRequiresContext(task.Text) &&
+			runtimeIntentAtomicCandidateRequiresContext(task.ResolvedText) {
+			return fmt.Errorf("intentTasks[%d].resolvedText must be a self-contained question after context resolution", index)
 		}
 	}
 

@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
 )
 
 func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testing.T) {
@@ -17,6 +19,74 @@ func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testi
 	err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点")
 	if err == nil || !strings.Contains(err.Error(), "objective") {
 		t.Fatalf("expected missing semantic field error, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReference(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent:             "hotel_info",
+		SubIntent:          "room_facilities",
+		Objective:          "availability",
+		RelationToPrevious: "reference_previous",
+		ResolutionState:    "resolved_from_context",
+		Entities:           runtimeIntentEntityList{{Text: "麦田", Type: "room_type"}},
+		Text:               "那麦田呢？",
+		ResolvedText:       "那麦田呢？",
+		SourceRefs:         runtimeIntentSourceRefList{"U1"},
+		NeedsKnowledge:     true,
+	}}}
+	err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？")
+	if err == nil || !strings.Contains(err.Error(), "self-contained") {
+		t.Fatalf("expected unresolved dependent reference to fail protocol validation, got %v", err)
+	}
+
+	parsed.IntentTasks[0].ResolvedText = "麦田房型有没有办公桌？"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err != nil {
+		t.Fatalf("self-contained reference must pass protocol validation: %v", err)
+	}
+}
+
+func TestImmediatelyPreviousAIReplySkipsServiceNotice(t *testing.T) {
+	reply := models.Message{
+		SenderType:  enums.IMSenderTypeAI,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "合柴和艺林有办公桌。",
+		ClientMsgID: "ai_reply_100",
+	}
+	notice := models.Message{
+		SenderType:  enums.IMSenderTypeAI,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "帮您转接同事啦～",
+		ClientMsgID: "ai_handoff_success_direct_10_100",
+	}
+	history := adapter.HistoryBuildResult{
+		RawItems:      []models.Message{reply},
+		LatestRawItem: &notice,
+	}
+	content, ok := immediatelyPreviousAIReply(history)
+	if !ok || !strings.Contains(content, reply.Content) {
+		t.Fatalf("expected substantive AI reply behind service notice, got %q ok=%v", content, ok)
+	}
+}
+
+func TestImmediatelyPreviousAIReplyDoesNotCrossNonAIMessageBehindServiceNotice(t *testing.T) {
+	notice := models.Message{
+		SenderType:  enums.IMSenderTypeAI,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "帮您转接同事啦～",
+		ClientMsgID: "ai_handoff_success_direct_10_100",
+	}
+	for _, senderType := range []enums.IMSenderType{enums.IMSenderTypeCustomer, enums.IMSenderTypeAgent} {
+		history := adapter.HistoryBuildResult{
+			RawItems: []models.Message{
+				{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "更早的业务答复"},
+				{SenderType: senderType, MessageType: enums.IMMessageTypeText, Content: "紧邻通知前的消息"},
+			},
+			LatestRawItem: &notice,
+		}
+		if content, ok := immediatelyPreviousAIReply(history); ok || content != "" {
+			t.Fatalf("must not cross sender %q to reuse an older AI reply, got %q ok=%v", senderType, content, ok)
+		}
 	}
 }
 
