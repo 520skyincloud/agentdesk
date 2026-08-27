@@ -61,6 +61,8 @@ func TestRepairRuntimeIntentAtomicKnowledgeTasksDoesNotSplitActionsOrSingleAspec
 	}{
 		{name: "action", text: "帮我送浴巾，顺便打扫一下", task: callbacks.IntentTaskTraceData{Intent: "service_request", SubIntent: "compound", Objective: "action_request", Text: "帮我送浴巾，顺便打扫一下", ResolvedText: "帮我送浴巾，顺便打扫一下", NeedsKnowledge: true, NeedsHumanRoute: true}},
 		{name: "single aspect", text: "房间有几瓶矿泉水，免费吗？", task: callbacks.IntentTaskTraceData{Intent: "hotel_info", SubIntent: "drinking_water", Objective: "compound_information", Text: "房间有几瓶矿泉水，免费吗？", ResolvedText: "房间有几瓶矿泉水，免费吗？", NeedsKnowledge: true}},
+		{name: "implicit same object aspects", text: "房间里有几瓶矿泉水，都是免费的吗？", task: callbacks.IntentTaskTraceData{Intent: "hotel_info", SubIntent: "drinking_water", Objective: "compound_information", Text: "房间里有几瓶矿泉水，都是免费的吗？", ResolvedText: "房间里有几瓶矿泉水，都是免费的吗？", Entities: []callbacks.IntentEntityTraceData{{Text: "矿泉水", Type: "supply"}}, NeedsKnowledge: true}},
+		{name: "repeated same object aspects", text: "房间有几瓶矿泉水，另外矿泉水收费吗？", task: callbacks.IntentTaskTraceData{Intent: "hotel_info", SubIntent: "drinking_water", Objective: "compound_information", Text: "房间有几瓶矿泉水，另外矿泉水收费吗？", ResolvedText: "房间有几瓶矿泉水，另外矿泉水收费吗？", Entities: []callbacks.IntentEntityTraceData{{Text: "矿泉水", Type: "supply"}}, NeedsKnowledge: true}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, repaired := repairRuntimeIntentAtomicKnowledgeTasks([]callbacks.IntentTaskTraceData{tt.task}, tt.text, []string{tt.text}, true)
@@ -68,6 +70,35 @@ func TestRepairRuntimeIntentAtomicKnowledgeTasksDoesNotSplitActionsOrSingleAspec
 				t.Fatalf("task must remain unchanged, repaired=%d tasks=%#v", repaired, got)
 			}
 		})
+	}
+}
+
+func TestRepairRuntimeIntentAtomicKnowledgeTasksKeepsThreeVoiceQuestions(t *testing.T) {
+	text := "麻烦分别告诉我，房间空调有没有，矿泉水配几瓶收不收费，入住要怎么操作。"
+	task := callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "compound_information", Objective: "compound_information",
+		RelationToPrevious: "independent", ResolutionState: "clear", Text: text, ResolvedText: text,
+		SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+		Entities: []callbacks.IntentEntityTraceData{
+			{Text: "空调", Type: "facility"},
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "入住", Type: "service"},
+		},
+	}
+
+	got, repaired := repairRuntimeIntentAtomicKnowledgeTasks([]callbacks.IntentTaskTraceData{task}, text, []string{text}, true)
+	if repaired != 3 || len(got) != 3 {
+		t.Fatalf("expected three repaired voice tasks, repaired=%d tasks=%#v", repaired, got)
+	}
+	wantTexts := []string{"房间空调有没有", "矿泉水配几瓶收不收费", "入住要怎么操作"}
+	wantObjectives := []string{"availability", "compound_information", "method"}
+	for index := range got {
+		if got[index].Text != wantTexts[index] || got[index].ResolvedText != wantTexts[index] || got[index].Objective != wantObjectives[index] {
+			t.Fatalf("unexpected voice task %d: %#v", index, got[index])
+		}
+		if !reflect.DeepEqual(got[index].SourceRefs, []string{"U1"}) {
+			t.Fatalf("voice task %d sourceRefs changed: %#v", index, got[index].SourceRefs)
+		}
 	}
 }
 

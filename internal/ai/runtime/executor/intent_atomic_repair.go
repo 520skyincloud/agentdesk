@@ -100,8 +100,15 @@ func repairRuntimeIntentAtomicKnowledgeTasks(tasks []callbacks.IntentTaskTraceDa
 	return repaired, repairCount
 }
 
+func runtimeIntentConcreteEntityText(entityText string) bool {
+	return len([]rune(entityText)) >= 2 && !containsAnyPrefix(entityText, []string{"酒店", "门店", "房间", "客房", "客户", "服务", "问题"})
+}
+
 func runtimeIntentAtomicTaskCanBeNarrowed(task callbacks.IntentTaskTraceData, candidates []string, assigned []int) bool {
 	if normalizeRuntimeKnowledgeQuery(task.Text) != normalizeRuntimeKnowledgeQuery(task.ResolvedText) {
+		return false
+	}
+	if runtimeIntentAtomicCandidatesShareEntity(task, candidates, assigned) {
 		return false
 	}
 	for _, candidateIndex := range assigned {
@@ -110,6 +117,29 @@ func runtimeIntentAtomicTaskCanBeNarrowed(task callbacks.IntentTaskTraceData, ca
 		}
 	}
 	return true
+}
+
+func runtimeIntentAtomicCandidatesShareEntity(task callbacks.IntentTaskTraceData, candidates []string, assigned []int) bool {
+	if len(assigned) <= 1 {
+		return false
+	}
+	for _, entity := range task.Entities {
+		entityText := normalizeRuntimeKnowledgeQuery(entity.Text)
+		if !runtimeIntentConcreteEntityText(entityText) {
+			continue
+		}
+		shared := true
+		for _, candidateIndex := range assigned {
+			if candidateIndex < 0 || candidateIndex >= len(candidates) || !strings.Contains(normalizeRuntimeKnowledgeQuery(candidates[candidateIndex]), entityText) {
+				shared = false
+				break
+			}
+		}
+		if shared {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimeIntentAtomicCandidateRequiresContext(candidate string) bool {
@@ -161,12 +191,17 @@ func runtimeIntentAtomicTaskMatch(task callbacks.IntentTaskTraceData, candidate 
 
 func runtimeIntentAtomicKnowledgeObjective(text string) string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
+	hasPrice := containsAny(compact, []string{"价格", "收费", "免费", "多少钱"})
+	hasQuantity := containsAny(compact, []string{"几瓶", "几个", "多少瓶", "数量"})
+	if hasPrice && hasQuantity {
+		return "compound_information"
+	}
 	switch {
-	case strings.Contains(compact, "价格"), strings.Contains(compact, "收费"), strings.Contains(compact, "免费"), strings.Contains(compact, "多少钱"):
+	case hasPrice:
 		return "price"
 	case strings.Contains(compact, "地址"), strings.Contains(compact, "位置"), strings.Contains(compact, "在哪里"), strings.Contains(compact, "在哪"), strings.Contains(compact, "哪里"):
 		return "location"
-	case strings.Contains(compact, "几瓶"), strings.Contains(compact, "几个"), strings.Contains(compact, "多少瓶"), strings.Contains(compact, "数量"):
+	case hasQuantity:
 		return "quantity"
 	case strings.Contains(compact, "几点"), strings.Contains(compact, "多久"), strings.Contains(compact, "什么时候"), strings.Contains(compact, "时间"):
 		return "time"

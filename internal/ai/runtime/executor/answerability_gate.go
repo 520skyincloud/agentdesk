@@ -53,6 +53,7 @@ type KnowledgeAnswerabilityGate struct {
 type runtimeKnowledgeQuestionResult struct {
 	TaskID         string
 	Query          string
+	EvidenceQuery  string
 	Result         *retrievers.KnowledgeRetrieveResult
 	Decision       string
 	MissingAspects []string
@@ -507,14 +508,20 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 		return batch, nil
 	}
 	results := make([]*retrievers.KnowledgeRetrieveResult, len(questions))
+	evidenceQueries := make([]string, len(questions))
 	errs := make(chan error, len(questions))
 	var wg sync.WaitGroup
 	for i, question := range questions {
 		wg.Add(1)
 		go func(index int, query string) {
 			defer wg.Done()
+			searchQuery := runtimeIntentRetrievalQuery(query)
+			if searchQuery == "" {
+				searchQuery = strings.TrimSpace(query)
+			}
+			evidenceQueries[index] = searchQuery
 			questionOpts := opts
-			questionOpts.QueryPreview = preview(query, 120)
+			questionOpts.QueryPreview = preview(searchQuery, 120)
 			if len(questions) > 1 {
 				if questionOpts.MaxContextItems <= 0 || questionOpts.MaxContextItems > 2 {
 					questionOpts.MaxContextItems = 2
@@ -523,7 +530,7 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 					questionOpts.TopK = 4
 				}
 			}
-			result, err := retriever.RetrieveContextByOptions(ctx, questionOpts, query)
+			result, err := retriever.RetrieveContextByOptions(ctx, questionOpts, searchQuery)
 			if err != nil {
 				errs <- err
 				return
@@ -541,9 +548,10 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 	batch.Questions = make([]runtimeKnowledgeQuestionResult, 0, len(questions))
 	for index, question := range questions {
 		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
-			TaskID: strings.TrimSpace(question.TaskID),
-			Query:  strings.TrimSpace(question.Query),
-			Result: results[index],
+			TaskID:        strings.TrimSpace(question.TaskID),
+			Query:         strings.TrimSpace(question.Query),
+			EvidenceQuery: strings.TrimSpace(evidenceQueries[index]),
+			Result:        results[index],
 		})
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(retriever.KnowledgeBaseIDs(), opts, originalQuery, batch.Questions)
@@ -635,9 +643,13 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		if len(rawHits) == 0 {
 			rawHits = question.Result.Hits
 		}
+		evidenceQuery := strings.TrimSpace(question.EvidenceQuery)
+		if evidenceQuery == "" {
+			evidenceQuery = strings.TrimSpace(question.Query)
+		}
 		item := knowledgeEvidenceJudgeTask{
 			TaskID:        question.TaskID,
-			Query:         question.Query,
+			Query:         evidenceQuery,
 			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question.Query),
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, question.Query); intentTask != nil {

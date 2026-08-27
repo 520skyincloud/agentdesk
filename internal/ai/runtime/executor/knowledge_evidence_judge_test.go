@@ -559,7 +559,7 @@ func TestKnowledgeEvidenceJudgeDefersFirstTransferDirectiveWithoutDroppingLaterA
 			judgeTestHit(1, 101, "空调故障", "问题：空调坏了\n答案：转接", 0.91),
 			judgeTestHit(2, 201, "空调设施", "问题：房间有空调吗\n答案：有。", 0.72),
 		),
-		"顺便问早餐几点": judgeTestRetrieveResult(
+		"早餐几点": judgeTestRetrieveResult(
 			judgeTestHit(1, 102, "门店早餐", "问题：早餐几点\n答案：酒店暂不提供早餐。", 0.88),
 			judgeTestHit(2, 202, "通用早餐", "问题：早餐几点\n答案：7:00-10:00。", 0.83),
 		),
@@ -592,7 +592,7 @@ func TestKnowledgeEvidenceJudgeDefersFirstTransferDirectiveWithoutDroppingLaterA
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
 	if summary.handoffDirective {
-		t.Fatal("the first deferred task must not suppress the later answer")
+		t.Fatalf("the first deferred task must not suppress the later answer: summary=%#v state=%#v trace=%#v plan=%#v", summary, state, collector.Data.Pipeline.EvidenceJudge, collector.Data.Pipeline.ReplyPlan)
 	}
 	if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, "酒店暂不提供早餐") || strings.Contains(state.RetrieveResult.ContextText, "转接") {
 		t.Fatalf("expected only the later breakfast answer in Generate context, got %#v", state.RetrieveResult)
@@ -930,6 +930,117 @@ func TestRepairHighConfidenceDirectFAQSelectionKeepsCompleteAnswer(t *testing.T)
 	}
 }
 
+func TestRepairHighConfidencePartialKnowledgeSelectionUsesCompleteExactFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "task-1",
+		Query:     "房间里有几瓶矿泉水，都是免费的吗",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "task-1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有几瓶矿泉水，都是免费的吗\n答案：房间内有两瓶矿泉水，都是免费的。", 0.97),
+			},
+			{
+				CandidateID: "task-1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "补充矿泉水", "问题：还要矿泉水怎么办\n答案：洗衣房有多余矿泉水，可以去1313对面自取。", 0.9),
+			},
+		},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"task-1": {
+			knowledgeEvidenceLayerStore: {
+				Decision:             knowledgeEvidenceDecisionPartial,
+				SelectedCandidateIDs: []string{"task-1C2"},
+				SupportedFacts: []knowledgeEvidenceFact{{
+					FactID: "task-1F1", Aspect: "price", Statement: "房间内矿泉水免费。", CriticalValues: []string{"免费"},
+				}},
+				MissingAspects: []string{"数量"},
+			},
+		},
+	}
+
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("expected exact FAQ to repair partial selection, repaired=%d selections=%#v", repaired, selections)
+	}
+	selection := selections["task-1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "task-1C1" {
+		t.Fatalf("expected complete exact FAQ selection, got %#v", selection)
+	}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, selection.SupportedFacts); len(missing) != 0 {
+		t.Fatalf("repaired FAQ must cover quantity and price, missing=%#v facts=%#v", missing, selection.SupportedFacts)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDowngradesMissingCompoundSlot(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "task-1",
+		Query:     "房间里有几瓶矿泉水，都是免费的吗",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "task-1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "补充矿泉水", "问题：还要矿泉水怎么办\n答案：房间内矿泉水免费，可以去1313对面的洗衣房自取。", 0.91),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"task-1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["task-1C1"],"supportedFacts":[{"factId":"task-1F1","aspect":"price","statement":"房间内矿泉水免费。","criticalValues":["免费"]},{"factId":"task-1F2","aspect":"quantity","statement":"可以去1313对面的洗衣房自取。","criticalValues":["1313"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["task-1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || !containsString(selection.MissingAspects, "数量") {
+		t.Fatalf("missing quantity must downgrade the selection to partial, got %#v", selection)
+	}
+	for _, fact := range selection.SupportedFacts {
+		if fact.Aspect == "quantity" || strings.Contains(fact.Statement, "1313") {
+			t.Fatalf("room number or location must not masquerade as quantity: %#v", selection.SupportedFacts)
+		}
+	}
+}
+
+func TestFilterKnowledgeEvidenceFactsKeepsOnlyCurrentObjective(t *testing.T) {
+	facts := []knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "existence", Statement: "酒店所有房间均配有空调，可使用控制面板或遥控器调节温度和风速。", CriticalValues: []string{"所有房间", "控制面板", "遥控器"}},
+		{FactID: "T1F2", Aspect: "method", Statement: "也可以通过智能语音操控空调。", CriticalValues: []string{"智能语音"}},
+		{FactID: "T1F3", Aspect: "other", Statement: "帮您解放双手。"},
+	}
+	filtered := filterKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "房间里有空调吗", Objective: "availability"}, facts)
+	if len(filtered) != 1 || filtered[0].Aspect != "existence" {
+		t.Fatalf("availability should retain only the existence fact, got %#v", filtered)
+	}
+	if strings.Contains(filtered[0].Statement, "控制面板") || strings.Contains(filtered[0].Statement, "智能语音") || strings.Contains(filtered[0].Statement, "解放双手") {
+		t.Fatalf("availability fact must not carry method or marketing extensions: %#v", filtered[0])
+	}
+
+	invoiceFacts := []knowledgeEvidenceFact{
+		{FactID: "T2F1", Aspect: "method", Statement: "退房后在自由家安心宿小程序申请发票。", CriticalValues: []string{"退房后", "小程序", "申请"}},
+		{FactID: "T2F2", Aspect: "time", Statement: "发票会在申请后1至3个工作日上传。", CriticalValues: []string{"1至3个工作日"}},
+	}
+	methodOnly := filterKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{TaskID: "T2", Query: "发票怎么开", Objective: "method"}, invoiceFacts)
+	if len(methodOnly) != 1 || methodOnly[0].Aspect != "method" {
+		t.Fatalf("invoice method task must not repeat download time, got %#v", methodOnly)
+	}
+	timeOnly := filterKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{TaskID: "T3", Query: "多久能下载", Objective: "time"}, invoiceFacts)
+	if len(timeOnly) != 1 || timeOnly[0].Aspect != "time" {
+		t.Fatalf("invoice time task must not repeat application method, got %#v", timeOnly)
+	}
+}
+
+func TestSplitKnowledgeEvidenceFAQTrimsTrainingMetadata(t *testing.T) {
+	hit := judgeTestHit(1, 101, "开门", "问题：酒店房门怎么打开\n答案：完成登记扫人脸就可以开门啦，无需房卡。\n相似问题：怎么开房门、没有房卡怎么开门、刷脸能开门吗", 0.96)
+	question, answer := splitKnowledgeEvidenceFAQForQuery(hit, "酒店房门怎么打开")
+	if question != "酒店房门怎么打开" || !strings.Contains(answer, "无需房卡") {
+		t.Fatalf("expected usable FAQ unit, question=%q answer=%q", question, answer)
+	}
+	if strings.Contains(answer, "相似问题") || strings.Contains(answer, "没有房卡怎么开门") {
+		t.Fatalf("training metadata must not enter Judge facts: %q", answer)
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeResponseWithholdsUngroundedFacts(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID: "T1",
@@ -1014,6 +1125,62 @@ func TestParseKnowledgeEvidenceJudgeResponseStillUsesAffirmativeFAQQuestionAndAn
 	selection := parsed["T1"][knowledgeEvidenceLayerStore]
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SupportedFacts) != 1 {
 		t.Fatalf("affirmative FAQ answer must still confirm facts stated in its own question: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceFAQAnswerConfirmationIsStrict(t *testing.T) {
+	for _, answer := range []string{"是的。", "对的，具体以知识答案为准。", "没错！", "有的，房间内配备。"} {
+		if !knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+			t.Fatalf("strict affirmative answer should confirm its FAQ question: %q", answer)
+		}
+	}
+	for _, answer := range []string{"可以联系门店确认。", "可以咨询同事。", "可以尝试申请。", "支持联系管家。", "提供咨询服务。", "不需要。", "不能。"} {
+		if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+			t.Fatalf("guidance or negative answer must not confirm its FAQ question: %q", answer)
+		}
+	}
+}
+
+func TestHighConfidenceFAQDoesNotInventPriceFactFromGuidanceAnswer(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "延迟退房收费吗",
+		Objective: "price",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "延迟退房", "问题：延迟退房收费吗\n答案：可以联系门店管家确认，具体情况以当天为准。", 0.96),
+		}},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("guidance answer must not be repaired into a direct price answer: %#v", selection)
+	}
+}
+
+func TestDeterministicKnowledgeEvidenceHotelAspectCues(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		clause string
+		aspect string
+	}{
+		{name: "door method", clause: "完成登记扫人脸就可以开门啦", aspect: "method"},
+		{name: "washing machine quantity", clause: "洗衣房有两台洗衣机", aspect: "quantity"},
+		{name: "towel quantity", clause: "房间有两条浴巾", aspect: "quantity"},
+		{name: "laundry location", clause: "洗衣机在洗衣房", aspect: "location"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			aspect, _ := knowledgeEvidenceAnswerClauseAspect(tt.clause)
+			if aspect != tt.aspect {
+				t.Fatalf("unexpected aspect for %q: got %s want %s", tt.clause, aspect, tt.aspect)
+			}
+			fact := knowledgeEvidenceFact{Aspect: aspect, Statement: tt.clause}
+			if !knowledgeEvidenceFactSupportsAspect(fact, tt.aspect) {
+				t.Fatalf("classified fact must cover %s: %#v", tt.aspect, fact)
+			}
+		})
+	}
+	if aspect, _ := knowledgeEvidenceAnswerClauseAspect("1313对面的洗衣房自取"); aspect == "quantity" {
+		t.Fatalf("room number must not be treated as a quantity")
 	}
 }
 

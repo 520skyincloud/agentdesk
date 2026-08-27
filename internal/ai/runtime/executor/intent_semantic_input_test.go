@@ -74,9 +74,46 @@ func TestCurrentTurnTaskCandidatesDetectSingleParagraphQuestions(t *testing.T) {
 }
 
 func TestCurrentTurnTaskCandidatesKeepDependentAspectWithPreviousQuestion(t *testing.T) {
-	got := currentTurnTaskCandidates("房间有几瓶矿泉水，免费吗？")
-	if len(got) != 1 || got[0] != "房间有几瓶矿泉水，免费吗" {
-		t.Fatalf("expected one compound task candidate, got %#v", got)
+	for _, text := range []string{
+		"房间有几瓶矿泉水，免费吗？",
+		"房间里有几瓶矿泉水，都是免费的吗？",
+		"房间有几瓶矿泉水，另外收费吗？",
+	} {
+		got := currentTurnTaskCandidates(text)
+		if len(got) != 1 {
+			t.Fatalf("expected one compound task candidate for %q, got %#v", text, got)
+		}
+	}
+}
+
+func TestCurrentTurnTaskCandidatesSkipsInstructionLeadButKeepsVoiceQuestions(t *testing.T) {
+	text := "麻烦分别告诉我，房间空调有没有，矿泉水配几瓶收不收费，入住要怎么操作。"
+	got := currentTurnTaskCandidates(text)
+	want := []string{"房间空调有没有", "矿泉水配几瓶收不收费", "入住要怎么操作"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("expected three business questions without the instruction lead, got %#v", got)
+	}
+}
+
+func TestRuntimeIntentRetrievalQueryOnlyTrimsConversationalLead(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "还有怎么办理入住", want: "怎么办理入住"},
+		{input: "另外停车免费吗", want: "停车免费吗"},
+		{input: "顺便问下外卖地址怎么填", want: "外卖地址怎么填"},
+		{input: "顺便问早餐几点", want: "早餐几点"},
+		{input: "再问一下房间有几瓶矿泉水", want: "房间有几瓶矿泉水"},
+		{input: "还有没有空调", want: "还有没有空调"},
+		{input: "还有多少间房", want: "还有多少间房"},
+		{input: "还有两瓶矿泉水收费吗", want: "还有两瓶矿泉水收费吗"},
+		{input: "另外收费吗", want: "另外收费吗"},
+	}
+	for _, tt := range tests {
+		if got := runtimeIntentRetrievalQuery(tt.input); got != tt.want {
+			t.Fatalf("runtimeIntentRetrievalQuery(%q)=%q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

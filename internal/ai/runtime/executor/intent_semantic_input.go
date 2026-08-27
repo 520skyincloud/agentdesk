@@ -106,9 +106,16 @@ func splitRuntimeTaskCandidateClause(text string) []string {
 }
 
 func isDependentIntentTaskClause(text string) bool {
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(strings.TrimSpace(text)))
+	compact := compactRuntimeIntentClause(text)
+	for _, prefix := range []string{"另外", "还有", "顺便", "然后", "而且"} {
+		compact = strings.TrimPrefix(compact, prefix)
+	}
+	for _, prefix := range []string{"这两瓶", "这几瓶", "这些", "这个", "它们", "它", "都", "也"} {
+		compact = strings.TrimPrefix(compact, prefix)
+	}
 	switch compact {
-	case "免费吗", "收费吗", "多少钱", "多久", "几点", "在哪里", "在哪", "怎么用", "怎么弄", "可以吗", "行吗", "那呢", "呢":
+	case "免费吗", "是免费的吗", "是不是免费的", "是不是都免费的", "是否免费", "收费吗", "收不收费", "要收费吗", "需要收费吗", "多少钱", "价格呢",
+		"多久", "几点", "什么时候", "在哪里", "在哪", "哪里", "怎么用", "怎么弄", "如何使用", "可以吗", "行吗", "那呢", "呢":
 		return true
 	default:
 		return false
@@ -116,11 +123,92 @@ func isDependentIntentTaskClause(text string) bool {
 }
 
 func isIntentTaskLeadOnly(text string) bool {
-	compact := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(strings.TrimSpace(text)))
+	compact := compactRuntimeIntentClause(text)
 	switch compact {
-	case "请问", "想问", "想问一下", "我想问", "我想问一下", "麻烦问一下", "咨询一下", "还有个问题", "还有一个问题", "另外", "还有", "顺便":
+	case "请问", "想问", "想问一下", "我想问", "我想问一下", "麻烦问一下", "咨询一下", "还有个问题", "还有一个问题", "另外", "还有", "顺便",
+		"麻烦分别告诉我", "请分别告诉我", "帮我分别说一下", "麻烦分别说一下", "请分别说一下",
+		"麻烦分别回答", "请分别回答", "麻烦逐个回答", "请逐个回答", "麻烦逐项回答", "请逐项回答":
 		return true
 	default:
 		return false
 	}
+}
+
+func compactRuntimeIntentClause(text string) string {
+	return strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "").Replace(strings.ToLower(strings.TrimSpace(text)))
+}
+
+// runtimeIntentRetrievalQuery removes only leading conversational framing from
+// a retrieval copy. The intent task's text, resolvedText and sourceRefs remain
+// unchanged so source coverage and generation still see the customer's words.
+func runtimeIntentRetrievalQuery(text string) string {
+	original := strings.TrimSpace(text)
+	if original == "" {
+		return ""
+	}
+	for _, prefix := range []string{
+		"还有一个问题想问", "还有个问题想问",
+		"顺便再问一下", "顺便再问下", "另外再问一下", "另外再问下",
+		"顺便问一下", "顺便问下", "顺便问", "另外问一下", "另外问下", "另外问", "再问一下", "再问下", "再问",
+		"还有一个问题", "还有个问题",
+	} {
+		if remainder, ok := trimRuntimeIntentRetrievalPrefix(original, prefix, true); ok {
+			return remainder
+		}
+	}
+	for _, prefix := range []string{"顺便", "另外", "还有"} {
+		if remainder, ok := trimRuntimeIntentRetrievalPrefix(original, prefix, false); ok {
+			return remainder
+		}
+	}
+	return original
+}
+
+func trimRuntimeIntentRetrievalPrefix(text string, prefix string, unambiguous bool) (string, bool) {
+	if !strings.HasPrefix(text, prefix) || len(text) <= len(prefix) {
+		return "", false
+	}
+	remainder := strings.TrimSpace(text[len(prefix):])
+	hadSeparator := false
+	for remainder != "" {
+		trimmed := strings.TrimLeft(remainder, " ，,：:；;。.!！?？")
+		if trimmed == remainder {
+			break
+		}
+		hadSeparator = true
+		remainder = trimmed
+	}
+	if remainder == "" || len([]rune(compactRuntimeIntentClause(remainder))) < 2 || !runtimeBurstLineLooksLikeTask(remainder) {
+		return "", false
+	}
+	if unambiguous || hadSeparator || prefix == "顺便" {
+		return remainder, true
+	}
+	compact := compactRuntimeIntentClause(remainder)
+	if prefix == "还有" && (containsAnyPrefix(compact, []string{"没有", "多少", "几个", "几瓶", "哪些", "多久", "多长", "剩"}) || startsWithRuntimeIntentQuantity(compact)) {
+		return "", false
+	}
+	if prefix == "另外" && containsAnyPrefix(compact, []string{"收费", "费用", "加收", "付费", "要钱"}) {
+		return "", false
+	}
+	if len([]rune(compact)) < 5 {
+		return "", false
+	}
+	return remainder, true
+}
+
+func startsWithRuntimeIntentQuantity(text string) bool {
+	for _, r := range text {
+		return strings.ContainsRune("0123456789零〇一二两三四五六七八九十百千万半几", r)
+	}
+	return false
+}
+
+func containsAnyPrefix(text string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
 }

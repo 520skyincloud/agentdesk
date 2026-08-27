@@ -187,6 +187,29 @@ func TestResolvedIntentTaskTextReplacesEllipticalBurstQuery(t *testing.T) {
 	}
 }
 
+func TestRuntimeKnowledgeRetrievalTrimsConversationalLeadButKeepsLogicalQuery(t *testing.T) {
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	batch, err := retrieveContextForRuntimeQuestionList(
+		context.Background(),
+		retriever,
+		retrievers.KnowledgeRetrieveOptions{},
+		"还有怎么办理入住",
+		[]runtimeKnowledgeQuestionSpec{{TaskID: "T1", Query: "还有怎么办理入住"}},
+	)
+	if err != nil {
+		t.Fatalf("retrieveContextForRuntimeQuestionList returned error: %v", err)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0] != "怎么办理入住" {
+		t.Fatalf("expected cleaned FastGPT query, got %#v", retriever.queries)
+	}
+	if batch == nil || len(batch.Questions) != 1 || batch.Questions[0].Query != "还有怎么办理入住" {
+		t.Fatalf("logical task query must remain unchanged for Judge mapping, got %#v", batch)
+	}
+	if batch.Questions[0].EvidenceQuery != "怎么办理入住" {
+		t.Fatalf("Judge must use the same cleaned question as retrieval, got %#v", batch.Questions[0])
+	}
+}
+
 func TestMergeRuntimeKnowledgeQueriesFiltersResourceWhenIntentMissedKnowledgeTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})
