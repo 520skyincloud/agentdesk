@@ -12,6 +12,7 @@ import (
 	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
 
@@ -60,36 +61,39 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	if handled, err := executeRuntimeHandoffDirective(req, summary, collector); handled || err != nil {
 		return completeRuntimeHandoffDirective(summary, collector, err, false)
 	}
-	if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
-		if err != nil {
-			summary.Status = "error"
-			summary.ErrorMessage = err.Error()
+	deferredIntentHumanRoute := deferMixedExplicitIntentHumanRoute(req, collector)
+	if !deferredIntentHumanRoute {
+		if handled, err := executeIntentHumanRoute(ctx, req, summary, collector); handled || err != nil {
+			if err != nil {
+				summary.Status = "error"
+				summary.ErrorMessage = err.Error()
+				collector.Data.Status = summary.Status
+				collector.Data.Error.Message = err.Error()
+				collector.Data.Error.Stage = "tool_knowledge"
+				summary.TraceData = collector.Marshal()
+				return summary, err
+			}
+			summary.Status = "completed"
+			summary.ModelName = req.AIConfig.ModelName
 			collector.Data.Status = summary.Status
-			collector.Data.Error.Message = err.Error()
-			collector.Data.Error.Stage = "tool_knowledge"
-			summary.TraceData = collector.Marshal()
-			return summary, err
-		}
-		summary.Status = "completed"
-		summary.ModelName = req.AIConfig.ModelName
-		collector.Data.Status = summary.Status
-		if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) && summary.handoffDispatchStatus == string(services.HandoffDispatchStatusDispatched) {
-			collector.Data.Output.FinishReason = "intent_emergency_human_route_dispatched"
+			if isEmergencySafetyHandoff(collector.Data.Pipeline.Intent) && summary.handoffDispatchStatus == string(services.HandoffDispatchStatusDispatched) {
+				collector.Data.Output.FinishReason = "intent_emergency_human_route_dispatched"
+				collector.Data.Pipeline.Generate.Status = "skipped"
+				collector.Data.Pipeline.Generate.Reason = "intent stage dispatched emergency safety directly to human reception"
+				collector.Data.Pipeline.Validate.Status = "passed"
+				collector.Data.Pipeline.Validate.Reason = "emergency safety route dispatched directly"
+				summary.TraceData = collector.Marshal()
+				return summary, nil
+			}
+			finishReason, generateReason, validateReason := handoffCompletionMetadata("intent_human_route", summary.handoffDispatchStatus)
+			collector.Data.Output.FinishReason = finishReason
 			collector.Data.Pipeline.Generate.Status = "skipped"
-			collector.Data.Pipeline.Generate.Reason = "intent stage dispatched emergency safety directly to human reception"
+			collector.Data.Pipeline.Generate.Reason = generateReason
 			collector.Data.Pipeline.Validate.Status = "passed"
-			collector.Data.Pipeline.Validate.Reason = "emergency safety route dispatched directly"
+			collector.Data.Pipeline.Validate.Reason = validateReason
 			summary.TraceData = collector.Marshal()
 			return summary, nil
 		}
-		finishReason, generateReason, validateReason := handoffCompletionMetadata("intent_human_route", summary.handoffDispatchStatus)
-		collector.Data.Output.FinishReason = finishReason
-		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = generateReason
-		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = validateReason
-		summary.TraceData = collector.Marshal()
-		return summary, nil
 	}
 	if prepareHotelVariableDirectCommit(req, summary, collector) {
 		summary.Status = "completed"
@@ -115,45 +119,41 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, err
 	}
-	hasVisibleSkills := factory.HasVisibleSkills(req.AIAgent)
-	tooling := prepareTooling(toolDefs, nil, req.ToolSet, hasVisibleSkills)
+	tooling := prepareGenerateToolingForIntent(toolDefs, req.ToolSet, collector.Data.Pipeline.Intent, factory.HasVisibleSkills(req.AIAgent))
 	summary.ToolCodes = append(summary.ToolCodes, tooling.toolCodes...)
 	collector.Data.Input.ToolCodes = append(collector.Data.Input.ToolCodes, summary.ToolCodes...)
 	collector.SetTooling(tooling.staticToolCodes, definitionToolCodes(tooling.definitions), len(tooling.definitions) > 0)
 
-	agent, err := s.agentFactory.BuildCustomerServiceAgent(ctx, factory.BuildCustomerServiceAgentInput{
-		AIAgent:                    req.AIAgent,
-		AIConfig:                   req.AIConfig,
-		InstructionToolDefinitions: tooling.definitions,
-		DynamicMCPToolDefinitions:  tooling.definitions,
-		StaticTools:                tooling.staticTools,
-		StaticToolCodes:            tooling.staticToolCodeMap,
-		StaticToolMetadata:         tooling.staticToolMetadata,
-		Collector:                  collector,
-	})
-	if err != nil {
-		summary.Status = "error"
-		summary.ErrorMessage = err.Error()
-		collector.Data.Status = summary.Status
-		collector.Data.Error.Message = err.Error()
-		collector.Data.Error.Stage = "prepare"
-		summary.TraceData = collector.Marshal()
-		return summary, err
-	}
-
-	runner := s.runnerFactory.Build(ctx, agent, false, true)
-	if runner == nil {
-		summary.Status = "error"
-		summary.ErrorMessage = "failed to build runner"
-		collector.Data.Status = summary.Status
-		collector.Data.Error.Message = summary.ErrorMessage
-		collector.Data.Error.Stage = "prepare"
-		summary.TraceData = collector.Marshal()
-		return summary, fmt.Errorf("%s", summary.ErrorMessage)
-	}
 	collector.Data.Interrupt.CheckPointID = checkPointID
+	generateAIConfig := generatedReplyAIConfigForPlan(req.AIConfig, collector.Data.Pipeline.ReplyPlan)
 	generateStartedAt := time.Now()
-	consumeErr := consumeAgentEvents(runner.Run(ctx, messages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
+	_, consumeErr := runGeneratedReplyWithRecovery(
+		ctx,
+		messages,
+		summary,
+		collector,
+		func() bool { return canContinueGeneratedReply(req) },
+		func(attemptCtx context.Context, attemptMessages []*schema.Message) error {
+			agent, buildErr := s.agentFactory.BuildCustomerServiceAgent(attemptCtx, factory.BuildCustomerServiceAgentInput{
+				AIAgent:                    req.AIAgent,
+				AIConfig:                   generateAIConfig,
+				InstructionToolDefinitions: tooling.definitions,
+				DynamicMCPToolDefinitions:  tooling.definitions,
+				StaticTools:                tooling.staticTools,
+				StaticToolCodes:            tooling.staticToolCodeMap,
+				StaticToolMetadata:         tooling.staticToolMetadata,
+				Collector:                  collector,
+			})
+			if buildErr != nil {
+				return fmt.Errorf("%w: %v", ErrGeneratedReplyExecution, buildErr)
+			}
+			runner := s.runnerFactory.Build(attemptCtx, agent, false, true)
+			if runner == nil {
+				return fmt.Errorf("%w: failed to build runner", ErrGeneratedReplyExecution)
+			}
+			return consumeAgentEvents(attemptCtx, runner.Run(attemptCtx, attemptMessages, buildRunOptions(checkPointID)...), summary, collector, tooling.toolDefsByModelName)
+		},
+	)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
 	if consumeErr != nil {
@@ -271,7 +271,9 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	if !intent.NeedsResource && len(intent.ResourceActions) == 0 {
 		return false
 	}
-	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsHumanRoute {
+	deferredHandoff := collector.Data.Pipeline.EvidenceJudge.DeferredHandoff
+	knowledgeOnlyDeferred := deferredHandoff && !runtimeReplyPlanRequiresGeneratedText(collector.Data.Pipeline.ReplyPlan)
+	if (intent.NeedsKnowledge && !knowledgeOnlyDeferred) || intent.NeedsTool || (intent.NeedsHumanRoute && !deferredHandoff) {
 		return false
 	}
 	resourceTypes := requestedHotelVariableResourceTypes(req.UserMessage.Content, intent)
@@ -305,6 +307,15 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	}
 	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n"))
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func runtimeReplyPlanRequiresGeneratedText(plan callbacks.ReplyPlanTraceData) bool {
+	for _, task := range plan.TaskPlans {
+		if replyTaskRequiresText(task) {
+			return true
+		}
+	}
+	return false
 }
 
 func canCommitStructuredLocation(instance *models.WxWorkProtocolInstance) bool {
@@ -394,58 +405,51 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 	collector.Data.Model.Provider = string(req.AIConfig.Provider)
 	collector.Data.Model.Name = req.AIConfig.ModelName
 
-	agent, err := s.agentFactory.BuildCustomerServiceAgent(ctx, factory.BuildCustomerServiceAgentInput{
-		AIAgent:                    req.AIAgent,
-		AIConfig:                   req.AIConfig,
-		InstructionToolDefinitions: tooling.definitions,
-		DynamicMCPToolDefinitions:  tooling.definitions,
-		StaticTools:                tooling.staticTools,
-		StaticToolCodes:            tooling.staticToolCodeMap,
-		StaticToolMetadata:         tooling.staticToolMetadata,
-		Collector:                  collector,
-	})
-	if err != nil {
-		summary.Status = "error"
-		summary.ErrorMessage = err.Error()
-		collector.Data.Status = summary.Status
-		collector.Data.Error.Message = err.Error()
-		collector.Data.Error.Stage = "resume_prepare"
-		summary.TraceData = collector.Marshal()
-		return summary, err
-	}
-	runner := s.runnerFactory.Build(ctx, agent, false, true)
-	if runner == nil {
-		summary.Status = "error"
-		summary.ErrorMessage = "failed to build runner"
-		collector.Data.Status = summary.Status
-		collector.Data.Error.Message = summary.ErrorMessage
-		collector.Data.Error.Stage = "resume_prepare"
-		summary.TraceData = collector.Marshal()
-		return summary, fmt.Errorf("%s", summary.ErrorMessage)
-	}
+	resumeAIConfig := generatedReplyAIConfigForPlan(req.AIConfig, callbacks.ReplyPlanTraceData{})
 	resumeData := buildResumeDataMessage(req.ResumeData)
 	resumeTargets := buildResumeTargets(req.ResumeData)
-	var (
-		iter *adk.AsyncIterator[*adk.AgentEvent]
-	)
-	if len(resumeTargets) > 0 {
-		iter, err = runner.ResumeWithParams(ctx, summary.CheckPointID, &adk.ResumeParams{
-			Targets: resumeTargets,
-		}, buildResumeOptions(summary.CheckPointID, resumeData)...)
-	} else {
-		iter, err = runner.Resume(ctx, summary.CheckPointID, buildResumeOptions(summary.CheckPointID, resumeData)...)
-	}
-	if err != nil {
-		summary.Status = "error"
-		summary.ErrorMessage = err.Error()
-		collector.Data.Status = summary.Status
-		collector.Data.Error.Message = err.Error()
-		collector.Data.Error.Stage = "resume_execute"
-		summary.TraceData = collector.Marshal()
-		return summary, err
-	}
 	generateStartedAt := time.Now()
-	consumeErr := consumeAgentEvents(iter, summary, collector, tooling.toolDefsByModelName)
+	_, consumeErr := runResumedGeneratedReplyWithRecovery(
+		ctx,
+		summary,
+		collector,
+		resolveResumeInterruptID(req),
+		func() bool { return canContinueResumedGeneratedReply(req) },
+		func(attemptCtx context.Context, _ []*schema.Message) error {
+			agent, buildErr := s.agentFactory.BuildCustomerServiceAgent(attemptCtx, factory.BuildCustomerServiceAgentInput{
+				AIAgent:                    req.AIAgent,
+				AIConfig:                   resumeAIConfig,
+				InstructionToolDefinitions: tooling.definitions,
+				DynamicMCPToolDefinitions:  tooling.definitions,
+				StaticTools:                tooling.staticTools,
+				StaticToolCodes:            tooling.staticToolCodeMap,
+				StaticToolMetadata:         tooling.staticToolMetadata,
+				Collector:                  collector,
+			})
+			if buildErr != nil {
+				return fmt.Errorf("%w: %v", ErrGeneratedReplyExecution, buildErr)
+			}
+			runner := s.runnerFactory.Build(attemptCtx, agent, false, true)
+			if runner == nil {
+				return fmt.Errorf("%w: failed to build runner", ErrGeneratedReplyExecution)
+			}
+			var (
+				iter *adk.AsyncIterator[*adk.AgentEvent]
+				err  error
+			)
+			if len(resumeTargets) > 0 {
+				iter, err = runner.ResumeWithParams(attemptCtx, summary.CheckPointID, &adk.ResumeParams{
+					Targets: resumeTargets,
+				}, buildResumeOptions(summary.CheckPointID, resumeData)...)
+			} else {
+				iter, err = runner.Resume(attemptCtx, summary.CheckPointID, buildResumeOptions(summary.CheckPointID, resumeData)...)
+			}
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrGeneratedReplyExecution, err)
+			}
+			return consumeAgentEvents(attemptCtx, iter, summary, collector, tooling.toolDefsByModelName)
+		},
+	)
 	collector.Data.Pipeline.Generate.LatencyMs = time.Since(generateStartedAt).Milliseconds()
 	summary.ModelName = req.AIConfig.ModelName
 	if consumeErr != nil {
@@ -453,7 +457,9 @@ func (s *Service) ExecuteResume(ctx context.Context, req ResumeInput) (*RunResul
 	}
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
-	collector.Data.Output.FinishReason = summary.Status
+	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
+		collector.Data.Output.FinishReason = summary.Status
+	}
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil

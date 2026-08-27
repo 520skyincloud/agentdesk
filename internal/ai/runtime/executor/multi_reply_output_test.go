@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
 )
 
 func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
@@ -77,14 +78,15 @@ func TestNormalizeGeneratedReplyPartsUnwrapsMarkdownAndJSONStrings(t *testing.T)
 	}
 }
 
-func TestNormalizeGeneratedReplyPartsFallsBackWithoutLosingReply(t *testing.T) {
+func TestNormalizeGeneratedReplyPartsRejectsUnstructuredMultiTaskReply(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},
 		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
 	}}
 	raw := "停车从辅路入口进，早餐在一楼。"
-	if got := normalizeGeneratedReplyParts(raw, plan, false); got != raw {
-		t.Fatalf("invalid structured output must preserve existing reply, got %q", got)
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if got != "" || !errors.Is(err, errGeneratedReplyProtocol) {
+		t.Fatalf("multi-task output must preserve task-level validation, got=%q err=%v", got, err)
 	}
 }
 
@@ -222,13 +224,260 @@ func TestBuildActiveGenerationUserMessageTextDoesNotRestoreDeferredQuestionForRe
 	}
 }
 
-func TestBuildTextReplyTaskGroupsCapsAtThreeMessages(t *testing.T) {
+func TestBuildTextReplyTaskGroupsKeepsEveryAtomicTask(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{}
 	for _, text := range []string{"一", "二", "三", "四"} {
 		plan.TaskPlans = append(plan.TaskPlans, callbacks.ReplyTaskPlanTraceData{Intent: "hotel_info", Text: text, Output: "knowledge_text_reply"})
 	}
 	groups := buildTextReplyTaskGroups(plan)
-	if len(groups) != 3 || strings.Join(groups[2].Texts, "") != "三四" {
-		t.Fatalf("expected remaining tasks to be combined into the third message, got %#v", groups)
+	if len(groups) != 4 {
+		t.Fatalf("expected every atomic task to remain independently verifiable, got %#v", groups)
+	}
+	for index, want := range []string{"一", "二", "三", "四"} {
+		if groups[index].TaskID != "task-"+string(rune('1'+index)) || strings.Join(groups[index].Texts, "") != want {
+			t.Fatalf("unexpected atomic task at %d: %#v", index, groups[index])
+		}
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsBalancesAtomicTasksIntoThreeMessages(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{}
+	parts := make([]string, 0, 8)
+	for index := 1; index <= 8; index++ {
+		plan.TaskPlans = append(plan.TaskPlans, callbacks.ReplyTaskPlanTraceData{Intent: "hotel_info", Text: "问题", Output: "knowledge_text_reply"})
+		parts = append(parts, `{"taskId":"task-`+string(rune('0'+index))+`","content":"回答`+string(rune('0'+index))+`"}`)
+	}
+	raw := `{"replyParts":[` + strings.Join(parts, ",") + `]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil {
+		t.Fatalf("normalize eight task parts: %v", err)
+	}
+	messages := strings.Split(got, "\n<<NEXT_MESSAGE>>\n")
+	if len(messages) != 3 || messages[0] != "回答1\n\n回答2\n\n回答3" || messages[1] != "回答4\n\n回答5\n\n回答6" || messages[2] != "回答7\n\n回答8" {
+		t.Fatalf("expected balanced consecutive 3/3/2 composition, got %#v", messages)
+	}
+}
+
+func TestValidateCoveredFactsRequiresKnownCompleteFactsAndCriticalValues(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
+		{FactID: "F1", Statement: "房间内有两瓶矿泉水", CriticalValues: []string{"两瓶"}},
+		{FactID: "F2", Statement: "矿泉水免费", CriticalValues: []string{"免费"}},
+	}}
+	valid := generatedReplyPart{TaskID: "task-1", Content: "房间内有两瓶矿泉水，都是免费的。", CoveredFactIDs: []string{"F2", "F1"}}
+	if err := validateCoveredFacts(valid, group); err != nil {
+		t.Fatalf("expected complete facts to pass: %v", err)
+	}
+
+	tests := map[string]generatedReplyPart{
+		"missing_fact":      {TaskID: "task-1", Content: "房间内有两瓶矿泉水。", CoveredFactIDs: []string{"F1"}},
+		"unknown_fact":      {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F3"}},
+		"duplicate_fact":    {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F1", "F2"}},
+		"missing_critical":  {TaskID: "task-1", Content: "房间内有矿泉水，都是免费的。", CoveredFactIDs: []string{"F1", "F2"}},
+		"contradicted_fact": {TaskID: "task-1", Content: "房间内有两瓶矿泉水，但矿泉水不免费。", CoveredFactIDs: []string{"F1", "F2"}},
+	}
+	for name, part := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("expected protocol failure, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCoveredFactsAllowsLosslessCriticalValueFormatting(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
+		{FactID: "F1", Statement: "发票会在申请后1至3个工作日上传。", CriticalValues: []string{"1至3个工作日"}},
+	}}
+	part := generatedReplyPart{
+		TaskID:         "task-1",
+		Content:        "发票会在申请后１～３个工作日上传。",
+		CoveredFactIDs: []string{"F1"},
+	}
+	if err := validateCoveredFacts(part, group); err != nil {
+		t.Fatalf("lossless full-width and numeric-range formatting must pass: %v", err)
+	}
+}
+
+func TestValidateCoveredFactsDoesNotTreatParaphrasesAsCriticalValues(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
+		{FactID: "F1", Statement: "完成登记后扫人脸开门。", CriticalValues: []string{"扫人脸"}},
+	}}
+	part := generatedReplyPart{
+		TaskID:         "task-1",
+		Content:        "完成登记后刷脸开门。",
+		CoveredFactIDs: []string{"F1"},
+	}
+	if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) {
+		t.Fatalf("semantic paraphrases must not weaken critical-value validation, got %v", err)
+	}
+}
+
+func TestGeneratedReplyAIConfigUsesConfiguredBudgetOnlyForMultipleTasks(t *testing.T) {
+	config := models.AIConfig{MaxOutputTokens: 1024}
+	singlePlan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+	}}
+	multiPlan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+		{TaskID: "task-2", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+	}}
+
+	if got := generatedReplyAIConfigForPlan(config, singlePlan).MaxOutputTokens; got != generatedReplySingleTaskMaxOutputTokens {
+		t.Fatalf("single task must keep the normal %d-token budget, got %d", generatedReplySingleTaskMaxOutputTokens, got)
+	}
+	if got := generatedReplyAIConfigForPlan(config, multiPlan).MaxOutputTokens; got != 1024 {
+		t.Fatalf("multiple tasks must retain the configured 1024-token budget, got %d", got)
+	}
+}
+
+func TestStructuredReplyPromptRemovesPlainTextOutputConflicts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{
+		Intent: "hotel_info",
+		Style:  "自然微信口吻，1-3句",
+		TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+			{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+			{TaskID: "task-2", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+		},
+	}
+	prompt := buildIntentStagePrompt(callbacks.IntentPromptTraceData{Instructions: []string{
+		"回复像微信真人，通常 1-3 句。",
+		"最终回复只输出给客人的话，不输出内部分析。",
+	}}, plan)
+
+	for _, forbidden := range []string{"1-3句", "1-3 句", "最终回复只输出给客人的话"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("structured prompt must remove conflicting instruction %q: %s", forbidden, prompt)
+		}
+	}
+	for _, required := range []string{"replyParts.content", "replyParts 的 content"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("structured prompt must scope customer-facing text to %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID:        "T1",
+			Intent:        "hotel_info",
+			ResolvedText:  "房间内有几瓶矿泉水，是否免费？",
+			OutputKind:    "text",
+			ReplyRequired: true,
+			Output:        "knowledge_text_reply",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+				{FactID: "T1F1", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+				{FactID: "T1F2", Statement: "矿泉水都是免费的。", CriticalValues: []string{"免费"}},
+			},
+		},
+	}}
+	instruction := buildMultiReplyOutputInstruction(plan, false)
+	for _, want := range []string{"T1", "T1F1", "T1F2", "两瓶", "免费", "coveredFactIds"} {
+		if !strings.Contains(instruction, want) {
+			t.Fatalf("active fact contract is missing %q: %s", want, instruction)
+		}
+	}
+	raw := `{"replyParts":[{"taskId":"T1","content":"房间内有两瓶矿泉水，都是免费的。","coveredFactIds":["T1F1","T1F2"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "房间内有两瓶矿泉水，都是免费的。" {
+		t.Fatalf("expected active task facts to validate, got=%q err=%v", got, err)
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsAcceptsUniqueTaskLocalFactID(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID:        "task-1",
+			Intent:        "hotel_info",
+			OutputKind:    "text",
+			ReplyRequired: true,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+				{FactID: "task-1F1", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+			},
+		},
+	}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"房间内有两瓶矿泉水。","coveredFactIds":["F1"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "房间内有两瓶矿泉水。" {
+		t.Fatalf("unique task-local fact ID must normalize to its scoped ID, got=%q err=%v", got, err)
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsScopesLocalFactIDsPerTask(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID:        "task-1",
+			Intent:        "hotel_info",
+			OutputKind:    "text",
+			ReplyRequired: true,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+				{FactID: "task-1F1", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+			},
+		},
+		{
+			TaskID:        "task-2",
+			Intent:        "hotel_info",
+			OutputKind:    "text",
+			ReplyRequired: true,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+				{FactID: "task-2F1", Statement: "矿泉水免费。", CriticalValues: []string{"免费"}},
+			},
+		},
+	}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"房间内有两瓶矿泉水。","coveredFactIds":["F1"]},{"taskId":"task-2","content":"矿泉水免费。","coveredFactIds":["F1"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "房间内有两瓶矿泉水。\n<<NEXT_MESSAGE>>\n矿泉水免费。" {
+		t.Fatalf("the same local fact ID must resolve independently inside each task, got=%q err=%v", got, err)
+	}
+}
+
+func TestNormalizeCoveredFactIDRejectsUnsafeAliases(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
+		{FactID: "task-1F1", Statement: "房间内有两瓶矿泉水。"},
+	}}
+	for name, coveredFactIDs := range map[string][]string{
+		"cross_task":           {"task-2F1"},
+		"unknown_local":        {"F2"},
+		"unsupported_hyphen":   {"task-1-F1"},
+		"normalized_duplicate": {"F1", "task-1F1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			part := generatedReplyPart{TaskID: "task-1", Content: "房间内有两瓶矿泉水。", CoveredFactIDs: coveredFactIDs}
+			if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("unsafe fact alias must fail closed, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeCoveredFactIDRejectsAmbiguousLocalSuffix(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
+		{FactID: "task-1F1", Statement: "事实一。"},
+		{FactID: "task-1F1", Statement: "重复且歧义的事实一。"},
+	}}
+	part := generatedReplyPart{TaskID: "task-1", Content: "事实一。", CoveredFactIDs: []string{"F1"}}
+	if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) || !strings.Contains(err.Error(), "ambiguous coveredFactId") {
+		t.Fatalf("ambiguous task-local fact suffix must fail closed, got %v", err)
+	}
+}
+
+func TestBuildMultiReplyOutputInstructionUsesScopedFactIDExample(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+	}}
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	if !strings.Contains(instruction, `"coveredFactIds":["task-1F1"]`) || strings.Contains(instruction, `"coveredFactIds":["F1"]`) {
+		t.Fatalf("reply protocol example must teach task-scoped fact IDs: %s", instruction)
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsRejectsModelControlledMessageMarker(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{Intent: "hotel_info", Text: "早餐几点", Output: "knowledge_text_reply"},
+	}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"早餐七点开始。<<NEXT_MESSAGE>>额外内容"}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if got != "" || !errors.Is(err, errGeneratedReplyProtocol) {
+		t.Fatalf("model-controlled composition marker must be rejected, got=%q err=%v", got, err)
 	}
 }

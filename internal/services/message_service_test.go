@@ -405,6 +405,50 @@ func TestClaimExpiredManualRouteRejectsStaleSnapshot(t *testing.T) {
 	}
 }
 
+func TestClaimExpiredManualRouteUsesDatabaseSecondPrecisionForFollowUpCAS(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	conversation, err := ConversationService.Create(welcomeTestExternalUser("manual-timeout-second-precision-user"), 0, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	now := time.Date(2026, time.August, 27, 12, 0, 0, 987654321, time.Local)
+	state, err := ConversationRouteService.EnterStoreWecomManual(conversation.ID, "等待人工", now.Add(-20*time.Minute))
+	if err != nil {
+		t.Fatalf("enter manual route: %v", err)
+	}
+	if err := db.Model(&models.ConversationRouteState{}).
+		Where("id = ?", state.ID).
+		Update("manual_expire_at", now.Add(-time.Minute).Truncate(time.Second)).Error; err != nil {
+		t.Fatalf("expire manual route: %v", err)
+	}
+
+	expired := ConversationRouteService.GetByConversationID(conversation.ID)
+	claimedState, claimed, err := ConversationRouteService.ClaimExpiredManualRoute(*expired, now)
+	if err != nil || !claimed || claimedState == nil {
+		t.Fatalf("claim expired manual route claimed=%v state=%+v err=%v", claimed, claimedState, err)
+	}
+	if claimedState.ManualExpireAt == nil || claimedState.ManualExpireAt.Nanosecond() != 0 {
+		t.Fatalf("claimed lease must match DATETIME second precision, got %v", claimedState.ManualExpireAt)
+	}
+
+	// SQLite preserves fractional seconds, so explicitly reproduce MySQL
+	// DATETIME storage before exercising the downstream compare-and-swap.
+	if err := db.Model(&models.ConversationRouteState{}).
+		Where("id = ?", state.ID).
+		Update("manual_expire_at", claimedState.ManualExpireAt.Truncate(time.Second)).Error; err != nil {
+		t.Fatalf("simulate DATETIME precision: %v", err)
+	}
+	restored, err := ConversationRouteService.RestoreAIFromTimeoutClaim(*claimedState, "人工接待超时恢复AI", now, false)
+	if err != nil || !restored {
+		t.Fatalf("restore from claimed timeout restored=%v err=%v", restored, err)
+	}
+	updated := ConversationRouteService.GetByConversationID(conversation.ID)
+	if updated == nil || updated.RouteStatus != enums.ConversationRouteStatusAIServing || updated.ManualExpireAt != nil {
+		t.Fatalf("expected claimed route restored once, got %+v", updated)
+	}
+}
+
 func TestHQAssignedManualResumeCanCommitAIReply(t *testing.T) {
 	db := setupMessageWelcomeTestDB(t)
 	aiAgent := createWelcomeTestAIAgent(t, db, "")

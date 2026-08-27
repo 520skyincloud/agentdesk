@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/registry"
 	runtimetooling "agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/models"
@@ -20,6 +22,85 @@ type preparedTooling struct {
 	staticTools         []einotool.BaseTool
 	staticToolCodeMap   map[string]string
 	staticToolMetadata  map[string]registry.ToolMetadata
+}
+
+func prepareGenerateToolingForIntent(defs []runtimetooling.MCPToolDefinition, toolSet *registry.ToolSet, intent callbacks.IntentTraceData, includeSkillTool bool) preparedTooling {
+	requestedToolCodes := toolx.NormalizeToolCodes(intent.ToolCodes)
+	if !intent.NeedsTool {
+		return prepareTooling(nil, nil, nil, false)
+	}
+	if len(requestedToolCodes) == 0 {
+		return prepareTooling(defs, nil, toolSet, includeSkillTool)
+	}
+
+	requestedSet := make(map[string]struct{}, len(requestedToolCodes))
+	for _, toolCode := range requestedToolCodes {
+		requestedSet[toolCode] = struct{}{}
+	}
+
+	filteredDefs := make([]runtimetooling.MCPToolDefinition, 0, len(defs))
+	for _, item := range defs {
+		toolCode := toolx.NormalizeToolCodeAlias(strings.TrimSpace(item.ToolCode))
+		if _, ok := requestedSet[toolCode]; ok {
+			filteredDefs = append(filteredDefs, item)
+		}
+	}
+
+	return prepareTooling(filteredDefs, nil, filterStaticToolSetByCodes(toolSet, requestedSet), false)
+}
+
+func filterStaticToolSetByCodes(toolSet *registry.ToolSet, requestedSet map[string]struct{}) *registry.ToolSet {
+	if toolSet == nil || len(requestedSet) == 0 {
+		return nil
+	}
+
+	selectedNames := make(map[string]struct{})
+	filtered := &registry.ToolSet{
+		StaticToolCodes:    make(map[string]string),
+		StaticToolMetadata: make(map[string]registry.ToolMetadata),
+	}
+	for modelName, toolCode := range toolSet.StaticToolCodes {
+		modelName = strings.TrimSpace(modelName)
+		toolCode = toolx.NormalizeToolCodeAlias(strings.TrimSpace(toolCode))
+		if modelName == "" || toolCode == "" {
+			continue
+		}
+		if _, ok := requestedSet[toolCode]; !ok {
+			continue
+		}
+		selectedNames[modelName] = struct{}{}
+		filtered.StaticToolCodes[modelName] = toolCode
+		if metadata, ok := toolSet.StaticToolMetadata[modelName]; ok {
+			filtered.StaticToolMetadata[modelName] = metadata
+		}
+	}
+
+	for _, staticTool := range toolSet.StaticTools {
+		modelName := staticToolModelName(staticTool)
+		if _, ok := selectedNames[modelName]; ok {
+			filtered.StaticTools = append(filtered.StaticTools, staticTool)
+		}
+	}
+	if len(filtered.StaticTools) == 0 && len(filtered.StaticToolCodes) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func staticToolModelName(staticTool einotool.BaseTool) string {
+	if staticTool == nil {
+		return ""
+	}
+	if namedTool, ok := staticTool.(interface{ Name() string }); ok {
+		if name := strings.TrimSpace(namedTool.Name()); name != "" {
+			return name
+		}
+	}
+	info, err := staticTool.Info(context.Background())
+	if err != nil || info == nil {
+		return ""
+	}
+	return strings.TrimSpace(info.Name)
 }
 
 func prepareTooling(defs []runtimetooling.MCPToolDefinition, selectedSkill *models.SkillDefinition, toolSet *registry.ToolSet, includeSkillTool bool) preparedTooling {

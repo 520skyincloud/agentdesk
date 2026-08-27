@@ -58,8 +58,13 @@ type Summary struct {
 }
 
 type ModelUsageCall struct {
-	PromptTokens       int
-	CompletionTokens   int
-	CachedPromptTokens int
-	ReasoningTokens    int
+	PromptTokens          int
+	CompletionTokens      int
+	CachedPromptTokens    int
+	ReasoningTokens       int
+	HasUsage              bool
+	CallSequence          int
+	GatewayReceiptOrdinal int
+	Status                string
+	ErrorMessage          string
 }

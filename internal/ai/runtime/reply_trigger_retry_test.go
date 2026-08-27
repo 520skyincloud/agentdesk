@@ -1,191 +1,169 @@
 package runtime
 
 import (
-	"context"
-	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
-	"time"
-
-	runtimeexecutor "agent-desk/internal/ai/runtime/executor"
-	"agent-desk/internal/models"
-	"agent-desk/internal/pkg/dto"
-	"agent-desk/internal/pkg/enums"
-	svc "agent-desk/internal/services"
-
-	"github.com/glebarez/sqlite"
-	"github.com/mlogclub/simple/sqls"
-	"gorm.io/gorm"
-	"gorm.io/gorm/schema"
 )
 
-func TestTriggerReplyWithProtocolRetryRetriesThenSucceeds(t *testing.T) {
-	db := setupReplyTriggerRetryTestDB(t)
-	service := newAIReplyService()
-	conversation, message := seedReplyTriggerRetryAttempt(t, db, 9101)
-	attempts := 0
-
-	runCount, err := service.triggerReplyWithProtocolRetry(
-		context.Background(),
-		conversation.ID,
-		message.ID,
-		time.Second,
-		0,
-		func(_ context.Context, currentConversation models.Conversation, currentMessage models.Message, currentAgent models.AIAgent) error {
-			attempts++
-			if attempts == 1 {
-				return fmt.Errorf("%w: missing content", runtimeexecutor.ErrGeneratedReplyProtocol)
+func TestReplyTriggerEntrypointsRunWholeTriggerExactlyOnce(t *testing.T) {
+	file := parseReplyTriggerServiceSource(t)
+	for _, methodName := range []string{"TriggerReplyAsync", "TriggerReplySync"} {
+		t.Run(methodName, func(t *testing.T) {
+			method := findReplyTriggerMethod(t, file, methodName)
+			triggerCalls := 0
+			ast.Inspect(method.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok || !isReplyTriggerSelectorCall(call, "TriggerReply") {
+					return true
+				}
+				triggerCalls++
+				if nestedFunctionDepth(method.Body, call) > expectedReplyTriggerFunctionDepth(methodName) {
+					t.Fatalf("%s must call TriggerReply directly, not through a retry callback", methodName)
+				}
+				return true
+			})
+			if triggerCalls != 1 {
+				t.Fatalf("%s must execute the whole TriggerReply pipeline exactly once, got %d calls", methodName, triggerCalls)
 			}
-			_, err := svc.MessageService.SendAIMessageWithRequestIDAndSourceMessageID(
-				currentConversation.ID,
-				currentAgent.ID,
-				fmt.Sprintf("reply-retry-%d", currentMessage.ID),
-				enums.IMMessageTypeText,
-				"早餐供应到上午十点。",
-				"",
-				&dto.AuthPrincipal{Username: "runtime-test", Nickname: "runtime-test"},
-				currentMessage.RequestID,
-				currentMessage.ID,
-			)
-			return err
-		},
-	)
-	if err != nil || runCount != 2 || attempts != 2 {
-		t.Fatalf("protocol failure must retry once and succeed, runCount=%d attempts=%d err=%v", runCount, attempts, err)
-	}
-	var committed int64
-	if err := db.Model(&models.Message{}).
-		Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).
-		Count(&committed).Error; err != nil {
-		t.Fatalf("count committed AI replies: %v", err)
-	}
-	if committed != 1 {
-		t.Fatalf("retry must commit exactly one customer reply, got %d", committed)
-	}
-}
-
-func TestTriggerReplyWithProtocolRetryDoesNotRetryOrdinaryFailure(t *testing.T) {
-	db := setupReplyTriggerRetryTestDB(t)
-	service := newAIReplyService()
-	conversation, message := seedReplyTriggerRetryAttempt(t, db, 9102)
-	attempts := 0
-
-	runCount, err := service.triggerReplyWithProtocolRetry(
-		context.Background(),
-		conversation.ID,
-		message.ID,
-		time.Second,
-		0,
-		func(context.Context, models.Conversation, models.Message, models.AIAgent) error {
-			attempts++
-			return fmt.Errorf("upstream unavailable")
-		},
-	)
-	if err == nil || runCount != 1 || attempts != 1 {
-		t.Fatalf("ordinary failure must not be retried, runCount=%d attempts=%d err=%v", runCount, attempts, err)
-	}
-}
-
-func TestTriggerReplyWithProtocolRetryStopsAfterManualTakeover(t *testing.T) {
-	db := setupReplyTriggerRetryTestDB(t)
-	service := newAIReplyService()
-	conversation, message := seedReplyTriggerRetryAttempt(t, db, 9103)
-	attempts := 0
-
-	runCount, err := service.triggerReplyWithProtocolRetry(
-		context.Background(),
-		conversation.ID,
-		message.ID,
-		time.Second,
-		0,
-		func(context.Context, models.Conversation, models.Message, models.AIAgent) error {
-			attempts++
-			if err := db.Model(&models.ConversationRouteState{}).
-				Where("conversation_id = ?", conversation.ID).
-				Updates(map[string]any{
-					"route_status": enums.ConversationRouteStatusStoreWecomManual,
-					"route_target": "store_wecom",
-				}).Error; err != nil {
-				t.Fatalf("switch route to manual: %v", err)
+			if containsReplyTriggerRetryControl(method.Body) {
+				t.Fatalf("%s must not wrap TriggerReply in an outer retry loop or retry helper", methodName)
 			}
-			return fmt.Errorf("%w: missing content", runtimeexecutor.ErrGeneratedReplyProtocol)
-		},
-	)
-	if err != nil || runCount != 1 || attempts != 1 {
-		t.Fatalf("manual takeover must cancel the retry, runCount=%d attempts=%d err=%v", runCount, attempts, err)
+		})
 	}
 }
 
-func setupReplyTriggerRetryTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	dbName := "reply_trigger_retry_" + strings.NewReplacer("/", "_").Replace(t.Name())
-	db, err := gorm.Open(sqlite.Open("file:"+dbName+"?mode=memory&cache=shared"), &gorm.Config{
-		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+func TestReplyTriggerServiceDoesNotRestoreOuterProtocolRetry(t *testing.T) {
+	file := parseReplyTriggerServiceSource(t)
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name != nil {
+			switch function.Name.Name {
+			case "triggerReplyWithProtocolRetry", "resolveAsyncReplyAttempt":
+				t.Fatalf("outer protocol retry helper %s must remain removed", function.Name.Name)
+			}
+		}
+	}
+
+	forbiddenIdentifiers := map[string]bool{
+		"generatedReplyProtocolMaxAttempts":  true,
+		"generatedReplyProtocolRetryBackoff": true,
+		"IsGeneratedReplyProtocolError":      true,
+	}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.Ident:
+			if forbiddenIdentifiers[value.Name] {
+				t.Fatalf("outer trigger must not classify or retry Generate protocol failures via %s", value.Name)
+			}
+		case *ast.SelectorExpr:
+			if value.Sel != nil && forbiddenIdentifiers[value.Sel.Name] {
+				t.Fatalf("outer trigger must not classify or retry Generate protocol failures via %s", value.Sel.Name)
+			}
+		}
+		return true
 	})
-	if err != nil {
-		t.Fatalf("open sqlite db: %v", err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("get sqlite db: %v", err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(
-		&models.Conversation{},
-		&models.ConversationRouteState{},
-		&models.AIManualResumeTask{},
-		&models.ConversationReadState{},
-		&models.ConversationEventLog{},
-		&models.Message{},
-		&models.AIAgent{},
-	); err != nil {
-		t.Fatalf("migrate reply trigger retry fixtures: %v", err)
-	}
-	sqls.SetDB(db)
-	return db
 }
 
-func seedReplyTriggerRetryAttempt(t *testing.T, db *gorm.DB, conversationID int64) (models.Conversation, models.Message) {
+func parseReplyTriggerServiceSource(t *testing.T) *ast.File {
 	t.Helper()
-	agent := models.AIAgent{
-		ID:                  conversationID + 1000,
-		Name:                "runtime-test",
-		Status:              enums.StatusOk,
-		ServiceMode:         enums.IMConversationServiceModeAIFirst,
-		ReplyTimeoutSeconds: 1,
+	_, currentFile, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test source path")
 	}
-	if err := db.Create(&agent).Error; err != nil {
-		t.Fatalf("create AI agent: %v", err)
+	path := filepath.Join(filepath.Dir(currentFile), "reply_trigger_service.go")
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
 	}
-	conversation := models.Conversation{
-		ID:        conversationID,
-		AIAgentID: agent.ID,
-		Status:    enums.IMConversationStatusAIServing,
+	return file
+}
+
+func findReplyTriggerMethod(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Recv == nil || function.Name == nil || function.Name.Name != name {
+			continue
+		}
+		return function
 	}
-	if err := db.Create(&conversation).Error; err != nil {
-		t.Fatalf("create conversation: %v", err)
+	t.Fatalf("reply trigger method %s not found", name)
+	return nil
+}
+
+func isReplyTriggerSelectorCall(call *ast.CallExpr, selectorName string) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && selector.Sel != nil && selector.Sel.Name == selectorName
+}
+
+func nestedFunctionDepth(root ast.Node, target ast.Node) int {
+	depth := 0
+	found := false
+	var visit func(ast.Node, int)
+	visit = func(node ast.Node, functionDepth int) {
+		if node == nil || found {
+			return
+		}
+		if node == target {
+			depth = functionDepth
+			found = true
+			return
+		}
+		ast.Inspect(node, func(child ast.Node) bool {
+			if child == nil || child == node || found {
+				return !found
+			}
+			nextDepth := functionDepth
+			if _, ok := child.(*ast.FuncLit); ok {
+				nextDepth++
+			}
+			visit(child, nextDepth)
+			return false
+		})
 	}
-	if err := db.Create(&models.ConversationRouteState{
-		ConversationID: conversation.ID,
-		RouteStatus:    enums.ConversationRouteStatusAIServing,
-		RouteTarget:    "ai",
-		SessionNo:      1,
-	}).Error; err != nil {
-		t.Fatalf("create route state: %v", err)
+	visit(root, 0)
+	return depth
+}
+
+func expectedReplyTriggerFunctionDepth(methodName string) int {
+	if methodName == "TriggerReplyAsync" {
+		return 1
 	}
-	now := time.Now()
-	message := models.Message{
-		ID:             conversationID + 2000,
-		ConversationID: conversation.ID,
-		RequestID:      fmt.Sprintf("req-%d", conversationID),
-		ClientMsgID:    fmt.Sprintf("msg-%d", conversationID),
-		SenderType:     enums.IMSenderTypeCustomer,
-		MessageType:    enums.IMMessageTypeText,
-		Content:        "请问早餐几点",
-		SentAt:         &now,
+	return 0
+}
+
+func containsReplyTriggerRetryControl(body *ast.BlockStmt) bool {
+	retryControl := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch value := node.(type) {
+		case *ast.ForStmt, *ast.RangeStmt:
+			retryControl = true
+			return false
+		case *ast.CallExpr:
+			name := replyTriggerCallName(value)
+			if strings.Contains(strings.ToLower(name), "retry") {
+				retryControl = true
+				return false
+			}
+		}
+		return !retryControl
+	})
+	return retryControl
+}
+
+func replyTriggerCallName(call *ast.CallExpr) string {
+	switch function := call.Fun.(type) {
+	case *ast.Ident:
+		return function.Name
+	case *ast.SelectorExpr:
+		if function.Sel != nil {
+			return function.Sel.Name
+		}
 	}
-	if err := db.Create(&message).Error; err != nil {
-		t.Fatalf("create customer message: %v", err)
-	}
-	return conversation, message
+	return ""
 }

@@ -40,6 +40,11 @@ func toSummary(summary *executor.RunResult) *Summary {
 			ret.ModelUsageCalls = append(ret.ModelUsageCalls, ModelUsageCall{
 				PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens,
 				CachedPromptTokens: usage.CachedPromptTokens, ReasoningTokens: usage.ReasoningTokens,
+				HasUsage:              usage.HasUsage,
+				CallSequence:          usage.CallSequence,
+				GatewayReceiptOrdinal: usage.GatewayReceiptOrdinal,
+				Status:                usage.Status,
+				ErrorMessage:          usage.ErrorMessage,
 			})
 		}
 	}

@@ -1,19 +1,30 @@
 package executor
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/usagex"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
 
-func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) error {
+// ErrGeneratedReplyExecution marks an upstream Generate event failure that is
+// safe for the caller to retry without rerunning Intent or knowledge stages.
+var ErrGeneratedReplyExecution = errors.New("generated reply execution failed")
+
+func IsGeneratedReplyExecutionError(err error) bool {
+	return errors.Is(err, ErrGeneratedReplyExecution)
+}
+
+func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.AgentEvent], summary *RunResult, collector *callbacks.RuntimeTraceCollector, toolDefsByModelName map[string]string) error {
 	if summary == nil {
 		return nil
 	}
@@ -22,6 +33,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 	}
 	suppressAssistantReply := false
 	var protocolErr error
+	var executionErr error
 	for {
 		event, ok := events.Next()
 		if !ok {
@@ -40,13 +52,16 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			if errMsg != "" {
 				summary.Status = "error"
 				summary.ErrorMessage = errMsg
+				if executionErr == nil {
+					executionErr = fmt.Errorf("%w: %v", ErrGeneratedReplyExecution, event.Err)
+				}
 			}
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
 		}
 		messageOutput := event.Output.MessageOutput
-		collectTokenUsage(messageOutput.Message, summary, collector)
+		collectTokenUsage(ctx, messageOutput.Message, summary, collector)
 		switch messageOutput.Role {
 		case schema.Assistant:
 			if suppressAssistantReply {
@@ -58,7 +73,13 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 				collector.Data.Pipeline.ReplyPlan,
 				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff,
 			)
+			if err == nil {
+				replyText, err = SanitizeGeneratedReplyText(replyText)
+			}
 			if err != nil {
+				if isBlockedInternalReplyMarkerError(err) {
+					collector.Data.Pipeline.Generate.BlockedInternalMarker = true
+				}
 				if errors.Is(err, errGeneratedReplyProtocol) && protocolErr == nil {
 					protocolErr = err
 				}
@@ -71,6 +92,7 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 			}
 			if replyText != "" {
 				summary.ReplyText = replyText
+				collector.Data.Pipeline.Generate.ComposedMessageCount = generatedReplyMessageCount(replyText)
 			}
 		case schema.Tool:
 			toolName := strings.TrimSpace(messageOutput.ToolName)
@@ -110,19 +132,43 @@ func consumeAgentEvents(events *adk.AsyncIterator[*adk.AgentEvent], summary *Run
 		}
 	}
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
-	return protocolErr
+	if protocolErr != nil {
+		return protocolErr
+	}
+	return executionErr
 }
 
-func collectTokenUsage(message *schema.Message, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+func isBlockedInternalReplyMarkerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "internal reply header")
+}
+
+func generatedReplyMessageCount(text string) int {
+	parts, _ := splitGeneratedReplyMessages(text)
+	count := 0
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func collectTokenUsage(ctx context.Context, message *schema.Message, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
 	if message == nil || message.ResponseMeta == nil || message.ResponseMeta.Usage == nil || summary == nil {
 		return
 	}
 	usage := message.ResponseMeta.Usage
 	summary.ModelUsageCalls = append(summary.ModelUsageCalls, ModelUsageCall{
-		PromptTokens:       usage.PromptTokens,
-		CompletionTokens:   usage.CompletionTokens,
-		CachedPromptTokens: usage.PromptTokenDetails.CachedTokens,
-		ReasoningTokens:    usage.CompletionTokensDetails.ReasoningTokens,
+		PromptTokens:          usage.PromptTokens,
+		CompletionTokens:      usage.CompletionTokens,
+		CachedPromptTokens:    usage.PromptTokenDetails.CachedTokens,
+		ReasoningTokens:       usage.CompletionTokensDetails.ReasoningTokens,
+		HasUsage:              true,
+		GatewayReceiptOrdinal: currentGatewayReceiptOrdinal(ctx),
+		Status:                "completed",
 	})
 	summary.PromptTokens += usage.PromptTokens
 	summary.CompletionTokens += usage.CompletionTokens
@@ -136,6 +182,14 @@ func collectTokenUsage(message *schema.Message, summary *RunResult, collector *c
 		collector.Data.Model.Usage.CachedPromptTokens += usage.PromptTokenDetails.CachedTokens
 		collector.Data.Model.Usage.ReasoningTokens += usage.CompletionTokensDetails.ReasoningTokens
 	}
+}
+
+func currentGatewayReceiptOrdinal(ctx context.Context) int {
+	capture := usagex.CaptureFromContext(ctx)
+	if capture == nil {
+		return 0
+	}
+	return len(capture.Receipts())
 }
 
 func hasInvokedGraphTool(toolCodes []string) bool {

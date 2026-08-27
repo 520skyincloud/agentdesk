@@ -60,6 +60,20 @@ func TestRuntimeHistoryMessageContentExcludesStandaloneOneExchange(t *testing.T)
 	}
 }
 
+func TestRuntimeHistoryMessageContentRejectsUnfinishedVoiceText(t *testing.T) {
+	for _, status := range []string{"", "pending", "failed", "empty"} {
+		message := models.Message{
+			SenderType:  enums.IMSenderTypeCustomer,
+			MessageType: enums.IMMessageTypeVoice,
+			Content:     "voice.amr",
+			Payload:     `{"mediaText":"早餐几点","mediaUnderstandingStatus":"` + status + `"}`,
+		}
+		if got := RuntimeHistoryMessageContent(&message); got != "" {
+			t.Fatalf("status %q must not enter intent history, got %q", status, got)
+		}
+	}
+}
+
 func setupAdapterHistoryTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dbName := "adapter_history_test_" + strings.NewReplacer("/", "_").Replace(t.Name())

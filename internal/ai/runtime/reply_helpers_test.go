@@ -308,8 +308,8 @@ func TestSplitReplyTextForCommitCapsMessagesAtThree(t *testing.T) {
 		]}}
 	}`)}
 	parts := splitReplyTextForCommit(trace, "一\n<<NEXT_MESSAGE>>\n二\n<<NEXT_MESSAGE>>\n三\n<<NEXT_MESSAGE>>\n四")
-	if len(parts) != 3 || parts[2] != "三\n\n四" {
-		t.Fatalf("expected extra replies to merge into third message, got %#v", parts)
+	if len(parts) != 3 || parts[0] != "一\n\n二" || parts[1] != "三" || parts[2] != "四" {
+		t.Fatalf("expected replies to be balanced across three messages, got %#v", parts)
 	}
 }
 
@@ -320,6 +320,7 @@ func TestContainsInternalReplyProtocolShape(t *testing.T) {
 		`{"taskId":"task-1","content":"房间有空调。"}`,
 		`[{"taskId":"task-1","content":"房间有空调。"}]`,
 		`{"replyParts":[]}`,
+		`{"coveredFactIds":["F1"],"content":"房间有两瓶水。"}`,
 	} {
 		if !containsInternalReplyProtocolShape(text) {
 			t.Fatalf("expected internal protocol payload to be rejected: %s", text)
@@ -327,6 +328,9 @@ func TestContainsInternalReplyProtocolShape(t *testing.T) {
 	}
 	if containsInternalReplyProtocolShape("房间有空调，可以正常使用。") {
 		t.Fatal("ordinary customer reply must not be rejected")
+	}
+	if containsInternalReplyProtocolShape("不好意思，这个需要同事处理，已经帮您转接。") {
+		t.Fatal("ordinary human-service wording must not be rejected")
 	}
 }
 

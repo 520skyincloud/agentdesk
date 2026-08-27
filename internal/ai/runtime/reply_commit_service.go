@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	runtimeexecutor "agent-desk/internal/ai/runtime/executor"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
@@ -46,6 +47,11 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	structuredReplies := s.buildStructuredVariableReplies(input)
 	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
+	var err error
+	replyText, err = runtimeexecutor.SanitizeGeneratedReplyText(replyText)
+	if err != nil {
+		return nil, fmt.Errorf("refusing to commit unsafe generated reply: %w", err)
+	}
 	if containsInternalReplyProtocolShape(replyText) {
 		return nil, fmt.Errorf("refusing to commit internal reply protocol payload")
 	}
@@ -118,10 +124,10 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 
 func containsInternalReplyProtocolShape(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
-	if strings.Contains(normalized, "replyparts") {
+	if strings.Contains(normalized, "replyparts") || strings.Contains(normalized, "coveredfactids") {
 		return true
 	}
-	return strings.Contains(normalized, `"taskid"`) && strings.Contains(normalized, `"content"`)
+	return strings.Contains(normalized, "taskid")
 }
 
 const manualResumeCustomerNotice = "同事暂时没能接入，接下来我先继续帮你处理。"
@@ -677,8 +683,19 @@ func capReplyTextParts(parts []string, limit int) []string {
 	if limit <= 0 || len(parts) <= limit {
 		return parts
 	}
-	ret := append([]string(nil), parts[:limit-1]...)
-	ret = append(ret, strings.Join(parts[limit-1:], "\n\n"))
+	baseSize := len(parts) / limit
+	extra := len(parts) % limit
+	ret := make([]string, 0, limit)
+	start := 0
+	for index := 0; index < limit; index++ {
+		size := baseSize
+		if index < extra {
+			size++
+		}
+		end := start + size
+		ret = append(ret, strings.Join(parts[start:end], "\n\n"))
+		start = end
+	}
 	return ret
 }
 

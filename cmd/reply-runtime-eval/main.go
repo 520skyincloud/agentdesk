@@ -48,6 +48,9 @@ type scenario struct {
 	NeedsKnowledge       *bool
 	NeedsResource        *bool
 	NeedsHumanRoute      *bool
+	MaxReplyMessages     int
+	LatencyWarningMs     int64
+	LatencyLimitMs       int64
 	Notes                string
 }
 
@@ -67,13 +70,21 @@ type turn struct {
 	NeedsKnowledge       *bool
 	NeedsResource        *bool
 	NeedsHumanRoute      *bool
+	MaxReplyMessages     int
+	LatencyWarningMs     int64
+	LatencyLimitMs       int64
 	Notes                string
 }
 
 type outcomeRequirement struct {
 	Label                      string
 	TextContainsAny            []string
+	TextContainsAll            []string
+	TextExcludesAny            []string
+	ResourceTypesAll           []string
 	DeferredHandoffContainsAny []string
+	// FactSlot excludes resource delivery and answer-shape checks from the factual coverage denominator.
+	FactSlot bool
 }
 
 type record struct {
@@ -110,6 +121,8 @@ type record struct {
 	HumanExpected             bool           `json:"humanExpected"`
 	RetrieverCount            int            `json:"retrieverCount"`
 	ToolCount                 int            `json:"toolCount"`
+	FactSlotsSatisfied        int            `json:"factSlotsSatisfied,omitempty"`
+	FactSlotsExpected         int            `json:"factSlotsExpected,omitempty"`
 	Score                     int            `json:"score"`
 	Passed                    bool           `json:"passed"`
 	Issues                    []string       `json:"issues,omitempty"`
@@ -233,7 +246,7 @@ func main() {
 	roundNo := flag.Int("round", 1, "self-optimization round number")
 	limit := flag.Int("limit", 0, "optional scenario limit for smoke runs")
 	scenarioID := flag.String("scenario", "", "optional exact scenario id for targeted smoke runs")
-	suite := flag.String("suite", "", "optional scenario suite, e.g. balanced20")
+	suite := flag.String("suite", "", "optional scenario suite, e.g. balanced20, active-answer or continuous50-safe")
 	waitTimeout := flag.Duration("wait-timeout", 180*time.Second, "max wait for each AI runlog")
 	outputDir := flag.String("output-dir", "docs/generated", "report output directory")
 	noCleanup := flag.Bool("no-cleanup", false, "keep temporary database records for debugging")
@@ -340,6 +353,7 @@ func (r *runner) run(ctx context.Context) error {
 			if err != nil {
 				rec.ErrorMessage = err.Error()
 				rec.Issues = append(rec.Issues, err.Error())
+				rec.FactSlotsExpected = remainingFactSlots(cases[idx], r.records)
 				rec.Score = 0
 				rec.Passed = false
 				r.records = append(r.records, rec)
@@ -349,6 +363,9 @@ func (r *runner) run(ctx context.Context) error {
 		if err != nil {
 			rec.ErrorMessage = err.Error()
 			rec.Issues = append(rec.Issues, err.Error())
+			if rec.FactSlotsExpected == 0 {
+				rec.FactSlotsExpected = countFactSlots(cases[idx])
+			}
 			rec.Score = 0
 			rec.Passed = false
 		}
@@ -409,6 +426,7 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 			return rec, err
 		}
 		if isMedia(t.Type) {
+			messageServiceAlreadyTriggered := preparedMediaPayloadTriggersAI(t.Payload)
 			if err := r.waitMediaUnderstandingAttempt(ctx, message.ID, 6*time.Second); err != nil {
 				return rec, err
 			}
@@ -418,7 +436,7 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 			if err := r.waitPreparedMediaUnderstanding(ctx, message.ID, 2*time.Second); err != nil {
 				return rec, err
 			}
-			if t.WaitForAI {
+			if t.WaitForAI && !messageServiceAlreadyTriggered {
 				r.triggerPreparedMediaAI(conversation, message.ID)
 			}
 		}
@@ -435,6 +453,7 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 				turnRec.Messages = append([]string(nil), rec.Messages...)
 				turnRec.MediaContext = append([]string(nil), rec.MediaContext...)
 				turnRec = r.fillRecordFromRunLog(turnRec, turnScenario, log)
+				turnRec.FactSlotsSatisfied, turnRec.FactSlotsExpected = factSlotStats(turnScenario, turnRec)
 				turnRec.Score, turnRec.Issues = scoreRecord(turnScenario, turnRec)
 				turnRec.Passed = turnRec.Score >= 80 && turnRec.Status != "error"
 				r.records = append(r.records, turnRec)
@@ -462,6 +481,7 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 		rec.Passed = true
 		return rec, nil
 	}
+	rec.FactSlotsSatisfied, rec.FactSlotsExpected = factSlotStats(sc, rec)
 	rec.Score, rec.Issues = scoreRecord(sc, rec)
 	rec.Passed = rec.Score >= 80 && rec.Status != "error"
 	return rec, nil
@@ -481,6 +501,9 @@ func scenarioFromTurn(sc scenario, index int, t turn) scenario {
 		NeedsKnowledge:       t.NeedsKnowledge,
 		NeedsResource:        t.NeedsResource,
 		NeedsHumanRoute:      t.NeedsHumanRoute,
+		MaxReplyMessages:     t.MaxReplyMessages,
+		LatencyWarningMs:     t.LatencyWarningMs,
+		LatencyLimitMs:       t.LatencyLimitMs,
 		Notes:                t.Notes,
 	}
 	if ret.Name == "" {
@@ -533,6 +556,12 @@ func (r *runner) prepareMediaPayload(t turn) (string, error) {
 		return "", err
 	}
 	return string(payload), nil
+}
+
+func preparedMediaPayloadTriggersAI(payload string) bool {
+	mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(payload)
+	return strings.TrimSpace(status) == "understood" &&
+		(strings.TrimSpace(mediaText) != "" || strings.TrimSpace(mediaSummary) != "")
 }
 
 func (r *runner) triggerPreparedMediaAI(conversation *models.Conversation, messageID int64) {
@@ -799,6 +828,7 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 	score := 100
 	issues := make([]string, 0)
 	reply := strings.TrimSpace(rec.ReplyText)
+	scoreText := scoreableCustomerText(rec)
 	if rec.ErrorMessage != "" || rec.Status == "error" {
 		score -= 60
 		issues = append(issues, "runtime error: "+preview(rec.ErrorMessage, 120))
@@ -808,12 +838,12 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 		issues = append(issues, "empty reply")
 	}
 	for _, needle := range sc.MustContainAll {
-		if !containsLoose(reply, needle) {
+		if !containsLoose(scoreText, needle) {
 			score -= 12
 			issues = append(issues, "missing required text: "+needle)
 		}
 	}
-	if len(sc.MustContainAny) > 0 && !containsAnyLoose(reply, sc.MustContainAny) {
+	if len(sc.MustContainAny) > 0 && !containsAnyLoose(scoreText, sc.MustContainAny) {
 		score -= 16
 		issues = append(issues, "missing any required text: "+strings.Join(sc.MustContainAny, "/"))
 	}
@@ -829,8 +859,8 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 		issues = append(issues, "missing required answer/action: "+label)
 	}
 	for _, banned := range append(defaultBannedPhrases(), sc.Banned...) {
-		if containsLoose(reply, banned) {
-			score -= 14
+		if containsLoose(scoreText, banned) {
+			score -= 24
 			issues = append(issues, "banned phrase: "+banned)
 		}
 	}
@@ -868,22 +898,79 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 			issues = append(issues, fmt.Sprintf("human route mismatch: got %t want %t", got, *sc.NeedsHumanRoute))
 		}
 	}
-	runeLen := len([]rune(reply))
-	if runeLen > 220 {
-		score -= 8
-		issues = append(issues, fmt.Sprintf("reply too long: %d chars", runeLen))
+	if sc.MaxReplyMessages > 0 {
+		if count := replyMessageCount(rec); count > sc.MaxReplyMessages {
+			score -= 24
+			issues = append(issues, fmt.Sprintf("too many reply messages: got %d want <= %d", count, sc.MaxReplyMessages))
+		}
 	}
-	if rec.LatencyMs > 12000 {
-		score -= 18
-		issues = append(issues, fmt.Sprintf("latency over 12s: %dms", rec.LatencyMs))
-	} else if rec.LatencyMs > 8000 {
+	for index, message := range replyTextMessages(rec) {
+		runeLen := len([]rune(message))
+		if runeLen <= 220 {
+			continue
+		}
 		score -= 8
-		issues = append(issues, fmt.Sprintf("latency over 8s: %dms", rec.LatencyMs))
+		issues = append(issues, fmt.Sprintf("reply message %d too long: %d chars", index+1, runeLen))
+	}
+	latencyWarningMs := int64(8000)
+	latencyLimitMs := int64(12000)
+	if sc.LatencyWarningMs > 0 {
+		latencyWarningMs = sc.LatencyWarningMs
+	}
+	if sc.LatencyLimitMs > 0 {
+		latencyLimitMs = sc.LatencyLimitMs
+	}
+	if rec.LatencyMs > latencyLimitMs {
+		score -= 18
+		issues = append(issues, fmt.Sprintf("latency over %dms: %dms", latencyLimitMs, rec.LatencyMs))
+	} else if rec.LatencyMs > latencyWarningMs {
+		score -= 8
+		issues = append(issues, fmt.Sprintf("latency over %dms: %dms", latencyWarningMs, rec.LatencyMs))
 	}
 	if score < 0 {
 		score = 0
 	}
 	return score, issues
+}
+
+func replyMessageCount(rec record) int {
+	count := 0
+	for _, item := range rec.CommitMessages {
+		if strings.TrimSpace(item.Status) != "sent" || strings.TrimSpace(item.ResourceType) != "" {
+			continue
+		}
+		if strings.TrimSpace(item.Content) != "" {
+			count++
+		}
+	}
+	if count > 0 {
+		return count
+	}
+	if strings.TrimSpace(rec.ReplyText) == "" {
+		return 0
+	}
+	return strings.Count(rec.ReplyText, "<<NEXT_MESSAGE>>") + 1
+}
+
+func replyTextMessages(rec record) []string {
+	messages := make([]string, 0, len(rec.CommitMessages))
+	for _, item := range rec.CommitMessages {
+		if strings.TrimSpace(item.Status) != "sent" || strings.TrimSpace(item.ResourceType) != "" {
+			continue
+		}
+		if content := strings.TrimSpace(item.Content); content != "" {
+			messages = append(messages, content)
+		}
+	}
+	if len(messages) > 0 {
+		return messages
+	}
+	for _, part := range strings.Split(rec.ReplyText, "<<NEXT_MESSAGE>>") {
+		if part = strings.TrimSpace(part); part != "" {
+			messages = append(messages, part)
+		}
+	}
+	return messages
 }
 
 func expectedStructuredResourceTypes(rec record) []string {
@@ -954,6 +1041,8 @@ func defaultBannedPhrases() []string {
 		"我发你", "我发您", "我这边发你", "我这边发您", "我这边直接发你", "我这边直接发您", "这边发你", "这边发您", "这边直接发你", "这边直接发您", "直接发你", "直接发您", "给你发", "给您发",
 		"根据知识库", "系统显示", "作为AI", "我是机器人", "从历史来看", "按当前规则", "我先看看上一轮",
 		"店助补充", "若不确定请先问同事", "请按门店实际填写",
+		"[历史消息]", "[AI客服]", "[人工客服]", "[人工作答]",
+		"replyParts", "taskId", "coveredFactIds",
 	}
 }
 
@@ -970,19 +1059,94 @@ func containsAnyLoose(text string, needles []string) bool {
 	return false
 }
 
-func requiredOutcomeSatisfied(rec record, requirement outcomeRequirement) bool {
-	textParts := []string{rec.ReplyText}
-	for _, item := range rec.CommitMessages {
-		if strings.TrimSpace(item.Status) == "sent" {
-			textParts = append(textParts, item.Content)
+func containsAllLoose(text string, needles []string) bool {
+	for _, needle := range needles {
+		if !containsLoose(text, needle) {
+			return false
 		}
 	}
-	if len(requirement.TextContainsAny) > 0 && containsAnyLoose(strings.Join(textParts, "\n"), requirement.TextContainsAny) {
+	return true
+}
+
+func scoreableCustomerText(rec record) string {
+	parts := make([]string, 0, len(rec.CommitMessages)+1)
+	if strings.TrimSpace(rec.ReplyText) != "" {
+		parts = append(parts, rec.ReplyText)
+	}
+	for _, item := range rec.CommitMessages {
+		if strings.TrimSpace(item.Status) == "sent" && strings.TrimSpace(item.Content) != "" {
+			parts = append(parts, item.Content)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func requiredOutcomeSatisfied(rec record, requirement outcomeRequirement) bool {
+	text := scoreableCustomerText(rec)
+	if len(requirement.TextExcludesAny) > 0 && containsAnyLoose(text, requirement.TextExcludesAny) {
+		return false
+	}
+	if len(requirement.TextContainsAll) > 0 && containsAllLoose(text, requirement.TextContainsAll) {
+		return true
+	}
+	if len(requirement.TextContainsAny) > 0 && containsAnyLoose(text, requirement.TextContainsAny) {
+		return true
+	}
+	if len(requirement.ResourceTypesAll) > 0 {
+		for _, resourceType := range requirement.ResourceTypesAll {
+			if !hasCommittedResourceType(rec.CommitMessages, resourceType) {
+				return false
+			}
+		}
 		return true
 	}
 	return rec.DeferredHandoff &&
 		len(requirement.DeferredHandoffContainsAny) > 0 &&
 		containsAnyLoose(rec.DeferredHandoffReason, requirement.DeferredHandoffContainsAny)
+}
+
+func factSlotStats(sc scenario, rec record) (satisfied int, expected int) {
+	for _, requirement := range sc.RequiredOutcomes {
+		if !requirement.FactSlot {
+			continue
+		}
+		expected++
+		if requiredOutcomeSatisfied(rec, requirement) {
+			satisfied++
+		}
+	}
+	return satisfied, expected
+}
+
+func countFactSlots(sc scenario) int {
+	count := 0
+	for _, requirement := range sc.RequiredOutcomes {
+		if requirement.FactSlot {
+			count++
+		}
+	}
+	for _, item := range sc.Turns {
+		for _, requirement := range item.RequiredOutcomes {
+			if requirement.FactSlot {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func remainingFactSlots(sc scenario, records []record) int {
+	remaining := countFactSlots(sc)
+	prefix := strings.ToUpper(strings.TrimSpace(sc.ID)) + "-T"
+	for _, item := range records {
+		if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(item.ScenarioID)), prefix) {
+			remaining -= item.FactSlotsExpected
+		}
+	}
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func containsExact(values []string, target string) bool {
@@ -1088,6 +1252,7 @@ func buildScenarios(round int) []scenario {
 	)
 
 	cases = append(cases, longScenario("L01"), longScenarioRoomExpiry("L02"), longScenarioStoreIsolation("L03"))
+	cases = append(cases, activeAnswerScenarios()...)
 	if round%2 == 0 {
 		cases = append(cases, hundredTurnScenario())
 	}
@@ -1099,6 +1264,10 @@ func buildScenarios(round int) []scenario {
 
 func selectScenarioSuite(cases []scenario, suite string) ([]scenario, error) {
 	switch strings.ToLower(strings.TrimSpace(suite)) {
+	case "active-answer", "active-answer-focused":
+		return selectScenarioIDs(cases, []string{"AA01", "AA02", "AA03", "AA04", "AA05", "AA06", "AA07", "AA08"})
+	case "continuous50", "continuous50-safe":
+		return []scenario{continuous50SafeScenario()}, nil
 	case "continuous30":
 		return []scenario{continuous30Scenario()}, nil
 	case "continuous20":
@@ -1129,6 +1298,235 @@ func selectScenarioSuite(cases []scenario, suite string) ([]scenario, error) {
 	default:
 		return nil, fmt.Errorf("unknown scenario suite %q", suite)
 	}
+}
+
+func activeAnswerScenarios() []scenario {
+	t := true
+	f := false
+	robotCapabilityBanned := []string{"送到房间", "送上来", "送到门口", "送到房门", "直接送房间", "送进房间"}
+
+	return []scenario{
+		{
+			ID:       "AA01",
+			Category: "active-answer",
+			Name:     "八问题长文字必须逐题完整回答",
+			Turns: []turn{{
+				Type:      enums.IMMessageTypeText,
+				Content:   "请把这八个问题分别回答清楚：WiFi账号密码是什么、怎么办理入住、房门怎么开、房间矿泉水有几瓶且收费吗、有没有外卖机器人、外卖地址怎么填、停车收费且有没有充电桩、发票怎么申请以及多久能下载？",
+				WaitForAI: true,
+			}},
+			RequiredOutcomes: []outcomeRequirement{
+				textOutcome("WiFi账号", "alilys"),
+				textOutcome("WiFi密码", "yzbh8888"),
+				textOutcome("无传统前台", "没有传统前台", "无传统前台"),
+				textOutcome("入住机", "入住机"),
+				textOutcome("入住小程序", "小程序"),
+				textOutcome("人脸开门", "扫脸", "刷脸", "人脸"),
+				textOutcome("矿泉水数量", "两瓶", "2瓶"),
+				textOutcome("矿泉水费用", "免费", "不收费"),
+				robotExistenceOutcome(),
+				textOutcome("南七店外卖地址", "丽斯未来酒店合肥南七店"),
+				textOutcome("楼层房间号格式", "楼层房间号", "对应楼层房间号", "房间号"),
+				textOutcome("停车费用", "停车免费", "免费停车", "停车是免费", "停车不收费"),
+				textOutcome("停车场充电桩", "充电桩"),
+				textOutcome("退房后申请发票", "退房后"),
+				textOutcome("发票小程序", "自由家安心宿", "小程序"),
+				textOutcome("发票下载时间", "1到3个工作日", "1至3个工作日", "1-3个工作日"),
+			},
+			Banned:           robotCapabilityBanned,
+			ExpectedIntent:   "hotel_info",
+			NeedsKnowledge:   &t,
+			NeedsResource:    nil,
+			NeedsHumanRoute:  &f,
+			MaxReplyMessages: 3,
+			LatencyWarningMs: 12000,
+			LatencyLimitMs:   15000,
+			Notes:            "八个原子业务问题均需有独立答案；机器人存在性不得外推配送范围。",
+		},
+		{
+			ID:       "AA02",
+			Category: "active-answer",
+			Name:     "三问语音使用完整转写逐题回答",
+			Turns: []turn{{
+				Type: enums.IMMessageTypeVoice, Content: "active-answer-three.amr",
+				Payload:   `{"filename":"active-answer-three.amr","mediaText":"我想一起问三个问题：房间里面有没有空调，矿泉水有几瓶而且是不是免费的，还有怎么办理入住？","mediaSummary":"客户一次询问多个酒店问题。","mediaUnderstandingStatus":"understood"}`,
+				WaitForAI: true,
+			}},
+			RequiredOutcomes: []outcomeRequirement{
+				textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"),
+				textOutcome("矿泉水数量", "两瓶", "2瓶"),
+				textOutcome("矿泉水费用", "免费", "不收费"),
+				textOutcome("无传统前台", "没有传统前台", "无传统前台"),
+				textOutcome("入住方式", "入住机", "小程序"),
+			},
+			ExpectedIntent:   "hotel_info",
+			NeedsKnowledge:   &t,
+			NeedsResource:    nil,
+			NeedsHumanRoute:  &f,
+			MaxReplyMessages: 3,
+			Notes:            "mediaSummary 刻意不含具体问题，必须优先使用完整 mediaText。",
+		},
+		{
+			ID:       "AA03",
+			Category: "active-answer",
+			Name:     "四问语音完整回答且不外推机器人能力",
+			Turns: []turn{{
+				Type: enums.IMMessageTypeVoice, Content: "active-answer-four.amr",
+				Payload:   `{"filename":"active-answer-four.amr","mediaText":"再一起问四个：你们有没有外卖机器人，外卖地址应该怎么填，布草是不是一客一换，携程抖音美团的价格是不是一样？","mediaSummary":"客户语音询问四项酒店信息。","mediaUnderstandingStatus":"understood"}`,
+				WaitForAI: true,
+			}},
+			RequiredOutcomes: []outcomeRequirement{
+				robotExistenceOutcome(),
+				textOutcome("南七店外卖地址", "丽斯未来酒店合肥南七店"),
+				textOutcome("楼层房间号格式", "楼层房间号", "对应楼层房间号", "房间号"),
+				textOutcome("布草一客一换", "一客一换"),
+				textOutcome("平台权益不同", "平台权益", "权益不一样", "权益不同", "平台活动", "价格不一样", "不一定一样"),
+				priceComparisonOutcome(),
+			},
+			Banned:           robotCapabilityBanned,
+			ExpectedIntent:   "hotel_info",
+			NeedsKnowledge:   &t,
+			NeedsResource:    &f,
+			NeedsHumanRoute:  &f,
+			MaxReplyMessages: 3,
+		},
+		{
+			ID:       "AA04",
+			Category: "active-answer",
+			Name:     "那麦田呢必须补全办公桌回指",
+			Turns: []turn{
+				{Type: enums.IMMessageTypeText, Content: "合柴房型有办公桌吗？", WaitForAI: true},
+				{Type: enums.IMMessageTypeText, Content: "那麦田呢？", WaitForAI: true},
+			},
+			RequiredOutcomes: []outcomeRequirement{textAllOutcome("麦田办公桌", "麦田", "办公桌")},
+			ExpectedIntent:   "hotel_info",
+			NeedsKnowledge:   &t,
+			NeedsResource:    &f,
+			NeedsHumanRoute:  &f,
+		},
+		{
+			ID:       "AA05",
+			Category: "active-answer",
+			Name:     "外卖地址再说一遍必须回指正确地址",
+			Turns: []turn{
+				{Type: enums.IMMessageTypeText, Content: "外卖地址怎么填？", WaitForAI: true},
+				{Type: enums.IMMessageTypeText, Content: "外卖地址再说一遍，只要正确地址。", WaitForAI: true},
+			},
+			RequiredOutcomes: []outcomeRequirement{
+				textOutcome("南七店名称", "丽斯未来酒店合肥南七店"),
+				textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号"),
+			},
+			Banned:          []string{"哪个门店", "酒店名称或具体店名"},
+			ExpectedIntent:  "hotel_info",
+			NeedsKnowledge:  &t,
+			NeedsResource:   &f,
+			NeedsHumanRoute: &f,
+		},
+		{
+			ID:       "AA06",
+			Category: "active-answer",
+			Name:     "那这两瓶是否免费必须保留数量与费用事实",
+			Turns: []turn{
+				{Type: enums.IMMessageTypeText, Content: "房间里有几瓶矿泉水？", WaitForAI: true},
+				{Type: enums.IMMessageTypeText, Content: "那这两瓶是不是都免费？", WaitForAI: true},
+			},
+			RequiredOutcomes: []outcomeRequirement{
+				textOutcome("矿泉水数量", "两瓶", "2瓶"),
+				textOutcome("矿泉水费用", "免费", "不收费"),
+			},
+			ExpectedIntent:  "hotel_info",
+			NeedsKnowledge:  &t,
+			NeedsResource:   &f,
+			NeedsHumanRoute: &f,
+		},
+		{
+			ID:       "AA07",
+			Category: "active-answer",
+			Name:     "机器人存在性不得外推配送范围",
+			Turns: []turn{{
+				Type: enums.IMMessageTypeText, Content: "你们有外卖机器人吗？", WaitForAI: true,
+			}},
+			RequiredOutcomes: []outcomeRequirement{robotExistenceOutcome()},
+			Banned:           robotCapabilityBanned,
+			ExpectedIntent:   "hotel_info",
+			NeedsKnowledge:   &t,
+			NeedsResource:    &f,
+			NeedsHumanRoute:  &f,
+		},
+		{
+			ID:       "AA08",
+			Category: "active-answer",
+			Name:     "内部历史标签和生成协议不得泄漏",
+			Turns: []turn{{
+				Type: enums.IMMessageTypeText, Content: "哪些房型有办公桌？哪些房型同时还有沙发？请分别说清楚。", WaitForAI: true,
+			}},
+			RequiredOutcomes: []outcomeRequirement{
+				textAllOutcome("麦田办公桌", "麦田", "办公桌"),
+				textAllOutcome("合柴同时有沙发和办公桌", "合柴", "沙发", "办公桌"),
+				textAllOutcome("艺林同时有沙发和办公桌", "艺林", "沙发", "办公桌"),
+			},
+			ExpectedIntent:  "hotel_info",
+			NeedsKnowledge:  &t,
+			NeedsResource:   &f,
+			NeedsHumanRoute: &f,
+			Notes:           "全局禁用词会拦截历史角色标签和 replyParts/taskId/coveredFactIds。",
+		},
+	}
+}
+
+func textOutcome(label string, containsAny ...string) outcomeRequirement {
+	return outcomeRequirement{Label: label, TextContainsAny: containsAny, FactSlot: true}
+}
+
+func robotExistenceOutcome() outcomeRequirement {
+	return textOutcome(
+		"外卖机器人存在",
+		"有外卖机器人",
+		"有外卖机器人的",
+		"配有外卖机器人",
+		"提供外卖机器人",
+	)
+}
+
+func priceComparisonOutcome() outcomeRequirement {
+	return priceComparisonRequirement(true)
+}
+
+func priceComparisonCoverageOutcome() outcomeRequirement {
+	return priceComparisonRequirement(false)
+}
+
+func priceComparisonRequirement(factSlot bool) outcomeRequirement {
+	return outcomeRequirement{
+		Label:           "建议比较价格",
+		TextContainsAny: []string{"对比", "比较"},
+		TextExcludesAny: negativePriceComparisonPhrases(),
+		FactSlot:        factSlot,
+	}
+}
+
+func negativePriceComparisonPhrases() []string {
+	prefixes := []string{"无需", "不用", "不必", "不能", "不要", "没必要", "没有必要", "不需要"}
+	verbs := []string{"对比", "比较"}
+	ret := make([]string, 0, len(prefixes)*len(verbs))
+	for _, prefix := range prefixes {
+		for _, verb := range verbs {
+			ret = append(ret, prefix+verb)
+		}
+	}
+	return ret
+}
+
+func textAllOutcome(label string, containsAll ...string) outcomeRequirement {
+	return outcomeRequirement{Label: label, TextContainsAll: containsAll, FactSlot: true}
+}
+
+func coverageOutcome(label string, containsAny ...string) outcomeRequirement {
+	return outcomeRequirement{Label: label, TextContainsAny: containsAny}
+}
+
+func resourceOutcome(label string, resourceTypes ...string) outcomeRequirement {
+	return outcomeRequirement{Label: label, ResourceTypesAll: resourceTypes}
 }
 
 func continuous20Scenario() scenario {
@@ -1288,6 +1686,145 @@ func continuous30Scenario() scenario {
 		},
 	)
 	return sc
+}
+
+func continuous50SafeScenario() scenario {
+	t := true
+	f := false
+	knowledge := func(content string, requirements ...outcomeRequirement) turn {
+		return turn{
+			Type: enums.IMMessageTypeText, Content: content, WaitForAI: true,
+			RequiredOutcomes: requirements, ExpectedIntent: "hotel_info",
+			NeedsKnowledge: &t, NeedsResource: &f, NeedsHumanRoute: &f,
+		}
+	}
+	interaction := func(content string, mustContainAny ...string) turn {
+		return turn{
+			Type: enums.IMMessageTypeText, Content: content, WaitForAI: true,
+			MustContainAny: mustContainAny, ExpectedIntent: "interaction",
+			NeedsKnowledge: &f, NeedsResource: &f, NeedsHumanRoute: &f,
+		}
+	}
+	resource := func(content string, needsKnowledge bool, requirements ...outcomeRequirement) turn {
+		return turn{
+			Type: enums.IMMessageTypeText, Content: content, WaitForAI: true,
+			RequiredOutcomes: requirements,
+			NeedsKnowledge:   &needsKnowledge, NeedsResource: &t, NeedsHumanRoute: &f,
+		}
+	}
+	voice := func(filename, mediaText, mediaSummary string, requirements ...outcomeRequirement) turn {
+		payload, _ := json.Marshal(map[string]any{
+			"filename": filename, "mediaText": mediaText, "mediaSummary": mediaSummary, "mediaUnderstandingStatus": "understood",
+		})
+		return turn{
+			Type: enums.IMMessageTypeVoice, Content: filename, Payload: string(payload), WaitForAI: true,
+			RequiredOutcomes: requirements, ExpectedIntent: "hotel_info",
+			NeedsKnowledge: &t, NeedsResource: &f, NeedsHumanRoute: &f,
+		}
+	}
+	withBanned := func(item turn, phrases ...string) turn {
+		item.Banned = append([]string(nil), phrases...)
+		return item
+	}
+	withMaxMessages := func(item turn, max int) turn {
+		item.MaxReplyMessages = max
+		return item
+	}
+	withLatencyBudget := func(item turn, warningMs, limitMs int64) turn {
+		item.LatencyWarningMs = warningMs
+		item.LatencyLimitMs = limitMs
+		return item
+	}
+	allowResource := func(item turn) turn {
+		item.NeedsResource = nil
+		return item
+	}
+	robotCapabilityBanned := []string{"送到房间", "送上来", "送到门口", "送到房门", "直接送房间", "送进房间"}
+
+	turns := []turn{
+		// 01-10: basic hotel facts and complete fact slots.
+		interaction("你好呀，小七，在吗？", "在", "你好", "您好"),
+		knowledge("WiFi账号密码多少？", textOutcome("WiFi账号", "alilys"), textOutcome("WiFi密码", "yzbh8888")),
+		knowledge("房间里有空调吗？", textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调")),
+		resource("怎么办理入住？小程序也发我一下。", true,
+			textOutcome("无传统前台", "没有传统前台", "无传统前台"), textOutcome("入住方式", "入住机", "小程序"), resourceOutcome("入住小程序资源", "mini_program")),
+		knowledge("酒店房门怎么打开？", textOutcome("人脸开门", "扫脸", "刷脸", "人脸"), textOutcome("无需房卡", "无需房卡", "不用房卡")),
+		knowledge("房间里有几瓶矿泉水，都是免费的吗？", textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费")),
+		withBanned(knowledge("你们有外卖机器人吗？", robotExistenceOutcome()), robotCapabilityBanned...),
+		knowledge("外卖地址应该怎么填？", textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")),
+		knowledge("你们房间的布草是一客一换的吗？", textOutcome("布草一客一换", "一客一换")),
+		knowledge("携程、抖音、美团的价格是一样的吗？", textOutcome("平台权益不同", "平台权益", "权益不一样", "权益不同", "平台活动", "价格不一样", "不一定一样"), priceComparisonCoverageOutcome()),
+
+		// 11-20: resources, invoice, voice multi-question and room-type reference setup.
+		knowledge("老客户优惠是什么情况？", textOutcome("当天情况", "当天情况", "当天房态"), textOutcome("门店管家电话", "18256022128")),
+		resource("定位发我，停车场入口也一起说下。", true, textOutcome("停车场入口", "昭潭路", "工人文化宫西北门", "工人文化宫地面停车场"), resourceOutcome("酒店定位资源", "location")),
+		knowledge("发票怎么开，多久能下载？", textOutcome("退房后申请", "退房后"), textOutcome("发票小程序", "自由家安心宿", "小程序"), textOutcome("下载时间", "1到3个工作日", "1至3个工作日", "1-3个工作日")),
+		withMaxMessages(allowResource(voice("continuous-three.amr",
+			"我想一起问三个问题：房间有没有空调，矿泉水有几瓶而且是不是免费的，还有怎么办理入住？",
+			"客户一次询问多个酒店问题。",
+			textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"), textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费"), textOutcome("入住方式", "入住机", "小程序"))), 3),
+		knowledge("合柴、艺林、塔川、岭南这四种房型都有办公桌吗？", textOutcome("合柴", "合柴"), textOutcome("艺林", "艺林"), textOutcome("塔川", "塔川", "另外两种", "其他两个"), textOutcome("岭南", "岭南", "另外两种", "其他两个")),
+		knowledge("那麦田呢？", textOutcome("麦田", "麦田"), textOutcome("办公桌回指", "办公桌", "桌子")),
+		knowledge("酒店有早餐吗？", textOutcome("早餐政策", "不提供早餐", "暂不提供早餐", "没有早餐", "不含早餐")),
+		knowledge("停车免费吗？停车场有充电桩吗？", textOutcome("停车费用", "停车免费", "免费停车", "停车是免费", "停车不收费", "不收费"), textOutcome("充电桩", "充电桩")),
+		resource("入住小程序再发我一下。", false, resourceOutcome("入住小程序资源", "mini_program")),
+		knowledge("外卖地址怎么填？", textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")),
+
+		// 21-30: explicit repetition, text multi-question and five-question coverage.
+		knowledge("外卖地址再说一遍，只要正确地址。", textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")),
+		interaction("好的，谢谢你。", "不客气", "客气", "随时"),
+		knowledge("房间里面有没有空调？", textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调")),
+		withMaxMessages(allowResource(knowledge("再一起问三个：房间有空调吗、矿泉水有几瓶且免费吗、怎么办入住？",
+			textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"), textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费"), textOutcome("入住方式", "入住机", "小程序"))), 3),
+		resource("定位、小程序、停车入口三个一起给我。", true, textOutcome("停车入口", "昭潭路", "工人文化宫西北门", "工人文化宫地面停车场"), resourceOutcome("定位和小程序资源", "location", "mini_program")),
+		knowledge("停车场入口怎么走？", textOutcome("停车入口", "昭潭路", "工人文化宫西北门", "工人文化宫地面停车场")),
+		knowledge("房间里有几瓶矿泉水？", textOutcome("矿泉水数量", "两瓶", "2瓶")),
+		knowledge("那这两瓶是不是都免费？", textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费")),
+		withMaxMessages(allowResource(knowledge("我一次问五个：WiFi账号密码是什么、怎么办入住、房门怎么开、发票怎么开、停车收费吗？",
+			textOutcome("WiFi账号", "alilys"), textOutcome("WiFi密码", "yzbh8888"), textOutcome("入住方式", "入住机", "小程序"), textOutcome("人脸开门", "扫脸", "刷脸", "人脸"), textOutcome("发票", "发票"), textOutcome("停车费用", "停车免费", "免费停车", "停车是免费", "停车不收费"))), 3),
+		knowledge("刚才发票那条，确认是退房后申请，1到3个工作日下载，对吧？", textOutcome("退房后申请", "退房后"), textOutcome("下载时间", "1到3个工作日", "1至3个工作日", "1-3个工作日")),
+
+		// 31-40: four-question voice, combined evidence and mixed resource turns.
+		withBanned(withMaxMessages(voice("continuous-four.amr",
+			"再一起问四个：你们有没有外卖机器人，外卖地址怎么填，布草是不是一客一换，携程抖音美团价格一样吗？",
+			"客户语音询问四项酒店信息。",
+			robotExistenceOutcome(), textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号"), textOutcome("布草一客一换", "一客一换"), textOutcome("平台权益不同", "平台权益", "权益不同", "权益不一样", "平台活动", "价格不一样", "不一定一样")), 3), robotCapabilityBanned...),
+		knowledge("哪些房型既有沙发又有办公桌？", textOutcome("合柴", "合柴"), textOutcome("艺林", "艺林")),
+		knowledge("哪些房型有办公桌？哪些房型同时还有沙发？", textOutcome("麦田办公桌", "麦田"), textOutcome("合柴交集", "合柴"), textOutcome("艺林交集", "艺林"), coverageOutcome("办公桌", "办公桌"), coverageOutcome("沙发", "沙发")),
+		knowledge("麦田有办公桌吗？合柴和艺林都有沙发吗？", textOutcome("麦田办公桌", "麦田"), textOutcome("办公桌", "办公桌"), textOutcome("合柴", "合柴"), textOutcome("艺林", "艺林"), textOutcome("沙发", "沙发")),
+		resource("请把酒店定位和入住小程序再发一次。", false, resourceOutcome("定位和小程序资源", "location", "mini_program")),
+		withBanned(knowledge("你们有外卖机器人吗？外卖地址怎么填？", robotExistenceOutcome(), textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")), robotCapabilityBanned...),
+		knowledge("房间有没有空调，矿泉水到底有几瓶？", textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"), textOutcome("矿泉水数量", "两瓶", "2瓶")),
+		allowResource(knowledge("入住方式和开门方式分别说，不要混在一起。", textOutcome("入住方式", "入住机", "小程序"), textOutcome("人脸开门", "扫脸", "刷脸", "人脸"))),
+		knowledge("谢谢，顺便再问下老客户优惠。", textOutcome("当天情况", "当天情况", "当天房态"), textOutcome("门店管家电话", "18256022128")),
+		knowledge("停车场入口和充电桩位置一起说清楚。", textOutcome("停车入口", "昭潭路", "工人文化宫西北门", "工人文化宫地面停车场"), textOutcome("充电桩", "充电桩")),
+
+		// 41-50: repeat stable facts, another voice run and final eight-question acceptance.
+		knowledge("发票申请流程和下载时间再完整说一次。", textOutcome("退房后申请", "退房后"), textOutcome("发票小程序", "自由家安心宿", "小程序"), textOutcome("下载时间", "1到3个工作日", "1至3个工作日", "1-3个工作日")),
+		knowledge("WiFi账号和密码再确认一下。", textOutcome("WiFi账号", "alilys"), textOutcome("WiFi密码", "yzbh8888")),
+		knowledge("布草是不是一客一换？", textOutcome("布草一客一换", "一客一换")),
+		knowledge("不同平台的房价为什么不一样？", textOutcome("平台权益不同", "平台权益", "权益不同", "权益不一样", "平台活动", "价格不一样", "不一定一样"), priceComparisonCoverageOutcome()),
+		withMaxMessages(allowResource(voice("continuous-three-rewrite.amr",
+			"麻烦分别告诉我，房间空调有没有，矿泉水配几瓶收不收费，入住要怎么操作。",
+			"客户语音询问客房设施和入住。",
+			textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"), textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费"), textOutcome("入住方式", "入住机", "小程序"))), 3),
+		knowledge("外卖地址只说正确的酒店名和房间号格式。", textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")),
+		knowledge("刚刚的外卖地址再复述一次。", textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号")),
+		withBanned(withLatencyBudget(withMaxMessages(allowResource(knowledge("最后一次长问题，请分别回答八项：WiFi账号密码、入住方式、开门方式、矿泉水数量和费用、外卖机器人、外卖地址、停车和充电桩、发票流程。",
+			textOutcome("WiFi账号", "alilys"), textOutcome("WiFi密码", "yzbh8888"), textOutcome("入住方式", "入住机", "小程序"), textOutcome("人脸开门", "扫脸", "刷脸", "人脸"), textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费"), robotExistenceOutcome(), textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号"), textOutcome("停车费用", "停车免费", "免费停车", "停车是免费", "停车不收费"), textOutcome("充电桩", "充电桩"), textOutcome("退房后申请", "退房后"), textOutcome("发票下载时间", "1到3个工作日", "1至3个工作日", "1-3个工作日"))), 3), 12000, 15000), robotCapabilityBanned...),
+		withMaxMessages(allowResource(knowledge("最终确认：没有传统前台、能用入住机或小程序入住、扫脸开门、房间有空调、两瓶水免费、外卖地址写酒店名加楼层房间号，对吗？",
+			textOutcome("无传统前台", "没有传统前台", "无传统前台"), textOutcome("入住方式", "入住机", "小程序"), textOutcome("人脸开门", "扫脸", "刷脸", "人脸"), textOutcome("空调", "有空调", "配有空调", "配了空调", "都有空调"), textOutcome("矿泉水数量", "两瓶", "2瓶"), textOutcome("矿泉水费用", "免费", "不收费"), textOutcome("南七店名称", "丽斯未来酒店合肥南七店"), textOutcome("房间号格式", "楼层房间号", "对应楼层房间号", "房间号"))), 3),
+		interaction("谢谢，今天就问到这里。", "不客气", "客气", "好的", "好呀"),
+	}
+
+	return scenario{
+		ID:             "Q50S",
+		Category:       "continuous50-safe",
+		Name:           "单会话连续50个AI轮次：逐题闭环、语音、回指、事实边界和协议安全",
+		Turns:          turns,
+		RecordEachTurn: true,
+		Notes:          "连续运行三遍即形成150个AI轮次；每遍含117个事实槽位，资源投递和表达覆盖另行评分；全部问题保持AI可回答，不触发人工接管状态。",
+	}
 }
 
 func selectScenarioIDs(cases []scenario, ids []string) ([]scenario, error) {
@@ -1675,6 +2212,8 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 	categories := map[string]int{}
 	categoryPass := map[string]int{}
 	issueCounts := map[string]int{}
+	factSlotsSatisfied := 0
+	factSlotsExpected := 0
 	for _, rec := range r.records {
 		categories[rec.Category]++
 		if rec.Passed {
@@ -1692,6 +2231,8 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 		}
 		totalTokens += rec.TotalTokens
 		cachedTokens += rec.CachedTokens
+		factSlotsSatisfied += rec.FactSlotsSatisfied
+		factSlotsExpected += rec.FactSlotsExpected
 		for _, issue := range rec.Issues {
 			issueCounts[issue]++
 		}
@@ -1724,6 +2265,9 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 		b.WriteString(fmt.Sprintf("- generateLatency: avg=%dms, p90=%dms, max=%dms\n", generateAvg, generateP90, generateMax))
 	}
 	b.WriteString(fmt.Sprintf("- runtimeSummaryTokens: total=%d, cached=%d, cacheHitRate=%.1f%%\n", totalTokens, cachedTokens, cacheRate))
+	if factSlotsExpected > 0 {
+		b.WriteString(fmt.Sprintf("- requiredFactSlots: %d/%d\n", factSlotsSatisfied, factSlotsExpected))
+	}
 	if usage.EventCount > 0 {
 		b.WriteString(fmt.Sprintf("- usageLedger: events=%d, requests=%d\n", usage.EventCount, usage.DistinctRequests))
 	}
@@ -1771,6 +2315,9 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 		b.WriteString(fmt.Sprintf("### %s %s %s\n\n", status, rec.ScenarioID, rec.Name))
 		b.WriteString(fmt.Sprintf("- category: `%s`, score: `%d`, status: `%s`, action: `%s`, latency: `%dms`, generateLatency: `%dms`\n", rec.Category, rec.Score, rec.Status, rec.FinalAction, rec.LatencyMs, rec.GenerateLatencyMs))
 		b.WriteString(fmt.Sprintf("- intent: `%s/%s`, resourceAction: `%s`, knowledge: `%t`, tokens: `%d`, cached: `%d`\n", rec.Intent, rec.SubIntent, rec.ResourceAction, rec.KnowledgeHit, rec.TotalTokens, rec.CachedTokens))
+		if rec.FactSlotsExpected > 0 {
+			b.WriteString(fmt.Sprintf("- required fact slots: `%d/%d`\n", rec.FactSlotsSatisfied, rec.FactSlotsExpected))
+		}
 		if rec.ConfiguredMaxOutputTokens > 0 || rec.EffectiveMaxOutputTokens > 0 {
 			b.WriteString(fmt.Sprintf("- model budget: configuredMaxOutput=`%d`, effectiveMaxOutput=`%d`\n", rec.ConfiguredMaxOutputTokens, rec.EffectiveMaxOutputTokens))
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -152,6 +153,20 @@ func TestRuntimeIntentDetectPromptRequiresSpecificHotelInfoSubIntent(t *testing.
 	}
 }
 
+func TestRuntimeIntentProfileSemanticContractDetectionKeepsOldProfilesCompatible(t *testing.T) {
+	if !runtimeIntentProfileExpectsTaskSemantics(nil) {
+		t.Fatal("default Profile must require the lightweight semantic contract")
+	}
+	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"hotel_info","text":"问题"}]}`}
+	if runtimeIntentProfileExpectsTaskSemantics(legacy) {
+		t.Fatal("legacy Profile without semantic fields must stay in compatibility mode")
+	}
+	current := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"objective":"availability","relationToPrevious":"independent","resolutionState":"clear","entities":[]}]}`}
+	if !runtimeIntentProfileExpectsTaskSemantics(current) {
+		t.Fatal("Profile declaring all semantic task fields must require them in model output")
+	}
+}
+
 func TestRuntimeIntentDetectSystemPromptUsesFiveCleanTopLevelIntents(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, intentCode := range []string{
@@ -286,7 +301,6 @@ func TestBuildRuntimeIntentDetectUserPromptDisclosesAnswerRelationOnlyAfterAIRep
 		"此前客户原问题",
 		"紧邻 AI 客服答复",
 		"answer_rejected",
-		"answer_contradicted",
 		"答非所问",
 		"引用真人客服说法或现场事实",
 		"你刚才不是说要开车吗",
@@ -425,6 +439,63 @@ func TestDeriveModelIntentFromTasksKeepsCheckinKnowledgePrimary(t *testing.T) {
 	}
 }
 
+func TestDeriveModelIntentFromTasksClearsStaleTopLevelSummary(t *testing.T) {
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
+		PrimaryIntent:        "human_complaint_risk",
+		SubIntent:            "explicit_handoff",
+		SecondaryIntents:     []string{"hotel_variable", "human_complaint_risk"},
+		SecondaryIntentCodes: []string{"hotel_variable", "human_complaint_risk"},
+		NeedsKnowledge:       false,
+		NeedsTool:            true,
+		NeedsResource:        true,
+		NeedsHumanRoute:      true,
+		ResourceType:         "location",
+		ResourceAction:       "provide_location",
+		ResourceActions:      []string{"provide_location"},
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:         "hotel_info",
+			SubIntent:      "parking",
+			Text:           "停车入口在哪",
+			NeedsKnowledge: true,
+		}},
+	})
+
+	if intent.PrimaryIntent != "hotel_info" || intent.SubIntent != "parking" || !intent.NeedsKnowledge {
+		t.Fatalf("task summary must replace stale top-level intent fields, got %#v", intent)
+	}
+	if len(intent.SecondaryIntents) != 0 || len(intent.SecondaryIntentCodes) != 0 {
+		t.Fatalf("stale secondary intents must be cleared, got %#v / %#v", intent.SecondaryIntents, intent.SecondaryIntentCodes)
+	}
+	if intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || intent.ResourceType != "" || intent.ResourceAction != "" || len(intent.ResourceActions) != 0 {
+		t.Fatalf("stale task actions must not survive task-derived summary, got %#v", intent)
+	}
+}
+
+func TestDeriveModelIntentFromTasksKeepsOnlyTaskDeclaredResources(t *testing.T) {
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
+		PrimaryIntent:   "hotel_variable",
+		SubIntent:       "phone",
+		NeedsResource:   true,
+		ResourceType:    "phone",
+		ResourceAction:  "provide_phone",
+		ResourceActions: []string{"provide_phone"},
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_variable", SubIntent: "mini_program", Text: "入住小程序发我", NeedsResource: true, ResourceAction: "provide_mini_program"},
+			{Intent: "hotel_info", SubIntent: "parking", Text: "停车怎么停", NeedsKnowledge: true},
+		},
+	})
+
+	if intent.PrimaryIntent != "hotel_variable" || intent.SubIntent != "mini_program" || intent.ResourceType != "mini_program" || intent.ResourceAction != "provide_mini_program" {
+		t.Fatalf("primary variable summary must come from the task, got %#v", intent)
+	}
+	if len(intent.ResourceActions) != 1 || intent.ResourceActions[0] != "provide_mini_program" {
+		t.Fatalf("stale phone resource must not survive, got %#v", intent.ResourceActions)
+	}
+	if len(intent.SecondaryIntents) != 1 || intent.SecondaryIntents[0] != "hotel_info" || !intent.NeedsKnowledge || !intent.NeedsResource {
+		t.Fatalf("mixed task summary is incomplete, got %#v", intent)
+	}
+}
+
 func TestDeriveModelIntentFromTasksDoesNotLetCorrectionToneHideBusinessTask(t *testing.T) {
 	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{
 		PrimaryIntent: "interaction",
@@ -438,6 +509,531 @@ func TestDeriveModelIntentFromTasksDoesNotLetCorrectionToneHideBusinessTask(t *t
 	}
 	if len(intent.SecondaryIntents) != 1 || intent.SecondaryIntents[0] != "interaction" {
 		t.Fatalf("expected correction tone to remain secondary context only, got %#v", intent.SecondaryIntents)
+	}
+}
+
+func TestBuildReplyPlanTreatsSecondaryInteractionAsBoundContext(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "interaction", SubIntent: "correction", Text: "我问的是这两瓶", ResolvedText: "我问的是这两瓶", SourceRefs: []string{"U1"}},
+			{Intent: "hotel_info", SubIntent: "drinking_water", Text: "是不是都免费", ResolvedText: "房间里的两瓶矿泉水是不是都免费", SourceRefs: []string{"U2"}, NeedsKnowledge: true},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ActiveTaskCount != 2 || plan.ReplyRequiredTaskCount != 1 || len(plan.TaskPlans) != 2 {
+		t.Fatalf("unexpected active task counts: %#v", plan)
+	}
+	contextTask := plan.TaskPlans[0]
+	if contextTask.TaskID != "context-1" || contextTask.OutputKind != "context_only" || contextTask.ReplyRequired || contextTask.Output != "context_only" {
+		t.Fatalf("expected correction task to become context only, got %#v", contextTask)
+	}
+	businessTask := plan.TaskPlans[1]
+	if businessTask.TaskID != "task-1" || businessTask.OutputKind != "text" || !businessTask.ReplyRequired {
+		t.Fatalf("expected one stable reply task, got %#v", businessTask)
+	}
+	if businessTask.OriginalText != "是不是都免费" || businessTask.ResolvedText != "房间里的两瓶矿泉水是不是都免费" || businessTask.Text != businessTask.ResolvedText {
+		t.Fatalf("expected original and resolved task text to stay distinct, got %#v", businessTask)
+	}
+	if len(businessTask.SourceRefs) != 2 || businessTask.SourceRefs[0] != "U2" || businessTask.SourceRefs[1] != "U1" {
+		t.Fatalf("expected primary source followed by bound context source, got %#v", businessTask.SourceRefs)
+	}
+}
+
+func TestBuildReplyPlanKeepsBurstBackgroundBoundToOneBusinessTask(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:             "hotel_info",
+			SubIntent:          "surrounding_facilities",
+			Objective:          "availability",
+			RelationToPrevious: "independent",
+			ResolutionState:    "clear",
+			Text:               "有没有咖啡",
+			ResolvedText:       "酒店附近有没有咖啡",
+			SourceRefs:         []string{"U2", "U1"},
+			NeedsKnowledge:     true,
+		}},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ActiveTaskCount != 1 || plan.ReplyRequiredTaskCount != 1 || len(plan.TaskPlans) != 1 {
+		t.Fatalf("background plus coffee question must remain one business task, got %#v", plan)
+	}
+	if refs := plan.TaskPlans[0].SourceRefs; len(refs) != 2 || refs[0] != "U2" || refs[1] != "U1" {
+		t.Fatalf("expected primary coffee source followed by tiredness context, got %#v", refs)
+	}
+}
+
+func TestNormalizeModelIntentTraceRepairsFacilityAvailabilityWithoutRoomCollection(t *testing.T) {
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:    "service_request",
+		SubIntent:        "air_conditioner",
+		IntentConfidence: 0.31,
+		NeedsKnowledge:   true,
+		NeedsHumanRoute:  true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:             "service_request",
+			SubIntent:          "air_conditioner",
+			Objective:          "availability",
+			RelationToPrevious: "independent",
+			ResolutionState:    "clear",
+			Entities:           []callbacks.IntentEntityTraceData{{Text: "空调", Type: "facility"}},
+			Text:               "房间有空调吗",
+			ResolvedText:       "房间有空调吗",
+			SourceRefs:         []string{"U1"},
+			NeedsKnowledge:     true,
+			NeedsHumanRoute:    true,
+		}},
+	}, RunInput{}, adapter.HistoryBuildResult{}, nil)
+
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || intent.NeedsHumanRoute || intent.NeedsClarification {
+		t.Fatalf("facility availability must stay an answerable information task, got %#v", intent)
+	}
+	if task := intent.IntentTasks[0]; task.Intent != "hotel_info" || task.NeedsHumanRoute || task.NeedsResource || task.NeedsTool {
+		t.Fatalf("facility availability must not reach room collection or actions, got %#v", task)
+	}
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != "knowledge_text_reply" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("facility availability should continue through knowledge answering, got %#v", plan.TaskPlans)
+	}
+}
+
+func TestNormalizeModelIntentTraceDropsDuplicateInvalidCheckinResourcePseudoTask(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "怎么办理入住"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		IntentConfidence:         0.91,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:             "hotel_info",
+				SubIntent:          "checkin_process",
+				Objective:          "method",
+				RelationToPrevious: "independent",
+				ResolutionState:    "clear",
+				Text:               "怎么办理入住",
+				ResolvedText:       "怎么办理入住",
+				SourceRefs:         []string{"U1"},
+				NeedsKnowledge:     true,
+			},
+			{
+				Intent:             "interaction",
+				SubIntent:          "clarify",
+				Objective:          "resource",
+				RelationToPrevious: "independent",
+				ResolutionState:    "clear",
+				Entities: []callbacks.IntentEntityTraceData{{
+					Text: "小程序",
+					Type: "resource",
+				}},
+				Text:         "怎么办理入住",
+				ResolvedText: "怎么办理入住",
+				SourceRefs:   []string{"U1"},
+				Reason:       "用户询问入住办理时隐含入住小程序资源",
+			},
+		},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if intent.PrimaryIntent != "hotel_info" || intent.NeedsClarification || !intent.NeedsKnowledge || !intent.NeedsResource {
+		t.Fatalf("duplicate invalid resource task must not derail checkin, got %#v", intent)
+	}
+	if len(intent.IntentTasks) != 2 {
+		t.Fatalf("expected checkin knowledge plus one valid mini program task, got %#v", intent.IntentTasks)
+	}
+	if task := intent.IntentTasks[0]; task.Intent != "hotel_info" || task.SubIntent != "checkin_process" || !task.NeedsKnowledge {
+		t.Fatalf("expected original checkin knowledge task to survive, got %#v", task)
+	}
+	if task := intent.IntentTasks[1]; task.Intent != "hotel_variable" || task.SubIntent != "mini_program" || task.ResourceAction != "provide_mini_program" || !task.NeedsResource {
+		t.Fatalf("expected deterministic valid mini program task, got %#v", task)
+	}
+	if !strings.Contains(intent.Reason, "redundant_invalid_resource_task_dropped") {
+		t.Fatalf("expected cleanup to remain visible in intent reason, got %q", intent.Reason)
+	}
+}
+
+func TestNormalizeModelIntentTraceCollapsesLegacyLowConfidenceTasksToClarification(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "定位发我"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		DetectedIntent:       "hotel_variable",
+		PrimaryIntent:        "hotel_variable",
+		SubIntent:            "location",
+		SecondaryIntents:     []string{"hotel_info"},
+		SecondaryIntentCodes: []string{"hotel_info"},
+		IntentConfidence:     0.2,
+		NeedsKnowledge:       true,
+		NeedsTool:            true,
+		NeedsResource:        true,
+		NeedsHumanRoute:      true,
+		ResourceType:         "location",
+		ResourceAction:       "provide_location",
+		ResourceActions:      []string{"provide_location"},
+		MixedSubTasks:        []string{"location"},
+		ToolCodes:            []string{"get_weather"},
+		HumanRoutePolicy:     "managed_mode",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:          "hotel_variable",
+			SubIntent:       "location",
+			Text:            "定位发我",
+			ResolvedText:    "把酒店定位发给我",
+			NeedsKnowledge:  true,
+			NeedsResource:   true,
+			NeedsTool:       true,
+			NeedsHumanRoute: true,
+			ResourceAction:  "provide_location",
+		}},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if intent.PrimaryIntent != "interaction" || intent.DetectedIntent != "interaction" || intent.SubIntent != "clarify" || !intent.NeedsClarification {
+		t.Fatalf("legacy low-confidence output must become one clarification, got %#v", intent)
+	}
+	if len(intent.IntentTasks) != 1 {
+		t.Fatalf("legacy low-confidence tasks must collapse to one task, got %#v", intent.IntentTasks)
+	}
+	task := intent.IntentTasks[0]
+	if task.Intent != "interaction" || task.SubIntent != "clarify" || task.ResolutionState != runtimeIntentResolutionAmbiguous || task.Text != "定位发我" || task.ResolvedText != "定位发我" {
+		t.Fatalf("unexpected clarification task: %#v", task)
+	}
+	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || intent.ResourceType != "" || intent.ResourceAction != "" || len(intent.ResourceActions) != 0 || len(intent.ToolCodes) != 0 || intent.HumanRoutePolicy != "" {
+		t.Fatalf("legacy low-confidence clarification must clear all business actions, got %#v", intent)
+	}
+	if len(intent.SecondaryIntents) != 0 || len(intent.SecondaryIntentCodes) != 0 || len(intent.MixedSubTasks) != 0 {
+		t.Fatalf("legacy low-confidence clarification must clear stale task summaries, got %#v", intent)
+	}
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 1 || plan.ReplyRequiredTaskCount != 1 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("legacy low-confidence output must only request one clarification reply, got %#v", plan)
+	}
+}
+
+func TestNormalizeModelIntentTraceKeepsExplicitFacilityActionRequest(t *testing.T) {
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:    "service_request",
+		SubIntent:        "air_conditioner_repair",
+		IntentConfidence: 0.31,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:             "service_request",
+			SubIntent:          "air_conditioner_repair",
+			Objective:          "action_request",
+			RelationToPrevious: "independent",
+			ResolutionState:    "clear",
+			Entities:           []callbacks.IntentEntityTraceData{{Text: "空调", Type: "facility"}},
+			Text:               "叫人来看看空调",
+			ResolvedText:       "叫人来看看空调",
+			SourceRefs:         []string{"U1"},
+			NeedsKnowledge:     true,
+		}},
+	}, RunInput{}, adapter.HistoryBuildResult{}, nil)
+
+	if intent.PrimaryIntent != "service_request" || intent.NeedsClarification || !intent.NeedsKnowledge {
+		t.Fatalf("explicit real-world action must remain a service request, got %#v", intent)
+	}
+}
+
+func TestBuildReplyPlanKeepsAmbiguousTaskReplyableBesideClearBusinessTask(t *testing.T) {
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:    "hotel_info",
+		IntentConfidence: 0.88,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:             "hotel_info",
+				SubIntent:          "breakfast",
+				Objective:          "time",
+				RelationToPrevious: "independent",
+				ResolutionState:    "clear",
+				Text:               "早餐几点",
+				ResolvedText:       "早餐几点",
+				SourceRefs:         []string{"U1"},
+				NeedsKnowledge:     true,
+			},
+			{
+				Intent:             "interaction",
+				SubIntent:          "clarify",
+				Objective:          "unknown",
+				RelationToPrevious: "reference_previous",
+				ResolutionState:    "ambiguous",
+				Text:               "那个多少钱",
+				ResolvedText:       "那个多少钱",
+				SourceRefs:         []string{"U2"},
+			},
+		},
+	}, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{{SenderType: enums.IMSenderTypeAI, Content: "早餐和停车都可以介绍"}}}, nil)
+
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || !intent.NeedsClarification {
+		t.Fatalf("one ambiguous task must not erase the clear task, got %#v", intent)
+	}
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 || plan.ReplyRequiredTaskCount != 2 {
+		t.Fatalf("clear answer and bounded clarification must both remain replyable, got %#v", plan)
+	}
+	if plan.TaskPlans[1].OutputKind != "text" || !plan.TaskPlans[1].ReplyRequired || plan.TaskPlans[1].SubIntent != "clarify" {
+		t.Fatalf("ambiguous task must not be collapsed into context_only, got %#v", plan.TaskPlans[1])
+	}
+}
+
+func TestBuildReplyPlanCollapsesDuplicateResolvedClarifyIntoBusinessTask(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "clarify",
+				ResolutionState: runtimeIntentResolutionResolvedFromContext,
+				Text:            "怎么办理入住？",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "checkin_process",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住？",
+				SourceRefs:      []string{"U1", "U2"},
+				NeedsKnowledge:  true,
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ActiveTaskCount != 2 || plan.ReplyRequiredTaskCount != 1 {
+		t.Fatalf("expected duplicate clarify to become context-only, got %#v", plan)
+	}
+	if got := plan.TaskPlans[0]; got.OutputKind != "context_only" || got.ReplyRequired || got.TaskID != "context-1" {
+		t.Fatalf("expected duplicate clarify context task, got %#v", got)
+	}
+	if got := plan.TaskPlans[1]; got.OutputKind != "text" || !got.ReplyRequired || got.TaskID != "task-1" || !reflect.DeepEqual(got.SourceRefs, []string{"U1", "U2"}) {
+		t.Fatalf("expected one replyable business task with merged sources, got %#v", got)
+	}
+}
+
+func TestBuildReplyPlanKeepsResolvedClarifyWhenSourceDoesNotOverlap(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "clarify",
+				ResolutionState: runtimeIntentResolutionResolvedFromContext,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "checkin_process",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U2"},
+				NeedsKnowledge:  true,
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 2 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("different source clarify must remain replyable, got %#v", plan)
+	}
+}
+
+func TestBuildReplyPlanKeepsResolvedClarifyWhenTextDoesNotMatch(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "clarify",
+				ResolutionState: runtimeIntentResolutionResolvedFromContext,
+				Text:            "停车怎么收费",
+				ResolvedText:    "停车怎么收费",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "checkin_process",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+				NeedsKnowledge:  true,
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 2 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("different clarify text must remain replyable, got %#v", plan)
+	}
+}
+
+func TestBuildReplyPlanKeepsAmbiguousOrUnresolvedClarify(t *testing.T) {
+	for _, resolution := range []string{runtimeIntentResolutionAmbiguous, runtimeIntentResolutionUnresolved} {
+		t.Run(resolution, func(t *testing.T) {
+			plan := buildReplyPlan(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info",
+				IntentTasks: []callbacks.IntentTaskTraceData{
+					{
+						Intent:          "interaction",
+						SubIntent:       "clarify",
+						ResolutionState: resolution,
+						Text:            "怎么办理入住",
+						ResolvedText:    "怎么办理入住",
+						SourceRefs:      []string{"U1"},
+					},
+					{
+						Intent:          "hotel_info",
+						SubIntent:       "checkin_process",
+						ResolutionState: runtimeIntentResolutionClear,
+						Text:            "怎么办理入住",
+						ResolvedText:    "怎么办理入住",
+						SourceRefs:      []string{"U1"},
+						NeedsKnowledge:  true,
+					},
+				},
+			}, callbacks.IntentPromptTraceData{})
+
+			if plan.ReplyRequiredTaskCount != 2 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+				t.Fatalf("%s clarify must remain replyable, got %#v", resolution, plan)
+			}
+		})
+	}
+}
+
+func TestBuildReplyPlanKeepsResolvedClarifyWithoutBusinessMatch(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "interaction",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:          "interaction",
+			SubIntent:       "clarify",
+			ResolutionState: runtimeIntentResolutionResolvedFromContext,
+			Text:            "怎么办理入住",
+			ResolvedText:    "怎么办理入住",
+			SourceRefs:      []string{"U1"},
+		}},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 1 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("standalone clarify must remain replyable, got %#v", plan)
+	}
+}
+
+func TestBuildReplyPlanKeepsResolvedClarifyWhenBusinessMatchIsAmbiguous(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "clarify",
+				ResolutionState: runtimeIntentResolutionResolvedFromContext,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "checkin_process",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+				NeedsKnowledge:  true,
+			},
+			{
+				Intent:          "service_request",
+				SubIntent:       "checkin_help",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "怎么办理入住",
+				ResolvedText:    "怎么办理入住",
+				SourceRefs:      []string{"U1"},
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 3 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("clarify with multiple matching business tasks must remain replyable, got %#v", plan)
+	}
+}
+
+func TestBuildReplyPlanKeepsPureInteractionReplyable(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "interaction",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "interaction", SubIntent: "social", Text: "谢谢你", SourceRefs: []string{"U1"},
+		}},
+	}, callbacks.IntentPromptTraceData{})
+	if plan.ActiveTaskCount != 1 || plan.ReplyRequiredTaskCount != 1 || len(plan.TaskPlans) != 1 {
+		t.Fatalf("unexpected pure interaction plan: %#v", plan)
+	}
+	task := plan.TaskPlans[0]
+	if task.TaskID != "task-1" || task.OutputKind != "text" || !task.ReplyRequired || task.ResolvedText != "谢谢你" {
+		t.Fatalf("expected pure interaction to remain replyable, got %#v", task)
+	}
+}
+
+func TestBuildReplyPlanKeepsIndependentIdentityQuestionBesideBusinessTask(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "ai_identity",
+				Objective:       "identity",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "你是谁",
+				ResolvedText:    "你是谁",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "parking",
+				Objective:       "price",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "停车收费吗",
+				ResolvedText:    "停车收费吗",
+				SourceRefs:      []string{"U1"},
+				NeedsKnowledge:  true,
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 2 || len(plan.TaskPlans) != 2 {
+		t.Fatalf("independent identity and parking questions must both remain replyable, got %#v", plan.TaskPlans)
+	}
+	for _, task := range plan.TaskPlans {
+		if task.OutputKind != "text" || !task.ReplyRequired {
+			t.Fatalf("both independent questions must require replies, got %#v", plan.TaskPlans)
+		}
+	}
+}
+
+func TestBuildReplyPlanStillCollapsesAttachedSocialContext(t *testing.T) {
+	plan := buildReplyPlan(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent:          "interaction",
+				SubIntent:       "thanks",
+				Objective:       "social",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "谢谢",
+				ResolvedText:    "谢谢",
+				SourceRefs:      []string{"U1"},
+			},
+			{
+				Intent:          "hotel_info",
+				SubIntent:       "parking",
+				Objective:       "price",
+				ResolutionState: runtimeIntentResolutionClear,
+				Text:            "停车收费吗",
+				ResolvedText:    "停车收费吗",
+				SourceRefs:      []string{"U1"},
+				NeedsKnowledge:  true,
+			},
+		},
+	}, callbacks.IntentPromptTraceData{})
+
+	if plan.ReplyRequiredTaskCount != 1 || plan.TaskPlans[0].OutputKind != "context_only" || plan.TaskPlans[1].OutputKind != "text" {
+		t.Fatalf("attached social text should remain context-only beside the business task, got %#v", plan.TaskPlans)
+	}
+	if !containsString(plan.TaskPlans[1].SourceRefs, "U1") {
+		t.Fatalf("business task should retain the attached source reference, got %#v", plan.TaskPlans[1])
 	}
 }
 
@@ -484,6 +1080,58 @@ func TestParseRuntimeIntentDetectJSONToleratesLooseListFields(t *testing.T) {
 	}
 	if len(parsed.MixedSubTasks) != 0 || len(parsed.IntentTasks) != 0 {
 		t.Fatalf("expected false mixedSubTasks/intentTasks to become empty lists, got %#v %#v", parsed.MixedSubTasks, parsed.IntentTasks)
+	}
+}
+
+func TestRuntimeIntentTaskResolvedTextAndSourceRefsAreBackwardCompatible(t *testing.T) {
+	parsed, err := parseRuntimeIntentDetectJSON(`{
+		"primaryIntent":"hotel_info",
+		"subIntent":"room_facilities",
+		"confidence":0.92,
+		"needsKnowledge":true,
+		"needsTool":false,
+		"needsResource":false,
+		"needsHumanRoute":false,
+		"needsClarification":false,
+		"resourceType":"",
+		"resourceAction":"",
+		"resourceActions":[],
+		"secondaryIntents":[],
+		"mixedSubTasks":[],
+		"intentTasks":[
+			{"intent":"hotel_info","subIntent":"room_facilities","objective":"availability","relationToPrevious":"reference_previous","resolutionState":"resolved_from_context","entities":[{"text":"麦田","type":"room_type"}],"text":"那麦田呢","resolvedText":"麦田房型有没有办公桌","sourceRefs":[{"ref":"U2","role":"primary"},{"ref":"U1","role":"context"}],"needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"明确回指"},
+			{"intent":"hotel_info","subIntent":"parking","text":"停车免费吗","resolvedText":"","sourceRefs":"U3","needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"旧输出兼容"}
+		],
+		"reason":"两个问题"
+	}`)
+	if err != nil {
+		t.Fatalf("expected compatible source ref forms to parse, got %v", err)
+	}
+	tasks := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks))
+	if len(tasks) != 2 {
+		t.Fatalf("expected two tasks, got %#v", tasks)
+	}
+	if tasks[0].Text != "那麦田呢" || tasks[0].ResolvedText != "麦田房型有没有办公桌" || len(tasks[0].SourceRefs) != 2 || tasks[0].SourceRefs[0] != "U2" || tasks[0].SourceRefs[1] != "U1" {
+		t.Fatalf("unexpected resolved task: %#v", tasks[0])
+	}
+	if tasks[0].Objective != "availability" || tasks[0].RelationToPrevious != "reference_previous" || tasks[0].ResolutionState != "resolved_from_context" || len(tasks[0].Entities) != 1 || tasks[0].Entities[0].Text != "麦田" || tasks[0].Entities[0].Type != "room_type" {
+		t.Fatalf("expected lightweight semantic fields to survive parsing, got %#v", tasks[0])
+	}
+	if tasks[1].ResolvedText != "停车免费吗" || len(tasks[1].SourceRefs) != 1 || tasks[1].SourceRefs[0] != "U3" {
+		t.Fatalf("expected legacy resolvedText fallback and single source ref, got %#v", tasks[1])
+	}
+	if tasks[1].Objective != "" || tasks[1].RelationToPrevious != "" || tasks[1].ResolutionState != "" || len(tasks[1].Entities) != 0 {
+		t.Fatalf("expected old Profile task without semantic fields to remain compatible, got %#v", tasks[1])
+	}
+}
+
+func TestParseRuntimeIntentDetectJSONRejectsUnknownOrTrailingOutput(t *testing.T) {
+	base := `{"primaryIntent":"interaction","subIntent":"chat","confidence":0.9,"needsKnowledge":false,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceType":"","resourceAction":"","resourceActions":[],"secondaryIntents":[],"mixedSubTasks":[],"intentTasks":[],"reason":"chat"}`
+	if _, err := parseRuntimeIntentDetectJSON(strings.Replace(base, `"reason":"chat"`, `"reason":"chat","unexpected":true`, 1)); err == nil {
+		t.Fatal("expected unknown intent field to be rejected")
+	}
+	if _, err := parseRuntimeIntentDetectJSON(base + " trailing"); err == nil {
+		t.Fatal("expected trailing output to be rejected")
 	}
 }
 
@@ -610,6 +1258,27 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
 	if !strings.Contains(prompt, "每个独立问题或动作都要在 intentTasks 中有对应任务") || !strings.Contains(prompt, "不能只分类最后一条") {
 		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
+	}
+	for _, expected := range []string{"[CURRENT_TURN_SOURCE_REFS]", "U1: 早餐有吗", "U2: 停车免费吗", "resolvedText", "sourceRefs[0]"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected source-bound intent prompt to contain %q, got %q", expected, prompt)
+		}
+	}
+}
+
+func TestDefaultRuntimeIntentContractDeclaresResolvedTextAndSourceRefs(t *testing.T) {
+	prompt := runtimeIntentDetectSystemPrompt()
+	for _, expected := range []string{
+		"text 保留客户当前轮对应的原表达",
+		"resolvedText 是供检索和回答使用的自包含问题",
+		"sourceRefs[0] 是主要问题来源",
+		`"resolvedText"`,
+		`"sourceRefs"`,
+		"字段必须全部出现",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("default intent contract missing %q", expected)
+		}
 	}
 }
 
@@ -1023,6 +1692,80 @@ func TestRuntimePipelineCheckinProcessAttachesMiniProgramTask(t *testing.T) {
 	}
 	if !strings.Contains(plan.Prompt, "结构化变量任务只由 Commit 阶段发送") {
 		t.Fatalf("expected checkin plan to preserve the commit boundary, got %q", plan.Prompt)
+	}
+}
+
+func TestRuntimePipelineDoesNotAttachMiniProgramForUngroundedCheckinTask(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "hybrid", NeedsKnowledge: true, Status: enums.StatusOk})
+	req := RunInput{
+		Conversation: models.Conversation{ID: 7},
+		UserMessage: models.Message{
+			MessageType: enums.IMMessageTypeVoice,
+			Content:     "active-answer-four.amr",
+			Payload:     `{"mediaText":"再一起问四个：你们有没有外卖机器人，外卖地址应该怎么填，布草是不是一客一换，携程抖音美团的价格是不是一样？","mediaSummary":"客户语音询问四项酒店信息。","mediaUnderstandingStatus":"understood"}`,
+		},
+	}
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SubIntent:                "delivery_robot",
+		IntentConfidence:         0.9,
+		ShouldReply:              true,
+		NeedsKnowledge:           true,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_info", SubIntent: "delivery_robot", Objective: "availability", RelationToPrevious: "independent", ResolutionState: "clear", Text: "你们有没有外卖机器人", ResolvedText: "你们有没有外卖机器人", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "delivery_address", Objective: "location", RelationToPrevious: "independent", ResolutionState: "clear", Text: "外卖地址应该怎么填", ResolvedText: "外卖地址应该怎么填", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "linen_policy", Objective: "policy", RelationToPrevious: "independent", ResolutionState: "clear", Text: "布草是不是一客一换", ResolvedText: "布草是不是一客一换", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "platform_price", Objective: "price", RelationToPrevious: "independent", ResolutionState: "clear", Text: "携程抖音美团的价格是不是一样", ResolvedText: "携程抖音美团的价格是不是一样", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method", RelationToPrevious: "independent", ResolutionState: "clear", Text: "怎么办理入住", ResolvedText: "怎么办理入住", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+		},
+		Reason: "模型错误附带了一个不属于当前语音的问题",
+	}})
+
+	if plan.Intent.NeedsResource || containsString(plan.Intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("ungrounded check-in task must not attach mini program, got %#v", plan.Intent)
+	}
+	for _, task := range plan.ReplyPlan.TaskPlans {
+		if task.ResourceAction == "provide_mini_program" || task.OutputKind == "resource" || task.SubIntent == "checkin_process" {
+			t.Fatalf("ungrounded check-in task must not survive into reply planning, got %#v", plan.ReplyPlan.TaskPlans)
+		}
+	}
+	if plan.ReplyPlan.ReplyRequiredTaskCount != 4 {
+		t.Fatalf("only the four grounded voice questions may remain, got %#v", plan.ReplyPlan.TaskPlans)
+	}
+}
+
+func TestRuntimePipelineCollapsesDuplicateClarifyAfterSemanticGate(t *testing.T) {
+	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "停车收费吗"}}
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SubIntent:                "parking",
+		IntentConfidence:         0.3,
+		ShouldReply:              true,
+		NeedsKnowledge:           true,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_info", SubIntent: "parking", Objective: "price", RelationToPrevious: "independent", ResolutionState: "clear", Text: "停车收费吗", ResolvedText: "停车收费吗", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "interaction", SubIntent: "clarify", Objective: "unknown", RelationToPrevious: "independent", ResolutionState: "clear", Text: "停车收费吗", ResolvedText: "停车收费吗", SourceRefs: []string{"U1"}},
+		},
+	}})
+
+	replyRequired := 0
+	contextOnly := 0
+	for _, task := range plan.ReplyPlan.TaskPlans {
+		if task.ReplyRequired {
+			replyRequired++
+		}
+		if task.OutputKind == "context_only" {
+			contextOnly++
+		}
+	}
+	if replyRequired != 1 || contextOnly != 1 {
+		t.Fatalf("duplicate clarify must collapse after the semantic gate, got %#v", plan.ReplyPlan.TaskPlans)
+	}
+	if plan.Intent.PrimaryIntent != "hotel_info" || plan.Intent.SubIntent != "parking" {
+		t.Fatalf("low confidence duplicate clarify must not replace the valid business task, got %#v", plan.Intent)
 	}
 }
 
@@ -1627,6 +2370,30 @@ func TestCurrentAndRecentMediaTextSkipsFailedVoiceUnderstanding(t *testing.T) {
 	}
 	if !strings.Contains(got, "米饭") || !strings.Contains(got, "炒菜") {
 		t.Fatalf("expected recent understood image context, got %q", got)
+	}
+}
+
+func TestCurrentAndRecentMediaTextPrefersCompleteMediaTextOverSummary(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeVoice,
+		Payload:     `{"mediaText":"早餐几点，停车免费吗，房间有几瓶矿泉水？","mediaSummary":"客户咨询早餐。","mediaUnderstandingStatus":"understood"}`,
+	}}
+
+	got := currentAndRecentMediaText(req, adapter.HistoryBuildResult{})
+	if got != "早餐几点，停车免费吗，房间有几瓶矿泉水？" {
+		t.Fatalf("expected complete mediaText without lossy summary, got %q", got)
+	}
+}
+
+func TestCurrentAndRecentMediaTextFallsBackToSummaryWhenMediaTextIsEmpty(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{
+		MessageType: enums.IMMessageTypeVoice,
+		Payload:     `{"mediaText":"","mediaSummary":"客户咨询早餐和停车。","mediaUnderstandingStatus":"understood"}`,
+	}}
+
+	got := currentAndRecentMediaText(req, adapter.HistoryBuildResult{})
+	if got != "客户咨询早餐和停车。" {
+		t.Fatalf("expected mediaSummary fallback, got %q", got)
 	}
 }
 

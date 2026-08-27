@@ -24,10 +24,6 @@ const aiReplyMediaContextWindow = 6 * time.Second
 const aiReplyBurstTextWindow = 8 * time.Second
 const standaloneOneReplyMaxAttempts = 3
 const deferredKnowledgeHandoffMaxAttempts = 3
-const generatedReplyProtocolMaxAttempts = 3
-const generatedReplyProtocolRetryBackoff = 500 * time.Millisecond
-
-type triggerReplyAttemptFunc func(context.Context, models.Conversation, models.Message, models.AIAgent) error
 
 func (s *aiReplyService) TriggerStandaloneOneReplyAsync(conversation models.Conversation, message models.Message) {
 	go func() {
@@ -133,84 +129,16 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 		timeout := s.resolveReplyTimeout(aiAgent)
 		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), timeout)
 		defer cancel()
-		attempts, err := s.triggerReplyWithProtocolRetry(
-			ctx,
-			conversation.ID,
-			message.ID,
-			timeout,
-			generatedReplyProtocolRetryBackoff,
-			s.TriggerReply,
-		)
+		err := s.TriggerReply(ctx, conversation, message, aiAgent)
 		if err != nil {
 			slog.Error("failed to trigger ai reply",
 				"requestId", message.RequestID,
 				"message_id", message.ID,
-				"attempts", attempts,
 				"timeout_ms", timeout.Milliseconds(),
 				"elapsed_ms", time.Since(startedAt).Milliseconds(),
 				"error", err)
 		}
 	}()
-}
-
-func (s *aiReplyService) triggerReplyWithProtocolRetry(
-	ctx context.Context,
-	conversationID int64,
-	messageID int64,
-	attemptTimeout time.Duration,
-	retryBackoff time.Duration,
-	run triggerReplyAttemptFunc,
-) (int, error) {
-	if run == nil {
-		return 0, fmt.Errorf("reply attempt runner is required")
-	}
-	attempts := 0
-	for attempt := 1; attempt <= generatedReplyProtocolMaxAttempts; attempt++ {
-		conversation, message, aiAgent, ok := s.resolveAsyncReplyAttempt(conversationID, messageID)
-		if !ok {
-			return attempts, nil
-		}
-		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		attempts++
-		err := run(attemptCtx, conversation, message, aiAgent)
-		cancel()
-		if err == nil {
-			return attempts, nil
-		}
-		if !applicationruntime.IsGeneratedReplyProtocolError(err) || attempt == generatedReplyProtocolMaxAttempts {
-			return attempts, err
-		}
-		slog.Warn("retry ai reply after generated reply protocol validation failed",
-			"requestId", message.RequestID,
-			"conversation_id", conversation.ID,
-			"message_id", message.ID,
-			"attempt", attempt,
-			"max_attempts", generatedReplyProtocolMaxAttempts,
-		)
-		if !sleepWithContext(ctx, time.Duration(attempt)*retryBackoff) {
-			return attempts, ctx.Err()
-		}
-	}
-	return attempts, nil
-}
-
-func (s *aiReplyService) resolveAsyncReplyAttempt(conversationID int64, messageID int64) (models.Conversation, models.Message, models.AIAgent, bool) {
-	conversation := svc.ConversationService.Get(conversationID)
-	message := svc.MessageService.Get(messageID)
-	if conversation == nil || message == nil || message.ConversationID != conversationID {
-		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
-	}
-	aiAgent, ok := s.resolveRuntimeAIAgent(*conversation)
-	if !ok || aiAgent.Status != enums.StatusOk {
-		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
-	}
-	if !svc.MessageService.CanSendAIReply(conversation.ID, message.RequestID, message.ID) {
-		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
-	}
-	if s.eligibility != nil && !s.eligibility.CanReply(*conversation, *message, aiAgent) {
-		return models.Conversation{}, models.Message{}, models.AIAgent{}, false
-	}
-	return *conversation, *message, aiAgent, true
 }
 
 func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) error {
@@ -462,7 +390,7 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 		if utils.IsStandaloneOneTextControl(item.MessageType, item.Content) {
 			continue
 		}
-		text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload))
+		text := runtimeBurstMessageText(item)
 		if text == "" {
 			continue
 		}
@@ -472,8 +400,25 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 		return message
 	}
 	merged := message
-	merged.Content = "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题；如果前面是图片、语音、文件，后面的短句通常是在追问它：\n" + strings.Join(parts, "\n")
+	merged.Content = utils.BuildRuntimeCustomerBurstEnvelope(parts)
 	return merged
+}
+
+func runtimeBurstMessageText(message models.Message) string {
+	if message.MessageType == enums.IMMessageTypeVoice {
+		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+		if strings.TrimSpace(status) != "understood" {
+			return ""
+		}
+		if text := strings.TrimSpace(mediaText); text != "" {
+			return text
+		}
+		if text := strings.TrimSpace(mediaSummary); text != "" {
+			return text
+		}
+		return ""
+	}
+	return strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
 }
 
 func (s *aiReplyService) latestOutboundMessageBefore(conversationID int64, sessionNo int, messageID int64) *models.Message {

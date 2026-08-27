@@ -162,6 +162,31 @@ func TestMergeRuntimeKnowledgeQueriesSkipsExplicitResourceTasks(t *testing.T) {
 	}
 }
 
+func TestResolvedIntentTaskTextReplacesEllipticalBurstQuery(t *testing.T) {
+	intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{
+		{
+			Intent:         "hotel_info",
+			SubIntent:      "room_facilities",
+			Text:           "那麦田呢？",
+			ResolvedText:   "麦田房型有没有办公桌？",
+			NeedsKnowledge: true,
+		},
+	}}
+	excluded := nonKnowledgeQueriesFromIntentTasks(intent)
+	for _, sourceQuery := range knowledgeSourceQueriesFromIntentTasks(intent) {
+		excluded = appendRuntimeKnowledgeQuery(excluded, sourceQuery)
+	}
+	got := mergeRuntimeKnowledgeQueries(
+		"客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 那麦田呢？",
+		knowledgeQueriesFromIntentTasks(intent),
+		excluded,
+	)
+	want := []string{"麦田房型有没有办公桌？"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("resolvedText must be the only retrieval query, got %#v", got)
+	}
+}
+
 func TestMergeRuntimeKnowledgeQueriesFiltersResourceWhenIntentMissedKnowledgeTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})
@@ -448,7 +473,37 @@ func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *t
 			},
 		},
 	}
-	gate := newTestKnowledgePolicyGate(retriever)
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		selections := make(map[string]map[string]knowledgeEvidenceLayerSelection, len(tasks))
+		for _, task := range tasks {
+			selectedIDs := make([]string, 0, 2)
+			for _, candidate := range task.Candidates {
+				content := strings.TrimSpace(candidate.Hit.Content)
+				if strings.Contains(content, "WiFi 名称是 LISI") || strings.Contains(content, "免费地上停车场") || strings.Contains(content, "纸巾在1020") {
+					selectedIDs = append(selectedIDs, candidate.CandidateID)
+				}
+			}
+			decision := knowledgeEvidenceDecisionDirectSingle
+			if len(selectedIDs) > 1 {
+				decision = knowledgeEvidenceDecisionDirectCombined
+			}
+			selections[task.TaskID] = map[string]knowledgeEvidenceLayerSelection{
+				knowledgeEvidenceLayerStore: {Decision: decision, SelectedCandidateIDs: selectedIDs},
+			}
+		}
+		return knowledgeEvidenceJudgeOutcome{
+			Applied:    true,
+			Selections: selections,
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+				SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+				Status:        "completed",
+			},
+		}
+	}}
+	gate := &KnowledgeAnswerabilityGate{
+		newRetriever: func(models.AIAgent) knowledgeContextRetriever { return retriever },
+		judge:        judge,
+	}
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request: newKnowledgePolicyRunInput("客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\nwifi和停车都发我一下\n房间没纸巾", "1"),
 		Summary: &RunResult{},
@@ -527,6 +582,34 @@ func newTestKnowledgePolicyGate(retriever knowledgeContextRetriever) *KnowledgeA
 	return &KnowledgeAnswerabilityGate{
 		newRetriever: func(aiAgent models.AIAgent) knowledgeContextRetriever {
 			return retriever
+		},
+		judge: deterministicTestKnowledgeEvidenceJudge{},
+	}
+}
+
+type deterministicTestKnowledgeEvidenceJudge struct{}
+
+func (deterministicTestKnowledgeEvidenceJudge) JudgeBatch(_ context.Context, _ RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+	selections := make(map[string]map[string]knowledgeEvidenceLayerSelection, len(tasks))
+	for _, task := range tasks {
+		layers := make(map[string]knowledgeEvidenceLayerSelection)
+		for _, candidate := range task.Candidates {
+			if _, exists := layers[candidate.Layer]; exists {
+				continue
+			}
+			layers[candidate.Layer] = knowledgeEvidenceLayerSelection{
+				Decision:             knowledgeEvidenceDecisionDirectSingle,
+				SelectedCandidateIDs: []string{candidate.CandidateID},
+			}
+		}
+		selections[task.TaskID] = layers
+	}
+	return knowledgeEvidenceJudgeOutcome{
+		Applied:    true,
+		Selections: selections,
+		Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+			SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+			Status:        "completed",
 		},
 	}
 }

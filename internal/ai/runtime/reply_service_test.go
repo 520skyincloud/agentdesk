@@ -8,6 +8,7 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/utils"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"github.com/glebarez/sqlite"
@@ -282,6 +283,111 @@ func TestMergeRecentCustomerBurstMessageKeepsMediaContext(t *testing.T) {
 	}
 	if !strings.Contains(merged.Content, "按顺序合并理解") {
 		t.Fatalf("expected explicit burst instruction, got: %s", merged.Content)
+	}
+}
+
+func TestMergeRecentCustomerBurstMessageKeepsTextAndVoiceInEitherOrder(t *testing.T) {
+	testCases := []struct {
+		name           string
+		conversationID int64
+		first          models.Message
+		second         models.Message
+		voiceText      string
+		otherText      string
+	}{
+		{
+			name:           "text_then_voice",
+			conversationID: 10014,
+			first: models.Message{
+				ClientMsgID: "text-first",
+				MessageType: enums.IMMessageTypeText,
+				Content:     "早餐几点",
+			},
+			second: models.Message{
+				ClientMsgID: "voice-last",
+				MessageType: enums.IMMessageTypeVoice,
+				Content:     "voice-last.amr",
+				Payload:     `{"mediaText":"停车免费吗","mediaSummary":"客户询问停车。","mediaUnderstandingStatus":"understood"}`,
+			},
+			voiceText: "停车免费吗",
+			otherText: "早餐几点",
+		},
+		{
+			name:           "voice_then_text",
+			conversationID: 10015,
+			first: models.Message{
+				ClientMsgID: "voice-first",
+				MessageType: enums.IMMessageTypeVoice,
+				Content:     "voice-first.amr",
+				Payload:     `{"mediaText":"早餐几点","mediaSummary":"客户询问早餐。","mediaUnderstandingStatus":"understood"}`,
+			},
+			second: models.Message{
+				ClientMsgID: "text-last",
+				MessageType: enums.IMMessageTypeText,
+				Content:     "房间有几瓶矿泉水，免费吗",
+			},
+			voiceText: "早餐几点",
+			otherText: "房间有几瓶矿泉水，免费吗",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			setupRuntimeReplyMessageTestDB(t)
+			service := newAIReplyService()
+			now := time.Now()
+			firstAt := now
+			secondAt := now.Add(2 * time.Second)
+
+			first := testCase.first
+			first.ID = 1
+			first.ConversationID = testCase.conversationID
+			first.SessionNo = 1
+			first.SeqNo = 1
+			first.SenderType = enums.IMSenderTypeCustomer
+			first.SentAt = &firstAt
+
+			second := testCase.second
+			second.ID = 2
+			second.ConversationID = testCase.conversationID
+			second.SessionNo = 1
+			second.SeqNo = 2
+			second.SenderType = enums.IMSenderTypeCustomer
+			second.SentAt = &secondAt
+
+			for _, item := range []models.Message{first, second} {
+				if err := sqls.DB().Create(&item).Error; err != nil {
+					t.Fatalf("create message %s: %v", item.ClientMsgID, err)
+				}
+			}
+
+			merged := service.mergeRecentCustomerBurstMessage(testCase.conversationID, second)
+			if !utils.IsRuntimeCustomerBurstEnvelope(merged.Content) {
+				t.Fatalf("expected machine-marked burst envelope, got %q", merged.Content)
+			}
+			if !strings.Contains(merged.Content, testCase.voiceText) || !strings.Contains(merged.Content, testCase.otherText) {
+				t.Fatalf("expected merged burst to preserve text and voice in order, got %q", merged.Content)
+			}
+			if count := strings.Count(merged.Content, testCase.voiceText); count != 1 {
+				t.Fatalf("expected voice transcript exactly once, got %d occurrences in %q", count, merged.Content)
+			}
+			if strings.Contains(merged.Content, ".amr") || strings.Contains(merged.Content, "语音摘要是") {
+				t.Fatalf("expected merged burst to use the complete transcript without filename or summary, got %q", merged.Content)
+			}
+		})
+	}
+}
+
+func TestRuntimeBurstMessageTextRejectsUnfinishedVoice(t *testing.T) {
+	for _, status := range []string{"", "pending", "failed", "empty"} {
+		message := models.Message{
+			MessageType: enums.IMMessageTypeVoice,
+			Content:     "voice.amr",
+			Payload:     `{"mediaText":"早餐几点","mediaUnderstandingStatus":"` + status + `"}`,
+		}
+		if got := runtimeBurstMessageText(message); got != "" {
+			t.Fatalf("status %q must not enter a burst, got %q", status, got)
+		}
 	}
 }
 

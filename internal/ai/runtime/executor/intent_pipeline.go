@@ -30,7 +30,7 @@ func buildRuntimePipelinePlan(req RunInput, history adapter.HistoryBuildResult) 
 }
 
 func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) runtimePipelinePlan {
-	currentText := strings.TrimSpace(req.UserMessage.Content)
+	currentText := currentRuntimeIntentSemanticText(req)
 	intent, promptPack, configured := detectRuntimeIntentWithModel(ctx, req, history, detector)
 	if !configured {
 		intent = intentDetectUnavailableIntent("IntentDetect model unavailable; entering interaction")
@@ -187,7 +187,7 @@ func buildContextTrace(req RunInput, history adapter.HistoryBuildResult, intent 
 		mediaCount++
 	}
 	return callbacks.ContextBuildTraceData{
-		CurrentTurn:             preview(req.UserMessage.Content, 240),
+		CurrentTurn:             preview(currentRuntimeIntentSemanticText(req), 240),
 		RecentRawMessageCount:   len(history.Messages),
 		CompressedMemorySource:  history.MemorySource,
 		CompressedMemoryCount:   history.MemoryItemCount,
@@ -236,22 +236,36 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 		}
 	}
 	style := "自然微信口吻，1-3句"
-	if len(taskPlans) > 1 {
+	replyRequiredTaskCount := countReplyRequiredTasks(taskPlans)
+	if replyRequiredTaskCount > 1 {
 		goal = "按 IntentDetect 子任务顺序分别处理当前轮每个任务"
 		style = "自然微信口吻；多任务可以分句或分行逐项回复，不强压成一句"
 		doNot = append(doNot, "不要只答主意图或最后一个问题")
 	}
-	return callbacks.ReplyPlanTraceData{Intent: intent.PrimaryIntent, AnswerGoal: goal, UseContext: useContext, DoNot: doNot, Style: style, TaskPlans: taskPlans}
+	return callbacks.ReplyPlanTraceData{
+		Intent:                 intent.PrimaryIntent,
+		AnswerGoal:             goal,
+		UseContext:             useContext,
+		DoNot:                  doNot,
+		Style:                  style,
+		ActiveTaskCount:        len(taskPlans),
+		ReplyRequiredTaskCount: replyRequiredTaskCount,
+		TaskPlans:              taskPlans,
+	}
 }
 
 func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbacks.ReplyPlanTraceData) string {
 	if len(prompt.Instructions) == 0 {
 		return ""
 	}
+	structuredOutput := replyPlanRequiresStructuredOutput(plan, false)
 	var b strings.Builder
 	b.WriteString("【当前意图专项规则】\n")
 	for _, item := range prompt.Instructions {
 		item = strings.TrimSpace(item)
+		if structuredOutput {
+			item = normalizeStructuredReplyPromptText(item)
+		}
 		if item != "" {
 			b.WriteString("- ")
 			b.WriteString(item)
@@ -265,7 +279,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 		generateTasks := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plan.TaskPlans))
 		hiddenCommitTaskCount := 0
 		for _, task := range plan.TaskPlans {
-			if task.Output == "knowledge_text_reply" || task.Intent == "hotel_info" {
+			if replyTaskRequiresText(task) {
 				generateTasks = append(generateTasks, task)
 				continue
 			}
@@ -276,9 +290,15 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 		b.WriteString("【多任务回复计划】\n")
 		for i, task := range generateTasks {
 			b.WriteString("- 任务")
-			b.WriteString(strconv.Itoa(i + 1))
+			if strings.TrimSpace(task.TaskID) != "" {
+				b.WriteString(task.TaskID)
+			} else {
+				b.WriteString(strconv.Itoa(i + 1))
+			}
 			b.WriteString("：")
-			if strings.TrimSpace(task.Text) != "" {
+			if strings.TrimSpace(task.ResolvedText) != "" {
+				b.WriteString(task.ResolvedText)
+			} else if strings.TrimSpace(task.Text) != "" {
 				b.WriteString(task.Text)
 				b.WriteString("；")
 			}
@@ -302,7 +322,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 			b.WriteString("- 本阶段没有需要生成文本的知识任务。\n")
 		}
 		if len(generateTasks) > 1 {
-			b.WriteString("多个文本任务可以拆成多条客户消息；不同文本消息之间必须用 <<NEXT_MESSAGE>> 单独一行分隔，Commit 阶段会按该标记分别发送。\n")
+			b.WriteString("多个文本任务必须逐题完整回答；具体输出格式以后续任务输出契约为准，不得自行合并、遗漏或增加任务。\n")
 		}
 		if hiddenCommitTaskCount > 0 {
 			b.WriteString("另有结构化变量任务已登记给 Commit 阶段，本阶段不要写变量名称、发送状态或后续动作。\n")
@@ -322,8 +342,16 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 	if len(plan.DoNot) > 0 {
 		b.WriteString("禁止：" + strings.Join(plan.DoNot, "；") + "\n")
 	}
-	b.WriteString("风格：" + plan.Style)
-	return strings.TrimSpace(b.String())
+	style := plan.Style
+	if structuredOutput {
+		style = normalizeStructuredReplyPromptText(style)
+	}
+	b.WriteString("风格：" + style)
+	result := strings.TrimSpace(b.String())
+	if structuredOutput {
+		result = normalizeStructuredReplyPromptText(result)
+	}
+	return result
 }
 
 func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTaskPlanTraceData {
@@ -331,14 +359,31 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 	add := func(task callbacks.ReplyTaskPlanTraceData) {
 		task.Intent = strings.TrimSpace(task.Intent)
 		task.SubIntent = strings.TrimSpace(task.SubIntent)
-		task.Text = strings.TrimSpace(task.Text)
+		task.Objective = semanticGateNormalizeObjective(task.Objective)
+		task.RelationToPrevious = semanticGateNormalizeRelation(task.RelationToPrevious)
+		task.ResolutionState = semanticGateNormalizeResolution(task.ResolutionState)
+		task.OriginalText = strings.TrimSpace(task.OriginalText)
+		if task.OriginalText == "" {
+			task.OriginalText = strings.TrimSpace(task.Text)
+		}
+		task.ResolvedText = strings.TrimSpace(task.ResolvedText)
+		if task.ResolvedText == "" {
+			task.ResolvedText = task.OriginalText
+		}
+		task.Text = task.ResolvedText
+		task.SourceRefs = normalizeRuntimeIntentSourceRefs(task.SourceRefs)
 		task.Output = strings.TrimSpace(task.Output)
 		task.ResourceAction = strings.TrimSpace(task.ResourceAction)
+		if task.OutputKind == "" {
+			task.OutputKind = replyTaskOutputKind(task)
+		}
+		task.ReplyRequired = task.OutputKind == "text"
 		if task.Intent == "" && task.Output == "" {
 			return
 		}
-		for _, existing := range tasks {
-			if existing.Intent == task.Intent && existing.SubIntent == task.SubIntent && existing.Text == task.Text && existing.Output == task.Output && existing.ResourceAction == task.ResourceAction {
+		for index, existing := range tasks {
+			if existing.Intent == task.Intent && existing.SubIntent == task.SubIntent && existing.Objective == task.Objective && existing.RelationToPrevious == task.RelationToPrevious && existing.ResolutionState == task.ResolutionState && existing.OriginalText == task.OriginalText && existing.ResolvedText == task.ResolvedText && existing.Output == task.Output && existing.ResourceAction == task.ResourceAction {
+				tasks[index].SourceRefs = mergeReplyTaskSourceRefs(existing.SourceRefs, task.SourceRefs)
 				return
 			}
 		}
@@ -383,7 +428,7 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 			ResourceAction: intent.ResourceAction,
 		})
 	}
-	return tasks
+	return finalizeReplyTaskPlans(tasks)
 }
 
 func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.ReplyTaskPlanTraceData {
@@ -398,12 +443,191 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
-		Intent:         task.Intent,
-		SubIntent:      task.SubIntent,
-		Text:           task.Text,
-		Output:         output,
-		ResourceAction: task.ResourceAction,
+		Intent:             task.Intent,
+		SubIntent:          task.SubIntent,
+		Objective:          task.Objective,
+		RelationToPrevious: task.RelationToPrevious,
+		ResolutionState:    task.ResolutionState,
+		Text:               task.ResolvedText,
+		OriginalText:       task.Text,
+		ResolvedText:       task.ResolvedText,
+		SourceRefs:         append([]string(nil), task.SourceRefs...),
+		Output:             output,
+		ResourceAction:     task.ResourceAction,
 	}
+}
+
+func finalizeReplyTaskPlans(tasks []callbacks.ReplyTaskPlanTraceData) []callbacks.ReplyTaskPlanTraceData {
+	hasBusinessTask := false
+	for _, task := range tasks {
+		if task.Intent != "interaction" {
+			hasBusinessTask = true
+			break
+		}
+	}
+	if hasBusinessTask {
+		for index := range tasks {
+			target := -1
+			if shouldCollapseInteractionTaskIntoContext(tasks[index]) {
+				target = nearestBusinessReplyTaskIndex(tasks, index)
+			} else if shouldCollapseDuplicateClarifyTask(tasks[index]) {
+				target = matchingBusinessReplyTaskIndex(tasks, index)
+			}
+			if target < 0 {
+				continue
+			}
+			tasks[index].Output = "context_only"
+			tasks[index].OutputKind = "context_only"
+			tasks[index].ReplyRequired = false
+			tasks[target].SourceRefs = mergeReplyTaskSourceRefs(tasks[target].SourceRefs, tasks[index].SourceRefs)
+		}
+	}
+	taskIndex := 0
+	contextIndex := 0
+	for index := range tasks {
+		if tasks[index].OutputKind == "context_only" {
+			contextIndex++
+			tasks[index].TaskID = "context-" + strconv.Itoa(contextIndex)
+			continue
+		}
+		taskIndex++
+		tasks[index].TaskID = "task-" + strconv.Itoa(taskIndex)
+	}
+	return tasks
+}
+
+func shouldCollapseInteractionTaskIntoContext(task callbacks.ReplyTaskPlanTraceData) bool {
+	if task.Intent != "interaction" {
+		return false
+	}
+	if task.SubIntent == "clarify" || task.ResolutionState == runtimeIntentResolutionAmbiguous || task.ResolutionState == runtimeIntentResolutionUnresolved {
+		return false
+	}
+	if strings.TrimSpace(task.ResourceAction) != "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(task.Objective), "identity") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "correction", "social", "thanks", "thank_you", "greeting", "farewell", "acknowledgement", "acknowledgment", "frustration", "insult_complaint":
+		return true
+	default:
+		return strings.EqualFold(strings.TrimSpace(task.Objective), "social")
+	}
+}
+
+func shouldCollapseDuplicateClarifyTask(task callbacks.ReplyTaskPlanTraceData) bool {
+	return task.Intent == "interaction" &&
+		task.SubIntent == "clarify" &&
+		task.ResolutionState != runtimeIntentResolutionAmbiguous &&
+		task.ResolutionState != runtimeIntentResolutionUnresolved
+}
+
+func matchingBusinessReplyTaskIndex(tasks []callbacks.ReplyTaskPlanTraceData, sourceIndex int) int {
+	if sourceIndex < 0 || sourceIndex >= len(tasks) {
+		return -1
+	}
+	source := tasks[sourceIndex]
+	match := -1
+	for index, task := range tasks {
+		if index == sourceIndex || task.Intent == "interaction" || !replyTaskSourceRefsOverlap(source.SourceRefs, task.SourceRefs) || !replyTaskTextsOverlap(source, task) {
+			continue
+		}
+		if match >= 0 {
+			return -1
+		}
+		match = index
+	}
+	return match
+}
+
+func replyTaskSourceRefsOverlap(left []string, right []string) bool {
+	for _, leftRef := range normalizeRuntimeIntentSourceRefs(left) {
+		for _, rightRef := range normalizeRuntimeIntentSourceRefs(right) {
+			if leftRef == rightRef {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func replyTaskTextsOverlap(left callbacks.ReplyTaskPlanTraceData, right callbacks.ReplyTaskPlanTraceData) bool {
+	leftTexts := normalizedReplyTaskTexts(left)
+	rightTexts := normalizedReplyTaskTexts(right)
+	for text := range leftTexts {
+		if rightTexts[text] {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedReplyTaskTexts(task callbacks.ReplyTaskPlanTraceData) map[string]bool {
+	ret := map[string]bool{}
+	for _, text := range []string{task.OriginalText, task.ResolvedText} {
+		if normalized := normalizeRuntimeKnowledgeQuery(text); normalized != "" {
+			ret[normalized] = true
+		}
+	}
+	return ret
+}
+
+func nearestBusinessReplyTaskIndex(tasks []callbacks.ReplyTaskPlanTraceData, sourceIndex int) int {
+	for distance := 1; distance < len(tasks); distance++ {
+		if right := sourceIndex + distance; right < len(tasks) && tasks[right].Intent != "interaction" {
+			return right
+		}
+		if left := sourceIndex - distance; left >= 0 && tasks[left].Intent != "interaction" {
+			return left
+		}
+	}
+	return -1
+}
+
+func mergeReplyTaskSourceRefs(primary []string, context []string) []string {
+	ret := append([]string(nil), primary...)
+	for _, ref := range context {
+		ret = appendIfMissing(ret, strings.TrimSpace(ref))
+	}
+	return normalizeRuntimeIntentSourceRefs(ret)
+}
+
+func replyTaskOutputKind(task callbacks.ReplyTaskPlanTraceData) string {
+	if task.Output == "structured_resource_commit" || task.Intent == "hotel_variable" || strings.TrimSpace(task.ResourceAction) != "" {
+		return "resource"
+	}
+	if task.Output == "human_route_confirmation_or_dispatch" || task.Intent == "human_complaint_risk" {
+		return "handoff"
+	}
+	return "text"
+}
+
+func countReplyRequiredTasks(tasks []callbacks.ReplyTaskPlanTraceData) int {
+	count := 0
+	for _, task := range tasks {
+		if replyTaskRequiresText(task) {
+			count++
+		}
+	}
+	return count
+}
+
+func replyTaskRequiresText(task callbacks.ReplyTaskPlanTraceData) bool {
+	switch strings.TrimSpace(task.OutputKind) {
+	case "text":
+		return true
+	case "resource", "handoff", "context_only":
+		return false
+	}
+	if task.ReplyRequired {
+		return true
+	}
+	if task.Output == "structured_resource_commit" || task.Output == "human_route_confirmation_or_dispatch" {
+		return false
+	}
+	return task.Output == "text_reply" || task.Output == "knowledge_text_reply" || task.Intent == "hotel_info" || task.Intent == "interaction"
 }
 
 func expectedIntentResources(intent callbacks.IntentTraceData) []string {
@@ -449,7 +673,7 @@ func isMediaOnlyWithoutActionableIntent(message models.Message) bool {
 		return false
 	}
 	mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
-	text := strings.TrimSpace(strings.Join([]string{mediaText, mediaSummary}, " "))
+	text := preferredMediaUnderstandingText(mediaText, mediaSummary)
 	if status != "understood" {
 		return false
 	}
@@ -470,7 +694,7 @@ func isActionableMediaMessage(message models.Message) bool {
 	if status != "understood" {
 		return false
 	}
-	return replyengine.MediaUnderstandingHasActionableIntent(strings.Join([]string{mediaText, mediaSummary}, " "))
+	return replyengine.MediaUnderstandingHasActionableIntent(preferredMediaUnderstandingText(mediaText, mediaSummary))
 }
 
 func hasRecentMediaContext(history adapter.HistoryBuildResult) bool {
@@ -486,43 +710,22 @@ func hasRecentMediaContext(history adapter.HistoryBuildResult) bool {
 
 func latestBurstMessageText(content string) string {
 	content = strings.TrimSpace(content)
-	if content == "" || !strings.Contains(content, "客人刚才连续发了几条消息") {
+	if content == "" || !utils.IsRuntimeCustomerBurstEnvelope(content) {
 		return content
 	}
-	lines := strings.Split(content, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		if idx := strings.Index(line, "]"); idx >= 0 && idx+1 < len(line) {
-			line = strings.TrimSpace(line[idx+1:])
-		}
-		if line != "" {
-			return line
-		}
+	items := utils.RuntimeCustomerBurstItems(content)
+	if len(items) == 0 {
+		return content
 	}
-	return content
+	return utils.RuntimeCustomerBurstItemText(items[len(items)-1])
 }
 
 func currentTurnDisplayText(content string) string {
 	content = strings.TrimSpace(content)
-	if content == "" || !strings.Contains(content, "客人刚才连续发了几条消息") {
+	if content == "" || !utils.IsRuntimeCustomerBurstEnvelope(content) {
 		return content
 	}
-	lines := strings.Split(content, "\n")
-	body := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "客人刚才连续发了几条消息") {
-			continue
-		}
-		body = append(body, line)
-	}
-	if len(body) == 0 {
-		return content
-	}
-	return "本轮客户连续消息（按时间顺序）：\n" + strings.Join(body, "\n")
+	return utils.RuntimeCustomerBurstDisplayText(content)
 }
 
 func hasAdjacentTextMediaQuestion(req RunInput, history adapter.HistoryBuildResult) bool {

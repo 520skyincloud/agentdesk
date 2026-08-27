@@ -331,3 +331,60 @@ func TestExecuteIntentHumanRouteSkipsCustomerWithAutoHandoffDisabled(t *testing.
 		t.Fatal("expected account-scoped setting to remain disabled")
 	}
 }
+
+func TestDeferMixedExplicitIntentHumanRouteKeepsAnswerableTasks(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:   "human_complaint_risk",
+		SubIntent:       "explicit_handoff",
+		NeedsHumanRoute: true,
+	}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+		{TaskID: "task-2", Intent: "human_complaint_risk", SubIntent: "explicit_handoff", OutputKind: "handoff"},
+	}}
+
+	deferred := deferMixedExplicitIntentHumanRoute(RunInput{UserMessage: models.Message{Content: "早餐几点，另外转人工"}}, collector)
+	if !deferred {
+		t.Fatal("expected explicit handoff to wait until the answerable task is committed")
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-2" {
+		t.Fatalf("unexpected deferred handoff trace: %#v", trace)
+	}
+	if !actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+		t.Fatalf("expected human route in the action ledger: %#v", collector.Data.ActionLedger)
+	}
+}
+
+func TestDeferMixedExplicitIntentHumanRouteKeepsPureAndRejectedRoutesImmediate(t *testing.T) {
+	tests := []struct {
+		name   string
+		intent callbacks.IntentTraceData
+		tasks  []callbacks.ReplyTaskPlanTraceData
+	}{
+		{
+			name:   "pure explicit handoff",
+			intent: callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", SubIntent: "explicit_handoff", NeedsHumanRoute: true},
+			tasks:  []callbacks.ReplyTaskPlanTraceData{{TaskID: "task-1", Intent: "human_complaint_risk", SubIntent: "explicit_handoff", OutputKind: "handoff"}},
+		},
+		{
+			name:   "answer rejected remains immediate",
+			intent: callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", SubIntent: "answer_rejected", NeedsHumanRoute: true},
+			tasks: []callbacks.ReplyTaskPlanTraceData{
+				{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},
+				{TaskID: "task-2", Intent: "human_complaint_risk", SubIntent: "answer_rejected", OutputKind: "handoff"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = tt.intent
+			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: tt.tasks}
+			if deferMixedExplicitIntentHumanRoute(RunInput{}, collector) {
+				t.Fatal("expected the route to remain immediate")
+			}
+		})
+	}
+}

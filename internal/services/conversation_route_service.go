@@ -391,7 +391,9 @@ func (s *conversationRouteService) ClaimExpiredManualRoute(state models.Conversa
 	if state.ID <= 0 || state.ManualExpireAt == nil || state.ManualExpireAt.After(now) || !routeStatusBlocksAIReply(state.RouteStatus) {
 		return nil, false, nil
 	}
-	leaseExpireAt := now.Add(time.Minute)
+	// manual_expire_at is stored as DATETIME without fractional seconds. Return
+	// the exact persisted precision so the follow-up CAS can match on MySQL.
+	leaseExpireAt := now.Add(time.Minute).Truncate(time.Second)
 	result := sqls.DB().Model(&models.ConversationRouteState{}).
 		Where("id = ? AND route_status = ? AND need_human_follow_up = ? AND manual_expire_at = ? AND manual_expire_at <= ?", state.ID, state.RouteStatus, state.NeedHumanFollowUp, *state.ManualExpireAt, now).
 		Updates(map[string]any{

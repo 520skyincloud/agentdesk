@@ -235,10 +235,13 @@ func intentContextMatches(config models.ReplyIntentConfig, req RunInput, history
 
 func currentAndRecentMediaText(req RunInput, history adapter.HistoryBuildResult) string {
 	parts := make([]string, 0)
-	if isRuntimeMediaMessage(req.UserMessage.MessageType) {
+	coveredCurrentTurnSources := runtimeIntentCurrentTurnSourceSet(req)
+	if isRuntimeMediaMessage(req.UserMessage.MessageType) && !utils.IsRuntimeCustomerBurstEnvelope(req.UserMessage.Content) {
 		mediaText, mediaSummary, status := utilsMediaUnderstanding(req.UserMessage)
 		if strings.TrimSpace(status) == "understood" {
-			parts = append(parts, mediaText, mediaSummary)
+			if text := preferredMediaUnderstandingText(mediaText, mediaSummary); text != "" {
+				parts = appendIfMissing(parts, text)
+			}
 		}
 	}
 	for i := len(history.RawItems) - 1; i >= 0 && len(parts) < 8; i-- {
@@ -250,9 +253,60 @@ func currentAndRecentMediaText(req RunInput, history adapter.HistoryBuildResult)
 		if strings.TrimSpace(status) != "understood" {
 			continue
 		}
-		parts = append(parts, mediaText, mediaSummary)
+		if runtimeIntentMessageCoveredByCurrentTurn(item, coveredCurrentTurnSources) {
+			continue
+		}
+		if text := preferredMediaUnderstandingText(mediaText, mediaSummary); text != "" {
+			parts = appendIfMissing(parts, text)
+		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func runtimeIntentCurrentTurnSourceSet(req RunInput) map[string]struct{} {
+	if !utils.IsRuntimeCustomerBurstEnvelope(req.UserMessage.Content) {
+		return nil
+	}
+	ret := make(map[string]struct{})
+	for _, source := range currentTurnIntentSourceTexts(currentRuntimeIntentSemanticText(req)) {
+		if normalized := normalizeRuntimeIntentSourceMatchText(source); normalized != "" {
+			ret[normalized] = struct{}{}
+		}
+	}
+	return ret
+}
+
+func runtimeIntentMessageCoveredByCurrentTurn(message models.Message, covered map[string]struct{}) bool {
+	if len(covered) == 0 {
+		return false
+	}
+	text := ""
+	if message.MessageType == enums.IMMessageTypeVoice {
+		mediaText, mediaSummary, status := utilsMediaUnderstanding(message)
+		if strings.TrimSpace(status) != "understood" {
+			return false
+		}
+		text = preferredMediaUnderstandingText(mediaText, mediaSummary)
+	} else {
+		text = utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload)
+	}
+	_, exists := covered[normalizeRuntimeIntentSourceMatchText(text)]
+	return exists
+}
+
+func normalizeRuntimeIntentSourceMatchText(text string) string {
+	lines := strings.FieldsFunc(strings.TrimSpace(text), func(r rune) bool { return r == '\n' || r == '\r' })
+	for index := range lines {
+		lines[index] = strings.TrimSpace(lines[index])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func preferredMediaUnderstandingText(mediaText string, mediaSummary string) string {
+	if text := strings.TrimSpace(mediaText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(mediaSummary)
 }
 
 func utilsMediaUnderstanding(message models.Message) (string, string, string) {

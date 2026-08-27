@@ -245,17 +245,8 @@ func buildRuntimeMessageText(item *models.Message) string {
 	}
 	text := utils.BuildRuntimeMessageTextWithPayload(item.MessageType, item.Content, item.Payload)
 	_, _, mediaStatus := utils.RuntimeMediaUnderstandingFromPayload(item.Payload)
-	if isMediaMessageType(item.MessageType) && mediaStatus != "" && mediaStatus != "understood" {
-		return strings.TrimSpace(text)
+	if item.MessageType == enums.IMMessageTypeVoice && mediaStatus != "understood" {
+		return ""
 	}
 	return strings.TrimSpace(text)
-}
-
-func isMediaMessageType(messageType enums.IMMessageType) bool {
-	switch messageType {
-	case enums.IMMessageTypeImage, enums.IMMessageTypeVoice, enums.IMMessageTypeVideo, enums.IMMessageTypeAttachment, enums.IMMessageTypeGIF:
-		return true
-	default:
-		return false
-	}
 }

@@ -87,6 +87,56 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 	return true, nil
 }
 
+func deferMixedExplicitIntentHumanRoute(req RunInput, collector *callbacks.RuntimeTraceCollector) bool {
+	if collector == nil {
+		return false
+	}
+	intent := collector.Data.Pipeline.Intent
+	if !intent.NeedsHumanRoute || strings.TrimSpace(intent.SubIntent) != "explicit_handoff" || isEmergencySafetyHandoff(intent) {
+		return false
+	}
+
+	plan := collector.Data.Pipeline.ReplyPlan
+	hasNonHandoffTask := false
+	handoffTaskIDs := make([]string, 0)
+	for _, task := range plan.TaskPlans {
+		switch strings.TrimSpace(task.OutputKind) {
+		case "text", "resource":
+			hasNonHandoffTask = true
+		case "handoff":
+			if strings.TrimSpace(task.SubIntent) != "explicit_handoff" {
+				return false
+			}
+			handoffTaskIDs = appendIfMissing(handoffTaskIDs, strings.TrimSpace(task.TaskID))
+		}
+	}
+	if !hasNonHandoffTask {
+		return false
+	}
+
+	reason := buildIntentHumanRouteReason(intent, req.UserMessage.Content)
+	judgeTrace := collector.Data.Pipeline.EvidenceJudge
+	judgeTrace.DeferredHandoff = true
+	if strings.TrimSpace(judgeTrace.DeferredHandoffReason) == "" {
+		judgeTrace.DeferredHandoffReason = reason
+	}
+	for _, taskID := range handoffTaskIDs {
+		if taskID != "" {
+			judgeTrace.DeferredTaskIDs = appendIfMissing(judgeTrace.DeferredTaskIDs, taskID)
+		}
+	}
+	collector.SetKnowledgeEvidenceJudge(judgeTrace)
+
+	ledger := collector.Data.ActionLedger
+	ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
+		Action: "human_route",
+		Status: "deferred",
+		Reason: reason,
+	})
+	collector.SetActionLedger(ledger)
+	return true
+}
+
 func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (bool, error) {
 	if strings.HasPrefix(strings.TrimSpace(req.UserMessage.RequestID), "manual_resume_") {
 		return false, nil

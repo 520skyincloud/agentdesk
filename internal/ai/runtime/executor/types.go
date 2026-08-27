@@ -64,12 +64,17 @@ type RunResult struct {
 	handoffDispatchStatus     string
 }
 
-// ModelUsageCall preserves one upstream model response. It is intentionally
+// ModelUsageCall preserves one upstream model call. It is intentionally
 // separate from the aggregate counters used by run diagnostics so billing can
 // meter retries without double counting the run total.
 type ModelUsageCall struct {
-	PromptTokens       int
-	CompletionTokens   int
-	CachedPromptTokens int
-	ReasoningTokens    int
+	PromptTokens          int
+	CompletionTokens      int
+	CachedPromptTokens    int
+	ReasoningTokens       int
+	HasUsage              bool
+	CallSequence          int
+	GatewayReceiptOrdinal int
+	Status                string
+	ErrorMessage          string
 }

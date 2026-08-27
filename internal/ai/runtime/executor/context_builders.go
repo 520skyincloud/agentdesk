@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"agent-desk/internal/ai/replyengine"
@@ -26,7 +27,7 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		collector.Data.Input.ContextMemorySource = history.MemorySource
 		collector.Data.Input.ContextMemoryMessageCount = history.MemoryItemCount
 		collector.Data.Input.KnowledgeBaseIDs = utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
-		collector.Data.Input.CurrentUserMessagePreview = preview(req.UserMessage.Content, 120)
+		collector.Data.Input.CurrentUserMessagePreview = preview(currentRuntimeIntentSemanticText(req), 120)
 	}
 	plan := buildRuntimePipelinePlanWithModel(ctx, req, history, nil)
 	if collector != nil {
@@ -42,9 +43,6 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	if instruction := buildWeatherToolInstruction(plan.Intent); strings.TrimSpace(instruction) != "" {
-		messages = append(messages, schema.SystemMessage(instruction))
-	}
-	if instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	if instruction := buildAutoHandoffDisabledInstruction(req, plan.Intent); strings.TrimSpace(instruction) != "" {
@@ -64,6 +62,10 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		activeReplyPlan = collector.Data.Pipeline.ReplyPlan
 		hasDeferredKnowledge = collector.Data.Pipeline.EvidenceJudge.DeferredHandoff
 	}
+	if instruction := buildCurrentTurnBoundaryInstructionForReplyPlan(req, history, plan.Intent, activeReplyPlan); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
+	messages = buildGenerateStageMessages(req, history, plan.Intent, activeReplyPlan, messages, retrievedContext.RawKnowledgeContextMessages)
 	if prompt := buildIntentStagePrompt(plan.PromptSelect, activeReplyPlan); strings.TrimSpace(prompt) != "" {
 		messages = append(messages, schema.SystemMessage(prompt))
 	}
@@ -75,7 +77,7 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	messages = append(messages, schema.UserMessage(buildActiveGenerationUserMessageText(
-		req.UserMessage.Content,
+		currentRuntimeIntentSemanticText(req),
 		plan.Intent,
 		activeReplyPlan,
 		hasDeferredKnowledge,
@@ -84,23 +86,190 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 }
 
 func buildActiveGenerationUserMessageText(currentText string, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData, hasDeferredKnowledge bool) string {
-	if !hasDeferredKnowledge {
-		return buildGenerationUserMessageText(currentText, intent)
-	}
-	groups := buildTextReplyTaskGroups(plan)
-	activeTasks := make([]string, 0, len(groups))
-	for _, group := range groups {
-		for _, text := range group.Texts {
-			text = strings.TrimSpace(text)
-			if text != "" {
-				activeTasks = appendIfMissing(activeTasks, text)
-			}
+	taskPlans := activeGenerationTaskPlans(intent, plan)
+	activeTasks := make([]string, 0, len(taskPlans))
+	for _, task := range taskPlans {
+		text := activeGenerationTaskText(task)
+		if text != "" {
+			activeTasks = appendIfMissing(activeTasks, text)
 		}
 	}
-	if len(activeTasks) == 0 {
+	if len(activeTasks) > 0 {
+		return strings.Join(activeTasks, "\n")
+	}
+	if hasDeferredKnowledge || len(plan.TaskPlans) > 0 {
 		return "当前没有需要 Generate 输出的文本任务。"
 	}
-	return strings.Join(activeTasks, "\n")
+	return buildGenerationUserMessageText(currentText, intent)
+}
+
+func buildGenerateStageMessages(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData, messages []*schema.Message, rawKnowledgeContextMessages []*schema.Message) []*schema.Message {
+	excluded := make(map[*schema.Message]struct{}, len(history.Messages)+1)
+	if history.MemoryMessage != nil {
+		excluded[history.MemoryMessage] = struct{}{}
+	}
+	for _, message := range history.Messages {
+		if message != nil {
+			excluded[message] = struct{}{}
+		}
+	}
+	for _, message := range rawKnowledgeContextMessages {
+		if message != nil {
+			excluded[message] = struct{}{}
+		}
+	}
+
+	ret := make([]*schema.Message, 0, len(messages)+1)
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		if _, exists := excluded[message]; exists {
+			continue
+		}
+		ret = append(ret, message)
+	}
+	if contextMessage := buildActiveGenerationTaskContext(req, intent, plan); contextMessage != nil {
+		ret = append(ret, contextMessage)
+	}
+	return ret
+}
+
+func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData) *schema.Message {
+	taskPlans := activeGenerationTaskPlans(intent, plan)
+	if len(taskPlans) == 0 {
+		return nil
+	}
+
+	sourceTexts := currentTurnIntentSourceTexts(currentRuntimeIntentSemanticText(req))
+	sourceByRef := make(map[string]string, len(sourceTexts))
+	for index, text := range sourceTexts {
+		if text = strings.TrimSpace(text); text != "" {
+			sourceByRef[fmt.Sprintf("U%d", index+1)] = text
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("【当前活跃回答任务】以下内容是 Generate 可使用的当前轮来源、补全问题和 Judge 已确认事实。更早原始历史与长期记忆已从 Generate 上下文移除；不得补答未列出的旧问题，也不得根据一个事实推导未确认能力。\n")
+	for taskIndex, task := range taskPlans {
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", taskIndex+1)
+		}
+		b.WriteString("\n任务 ")
+		b.WriteString(taskID)
+		b.WriteString("：\n")
+
+		originalText := strings.TrimSpace(task.OriginalText)
+		if originalText == "" {
+			originalText = strings.TrimSpace(task.Text)
+		}
+		resolvedText := strings.TrimSpace(task.ResolvedText)
+		if resolvedText == "" {
+			resolvedText = strings.TrimSpace(task.Text)
+		}
+		if resolvedText == "" {
+			resolvedText = originalText
+		}
+
+		primarySource, contextSources := activeGenerationTaskSources(task.SourceRefs, sourceByRef)
+		if primarySource == "" {
+			primarySource = originalText
+		}
+		if primarySource == "" && len(sourceTexts) == 1 {
+			primarySource = strings.TrimSpace(sourceTexts[0])
+		}
+		if primarySource != "" {
+			b.WriteString("- primary 来源：")
+			b.WriteString(primarySource)
+			b.WriteString("\n")
+		}
+		for _, source := range contextSources {
+			b.WriteString("- context 来源：")
+			b.WriteString(source)
+			b.WriteString("\n")
+		}
+		if resolvedText != "" {
+			b.WriteString("- 自包含问题：")
+			b.WriteString(resolvedText)
+			b.WriteString("\n")
+		}
+		for factIndex, fact := range task.SupportedFacts {
+			statement := strings.TrimSpace(fact.Statement)
+			if statement == "" {
+				continue
+			}
+			factID := strings.TrimSpace(fact.FactID)
+			if factID == "" {
+				factID = fmt.Sprintf("F%d", factIndex+1)
+			}
+			b.WriteString("- 已确认事实 ")
+			b.WriteString(factID)
+			b.WriteString("：")
+			b.WriteString(statement)
+			if values := compactGenerationContextStrings(fact.CriticalValues); len(values) > 0 {
+				b.WriteString("；必要值：")
+				b.WriteString(strings.Join(values, "、"))
+			}
+			b.WriteString("\n")
+		}
+		if missing := compactGenerationContextStrings(task.MissingAspects); len(missing) > 0 {
+			b.WriteString("- 尚未确认方面（禁止自行补全）：")
+			b.WriteString(strings.Join(missing, "、"))
+			b.WriteString("\n")
+		}
+	}
+	return schema.SystemMessage(strings.TrimSpace(b.String()))
+}
+
+func activeGenerationTaskPlans(intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData) []callbacks.ReplyTaskPlanTraceData {
+	taskPlans := plan.TaskPlans
+	if len(taskPlans) == 0 {
+		taskPlans = buildReplyTaskPlans(intent)
+	}
+	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(taskPlans))
+	for _, task := range taskPlans {
+		if replyTaskRequiresText(task) {
+			ret = append(ret, task)
+		}
+	}
+	return ret
+}
+
+func activeGenerationTaskText(task callbacks.ReplyTaskPlanTraceData) string {
+	for _, text := range []string{task.ResolvedText, task.Text, task.OriginalText} {
+		if text = strings.TrimSpace(text); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func activeGenerationTaskSources(refs []string, sourceByRef map[string]string) (string, []string) {
+	primary := ""
+	contexts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		source := strings.TrimSpace(sourceByRef[strings.TrimSpace(ref)])
+		if source == "" {
+			continue
+		}
+		if primary == "" {
+			primary = source
+			continue
+		}
+		contexts = appendIfMissing(contexts, source)
+	}
+	return primary, contexts
+}
+
+func compactGenerationContextStrings(values []string) []string {
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			ret = appendIfMissing(ret, value)
+		}
+	}
+	return ret
 }
 
 func buildAutoHandoffDisabledInstruction(req RunInput, intent callbacks.IntentTraceData) string {
@@ -176,11 +345,19 @@ func buildGenerationScopeInstruction(intent callbacks.IntentTraceData, replyPlan
 		"本阶段只输出酒店信息任务的文本答案：" + strings.Join(knowledgeTasks, "、") + "。",
 	}
 	_ = resourceTasks
+	textOutputSubject := "最终文本"
+	if replyPlanRequiresStructuredOutput(replyPlan, false) {
+		textOutputSubject = "replyParts 的各个 content"
+	}
 	parts = append(parts,
 		"变量任务由 Commit 阶段单独处理，本阶段完全不要写变量任务、变量名称、发送状态或后续动作。",
-		"最终文本只回答上面列出的酒店信息任务，不能包含“发你/发给你/给你发/已经发/后续发/点开就能/我这边发/我这边按入口发”。",
+		textOutputSubject+"只回答上面列出的酒店信息任务，不能包含“发你/发给你/给你发/已经发/后续发/点开就能/我这边发/我这边按入口发”。",
 	)
-	return strings.Join(parts, "\n")
+	result := strings.Join(parts, "\n")
+	if replyPlanRequiresStructuredOutput(replyPlan, false) {
+		result = normalizeStructuredReplyPromptText(result)
+	}
+	return result
 }
 
 func runtimeTaskDisplayLabel(value string) string {
@@ -302,12 +479,24 @@ func actionLedgerContainsAction(items []callbacks.ActionLedgerItem, action strin
 }
 
 func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) string {
-	currentText := strings.TrimSpace(currentTurnDisplayText(req.UserMessage.Content))
+	return buildCurrentTurnBoundaryInstructionForReplyPlan(req, history, intent, callbacks.ReplyPlanTraceData{})
+}
+
+func buildCurrentTurnBoundaryInstructionForReplyPlan(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData, replyPlan callbacks.ReplyPlanTraceData) string {
+	currentText := currentRuntimeIntentSemanticText(req)
 	if currentText == "" {
 		return ""
 	}
 	boundaryText := currentText
-	if intent.NeedsKnowledge && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
+	activeTaskTexts := make([]string, 0, len(replyPlan.TaskPlans))
+	for _, task := range activeGenerationTaskPlans(intent, replyPlan) {
+		if text := activeGenerationTaskText(task); text != "" {
+			activeTaskTexts = append(activeTaskTexts, text)
+		}
+	}
+	if len(replyPlan.TaskPlans) > 0 && len(activeTaskTexts) > 0 {
+		boundaryText = strings.Join(activeTaskTexts, "\n")
+	} else if intent.NeedsKnowledge && (intent.NeedsResource || len(intent.ResourceActions) > 0) {
 		if generationText := strings.TrimSpace(buildGenerationUserMessageText(req.UserMessage.Content, intent)); generationText != "" {
 			boundaryText = generationText
 		}
@@ -321,6 +510,9 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 		"动作安全：没有工具、资源提交、接待路由或明确系统执行结果时，不能承诺或暗示任何真实动作、内部核实、通知转告、登记安排、现场查看、后续跟进或已完成状态。明确的酒店业务问题如果知识库没有可用答案，必须进入接待路由；确实只缺一个能推进处理的关键点时只追问一个，不能口头假装后续有人处理。",
 	}
 	currentLine := "当前客户消息"
+	if len(replyPlan.TaskPlans) > 0 {
+		currentLine = "当前活跃回答任务"
+	}
 	if timeLabel := adapter.RuntimeMessageTimeLabel(&req.UserMessage); timeLabel != "" {
 		currentLine += "[" + timeLabel + "]"
 	}
@@ -328,7 +520,7 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果明确的酒店业务问题没有可用答案，进入接待路由，不要对客户说资料没写明或没查到。")
 	}
-	if len(intent.IntentTasks) > 1 || isMultiQuestionCurrentTurn(currentText) {
+	if len(activeTaskTexts) > 1 || (len(replyPlan.TaskPlans) == 0 && (len(intent.IntentTasks) > 1 || isMultiQuestionCurrentTurn(currentText))) {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答；没有可用答案的酒店业务项进入接待路由，不能说“资料没写明”“帮你查/我查一下”。")
 	}
 	if intent.PrimaryIntent == "service_request" {
@@ -352,7 +544,11 @@ func buildCurrentTurnBoundaryInstruction(req RunInput, history adapter.HistoryBu
 	if intent.PrimaryIntent == "interaction" && isSocialCorrectionSubIntent(intent.SubIntent) {
 		parts = append(parts, "纠错/误会：完整上下文仍然保留，但本轮只允许用当前纠正和紧邻的上一条客服消息识别误会；自然承认看错、听错或理解错，只输出一句完整短句。不要辩解，不要补答或追问任何旧业务主题。")
 	}
-	return strings.Join(parts, "\n")
+	result := strings.Join(parts, "\n")
+	if replyPlanRequiresStructuredOutput(replyPlan, false) {
+		result = normalizeStructuredReplyPromptText(result)
+	}
+	return result
 }
 
 func isSocialCorrectionSubIntent(subIntent string) bool {
@@ -366,7 +562,13 @@ func isSocialCorrectionSubIntent(subIntent string) bool {
 
 func isMultiQuestionCurrentTurn(text string) bool {
 	trimmed := strings.TrimSpace(text)
-	return trimmed != "" && (strings.Count(trimmed, "\n") >= 1 || strings.Contains(trimmed, "[消息"))
+	if trimmed == "" {
+		return false
+	}
+	if utils.IsRuntimeCustomerBurstEnvelope(trimmed) && len(utils.RuntimeCustomerBurstItems(trimmed)) > 1 {
+		return true
+	}
+	return len(currentTurnTaskCandidates(trimmed)) > 1
 }
 
 func shouldAttachRecentMediaUnderstandingToCurrentTurn(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) bool {
@@ -404,7 +606,7 @@ func buildRecentMediaContextInstruction(req RunInput, history adapter.HistoryBui
 	mediaText := recentUsableMediaTextFromHistory(history)
 	if mediaText == "" {
 		if recent := findRecentUsableMediaUnderstanding(req); recent != nil {
-			mediaText = strings.TrimSpace(strings.Join([]string{recent.MediaText, recent.MediaSummary}, "\n"))
+			mediaText = preferredGenerateMediaUnderstandingText(recent.MediaText, recent.MediaSummary)
 		}
 	}
 	if mediaText == "" {
@@ -426,7 +628,7 @@ func recentUsableMediaTextFromHistory(history adapter.HistoryBuildResult) string
 		if strings.TrimSpace(status) != "understood" {
 			continue
 		}
-		text := strings.TrimSpace(strings.Join([]string{mediaText, mediaSummary}, "\n"))
+		text := preferredGenerateMediaUnderstandingText(mediaText, mediaSummary)
 		if text != "" {
 			return text
 		}
@@ -434,9 +636,17 @@ func recentUsableMediaTextFromHistory(history adapter.HistoryBuildResult) string
 	return ""
 }
 
+func preferredGenerateMediaUnderstandingText(mediaText string, mediaSummary string) string {
+	if text := strings.TrimSpace(mediaText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(mediaSummary)
+}
+
 type retrievedContextOutcome struct {
-	Decision            knowledgeGuardDecision
-	AnswerabilityStatus string
+	Decision                    knowledgeGuardDecision
+	AnswerabilityStatus         string
+	RawKnowledgeContextMessages []*schema.Message
 }
 
 func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.IntentTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate, messages *[]*schema.Message) retrievedContextOutcome {
@@ -472,12 +682,34 @@ func appendRetrievedContext(ctx context.Context, req RunInput, intent callbacks.
 			AnswerabilityStatus: answerabilityStatusUnanswerable,
 		}
 	}
+	rawKnowledgeContextMessages := findRawKnowledgeContextMessages(state)
 	*messages = append((*messages)[:0], state.Input.Messages...)
 	if state.SkipGate {
-		return retrievedContextOutcome{AnswerabilityStatus: state.AnswerabilityStatus}
+		return retrievedContextOutcome{
+			AnswerabilityStatus:         state.AnswerabilityStatus,
+			RawKnowledgeContextMessages: rawKnowledgeContextMessages,
+		}
 	}
 	return retrievedContextOutcome{
-		Decision:            state.Decision,
-		AnswerabilityStatus: state.AnswerabilityStatus,
+		Decision:                    state.Decision,
+		AnswerabilityStatus:         state.AnswerabilityStatus,
+		RawKnowledgeContextMessages: rawKnowledgeContextMessages,
 	}
+}
+
+func findRawKnowledgeContextMessages(state *answerabilityGateState) []*schema.Message {
+	if state == nil || state.RetrieveResult == nil {
+		return nil
+	}
+	contextText := strings.TrimSpace(state.RetrieveResult.ContextText)
+	if contextText == "" {
+		return nil
+	}
+	ret := make([]*schema.Message, 0, 1)
+	for _, message := range state.Input.Messages {
+		if message != nil && strings.TrimSpace(message.Content) == contextText {
+			ret = append(ret, message)
+		}
+	}
+	return ret
 }

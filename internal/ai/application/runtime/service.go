@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"agent-desk/internal/ai/runtime/executor"
+	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 )
 
@@ -23,7 +24,7 @@ func NewService() *Service {
 }
 
 func (s *Service) Run(ctx context.Context, req Request) (*Summary, error) {
-	req.UserMessage.Content = utils.BuildRuntimeMessageTextWithPayload(req.UserMessage.MessageType, req.UserMessage.Content, req.UserMessage.Payload)
+	req.UserMessage.Content = normalizeRuntimeUserMessageContent(req.UserMessage.MessageType, req.UserMessage.Content, req.UserMessage.Payload)
 	toolSet, err := s.prepare.prepareToolsForRun(req)
 	if err != nil {
 		return nil, err
@@ -41,6 +42,19 @@ func (s *Service) Run(ctx context.Context, req Request) (*Summary, error) {
 		return toSummary(summary), err
 	}
 	return toSummary(summary), nil
+}
+
+func normalizeRuntimeUserMessageContent(messageType enums.IMMessageType, content string, payload string) string {
+	if utils.IsRuntimeCustomerBurstEnvelope(content) {
+		return content
+	}
+	if messageType == enums.IMMessageTypeVoice {
+		_, _, status := utils.RuntimeMediaUnderstandingFromPayload(payload)
+		if status != "understood" {
+			return ""
+		}
+	}
+	return utils.BuildRuntimeMessageTextWithPayload(messageType, content, payload)
 }
 
 func (s *Service) Resume(ctx context.Context, req ResumeRequest) (*Summary, error) {

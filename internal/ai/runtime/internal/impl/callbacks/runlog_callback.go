@@ -135,9 +135,13 @@ func (c *RuntimeTraceCollector) SetKnowledgeEvidenceJudge(data KnowledgeEvidence
 	data.Tasks = append([]KnowledgeEvidenceJudgeTaskTraceData(nil), data.Tasks...)
 	for index := range data.Tasks {
 		data.Tasks[index].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].SelectedCandidateIDs...)
+		data.Tasks[index].SupportedFacts = cloneKnowledgeEvidenceFacts(data.Tasks[index].SupportedFacts)
+		data.Tasks[index].MissingAspects = append([]string(nil), data.Tasks[index].MissingAspects...)
 		data.Tasks[index].Layers = append([]KnowledgeEvidenceJudgeLayerTraceData(nil), data.Tasks[index].Layers...)
 		for layerIndex := range data.Tasks[index].Layers {
 			data.Tasks[index].Layers[layerIndex].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].Layers[layerIndex].SelectedCandidateIDs...)
+			data.Tasks[index].Layers[layerIndex].SupportedFacts = cloneKnowledgeEvidenceFacts(data.Tasks[index].Layers[layerIndex].SupportedFacts)
+			data.Tasks[index].Layers[layerIndex].MissingAspects = append([]string(nil), data.Tasks[index].Layers[layerIndex].MissingAspects...)
 		}
 	}
 	c.Data.Pipeline.EvidenceJudge = data
@@ -149,7 +153,21 @@ func (c *RuntimeTraceCollector) SetReplyPlan(data ReplyPlanTraceData) {
 	data.UseContext = append([]string(nil), data.UseContext...)
 	data.DoNot = append([]string(nil), data.DoNot...)
 	data.TaskPlans = append([]ReplyTaskPlanTraceData(nil), data.TaskPlans...)
+	for index := range data.TaskPlans {
+		data.TaskPlans[index].SourceRefs = append([]string(nil), data.TaskPlans[index].SourceRefs...)
+		data.TaskPlans[index].SelectedCandidateIDs = append([]string(nil), data.TaskPlans[index].SelectedCandidateIDs...)
+		data.TaskPlans[index].SupportedFacts = cloneKnowledgeEvidenceFacts(data.TaskPlans[index].SupportedFacts)
+		data.TaskPlans[index].MissingAspects = append([]string(nil), data.TaskPlans[index].MissingAspects...)
+	}
 	c.Data.Pipeline.ReplyPlan = data
+}
+
+func cloneKnowledgeEvidenceFacts(items []KnowledgeEvidenceFactTraceData) []KnowledgeEvidenceFactTraceData {
+	cloned := append([]KnowledgeEvidenceFactTraceData(nil), items...)
+	for index := range cloned {
+		cloned[index].CriticalValues = append([]string(nil), cloned[index].CriticalValues...)
+	}
+	return cloned
 }
 
 func (c *RuntimeTraceCollector) SetKnowledgeResources(items []KnowledgeResourceTraceData) {

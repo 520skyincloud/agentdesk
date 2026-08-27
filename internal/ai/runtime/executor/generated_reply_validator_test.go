@@ -1,11 +1,47 @@
 package executor
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
+
+func TestSanitizeGeneratedReplyTextRemovesExactInternalHeaderPrefixes(t *testing.T) {
+	raw := "[历史消息][客户][2026-08-26 12:59:58] 房间内有几瓶矿泉水？\n<<NEXT_MESSAGE>>\n[历史消息][人工作答][2026-08-26 13:00:24] 房间内有两瓶矿泉水。\n<<NEXT_MESSAGE>>\n[AI客服] 停车场可以免费停车。"
+	got, err := SanitizeGeneratedReplyText(raw)
+	if err != nil {
+		t.Fatalf("sanitize exact internal prefixes: %v", err)
+	}
+	want := "房间内有几瓶矿泉水？\n<<NEXT_MESSAGE>>\n房间内有两瓶矿泉水。\n<<NEXT_MESSAGE>>\n停车场可以免费停车。"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestSanitizeGeneratedReplyTextRejectsEmbeddedOrEmptyInternalHeaders(t *testing.T) {
+	for name, raw := range map[string]string{
+		"embedded_history":  "房间内有两瓶矿泉水。[历史消息][AI客服]停车免费。",
+		"embedded_customer": "房间内有两瓶矿泉水。[客户][2026-08-26 12:59:58]停车免费吗？",
+		"empty":             "[人工客服][2026-08-26 13:00:24]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := SanitizeGeneratedReplyText(raw)
+			if got != "" || !errors.Is(err, ErrGeneratedReplyProtocol) {
+				t.Fatalf("unsafe internal marker must fail closed, got=%q err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestSanitizeGeneratedReplyTextKeepsOrdinaryHumanServiceWording(t *testing.T) {
+	want := "不好意思，这个需要同事处理，已经帮您转接。"
+	got, err := SanitizeGeneratedReplyText(want)
+	if err != nil || got != want {
+		t.Fatalf("ordinary handoff wording must remain untouched, got=%q err=%v", got, err)
+	}
+}
 
 func TestEnforceGeneratedReplyActionLedgerRemovesResourceCommitText(t *testing.T) {
 	summary := &RunResult{

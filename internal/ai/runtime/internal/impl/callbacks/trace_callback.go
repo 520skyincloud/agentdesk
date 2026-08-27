@@ -100,14 +100,25 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 	QueryPreview         string                                 `json:"queryPreview,omitempty"`
 	SelectedLayer        string                                 `json:"selectedLayer,omitempty"`
 	SelectedCandidateIDs []string                               `json:"selectedCandidateIds,omitempty"`
+	SupportedFacts       []KnowledgeEvidenceFactTraceData       `json:"supportedFacts,omitempty"`
+	MissingAspects       []string                               `json:"missingAspects,omitempty"`
 	Decision             string                                 `json:"decision,omitempty"`
 	Layers               []KnowledgeEvidenceJudgeLayerTraceData `json:"layers,omitempty"`
 }
 
 type KnowledgeEvidenceJudgeLayerTraceData struct {
-	Layer                string   `json:"layer,omitempty"`
-	Decision             string   `json:"decision,omitempty"`
-	SelectedCandidateIDs []string `json:"selectedCandidateIds,omitempty"`
+	Layer                string                           `json:"layer,omitempty"`
+	Decision             string                           `json:"decision,omitempty"`
+	SelectedCandidateIDs []string                         `json:"selectedCandidateIds,omitempty"`
+	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
+	MissingAspects       []string                         `json:"missingAspects,omitempty"`
+}
+
+type KnowledgeEvidenceFactTraceData struct {
+	FactID         string   `json:"factId,omitempty"`
+	Aspect         string   `json:"aspect,omitempty"`
+	Statement      string   `json:"statement,omitempty"`
+	CriticalValues []string `json:"criticalValues,omitempty"`
 }
 
 type RetrieverPolicyTraceItem struct {
@@ -219,42 +230,54 @@ type NormalizeTraceData struct {
 }
 
 type IntentTraceData struct {
-	DetectedIntent       string                `json:"detectedIntent,omitempty"`
-	MatchedIntentCode    string                `json:"matchedIntentCode,omitempty"`
-	PrimaryIntent        string                `json:"primaryIntent,omitempty"`
-	SubIntent            string                `json:"subIntent,omitempty"`
-	SecondaryIntents     []string              `json:"secondaryIntents,omitempty"`
-	SecondaryIntentCodes []string              `json:"secondaryIntentCodes,omitempty"`
-	IntentConfidence     float64               `json:"intentConfidence,omitempty"`
-	ShouldReply          bool                  `json:"shouldReply,omitempty"`
-	NeedsClarification   bool                  `json:"needsClarification,omitempty"`
-	NeedsKnowledge       bool                  `json:"needsKnowledge,omitempty"`
-	NeedsTool            bool                  `json:"needsTool,omitempty"`
-	NeedsResource        bool                  `json:"needsResource,omitempty"`
-	NeedsHumanRoute      bool                  `json:"needsHumanRoute,omitempty"`
-	ResourceType         string                `json:"resourceType,omitempty"`
-	ResourceAction       string                `json:"resourceAction,omitempty"`
-	ResourceActions      []string              `json:"resourceActions,omitempty"`
-	MixedSubTasks        []string              `json:"mixedSubTasks,omitempty"`
-	IntentTasks          []IntentTaskTraceData `json:"intentTasks,omitempty"`
-	ToolCodes            []string              `json:"toolCodes,omitempty"`
-	HumanRoutePolicy     string                `json:"humanRoutePolicy,omitempty"`
-	MatchedConfigID      int64                 `json:"matchedConfigId,omitempty"`
-	MatchedConfig        string                `json:"matchedConfig,omitempty"`
-	MatchMode            string                `json:"matchMode,omitempty"`
-	Reason               string                `json:"reason,omitempty"`
+	DetectedIntent           string                `json:"detectedIntent,omitempty"`
+	MatchedIntentCode        string                `json:"matchedIntentCode,omitempty"`
+	PrimaryIntent            string                `json:"primaryIntent,omitempty"`
+	SubIntent                string                `json:"subIntent,omitempty"`
+	SecondaryIntents         []string              `json:"secondaryIntents,omitempty"`
+	SecondaryIntentCodes     []string              `json:"secondaryIntentCodes,omitempty"`
+	IntentConfidence         float64               `json:"intentConfidence,omitempty"`
+	ShouldReply              bool                  `json:"shouldReply,omitempty"`
+	NeedsClarification       bool                  `json:"needsClarification,omitempty"`
+	NeedsKnowledge           bool                  `json:"needsKnowledge,omitempty"`
+	NeedsTool                bool                  `json:"needsTool,omitempty"`
+	NeedsResource            bool                  `json:"needsResource,omitempty"`
+	NeedsHumanRoute          bool                  `json:"needsHumanRoute,omitempty"`
+	ResourceType             string                `json:"resourceType,omitempty"`
+	ResourceAction           string                `json:"resourceAction,omitempty"`
+	ResourceActions          []string              `json:"resourceActions,omitempty"`
+	MixedSubTasks            []string              `json:"mixedSubTasks,omitempty"`
+	IntentTasks              []IntentTaskTraceData `json:"intentTasks,omitempty"`
+	SemanticContractExpected bool                  `json:"semanticContractExpected,omitempty"`
+	ToolCodes                []string              `json:"toolCodes,omitempty"`
+	HumanRoutePolicy         string                `json:"humanRoutePolicy,omitempty"`
+	MatchedConfigID          int64                 `json:"matchedConfigId,omitempty"`
+	MatchedConfig            string                `json:"matchedConfig,omitempty"`
+	MatchMode                string                `json:"matchMode,omitempty"`
+	Reason                   string                `json:"reason,omitempty"`
 }
 
 type IntentTaskTraceData struct {
-	Intent          string `json:"intent,omitempty"`
-	SubIntent       string `json:"subIntent,omitempty"`
-	Text            string `json:"text,omitempty"`
-	NeedsKnowledge  bool   `json:"needsKnowledge,omitempty"`
-	NeedsResource   bool   `json:"needsResource,omitempty"`
-	NeedsTool       bool   `json:"needsTool,omitempty"`
-	NeedsHumanRoute bool   `json:"needsHumanRoute,omitempty"`
-	ResourceAction  string `json:"resourceAction,omitempty"`
-	Reason          string `json:"reason,omitempty"`
+	Intent             string                  `json:"intent,omitempty"`
+	SubIntent          string                  `json:"subIntent,omitempty"`
+	Objective          string                  `json:"objective,omitempty"`
+	RelationToPrevious string                  `json:"relationToPrevious,omitempty"`
+	ResolutionState    string                  `json:"resolutionState,omitempty"`
+	Entities           []IntentEntityTraceData `json:"entities,omitempty"`
+	Text               string                  `json:"text,omitempty"`
+	ResolvedText       string                  `json:"resolvedText,omitempty"`
+	SourceRefs         []string                `json:"sourceRefs,omitempty"`
+	NeedsKnowledge     bool                    `json:"needsKnowledge,omitempty"`
+	NeedsResource      bool                    `json:"needsResource,omitempty"`
+	NeedsTool          bool                    `json:"needsTool,omitempty"`
+	NeedsHumanRoute    bool                    `json:"needsHumanRoute,omitempty"`
+	ResourceAction     string                  `json:"resourceAction,omitempty"`
+	Reason             string                  `json:"reason,omitempty"`
+}
+
+type IntentEntityTraceData struct {
+	Text string `json:"text,omitempty"`
+	Type string `json:"type,omitempty"`
 }
 
 type CommitMessageTraceData struct {
@@ -311,20 +334,35 @@ type ContextBuildTraceData struct {
 }
 
 type ReplyPlanTraceData struct {
-	Intent     string                   `json:"intent,omitempty"`
-	AnswerGoal string                   `json:"answerGoal,omitempty"`
-	UseContext []string                 `json:"useContext,omitempty"`
-	DoNot      []string                 `json:"doNot,omitempty"`
-	Style      string                   `json:"style,omitempty"`
-	TaskPlans  []ReplyTaskPlanTraceData `json:"taskPlans,omitempty"`
+	Intent                 string                   `json:"intent,omitempty"`
+	AnswerGoal             string                   `json:"answerGoal,omitempty"`
+	UseContext             []string                 `json:"useContext,omitempty"`
+	DoNot                  []string                 `json:"doNot,omitempty"`
+	Style                  string                   `json:"style,omitempty"`
+	ActiveTaskCount        int                      `json:"activeTaskCount,omitempty"`
+	ReplyRequiredTaskCount int                      `json:"replyRequiredTaskCount,omitempty"`
+	TaskPlans              []ReplyTaskPlanTraceData `json:"taskPlans,omitempty"`
 }
 
 type ReplyTaskPlanTraceData struct {
-	Intent         string `json:"intent,omitempty"`
-	SubIntent      string `json:"subIntent,omitempty"`
-	Text           string `json:"text,omitempty"`
-	Output         string `json:"output,omitempty"`
-	ResourceAction string `json:"resourceAction,omitempty"`
+	TaskID               string                           `json:"taskId,omitempty"`
+	Intent               string                           `json:"intent,omitempty"`
+	SubIntent            string                           `json:"subIntent,omitempty"`
+	Objective            string                           `json:"objective,omitempty"`
+	RelationToPrevious   string                           `json:"relationToPrevious,omitempty"`
+	ResolutionState      string                           `json:"resolutionState,omitempty"`
+	Text                 string                           `json:"text,omitempty"`
+	OriginalText         string                           `json:"originalText,omitempty"`
+	ResolvedText         string                           `json:"resolvedText,omitempty"`
+	SourceRefs           []string                         `json:"sourceRefs,omitempty"`
+	OutputKind           string                           `json:"outputKind,omitempty"`
+	ReplyRequired        bool                             `json:"replyRequired,omitempty"`
+	Output               string                           `json:"output,omitempty"`
+	ResourceAction       string                           `json:"resourceAction,omitempty"`
+	SelectedLayer        string                           `json:"selectedLayer,omitempty"`
+	SelectedCandidateIDs []string                         `json:"selectedCandidateIds,omitempty"`
+	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
+	MissingAspects       []string                         `json:"missingAspects,omitempty"`
 }
 
 func (d ReplyPlanTraceData) HasMultipleTasks() bool {
@@ -339,11 +377,16 @@ type ToolKnowledgeTraceData struct {
 }
 
 type GenerateTraceData struct {
-	Policy     string                   `json:"policy,omitempty"`
-	Status     string                   `json:"status,omitempty"`
-	Reason     string                   `json:"reason,omitempty"`
-	LatencyMs  int64                    `json:"latencyMs,omitempty"`
-	TagContext ReplyTagContextTraceData `json:"tagContext,omitempty"`
+	Policy                string                   `json:"policy,omitempty"`
+	Status                string                   `json:"status,omitempty"`
+	Reason                string                   `json:"reason,omitempty"`
+	LatencyMs             int64                    `json:"latencyMs,omitempty"`
+	AttemptCount          int                      `json:"attemptCount,omitempty"`
+	FallbackMode          string                   `json:"fallbackMode,omitempty"`
+	LastProtocolError     string                   `json:"lastProtocolError,omitempty"`
+	ComposedMessageCount  int                      `json:"composedMessageCount,omitempty"`
+	BlockedInternalMarker bool                     `json:"blockedInternalMarker,omitempty"`
+	TagContext            ReplyTagContextTraceData `json:"tagContext,omitempty"`
 }
 
 type ReplyTagContextTraceData struct {

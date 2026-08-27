@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -11,6 +12,120 @@ import (
 type generatedReplyValidationOutcome struct {
 	RequestHandoffConfirmation bool
 	HandoffReason              string
+}
+
+var internalReplyHeaderMarkers = []string{
+	"[历史消息]",
+	"[客户]",
+	"[AI客服]",
+	"[人工客服]",
+	"[人工作答]",
+}
+
+// SanitizeGeneratedReplyText removes only exact internal headers at the start
+// of a generated message. Markers embedded in customer-visible prose are
+// rejected because their structure is ambiguous and must never be committed.
+func SanitizeGeneratedReplyText(text string) (string, error) {
+	parts, marker := splitGeneratedReplyMessages(text)
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value, err := sanitizeGeneratedReplyMessage(part)
+		if err != nil {
+			return "", err
+		}
+		cleaned = append(cleaned, value)
+	}
+	if len(cleaned) == 0 {
+		return "", nil
+	}
+	if marker == "" {
+		return cleaned[0], nil
+	}
+	return strings.Join(cleaned, "\n"+marker+"\n"), nil
+}
+
+func splitGeneratedReplyMessages(text string) ([]string, string) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n")
+	for _, marker := range []string{"<<NEXT_MESSAGE>>", "<NEXT_MESSAGE>", "[[NEXT_MESSAGE]]"} {
+		if !strings.Contains(normalized, marker) {
+			continue
+		}
+		return strings.Split(normalized, marker), marker
+	}
+	return []string{normalized}, ""
+}
+
+func sanitizeGeneratedReplyMessage(text string) (string, error) {
+	cleaned := strings.TrimSpace(text)
+	removedHeader := false
+	for {
+		matched := false
+		for _, marker := range internalReplyHeaderMarkers {
+			if strings.HasPrefix(cleaned, marker) {
+				cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, marker))
+				removedHeader = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break
+		}
+	}
+	if removedHeader {
+		cleaned = stripInternalReplyTimestampPrefix(cleaned)
+	}
+	if cleaned == "" {
+		if removedHeader {
+			return "", fmt.Errorf("%w: internal reply header has no customer-visible content", errGeneratedReplyProtocol)
+		}
+		return "", nil
+	}
+	for _, marker := range internalReplyHeaderMarkers {
+		if strings.Contains(cleaned, marker) {
+			return "", fmt.Errorf("%w: internal reply header %s appears inside customer-visible content", errGeneratedReplyProtocol, marker)
+		}
+	}
+	return cleaned, nil
+}
+
+func stripInternalReplyTimestampPrefix(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) < 21 || text[0] != '[' {
+		return text
+	}
+	end := strings.IndexByte(text, ']')
+	if end != 20 || !looksLikeInternalReplyTimestamp(text[1:end]) {
+		return text
+	}
+	return strings.TrimSpace(text[end+1:])
+}
+
+func looksLikeInternalReplyTimestamp(value string) bool {
+	if len(value) != 19 {
+		return false
+	}
+	for index, character := range value {
+		switch index {
+		case 4, 7:
+			if character != '-' {
+				return false
+			}
+		case 10:
+			if character != ' ' {
+				return false
+			}
+		case 13, 16:
+			if character != ':' {
+				return false
+			}
+		default:
+			if character < '0' || character > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.RuntimeTraceCollector) generatedReplyValidationOutcome {
