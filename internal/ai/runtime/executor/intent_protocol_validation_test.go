@@ -44,6 +44,14 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err != nil {
 		t.Fatalf("self-contained reference must pass protocol validation: %v", err)
 	}
+
+	parsed.IntentTasks[0].Text = "麦田房型有没有办公桌？"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err != nil {
+		t.Fatalf("model-completed text must not invalidate a self-contained resolved reference: %v", err)
+	}
+	if parsed.IntentTasks[0].Text != "那麦田呢" {
+		t.Fatalf("protocol validation must restore customer text while preserving resolvedText, got %#v", parsed.IntentTasks[0])
+	}
 }
 
 func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCandidates(t *testing.T) {
@@ -78,6 +86,67 @@ func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCand
 	if err := validateRuntimeIntentDetectProtocol(distinct, nil, currentText); err != nil {
 		t.Fatalf("distinct tasks must satisfy explicit candidate coverage: %v", err)
 	}
+
+	reusedCompound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		{
+			Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+		{
+			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+		},
+	}}
+	if err := validateRuntimeIntentDetectProtocol(reusedCompound, nil, currentText); err == nil {
+		t.Fatalf("reused compound tasks must be rejected, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolUsesExactTextOwnershipForOverlappingQuestions(t *testing.T) {
+	currentText := "早餐几点？早餐几点结束？"
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("早餐几点", "time"),
+		validRuntimeIntentProtocolTask("早餐几点结束", "time"),
+	}}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
+		t.Fatalf("overlapping but distinct original questions must pass one-to-one ownership: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTasks(t *testing.T) {
+	currentText := "早餐几点？停车免费吗？"
+	for _, tt := range []struct {
+		name      string
+		tasks     runtimeIntentTaskList
+		wantError string
+	}{
+		{
+			name: "extra task",
+			tasks: runtimeIntentTaskList{
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+				validRuntimeIntentProtocolTask("停车免费吗", "price"),
+				validRuntimeIntentProtocolTask("发票怎么开", "method"),
+			},
+			wantError: "extra executable business task",
+		},
+		{
+			name: "duplicate task",
+			tasks: runtimeIntentTaskList{
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+				validRuntimeIntentProtocolTask("早餐几点", "time"),
+			},
+			wantError: "duplicates atomic question",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: tt.tasks}, nil, currentText)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q error, got %v", tt.wantError, err)
+			}
+		})
+	}
 }
 
 func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaims(t *testing.T) {
@@ -87,7 +156,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaim
 		resolvedText string
 		wantError    string
 	}{
-		{name: "self contained original", text: "早餐几点", resolvedText: "早餐几点", wantError: "dependent original text"},
+		{name: "self contained original", text: "早餐几点", resolvedText: "酒店早餐几点", wantError: "context-dependent original text"},
 		{name: "confirmation remains dependent", text: "对吗", resolvedText: "对吗", wantError: "self-contained"},
 		{name: "demonstrative remains dependent", text: "那呢", resolvedText: "那呢", wantError: "self-contained"},
 		{name: "recent reference remains dependent", text: "刚才那个再说一遍", resolvedText: "刚才那个", wantError: "self-contained"},

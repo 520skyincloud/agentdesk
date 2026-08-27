@@ -7,6 +7,8 @@ import (
 	"agent-desk/internal/pkg/utils"
 )
 
+const runtimeIntentExplicitQuestionMarker = "\uE000"
+
 // currentRuntimeIntentSemanticText returns the customer text that every Intent
 // stage should classify. Voice transcripts are business input, not media
 // decoration, so they follow the same path as ordinary text.
@@ -33,6 +35,10 @@ func currentTurnTaskCandidates(text string) []string {
 	if display == "" {
 		return nil
 	}
+	display = strings.NewReplacer(
+		"?", runtimeIntentExplicitQuestionMarker+"?",
+		"？", runtimeIntentExplicitQuestionMarker+"？",
+	).Replace(display)
 	coarseParts := strings.FieldsFunc(display, func(r rune) bool {
 		switch r {
 		case '\n', '\r', ',', '，', '.', '。', ';', '；', '?', '？', '!', '！':
@@ -48,19 +54,21 @@ func currentTurnTaskCandidates(text string) []string {
 	candidates := make([]string, 0, len(parts))
 	seen := make(map[string]struct{}, len(parts))
 	for _, part := range parts {
+		explicitQuestion := strings.Contains(part, runtimeIntentExplicitQuestionMarker)
+		part = strings.ReplaceAll(part, runtimeIntentExplicitQuestionMarker, "")
 		part = cleanRuntimeQuestionLine(part)
 		part = trimRuntimeTaskCandidateLead(part)
 		if part == "" || isRuntimeBurstStructureLine(part) || isIntentTaskLeadOnly(part) {
 			continue
 		}
-		dependent := isDependentIntentTaskClause(part) || runtimeIntentAtomicCandidateRequiresContext(part)
+		dependent := isRuntimeIntentOutputConstraintClauseWithExplicitQuestion(part, explicitQuestion) || isDependentIntentTaskClause(part) || runtimeIntentAtomicCandidateRequiresContext(part)
 		if dependent {
 			if len(candidates) > 0 {
 				candidates[len(candidates)-1] = strings.TrimSpace(candidates[len(candidates)-1] + "，" + part)
 				continue
 			}
 		}
-		if !dependent && !runtimeBurstLineLooksLikeTask(part) && !runtimeIntentTaskLabelLooksLikeTask(part) {
+		if !dependent && !explicitQuestion && !runtimeBurstLineLooksLikeTask(part) && !runtimeIntentTaskLabelLooksLikeTask(part) {
 			continue
 		}
 		normalized := normalizeRuntimeKnowledgeQuery(part)
@@ -208,6 +216,31 @@ func isDependentIntentTaskClause(text string) bool {
 	default:
 		return runtimeIntentGenericFollowUpClause(compact)
 	}
+}
+
+func isRuntimeIntentOutputConstraintClause(text string) bool {
+	return isRuntimeIntentOutputConstraintClauseWithExplicitQuestion(text, strings.ContainsAny(text, "?？"))
+}
+
+func isRuntimeIntentOutputConstraintClauseWithExplicitQuestion(text string, explicitQuestion bool) bool {
+	compact := compactRuntimeIntentClause(text)
+	if explicitQuestion || runtimeIntentClauseHasSelfContainedQuestion(compact) {
+		return false
+	}
+	for _, prefix := range []string{"只要", "只说", "只回复", "只需要", "仅说", "仅回复", "仅需要", "仅"} {
+		if strings.HasPrefix(compact, prefix) && len(compact) > len(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentClauseHasSelfContainedQuestion(compact string) bool {
+	return containsAny(compact, []string{
+		"吗", "是否", "有没有", "能不能", "可不可以", "是不是",
+		"怎么", "如何", "多少", "几个", "几瓶", "几点", "多久", "什么时候",
+		"哪里", "在哪", "为什么", "谁", "什么",
+	})
 }
 
 func runtimeIntentGenericFollowUpClause(compact string) bool {

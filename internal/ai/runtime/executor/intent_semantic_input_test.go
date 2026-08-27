@@ -165,6 +165,44 @@ func TestCurrentTurnTaskCandidatesKeepsStandaloneReplayForContextResolution(t *t
 	}
 }
 
+func TestCurrentTurnTaskCandidatesAttachOutputConstraintsToPreviousQuestion(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{input: "外卖地址再说一遍，只要正确地址", want: "外卖地址再说一遍，只要正确地址"},
+		{input: "外卖地址怎么填？只说正确地址", want: "外卖地址怎么填，只说正确地址"},
+		{input: "再说一遍，只回复地址", want: "再说一遍，只回复地址"},
+		{input: "外卖地址怎么填？仅回复地址", want: "外卖地址怎么填，仅回复地址"},
+		{input: "外卖地址怎么填？仅正确地址", want: "外卖地址怎么填，仅正确地址"},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if len(got) != 1 || got[0] != tt.want {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want one constrained task %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestCurrentTurnTaskCandidatesKeepSelfContainedOnlyQuestionsIndependent(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  []string
+	}{
+		{input: "早餐几点？只要身份证可以入住吗？", want: []string{"早餐几点", "只要身份证可以入住吗"}},
+		{input: "早餐几点？只要身份证就可以入住？", want: []string{"早餐几点", "只要身份证就可以入住"}},
+		{input: "早餐几点？只需要身份证是否可以入住？", want: []string{"早餐几点", "只需要身份证是否可以入住"}},
+		{input: "早餐几点？仅身份证能不能入住？", want: []string{"早餐几点", "仅身份证能不能入住"}},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want %#v", tt.input, got, tt.want)
+		}
+		if !isMultiQuestionCurrentTurn(tt.input) {
+			t.Fatalf("self-contained only-question must keep multi-question coverage: %q", tt.input)
+		}
+	}
+}
+
 func TestCurrentTurnTaskCandidatesKeepsEllipticalFollowUpsWithTheirSubject(t *testing.T) {
 	for _, tt := range []struct {
 		input string
@@ -183,9 +221,12 @@ func TestCurrentTurnTaskCandidatesKeepsEllipticalFollowUpsWithTheirSubject(t *te
 }
 
 func TestRuntimeIntentGenericFollowUpDoesNotHideSelfContainedQuestions(t *testing.T) {
-	for _, input := range []string{"几点退房", "怎么投屏", "如何开门", "早餐在哪里吃", "发票多久能下载"} {
+	for _, input := range []string{"几点退房", "怎么投屏", "如何开门", "早餐在哪里吃", "发票多久能下载", "只要身份证可以入住吗"} {
 		if isDependentIntentTaskClause(input) {
 			t.Fatalf("self-contained question must not be treated as an elliptical follow-up: %q", input)
+		}
+		if isRuntimeIntentOutputConstraintClause(input) {
+			t.Fatalf("self-contained question must not be treated as an output constraint: %q", input)
 		}
 	}
 }
