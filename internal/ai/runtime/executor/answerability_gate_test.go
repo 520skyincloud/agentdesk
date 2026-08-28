@@ -1015,6 +1015,170 @@ func TestKnowledgePolicyKeepsPureMissingKnowledgeHandoff(t *testing.T) {
 	}
 }
 
+func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	storeHit := rag.RetrieveResult{KnowledgeBaseID: 1, ChunkID: 101, Title: "门店用品", Content: "问题：拖鞋没了怎么办\n答案：当前资料没有可用处理方式。", Score: 0.91}
+	storeDiscardedHit := rag.RetrieveResult{KnowledgeBaseID: 1, ChunkID: 102, Title: "门店其他用品", Content: "问题：浴巾放在哪里\n答案：浴巾在房间衣柜内。", Score: 0.89}
+	generalHit := rag.RetrieveResult{KnowledgeBaseID: 2, ChunkID: 201, Title: "通用用品", Content: "问题：可以补充用品吗\n答案：具体情况需要同事处理。", Score: 0.88}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1, 2},
+		result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1, 2},
+			RawHits:          []rag.RetrieveResult{storeHit, storeDiscardedHit, generalHit},
+			Hits:             []rag.RetrieveResult{storeHit},
+			ContextResults:   []rag.RetrieveResult{storeHit},
+			ContextText:      storeHit.Content,
+			TraceSummary: callbacks.RetrieverTraceSummary{
+				TopK:         10,
+				HitCount:     1,
+				ContextCount: 1,
+			},
+			TraceItems: []callbacks.RetrieverTraceItem{
+				{Query: "拖鞋没了", KnowledgeBaseID: 1, DocumentID: 101, Score: 0.91, RawRankNo: 1, ContextRankNo: 1, UsedInContext: true},
+				{Query: "拖鞋没了", KnowledgeBaseID: 1, DocumentID: 102, Score: 0.89, RawRankNo: 2, DiscardReason: "context_budget"},
+				{Query: "拖鞋没了", KnowledgeBaseID: 2, DocumentID: 201, Score: 0.88, RawRankNo: 3, DiscardReason: "context_budget"},
+			},
+		},
+	}
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		if len(tasks) != 1 {
+			t.Fatalf("expected one knowledge task, got %#v", tasks)
+		}
+		return knowledgeEvidenceJudgeOutcome{
+			Applied: true,
+			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				tasks[0].TaskID: {
+					knowledgeEvidenceLayerStore: {
+						Decision:       knowledgeEvidenceDecisionInsufficient,
+						DecisionSource: "model",
+						MissingAspects: []string{"处理方式"},
+					},
+					knowledgeEvidenceLayerGeneral: {
+						Decision:       knowledgeEvidenceDecisionInsufficient,
+						DecisionSource: "model",
+						MissingAspects: []string{"门店适用范围"},
+					},
+				},
+			},
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+				SchemaVersion:  knowledgeEvidenceJudgeSchemaVersion,
+				Status:         "completed",
+				TaskCount:      1,
+				CandidateCount: 3,
+			},
+		}
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	summary := &RunResult{}
+	state, err := (&KnowledgeAnswerabilityGate{
+		newRetriever: func(models.AIAgent) knowledgeContextRetriever { return retriever },
+		judge:        judge,
+	}).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("拖鞋没了", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusNoContext || !summary.handoffDirective {
+		t.Fatalf("all-pending knowledge must enter the existing handoff path, state=%#v summary=%#v", state, summary)
+	}
+	if summary.RetrieverCount != 3 || collector.Data.Retriever.Count != 3 || len(collector.Data.Retriever.Items) != 3 {
+		t.Fatalf("raw retrieval trace must survive all-pending early return, summary=%d retriever=%#v", summary.RetrieverCount, collector.Data.Retriever)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if trace.Status != "completed" || trace.TaskCount != 1 || trace.CandidateCount != 3 || len(trace.Tasks) != 1 {
+		t.Fatalf("judge batch trace must survive all-pending early return: %#v", trace)
+	}
+	taskTrace := trace.Tasks[0]
+	if taskTrace.CandidateCount != 3 || taskTrace.Decision != knowledgeEvidenceDecisionInsufficient || taskTrace.DecisionSource != "model" || len(taskTrace.Layers) != 2 {
+		t.Fatalf("unexpected all-pending task trace: %#v", taskTrace)
+	}
+	if taskTrace.Layers[0].Layer != knowledgeEvidenceLayerStore || taskTrace.Layers[0].CandidateCount != 2 || taskTrace.Layers[0].DecisionSource != "model" || strings.Join(taskTrace.Layers[0].MissingAspects, "|") != "处理方式" {
+		t.Fatalf("unexpected store layer trace: %#v", taskTrace.Layers[0])
+	}
+	if taskTrace.Layers[1].Layer != knowledgeEvidenceLayerGeneral || taskTrace.Layers[1].CandidateCount != 1 || taskTrace.Layers[1].DecisionSource != "model" || strings.Join(taskTrace.Layers[1].MissingAspects, "|") != "门店适用范围" {
+		t.Fatalf("unexpected general layer trace: %#v", taskTrace.Layers[1])
+	}
+}
+
+func TestApplyKnowledgeEvidenceJudgeOutcomeKeepsTaskAndLayerTraceBoundaries(t *testing.T) {
+	storeHit := rag.RetrieveResult{KnowledgeBaseID: 1, ChunkID: 101, Content: "问题：有外卖机器人吗\n答案：有外卖机器人的。", Score: 0.92}
+	generalHit := rag.RetrieveResult{KnowledgeBaseID: 2, ChunkID: 201, Content: "问题：外卖怎么取\n答案：请根据门店实际情况处理。", Score: 0.86}
+	batch := &runtimeKnowledgeRetrieveBatch{
+		Questions: []runtimeKnowledgeQuestionResult{{
+			TaskID: "T1",
+			Query:  "有外卖机器人吗，能送到房间吗",
+			Result: &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{1, 2},
+				RawHits:          []rag.RetrieveResult{storeHit, generalHit},
+				Hits:             []rag.RetrieveResult{storeHit, generalHit},
+				ContextResults:   []rag.RetrieveResult{storeHit, generalHit},
+				ContextText:      storeHit.Content + "\n" + generalHit.Content,
+			},
+		}},
+	}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1, 2}, retrievers.DefaultKnowledgeRetrieveOptions(), "有外卖机器人吗，能送到房间吗", batch.Questions)
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "T1",
+		Query:  "有外卖机器人吗，能送到房间吗",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: storeHit},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerGeneral, Hit: generalHit},
+		},
+	}}
+	outcome := knowledgeEvidenceJudgeOutcome{
+		Applied: true,
+		Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+			"T1": {
+				knowledgeEvidenceLayerStore: {
+					Decision:             knowledgeEvidenceDecisionPartial,
+					DecisionSource:       "model",
+					SelectedCandidateIDs: []string{"T1C1"},
+					SupportedFacts: []knowledgeEvidenceFact{{
+						FactID: "T1F1", Aspect: "existence", Statement: "有外卖机器人的。",
+					}},
+					MissingAspects: []string{"配送范围"},
+				},
+				knowledgeEvidenceLayerGeneral: {
+					Decision:       knowledgeEvidenceDecisionInsufficient,
+					DecisionSource: "model",
+					MissingAspects: []string{"门店是否配置", "配送范围"},
+				},
+			},
+		},
+		Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+			SchemaVersion:  knowledgeEvidenceJudgeSchemaVersion,
+			Status:         "completed",
+			TaskCount:      1,
+			CandidateCount: 2,
+		},
+	}
+
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, tasks, outcome)
+	if len(trace.Tasks) != 1 {
+		t.Fatalf("expected one task trace, got %#v", trace.Tasks)
+	}
+	taskTrace := trace.Tasks[0]
+	if taskTrace.SelectedLayer != knowledgeEvidenceLayerStore || taskTrace.Decision != knowledgeEvidenceDecisionPartial || taskTrace.DecisionSource != "model" || taskTrace.CandidateCount != 2 {
+		t.Fatalf("unexpected selected task trace: %#v", taskTrace)
+	}
+	if len(taskTrace.SupportedFacts) != 1 || taskTrace.SupportedFacts[0].Aspect != "existence" || strings.Join(taskTrace.MissingAspects, "|") != "配送范围" {
+		t.Fatalf("task trace must keep only the selected store fact boundary: %#v", taskTrace)
+	}
+	if len(taskTrace.Layers) != 2 {
+		t.Fatalf("expected store and general layer traces, got %#v", taskTrace.Layers)
+	}
+	if len(taskTrace.Layers[0].SupportedFacts) != 1 || strings.Join(taskTrace.Layers[0].MissingAspects, "|") != "配送范围" {
+		t.Fatalf("store layer fact boundary was not preserved: %#v", taskTrace.Layers[0])
+	}
+	if len(taskTrace.Layers[1].SupportedFacts) != 0 || strings.Join(taskTrace.Layers[1].MissingAspects, "|") != "门店是否配置|配送范围" {
+		t.Fatalf("general layer must keep its own missing aspects: %#v", taskTrace.Layers[1])
+	}
+}
+
 func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibling(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	collector := callbacks.NewRuntimeTraceCollector()

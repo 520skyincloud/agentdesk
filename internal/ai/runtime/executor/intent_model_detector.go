@@ -389,7 +389,7 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 			Text:               strings.TrimSpace(task.Text),
 			ResolvedText:       resolvedText,
 			SourceRefs:         normalizeRuntimeIntentSourceRefs([]string(task.SourceRefs)),
-			NeedsKnowledge:     task.NeedsKnowledge || intent == "hotel_info",
+			NeedsKnowledge:     task.NeedsKnowledge || intent == "hotel_info" || intent == "service_request",
 			NeedsResource:      task.NeedsResource || intent == "hotel_variable",
 			NeedsTool:          task.NeedsTool,
 			NeedsHumanRoute:    task.NeedsHumanRoute || intent == "human_complaint_risk",
@@ -1056,6 +1056,9 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 			if isCheckinProcessSubIntent(task.SubIntent) {
 				hasCheckinKnowledge = true
 			}
+		case "service_request":
+			hasKnowledge = true
+			task.NeedsKnowledge = true
 		}
 		if task.NeedsKnowledge {
 			hasKnowledge = true
@@ -1445,7 +1448,7 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		if task.Intent == "" {
 			continue
 		}
-		if task.Intent == "hotel_info" {
+		if task.Intent == "hotel_info" || task.Intent == "service_request" {
 			task.NeedsKnowledge = true
 		}
 		if task.Intent == "hotel_variable" {

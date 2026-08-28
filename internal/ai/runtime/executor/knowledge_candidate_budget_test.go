@@ -227,6 +227,37 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsCompleteStoreFAQInSingleSlot(
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsSemanticStoreServiceFAQAtTightQuotas(t *testing.T) {
+	base := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.97, Content: "问题：如何让同事送拖鞋\n答案：同事会把拖鞋送到房间。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.91, Content: "问题：需要额外拖鞋怎么办\n答案：可前往洗衣房领取。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：拖鞋没了怎么办\n答案：转接"}},
+		},
+	}
+	question, _ := splitKnowledgeEvidenceFAQForQuery(base.Candidates[1].Hit, base.Query)
+	if match := knowledgeEvidenceFAQQuestionMatchScore(question, base.Query); match >= 0.82 {
+		t.Fatalf("test must exercise the semantic store-service eligibility path, got %.3f", match)
+	}
+	for _, quota := range []int{1, 2} {
+		limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{base}, map[string]string{"T1": "action_request"}, quota)
+		if len(limited) != 1 || len(limited[0].Candidates) != quota {
+			t.Fatalf("quota %d returned unexpected candidates: %#v", quota, limited)
+		}
+		seenTarget := false
+		for _, candidate := range limited[0].Candidates {
+			if candidate.CandidateID == "T1C2" {
+				seenTarget = true
+			}
+		}
+		if !seenTarget {
+			t.Fatalf("quota %d dropped the lower-ranked complete store service FAQ: %#v", quota, limited[0].Candidates)
+		}
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCompoundBudgetKeepsLowerRankCompleteStoreFAQ(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",

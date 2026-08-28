@@ -1331,6 +1331,304 @@ func TestRepairHighConfidencePartialKnowledgeSelectionUsesCompleteExactFAQ(t *te
 	}
 }
 
+func TestRepairHighConfidenceServiceSupplyFAQUsesGroundedSelfServicePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		question string
+		answer   string
+		state    knowledgeEvidenceLayerSelection
+		wantItem string
+		wantSite string
+	}{
+		{
+			name:     "slippers insufficient",
+			query:    "拖鞋没了",
+			question: "需要额外拖鞋怎么办",
+			answer:   "如需额外拖鞋，可前往1313对面洗衣房领取。",
+			state:    insufficientKnowledgeEvidenceLayerSelection(),
+			wantItem: "拖鞋",
+			wantSite: "1313对面洗衣房",
+		},
+		{
+			name:     "toothbrush partial",
+			query:    "牙刷没有了",
+			question: "需要额外牙刷怎么办",
+			answer:   "额外牙刷可以到1313对面洗衣房自取。",
+			state: knowledgeEvidenceLayerSelection{
+				Decision:             knowledgeEvidenceDecisionPartial,
+				SelectedCandidateIDs: []string{"T1C1"},
+				SupportedFacts: []knowledgeEvidenceFact{{
+					FactID: "T1F1", Aspect: "location", Statement: "牙刷在1313对面洗衣房。",
+				}},
+				MissingAspects: []string{"处理方式"},
+			},
+			wantItem: "牙刷",
+			wantSite: "1313对面洗衣房",
+		},
+		{
+			name:     "tissue insufficient",
+			query:    "纸巾不够",
+			question: "纸巾不够怎么办",
+			answer:   "可以前往1020对面的洗衣房拿取纸巾。",
+			state:    insufficientKnowledgeEvidenceLayerSelection(),
+			wantItem: "纸巾",
+			wantSite: "1020对面的洗衣房",
+		},
+		{
+			name:     "towel insufficient",
+			query:    "浴巾在哪拿",
+			question: "额外浴巾在哪里领取",
+			answer:   "额外浴巾可前往1313对面洗衣房领取。",
+			state:    insufficientKnowledgeEvidenceLayerSelection(),
+			wantItem: "浴巾",
+			wantSite: "1313对面洗衣房",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Intent:    "service_request",
+				Query:     tt.query,
+				SubIntent: "supplies_self_help",
+				Objective: "action_request",
+				Entities:  []knowledgeEvidenceJudgeEntity{{Text: tt.wantItem, Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, tt.wantItem+"自取", "问题："+tt.question+"\n答案："+tt.answer, 0.92),
+				}},
+			}
+			question, answer := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+			if match := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query); match >= 0.82 {
+				t.Fatalf("test must cover semantic FAQ rescue below the character-match gate, got %.3f", match)
+			}
+			selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+				"T1": {knowledgeEvidenceLayerStore: tt.state},
+			}
+			if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+				t.Fatalf("expected one grounded store FAQ repair, repaired=%d selection=%#v", repaired, selections)
+			}
+			selection := selections["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "store_exact_faq_rescue" {
+				t.Fatalf("unexpected repaired selection: %#v", selection)
+			}
+			aspects := make(map[string]bool)
+			joined := ""
+			for _, fact := range selection.SupportedFacts {
+				aspects[fact.Aspect] = true
+				joined += fact.Statement + " "
+			}
+			if !aspects["method"] || !aspects["location"] {
+				t.Fatalf("self-service path must retain method and location facts: %#v", selection.SupportedFacts)
+			}
+			if !strings.Contains(joined, tt.wantSite) {
+				t.Fatalf("repaired facts lost the pickup location: %#v", selection.SupportedFacts)
+			}
+			if missing := missingRequiredKnowledgeEvidenceAspects(task, selection.SupportedFacts); len(missing) != 0 {
+				t.Fatalf("repaired self-service FAQ must be complete, missing=%#v facts=%#v answer=%q", missing, selection.SupportedFacts, answer)
+			}
+		})
+	}
+}
+
+func TestHighConfidenceServiceSupplyFAQRejectsSameLayerConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "service_request",
+		Query:     "拖鞋没了",
+		SubIntent: "supplies_self_help",
+		Objective: "action_request",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往1313对面洗衣房领取。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋领取", "问题：额外拖鞋去哪里拿\n答案：可前往1020对面洗衣房领取。", 0.92)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("conflicting pickup locations must not be rescued: %#v", selection)
+	}
+}
+
+func TestHighConfidenceServiceRequestAcceptsActionableLocationWithoutMethodVerb(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "service_request",
+		Query:     "遥控器找不到",
+		SubIntent: "room_supply_location",
+		Objective: "action_request",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "遥控器", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "遥控器位置", "问题：遥控器一般放在哪里\n答案：遥控器在床头柜抽屉或电视柜里。", 0.93),
+		}},
+	}
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("an actionable item location must complete the service request: %#v ok=%v", selection, ok)
+	}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, selection.SupportedFacts); len(missing) != 0 {
+		t.Fatalf("the grounded location must satisfy the service action, missing=%#v facts=%#v", missing, selection.SupportedFacts)
+	}
+}
+
+func TestHighConfidenceServiceSemanticFAQRejectsDifferentOperation(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "service_request",
+		Query:     "我想把房间空调温度调低一点",
+		SubIntent: "air_conditioner_control",
+		Objective: "action_request",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "空调", Type: "facility"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "关闭空调", "问题：关闭空调的方法\n答案：按遥控器电源键关闭空调。", 0.96),
+		}},
+	}
+	question, _ := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+	if match := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query); match >= 0.82 {
+		t.Fatalf("test must exercise semantic rescue rather than exact question matching, got %.3f", match)
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("temperature adjustment must not be rescued by a turn-off FAQ: %#v", selection)
+	}
+}
+
+func TestHighConfidenceServiceSupplyFAQRejectsNonnumericLocationConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往洗衣房领取。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋领取", "问题：额外拖鞋去哪里拿\n答案：可到百宝箱领取。", 0.92)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("different named pickup locations must block deterministic rescue: %#v", selection)
+	}
+}
+
+func TestHighConfidenceServiceSupplyFAQRejectsPickupDeliveryConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往洗衣房自取。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋配送", "问题：需要额外拖鞋怎么办\n答案：同事会把拖鞋送到房间。", 0.92)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("self-pickup and room delivery must not be treated as compatible facts: %#v", selection)
+	}
+}
+
+func TestHighConfidenceServiceSupplyFAQAllowsCompatibleLocationMethodSupplements(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋位置", "问题：额外拖鞋在哪里\n答案：额外拖鞋在洗衣房。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往洗衣房领取。", 0.92)},
+		},
+	}
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("compatible location and pickup guidance must remain eligible: %#v ok=%v", selection, ok)
+	}
+}
+
+func TestKnowledgeEvidenceFAQConflictSeparatesScopeDimensions(t *testing.T) {
+	if !knowledgeEvidenceFAQAnswersConflict("所有房间都配有该设施。", "只有部分房型配有该设施。") {
+		t.Fatal("all-room and partial-room coverage must conflict")
+	}
+	if !knowledgeEvidenceFAQAnswersConflict("外卖只能放一楼。", "外卖可以送到房间。") {
+		t.Fatal("first-floor-only and room-delivery scopes must conflict")
+	}
+	if knowledgeEvidenceFAQAnswersConflict("所有房间都配有该设施。", "外卖可以送到房间。") {
+		t.Fatal("different scope dimensions are compatible supplements, not a conflict")
+	}
+	if !knowledgeEvidenceFAQAnswersConflict("服务每天开放。", "服务仅工作日开放。") {
+		t.Fatal("daily and workday-only conditions must conflict")
+	}
+}
+
+func TestKnowledgeEvidenceLayerPriorityKeepsStoreBodyOverGeneralHandoff(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "拖鞋没了",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：拖鞋没了怎么办\n答案：可前往1313对面洗衣房领取。", 0.94)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerGeneral, Hit: judgeTestHit(2, 201, "用品服务", "问题：拖鞋没了怎么办\n答案：转接", 0.99)},
+		},
+	}
+	selections := map[string]knowledgeEvidenceLayerSelection{
+		knowledgeEvidenceLayerStore: {
+			Decision:             knowledgeEvidenceDecisionDirectSingle,
+			SelectedCandidateIDs: []string{"T1C1"},
+			SupportedFacts:       []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "method", Statement: "可前往1313对面洗衣房领取。"}},
+		},
+		knowledgeEvidenceLayerGeneral: {
+			Decision:             knowledgeEvidenceDecisionDirectSingle,
+			SelectedCandidateIDs: []string{"T1C2"},
+		},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{"T1C1": task.Candidates[0], "T1C2": task.Candidates[1]}
+	if got := selectKnowledgeEvidenceLayer(selections, candidates, task.Query); got != knowledgeEvidenceLayerStore {
+		t.Fatalf("store body must win over general handoff, got %q", got)
+	}
+}
+
+func TestKnowledgeEvidenceLayerPriorityKeepsExactStoreHandoffOverGeneralBody(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "床单有毛发帮我换一下",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "更换床单", "问题：床单有毛发帮我换一下\n答案：转接", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerGeneral, Hit: judgeTestHit(2, 201, "布草", "问题：床单有毛发怎么办\n答案：可以自行到洗衣房拿床单。", 0.99)},
+		},
+	}
+	selections := map[string]knowledgeEvidenceLayerSelection{
+		knowledgeEvidenceLayerStore:   {Decision: knowledgeEvidenceDecisionDirectSingle, SelectedCandidateIDs: []string{"T1C1"}},
+		knowledgeEvidenceLayerGeneral: {Decision: knowledgeEvidenceDecisionDirectSingle, SelectedCandidateIDs: []string{"T1C2"}, SupportedFacts: []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "method", Statement: "可以自行到洗衣房拿床单。"}}},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{"T1C1": task.Candidates[0], "T1C2": task.Candidates[1]}
+	if got := selectKnowledgeEvidenceLayer(selections, candidates, task.Query); got != knowledgeEvidenceLayerStore {
+		t.Fatalf("exact store handoff must win over general body, got %q", got)
+	}
+}
+
+func TestRepairHighConfidenceKnowledgeSelectionsKeepsTasksIndependent(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{
+		{
+			TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+			Entities:   []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往1313对面洗衣房领取。", 0.93)}},
+		},
+		{
+			TaskID: "T2", Intent: "service_request", Query: "帮我换个新枕头", SubIntent: "room_supply_request", Objective: "action_request",
+			Entities:   []knowledgeEvidenceJudgeEntity{{Text: "枕头", Type: "supply"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T2C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "其他用品", "问题：哪里能拿牙刷\n答案：牙刷在洗衣房自取。", 0.91)}},
+		},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+		"T2": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections(tasks, selections); repaired != 1 {
+		t.Fatalf("only the grounded task should be rescued, repaired=%d selections=%#v", repaired, selections)
+	}
+	if got := selections["T1"][knowledgeEvidenceLayerStore]; got.Decision != knowledgeEvidenceDecisionDirectSingle || len(got.SupportedFacts) == 0 {
+		t.Fatalf("first task must retain its rescued answer: %#v", got)
+	}
+	if got := selections["T2"][knowledgeEvidenceLayerStore]; got.Decision != knowledgeEvidenceDecisionInsufficient || len(got.SelectedCandidateIDs) != 0 || len(got.SupportedFacts) != 0 {
+		t.Fatalf("unrelated second task must remain independently insufficient: %#v", got)
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeResponseDowngradesMissingCompoundSlot(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID:    "task-1",
@@ -2330,6 +2628,7 @@ func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *tes
 	task.Candidates = []knowledgeEvidenceJudgeCandidate{candidates["T1C1"], candidates["T1C2"]}
 	selection := knowledgeEvidenceLayerSelection{
 		Decision:             knowledgeEvidenceDecisionDirectCombined,
+		DecisionSource:       "model",
 		SelectedCandidateIDs: []string{"T1C1", "T1C2"},
 	}
 	got := reconcileSelectedFAQGuidanceFactsForTask(task, knowledgeEvidenceLayerStore, selection, candidates)
@@ -2342,6 +2641,9 @@ func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *tes
 	}
 	if len(fact.CriticalValues) != 2 || fact.CriticalValues[0] != "合柴" || fact.CriticalValues[1] != "艺林" {
 		t.Fatalf("only intersection members may remain mandatory: %#v", fact.CriticalValues)
+	}
+	if got.DecisionSource != "model" {
+		t.Fatalf("reconciliation must preserve the model decision source, got %q", got.DecisionSource)
 	}
 }
 

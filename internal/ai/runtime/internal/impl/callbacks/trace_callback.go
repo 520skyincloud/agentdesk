@@ -98,7 +98,9 @@ type KnowledgeEvidenceJudgeTraceData struct {
 type KnowledgeEvidenceJudgeTaskTraceData struct {
 	TaskID               string                                 `json:"taskId,omitempty"`
 	QueryPreview         string                                 `json:"queryPreview,omitempty"`
+	CandidateCount       int                                    `json:"candidateCount,omitempty"`
 	SelectedLayer        string                                 `json:"selectedLayer,omitempty"`
+	DecisionSource       string                                 `json:"decisionSource,omitempty"`
 	SelectedCandidateIDs []string                               `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData       `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                               `json:"missingAspects,omitempty"`
@@ -108,7 +110,9 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 
 type KnowledgeEvidenceJudgeLayerTraceData struct {
 	Layer                string                           `json:"layer,omitempty"`
+	CandidateCount       int                              `json:"candidateCount,omitempty"`
 	Decision             string                           `json:"decision,omitempty"`
+	DecisionSource       string                           `json:"decisionSource,omitempty"`
 	SelectedCandidateIDs []string                         `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                         `json:"missingAspects,omitempty"`

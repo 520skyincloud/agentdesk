@@ -614,6 +614,7 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 		task.NeedsKnowledge = true
 		task.NeedsTool = false
 	case "service_request":
+		task.NeedsKnowledge = true
 		task.NeedsTool = false
 	case "interaction":
 		task.NeedsKnowledge = false

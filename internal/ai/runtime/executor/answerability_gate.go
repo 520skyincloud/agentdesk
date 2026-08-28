@@ -52,6 +52,7 @@ type KnowledgeAnswerabilityGate struct {
 
 type runtimeKnowledgeQuestionResult struct {
 	TaskID         string
+	Intent         string
 	Query          string
 	EvidenceQuery  string
 	SubIntent      string
@@ -64,6 +65,7 @@ type runtimeKnowledgeQuestionResult struct {
 
 type runtimeKnowledgeQuestionSpec struct {
 	TaskID    string
+	Intent    string
 	Query     string
 	SubIntent string
 	Objective string
@@ -256,6 +258,7 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 		seenTaskIDs[taskID] = struct{}{}
 		spec := runtimeKnowledgeQuestionSpec{
 			TaskID:    taskID,
+			Intent:    canonicalIntentCode(task.Intent),
 			Query:     query,
 			SubIntent: strings.TrimSpace(task.SubIntent),
 			Objective: semanticGateNormalizeObjective(task.Objective),
@@ -552,6 +555,7 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 	for index, question := range questions {
 		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
 			TaskID:        strings.TrimSpace(question.TaskID),
+			Intent:        canonicalIntentCode(question.Intent),
 			Query:         strings.TrimSpace(question.Query),
 			EvidenceQuery: strings.TrimSpace(evidenceQueries[index]),
 			SubIntent:     strings.TrimSpace(question.SubIntent),
@@ -572,6 +576,7 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	normalizedQuery := normalizeRuntimeKnowledgeQuery(query)
 	normalizedSubIntent := strings.ToLower(strings.TrimSpace(spec.SubIntent))
 	judgeTask := knowledgeEvidenceJudgeTask{
+		Intent:    canonicalIntentCode(spec.Intent),
 		Query:     query,
 		Objective: semanticGateNormalizeObjective(spec.Objective),
 		Entities:  make([]knowledgeEvidenceJudgeEntity, 0, len(spec.Entities)),
@@ -786,6 +791,7 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		}
 		item := knowledgeEvidenceJudgeTask{
 			TaskID:        question.TaskID,
+			Intent:        canonicalIntentCode(question.Intent),
 			Query:         evidenceQuery,
 			SubIntent:     strings.TrimSpace(question.SubIntent),
 			Objective:     semanticGateNormalizeObjective(question.Objective),
@@ -796,6 +802,9 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 			item.Entities = append(item.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, question.Query); intentTask != nil {
+			if item.Intent == "" {
+				item.Intent = canonicalIntentCode(intentTask.Intent)
+			}
 			if item.SubIntent == "" {
 				item.SubIntent = strings.TrimSpace(intentTask.SubIntent)
 			}
@@ -1354,8 +1363,9 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			selections[layer] = reconcileSelectedFAQGuidanceFactsForTask(task, layer, selection, candidateByID)
 		}
 		taskTrace := callbacks.KnowledgeEvidenceJudgeTaskTraceData{
-			TaskID:       task.TaskID,
-			QueryPreview: preview(task.Query, 120),
+			TaskID:         task.TaskID,
+			QueryPreview:   preview(task.Query, 120),
+			CandidateCount: len(task.Candidates),
 		}
 		selectedLayer := selectKnowledgeEvidenceLayer(selections, candidateByID, task.Query)
 		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
@@ -1365,7 +1375,9 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			}
 			taskTrace.Layers = append(taskTrace.Layers, callbacks.KnowledgeEvidenceJudgeLayerTraceData{
 				Layer:                layer,
+				CandidateCount:       knowledgeEvidenceTaskLayerCandidateCount(task, layer),
 				Decision:             selection.Decision,
+				DecisionSource:       selection.DecisionSource,
 				SelectedCandidateIDs: append([]string(nil), selection.SelectedCandidateIDs...),
 				SupportedFacts:       knowledgeEvidenceFactsToTrace(selection.SupportedFacts),
 				MissingAspects:       append([]string(nil), selection.MissingAspects...),
@@ -1377,6 +1389,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			selection := selections[selectedLayer]
 			selectedSelection = selection
 			taskTrace.Decision = selection.Decision
+			taskTrace.DecisionSource = selection.DecisionSource
 			taskTrace.SupportedFacts = knowledgeEvidenceFactsToTrace(selection.SupportedFacts)
 			taskTrace.MissingAspects = append([]string(nil), selection.MissingAspects...)
 			for _, candidateID := range selection.SelectedCandidateIDs {
@@ -1391,6 +1404,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		taskTrace.SelectedLayer = selectedLayer
 		if selectedLayer == "" {
 			taskTrace.Decision = knowledgeEvidenceDecisionInsufficient
+			taskTrace.DecisionSource = knowledgeEvidenceTraceDecisionSource(selections)
 		}
 		retrievers.RebuildKnowledgeRetrieveSelection(question.Result, selectedHits)
 		appendKnowledgeEvidenceFactBoundary(question.Result, task.TaskID, selectedSelection)
@@ -1400,6 +1414,25 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 	return trace
+}
+
+func knowledgeEvidenceTaskLayerCandidateCount(task knowledgeEvidenceJudgeTask, layer string) int {
+	count := 0
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) == strings.TrimSpace(layer) {
+			count++
+		}
+	}
+	return count
+}
+
+func knowledgeEvidenceTraceDecisionSource(selections map[string]knowledgeEvidenceLayerSelection) string {
+	for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+		if source := strings.TrimSpace(selections[layer].DecisionSource); source != "" {
+			return source
+		}
+	}
+	return ""
 }
 
 func knowledgeEvidenceFactsToTrace(facts []knowledgeEvidenceFact) []callbacks.KnowledgeEvidenceFactTraceData {
@@ -2007,6 +2040,18 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		return state, nil
 	}
 	result := batch.Merged
+	if result != nil {
+		rawCandidateCount := runtimeRetrieverRawCandidateCount(result)
+		if state.Input.Summary != nil {
+			state.Input.Summary.RetrieverCount = rawCandidateCount
+		}
+		if state.Input.Collector != nil {
+			traceSummary := result.TraceSummary
+			traceSummary.HitCount = rawCandidateCount
+			state.Input.Collector.SetRetrieverSummary(traceSummary)
+			state.Input.Collector.AddRetrieverItems(result.TraceItems)
+		}
+	}
 	storeKnowledgeBaseIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 	judgeTasks := buildKnowledgeEvidenceJudgeTasks(
 		batch,
@@ -2063,9 +2108,6 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
 		result = batch.Merged
 		state.RetrieveResult = result
-		if state.Input.Summary != nil && result != nil {
-			state.Input.Summary.RetrieverCount = len(result.Hits)
-		}
 		for _, pending := range pendingQuestions {
 			if pending.HandoffHit.Content != "" {
 				markKnowledgeHandoffDirective(state.Input, pending.HandoffHit)
@@ -2107,12 +2149,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
 	}
 	state.RetrieveResult = result
-	if state.Input.Summary != nil && result != nil {
-		state.Input.Summary.RetrieverCount = len(result.Hits)
-	}
 	if state.Input.Collector != nil && result != nil {
-		state.Input.Collector.SetRetrieverSummary(result.TraceSummary)
-		state.Input.Collector.AddRetrieverItems(result.TraceItems)
 		state.Input.Collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(state.Input.Request, result))
 	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
@@ -2129,6 +2166,19 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func runtimeRetrieverRawCandidateCount(result *retrievers.KnowledgeRetrieveResult) int {
+	if result == nil {
+		return 0
+	}
+	if len(result.RawHits) > 0 {
+		return len(result.RawHits)
+	}
+	if len(result.TraceItems) > 0 {
+		return len(result.TraceItems)
+	}
+	return len(result.Hits)
 }
 
 func runtimeReplyPlanHasIndependentNonKnowledgeWork(plan callbacks.ReplyPlanTraceData) bool {
