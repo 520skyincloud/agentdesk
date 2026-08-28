@@ -363,9 +363,11 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if candidateIndex := taskCandidates[taskIndex]; candidateIndex >= 0 && candidateIndex < len(candidates) {
 			candidateText = candidates[candidateIndex]
 		}
-		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText) ||
-			runtimeIntentProtocolRelationAuthorizesContextResolution(task, candidateText, sourceTexts)
 		resolution := semanticGateNormalizeResolution(task.ResolutionState)
+		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText) ||
+			runtimeIntentProtocolRelationAuthorizesContextResolution(task, candidateText, sourceTexts) ||
+			(resolution == runtimeIntentResolutionResolvedFromContext &&
+				runtimeIntentProtocolCurrentTurnContextAuthorizesResolution(task, candidateText, sourceTexts))
 		if resolution == runtimeIntentResolutionResolvedFromContext && !candidateRequiresContext {
 			return fmt.Errorf("intentTasks[%d].resolutionState resolved_from_context requires context-dependent original text", taskIndex)
 		}
@@ -426,6 +428,18 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolCurrentTurnContextAuthorizesResolution(task runtimeIntentTaskJSON, originalText string, sourceTexts []string) bool {
+	relation := semanticGateNormalizeRelation(task.RelationToPrevious)
+	if relation != "independent" || len(task.SourceRefs) < 2 ||
+		!runtimeIntentProtocolTaskOwnsOriginalSource(task, originalText, sourceTexts) {
+		return false
+	}
+	resolvedText := strings.TrimSpace(task.ResolvedText)
+	return resolvedText != "" &&
+		normalizeRuntimeIntentProtocolAtomicText(resolvedText) != normalizeRuntimeIntentProtocolAtomicText(originalText) &&
+		!runtimeIntentAtomicCandidateRequiresContext(resolvedText)
 }
 
 func runtimeIntentProtocolRelationAuthorizesContextResolution(task runtimeIntentTaskJSON, originalText string, sourceTexts []string) bool {

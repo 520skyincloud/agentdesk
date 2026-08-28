@@ -179,6 +179,78 @@ func TestIntentSemanticGateSeparatesResolvableContextFromAdjacentAIReply(t *test
 	}
 }
 
+func TestIntentSemanticGateAcceptsCurrentTurnSourceContextWithoutHistoricalTurn(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "parking", Objective: "availability",
+			RelationToPrevious: "independent", ResolutionState: "resolved_from_context",
+			Text: "我开电车来的你懂我意思吗", ResolvedText: "酒店停车场有没有电车充电桩",
+			SourceRefs: []string{"U3", "U2"}, NeedsKnowledge: true,
+		}},
+	}
+
+	got := applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
+		RequireSemanticContract: true,
+		CurrentTurnRefsValid:    true,
+	})
+	task := got.Intent.IntentTasks[0]
+	if task.Intent != "hotel_info" || task.SubIntent != "parking" || !task.NeedsKnowledge || task.ResolutionState != "resolved_from_context" {
+		t.Fatalf("current-turn sourceRefs must authorize the model-resolved task without older history: %#v", task)
+	}
+	if hasSemanticGateViolation(got.Violations, "context_resolution_unavailable") {
+		t.Fatalf("current-turn source context must not be rejected as missing historical context: %#v", got.Violations)
+	}
+}
+
+func TestIntentSemanticGateDoesNotUseCurrentSourcesToFakeHistoricalReference(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "parking", Objective: "availability",
+			RelationToPrevious: "reference_previous", ResolutionState: "resolved_from_context",
+			Text: "我开电车来的你懂我意思吗", ResolvedText: "酒店停车场有没有电车充电桩",
+			SourceRefs: []string{"U3", "U2"}, NeedsKnowledge: true,
+		}},
+	}
+
+	got := applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
+		RequireSemanticContract: true,
+		CurrentTurnRefsValid:    true,
+	})
+	task := got.Intent.IntentTasks[0]
+	if task.Intent != "interaction" || task.SubIntent != "clarify" || task.NeedsKnowledge {
+		t.Fatalf("a declared historical reference still needs real adjacent history: %#v", task)
+	}
+	if !hasSemanticGateViolation(got.Violations, "context_resolution_unavailable") {
+		t.Fatalf("missing historical context must remain visible in the gate trace: %#v", got.Violations)
+	}
+}
+
+func TestIntentSemanticGateRequiresHistoricalContextForFollowUpEvenWithCurrentSources(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "parking", Objective: "availability",
+			RelationToPrevious: "follow_up", ResolutionState: "resolved_from_context",
+			Text: "我开电车来的你懂我意思吗", ResolvedText: "酒店停车场有没有电车充电桩",
+			SourceRefs: []string{"U3", "U2"}, NeedsKnowledge: true,
+		}},
+	}
+
+	got := applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
+		RequireSemanticContract: true,
+		CurrentTurnRefsValid:    true,
+	})
+	task := got.Intent.IntentTasks[0]
+	if task.Intent != "interaction" || task.SubIntent != "clarify" || task.NeedsKnowledge {
+		t.Fatalf("follow_up must continue to require real adjacent history: %#v", task)
+	}
+	if !hasSemanticGateViolation(got.Violations, "context_resolution_unavailable") {
+		t.Fatalf("missing follow-up history must remain visible in the gate trace: %#v", got.Violations)
+	}
+}
+
 func TestIntentSemanticGateAmbiguousTaskCannotExecuteActions(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:    "human_complaint_risk",

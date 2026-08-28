@@ -608,6 +608,7 @@ func TestNormalizeModelIntentTracePreservesV2InvalidCheckinTaskForFailClosedHand
 		PrimaryIntent:            "hotel_info",
 		IntentConfidence:         0.91,
 		SemanticContractExpected: true,
+		SourceRefsValidated:      true,
 		IntentTasks: []callbacks.IntentTaskTraceData{
 			{
 				Intent:             "hotel_info",
@@ -655,6 +656,54 @@ func TestNormalizeModelIntentTracePreservesV2InvalidCheckinTaskForFailClosedHand
 	}
 	if strings.Contains(intent.Reason, "redundant_invalid_resource_task_dropped") {
 		t.Fatalf("V2 must not run legacy task-count repair, got %q", intent.Reason)
+	}
+}
+
+func TestNormalizeModelIntentTraceNeverDropsV2ModelOwnedTask(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "早餐几点"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		IntentConfidence:         0.91,
+		SemanticContractExpected: true,
+		SourceRefsValidated:      true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+			{
+				Intent: "hotel_info", SubIntent: "parking", Objective: "price",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "停车收费吗", ResolvedText: "停车收费吗", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+		},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if len(intent.IntentTasks) != 2 {
+		t.Fatalf("V2 normalization must never silently delete a model-owned task: %#v", intent.IntentTasks)
+	}
+	if strings.Contains(intent.Reason, "current-turn grounding dropped") {
+		t.Fatalf("V2 must use strict protocol validation instead of post-model task deletion: %q", intent.Reason)
+	}
+}
+
+func TestNormalizeModelIntentTraceKeepsLegacyTaskCountUnchanged(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "早餐几点"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:    "hotel_info",
+		IntentConfidence: 0.91,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_info", SubIntent: "breakfast", Text: "早餐几点", NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "parking", Text: "停车收费吗", NeedsKnowledge: true},
+		},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if len(intent.IntentTasks) != 2 {
+		t.Fatalf("legacy normalization must preserve its previous task-count behavior: %#v", intent.IntentTasks)
+	}
+	if strings.Contains(intent.Reason, "current-turn grounding dropped") {
+		t.Fatalf("legacy Profile must not enable the new strict grounding filter: %q", intent.Reason)
 	}
 }
 

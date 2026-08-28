@@ -215,6 +215,9 @@ func generationConversationContextMode(task callbacks.ReplyTaskPlanTraceData) st
 	relation := strings.ToLower(strings.TrimSpace(task.RelationToPrevious))
 	resolution := strings.ToLower(strings.TrimSpace(task.ResolutionState))
 	if resolution == runtimeIntentResolutionResolvedFromContext {
+		if len(task.SourceRefs) > 1 && relation == "independent" {
+			return ""
+		}
 		return "adjacent"
 	}
 	switch relation {

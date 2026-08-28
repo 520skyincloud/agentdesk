@@ -181,6 +181,34 @@ func TestBuildGenerateStageMessagesAddsAdjacentContextOnlyForDependentTasks(t *t
 	}
 }
 
+func TestBuildGenerateStageMessagesDoesNotInjectOldHistoryForCurrentTurnSourceContext(t *testing.T) {
+	history := []*schema.Message{
+		schema.UserMessage("[历史消息][客户] 之前问过早餐几点"),
+		schema.AssistantMessage("[历史消息][AI客服] 早餐暂不提供。", nil),
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "parking", OutputKind: "text", ReplyRequired: true,
+		Text: "我开电车来的你懂我意思吗", ResolvedText: "酒店停车场有没有电车充电桩",
+		RelationToPrevious: "independent", ResolutionState: "resolved_from_context", SourceRefs: []string{"U3", "U2"},
+	}}}
+
+	got := buildGenerateStageMessages(
+		RunInput{UserMessage: models.Message{Content: "我开电车来的你懂我意思吗"}},
+		adapter.HistoryBuildResult{Messages: history},
+		callbacks.IntentTraceData{},
+		plan,
+		append([]*schema.Message(nil), history...),
+		nil,
+	)
+	joined := joinSchemaMessageContents(got)
+	if strings.Contains(joined, "之前问过早餐") || strings.Contains(joined, "早餐暂不提供") {
+		t.Fatalf("current-turn sourceRefs already resolve the task; old history must not be injected: %q", joined)
+	}
+	if !strings.Contains(joined, "酒店停车场有没有电车充电桩") {
+		t.Fatalf("the self-contained current task must remain in Generate input: %q", joined)
+	}
+}
+
 func TestBuildGenerateStageMessagesConversationRecapUsesAtMostEightRecentMessages(t *testing.T) {
 	historyMessages := make([]*schema.Message, 0, 10)
 	for index := 1; index <= 10; index++ {

@@ -249,6 +249,7 @@ type IntentTraceData struct {
 	MixedSubTasks            []string              `json:"mixedSubTasks,omitempty"`
 	IntentTasks              []IntentTaskTraceData `json:"intentTasks,omitempty"`
 	SemanticContractExpected bool                  `json:"semanticContractExpected,omitempty"`
+	SourceRefsValidated      bool                  `json:"sourceRefsValidated,omitempty"`
 	ToolCodes                []string              `json:"toolCodes,omitempty"`
 	HumanRoutePolicy         string                `json:"humanRoutePolicy,omitempty"`
 	MatchedConfigID          int64                 `json:"matchedConfigId,omitempty"`

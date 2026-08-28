@@ -890,12 +890,41 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsOrderedSpansFromUnpunctuatedP
 		validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability"),
 		validRuntimeIntentProtocolTask("发票咋开", "method"),
 	}
-	tasks[4].RelationToPrevious = "reference_previous"
-	tasks[4].ResolutionState = "resolved_from_context"
 	tasks[4].ResolvedText = "酒店停车场有没有充电桩"
 
 	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: tasks}, nil, currentText); err != nil {
 		t.Fatalf("ordered literal spans must be accepted for an uncertain coarse paragraph: %v", err)
+	}
+}
+
+func TestRuntimeIntentProtocolDoesNotTreatUnderstandingMarkerAsHistoricalReference(t *testing.T) {
+	text := "我开电车来的你懂我意思吗"
+	if runtimeIntentAtomicCandidateRequiresContext(text) {
+		t.Fatalf("a self-contained implied charging question must not require older history: %q", text)
+	}
+	task := validRuntimeIntentProtocolTask(text, "availability")
+	task.ResolvedText = "酒店有没有电车充电桩"
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, text); err != nil {
+		t.Fatalf("the model may classify the implied question as independent and clear: %v", err)
+	}
+	if !runtimeIntentAtomicCandidateRequiresContext("你懂我意思吗") {
+		t.Fatal("the standalone discourse marker must still require real adjacent context")
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAcceptsCurrentTurnSourceResolution(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 有没有停车场",
+		"2. [文字] 我开电车来的你懂我意思吗",
+	})
+	task := validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability")
+	task.RelationToPrevious = "independent"
+	task.ResolutionState = "resolved_from_context"
+	task.ResolvedText = "酒店停车场有没有电车充电桩"
+	task.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, burst); err != nil {
+		t.Fatalf("validated current-turn sourceRefs must authorize context resolution: %v", err)
 	}
 }
 

@@ -36,6 +36,7 @@ type runtimeIntentSemanticGateContext struct {
 	HasResolvableAdjacentContext bool
 	HasAdjacentAIReply           bool
 	RequireSemanticContract      bool
+	CurrentTurnRefsValid         bool
 }
 
 type runtimeIntentSemanticViolation struct {
@@ -157,7 +158,7 @@ func applyRuntimeIntentSemanticConsistencyGate(
 				Detail:    "ambiguous or unresolved task cannot execute knowledge, resource, tool, or handoff actions",
 			})
 		case runtimeIntentResolutionResolvedFromContext:
-			if !semanticGateHasResolvableAdjacentContext(context) || !semanticGateRelationUsesPrevious(semantic.RelationToPrevious) {
+			if !semanticGateTaskHasResolvableContext(task, semantic, context) {
 				task = semanticGateClarificationTask(task)
 				allTasksClear = false
 				result.Violations = append(result.Violations, runtimeIntentSemanticViolation{
@@ -253,6 +254,16 @@ func applyRuntimeIntentSemanticConsistencyGate(
 
 func semanticGateHasResolvableAdjacentContext(context runtimeIntentSemanticGateContext) bool {
 	return context.HasResolvableAdjacentContext || context.HasAdjacentContext
+}
+
+func semanticGateTaskHasResolvableContext(task callbacks.IntentTaskTraceData, semantic runtimeIntentTaskSemantics, context runtimeIntentSemanticGateContext) bool {
+	relation := semanticGateNormalizeRelation(semantic.RelationToPrevious)
+	if context.CurrentTurnRefsValid &&
+		len(task.SourceRefs) > 1 &&
+		relation == "independent" {
+		return true
+	}
+	return semanticGateHasResolvableAdjacentContext(context) && semanticGateRelationUsesPrevious(semantic.RelationToPrevious)
 }
 
 func semanticGateHasAdjacentAIReply(context runtimeIntentSemanticGateContext) bool {

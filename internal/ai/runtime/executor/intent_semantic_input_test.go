@@ -88,6 +88,9 @@ func TestRuntimeIntentPromptAlwaysDelegatesTaskBoundariesToModel(t *testing.T) {
 		if !strings.Contains(prompt, "【当前轮逐题识别】") || !strings.Contains(prompt, "任务数量和边界只能由你根据完整语义判断") {
 			t.Fatalf("every current turn must delegate task boundaries to IntentDetect, got %q", prompt)
 		}
+		if !strings.Contains(prompt, "把前一个 URef 加入 sourceRefs") || !strings.Contains(prompt, "保持 relationToPrevious=independent") {
+			t.Fatalf("current-turn context must use sourceRefs without inventing a previous-turn relation, got %q", prompt)
+		}
 		if strings.Contains(prompt, "[POSSIBLE_ATOMIC_TASKS]") {
 			t.Fatalf("local candidate guesses must not be disclosed to IntentDetect, got %q", prompt)
 		}
