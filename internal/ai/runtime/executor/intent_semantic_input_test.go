@@ -91,6 +91,9 @@ func TestRuntimeIntentPromptAlwaysDelegatesTaskBoundariesToModel(t *testing.T) {
 		if !strings.Contains(prompt, "把前一个 URef 加入 sourceRefs") || !strings.Contains(prompt, "保持 relationToPrevious=independent") {
 			t.Fatalf("current-turn context must use sourceRefs without inventing a previous-turn relation, got %q", prompt)
 		}
+		if !strings.Contains(prompt, "即使 subIntent 相同也不能合并不同答案目标") || !strings.Contains(prompt, "餐饮推荐和游玩推荐两个 Task") {
+			t.Fatalf("IntentDetect must own and preserve separate answer targets even within one subtype, got %q", prompt)
+		}
 		if strings.Contains(prompt, "[POSSIBLE_ATOMIC_TASKS]") {
 			t.Fatalf("local candidate guesses must not be disclosed to IntentDetect, got %q", prompt)
 		}

@@ -9,6 +9,8 @@ func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) 
 	prompt := DefaultHotelIntentDetectPrompt()
 	for _, expected := range []string{
 		"每个任务还必须输出 objective、relationToPrevious、resolutionState、entities",
+		"即使 subIntent 相同也必须分别建 Task",
+		"必须拆成餐饮推荐和游玩推荐两个 Task",
 		"action_request 只表示客户明确要求系统或门店同事执行现实动作",
 		"relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected",
 		"同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent",

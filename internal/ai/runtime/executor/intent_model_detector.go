@@ -500,7 +500,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
 	}
-	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息都可能包含 0 个、1 个或多个任务，任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序。不同对象或不同知识主题必须拆开；只有同一对象紧密相关的多个方面才可合成 compound_information。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，不能只处理最后一句或最后一个问题。")
+	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息都可能包含 0 个、1 个或多个任务，任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序。不同对象、不同知识主题或需要不同答案证据的问题必须拆开；即使 subIntent 相同也不能合并不同答案目标，例如“有啥吃的推荐没，以及附近哪里好玩”必须由你输出餐饮推荐和游玩推荐两个 Task，不能因为都属于 surrounding_facilities 合成一个。只有同一对象紧密相关且需要共同回答的多个方面才可合成 compound_information。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，不能只处理最后一句或最后一个问题。")
 	b.WriteString("同一当前轮中，若后一个 URef 需要前一个 URef 才能补全，就把前一个 URef 加入 sourceRefs，并保持 relationToPrevious=independent；follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，充电 Task 的 text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context。")
 	b.WriteString("\n\n当前消息类型: ")
 	b.WriteString(string(req.UserMessage.MessageType))
