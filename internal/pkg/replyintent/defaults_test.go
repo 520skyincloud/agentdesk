@@ -15,6 +15,11 @@ func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) 
 		"不能只因为 confidence 较低就标记歧义",
 		"功能相近”不等于“同一物品",
 		"needsClarification=true 只能来自真正的 ambiguous 或 unresolved 任务",
+		"interaction/conversation_recap",
+		"是的啊/对/可以",
+		"单独“不是”",
+		"AI 追问姓名、房号或其他必要字段",
+		"玩的呢/玩的勒",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("default intent prompt missing semantic contract %q", expected)

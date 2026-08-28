@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -103,6 +104,160 @@ func TestBuildGenerateStageMessagesNeverExposesRawKnowledgeWithoutJudgeFacts(t *
 	}
 	if !strings.Contains(joined, "自包含问题：早餐几点") {
 		t.Fatalf("active task must remain visible after raw knowledge is removed, got %q", joined)
+	}
+}
+
+func TestBuildGenerateStageMessagesAddsAdjacentContextOnlyForDependentTasks(t *testing.T) {
+	tests := []struct {
+		name        string
+		currentText string
+		history     []*schema.Message
+		task        callbacks.ReplyTaskPlanTraceData
+		expected    []string
+	}{
+		{
+			name:        "short confirmation answers the ai question",
+			currentText: "是的啊",
+			history: []*schema.Message{
+				schema.UserMessage("[历史消息][客户][2026-08-27 23:39:00] 我是开电车来的你懂我意思吗"),
+				schema.AssistantMessage("[历史消息][AI客服][2026-08-27 23:39:02] 明白，您是问咱们这儿有没有充电桩吗？", nil),
+			},
+			task: callbacks.ReplyTaskPlanTraceData{
+				TaskID: "task-1", Intent: "hotel_info", SubIntent: "parking", OutputKind: "text", ReplyRequired: true,
+				Text: "是的啊", ResolvedText: "酒店停车场有没有充电桩", RelationToPrevious: "clarification_answer", ResolutionState: "resolved_from_context",
+			},
+			expected: []string{"客户：我是开电车来的你懂我意思吗", "AI客服：明白，您是问咱们这儿有没有充电桩吗？"},
+		},
+		{
+			name:        "slot value keeps the question that requested it",
+			currentText: "吴朝伟",
+			history: []*schema.Message{
+				schema.UserMessage("[历史消息][客户][2026-08-27 23:34:00] 帮我查一下入住信息"),
+				schema.AssistantMessage("[历史消息][AI客服][2026-08-27 23:34:02] 方便说下入住人姓名吗？", nil),
+			},
+			task: callbacks.ReplyTaskPlanTraceData{
+				TaskID: "task-1", Intent: "interaction", SubIntent: "clarify", OutputKind: "text", ReplyRequired: true,
+				Text: "吴朝伟", ResolvedText: "入住人姓名是吴朝伟", RelationToPrevious: "clarification_answer", ResolutionState: "resolved_from_context",
+			},
+			expected: []string{"客户：帮我查一下入住信息", "AI客服：方便说下入住人姓名吗？"},
+		},
+		{
+			name:        "elliptical reference keeps the nearest business exchange",
+			currentText: "玩的勒",
+			history: []*schema.Message{
+				schema.UserMessage("[历史消息][客户][2026-08-27 23:36:00] 附近有吃的没"),
+				schema.AssistantMessage("[历史消息][AI客服][2026-08-27 23:36:02] 附近有小吃和餐馆。", nil),
+			},
+			task: callbacks.ReplyTaskPlanTraceData{
+				TaskID: "task-1", Intent: "hotel_info", SubIntent: "surrounding_facilities", OutputKind: "text", ReplyRequired: true,
+				Text: "玩的勒", ResolvedText: "酒店附近有什么可以玩的地方", RelationToPrevious: "reference_previous", ResolutionState: "resolved_from_context",
+			},
+			expected: []string{"客户：附近有吃的没", "AI客服：附近有小吃和餐馆。"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			history := adapter.HistoryBuildResult{Messages: tt.history}
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{tt.task}}
+			got := buildGenerateStageMessages(
+				RunInput{UserMessage: models.Message{Content: tt.currentText}},
+				history,
+				callbacks.IntentTraceData{},
+				plan,
+				append([]*schema.Message(nil), tt.history...),
+				nil,
+			)
+			joined := joinSchemaMessageContents(got)
+			for _, expected := range tt.expected {
+				if !strings.Contains(joined, expected) {
+					t.Fatalf("bounded Generate context missing %q, got %q", expected, joined)
+				}
+			}
+			if strings.Contains(joined, "[历史消息]") {
+				t.Fatalf("bounded context must use safe role labels instead of internal history markers, got %q", joined)
+			}
+		})
+	}
+}
+
+func TestBuildGenerateStageMessagesConversationRecapUsesAtMostEightRecentMessages(t *testing.T) {
+	historyMessages := make([]*schema.Message, 0, 10)
+	for index := 1; index <= 10; index++ {
+		content := "[历史消息][客户] 历史问题" + fmt.Sprint(index)
+		if index%2 == 0 {
+			historyMessages = append(historyMessages, schema.AssistantMessage(strings.Replace(content, "[客户]", "[AI客服]", 1), nil))
+			continue
+		}
+		historyMessages = append(historyMessages, schema.UserMessage(content))
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "interaction", SubIntent: "conversation_recap", OutputKind: "text", ReplyRequired: true,
+		Text: "刚刚都问你什么了？", ResolvedText: "回顾刚才的会话内容",
+	}}}
+
+	got := buildGenerateStageMessages(
+		RunInput{UserMessage: models.Message{Content: "刚刚都问你什么了？"}},
+		adapter.HistoryBuildResult{Messages: historyMessages},
+		callbacks.IntentTraceData{},
+		plan,
+		append([]*schema.Message(nil), historyMessages...),
+		nil,
+	)
+	joined := joinSchemaMessageContents(got)
+	for _, forbidden := range []string{"客户：历史问题1\n", "AI客服：历史问题2\n"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("conversation recap must be bounded to the latest eight messages; found %q in %q", forbidden, joined)
+		}
+	}
+	for index := 3; index <= 10; index++ {
+		if expected := "历史问题" + fmt.Sprint(index); !strings.Contains(joined, expected) {
+			t.Fatalf("conversation recap missing recent message %q in %q", expected, joined)
+		}
+	}
+}
+
+func TestConversationRecapContextModeSupportsSubtypeAndExplicitQuestion(t *testing.T) {
+	for name, task := range map[string]callbacks.ReplyTaskPlanTraceData{
+		"subtype": {
+			SubIntent: "conversation_recap",
+			Text:      "帮我回顾一下",
+		},
+		"explicit question": {
+			SubIntent: "clarify",
+			Text:      "刚才聊了什么？",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := generationConversationContextMode(task); got != "recap" {
+				t.Fatalf("expected recap context mode, got %q", got)
+			}
+		})
+	}
+}
+
+func TestBuildGenerateStageMessagesKeepsIndependentKnowledgeTaskIsolated(t *testing.T) {
+	oldCustomer := schema.UserMessage("[历史消息][客户] 停车免费吗")
+	oldAI := schema.AssistantMessage("[历史消息][AI客服] 停车免费。", nil)
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", OutputKind: "text", ReplyRequired: true,
+		Text: "早餐几点", ResolvedText: "早餐几点", RelationToPrevious: "independent", ResolutionState: "clear",
+	}}}
+
+	got := buildGenerateStageMessages(
+		RunInput{UserMessage: models.Message{Content: "早餐几点"}},
+		adapter.HistoryBuildResult{Messages: []*schema.Message{oldCustomer, oldAI}},
+		callbacks.IntentTraceData{},
+		plan,
+		[]*schema.Message{oldCustomer, oldAI},
+		nil,
+	)
+	joined := joinSchemaMessageContents(got)
+	if strings.Contains(joined, "停车免费") || strings.Contains(joined, "【当前任务所需的有界会话上下文】") {
+		t.Fatalf("independent knowledge task must not receive old conversation content, got %q", joined)
+	}
+	if !strings.Contains(joined, "自包含问题：早餐几点") {
+		t.Fatalf("independent active task must remain available, got %q", joined)
 	}
 }
 

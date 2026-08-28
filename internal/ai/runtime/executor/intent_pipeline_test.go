@@ -263,7 +263,7 @@ func TestRuntimeIntentDetectSystemPromptRoutesPublicCompanyIdentityToKnowledge(t
 func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, expected := range []string{
-		"紧邻的上一条 AI 客服消息正在就一个业务问题追问偏好、条件、范围或选项",
+		"紧邻的上一条 AI 客服消息正在就一个业务问题追问确认、偏好、条件、范围、身份字段或选项",
 		"附近餐饮推荐，偏好麻辣口味",
 		"不能从更早历史里挑一个旧主题强行续接",
 		"answer_rejected 只有本轮用户提示明确启用",

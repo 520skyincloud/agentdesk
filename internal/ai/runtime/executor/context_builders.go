@@ -129,10 +129,181 @@ func buildGenerateStageMessages(req RunInput, history adapter.HistoryBuildResult
 		}
 		ret = append(ret, message)
 	}
+	if contextMessage := buildBoundedGenerationConversationContext(history, activeGenerationTaskPlans(intent, plan)); contextMessage != nil {
+		ret = append(ret, contextMessage)
+	}
 	if contextMessage := buildActiveGenerationTaskContext(req, intent, plan); contextMessage != nil {
 		ret = append(ret, contextMessage)
 	}
 	return ret
+}
+
+type boundedGenerationHistoryEntry struct {
+	speaker string
+	text    string
+}
+
+func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResult, taskPlans []callbacks.ReplyTaskPlanTraceData) *schema.Message {
+	adjacentTaskIDs := make([]string, 0, len(taskPlans))
+	recapTaskIDs := make([]string, 0, len(taskPlans))
+	for index, task := range taskPlans {
+		taskMode := generationConversationContextMode(task)
+		if taskMode == "" {
+			continue
+		}
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		if taskMode == "recap" {
+			recapTaskIDs = appendIfMissing(recapTaskIDs, taskID)
+		} else {
+			adjacentTaskIDs = appendIfMissing(adjacentTaskIDs, taskID)
+		}
+	}
+	if len(adjacentTaskIDs) == 0 && len(recapTaskIDs) == 0 {
+		return nil
+	}
+
+	entries := boundedGenerationHistoryEntries(history)
+	if len(entries) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString("【当前任务所需的有界会话上下文】下列历史只供明确标注的任务使用，不会重新成为待回答任务；不得补答、复述或续写其他旧问题。\n")
+	if len(adjacentTaskIDs) > 0 {
+		b.WriteString("相邻上下文适用任务：")
+		b.WriteString(strings.Join(adjacentTaskIDs, "、"))
+		b.WriteString("。只用下面最多两条消息理解当前短答、指代、纠正或槽位答案，最终仍只回答当前活跃任务。\n")
+		appendBoundedGenerationHistoryEntries(&b, adjacentGenerationHistoryEntries(entries))
+	}
+	if len(recapTaskIDs) > 0 {
+		b.WriteString("会话回顾上下文适用任务：")
+		b.WriteString(strings.Join(recapTaskIDs, "、"))
+		b.WriteString("。可以按时间顺序概括下面最多八条最近消息；不要声称客户此前没有提问，也不要带出未列出的更早内容。\n")
+		appendBoundedGenerationHistoryEntries(&b, lastBoundedGenerationHistoryEntries(entries, 8))
+	}
+	return schema.SystemMessage(strings.TrimSpace(b.String()))
+}
+
+func appendBoundedGenerationHistoryEntries(b *strings.Builder, entries []boundedGenerationHistoryEntry) {
+	if b == nil {
+		return
+	}
+	for _, entry := range entries {
+		b.WriteString("- ")
+		b.WriteString(entry.speaker)
+		b.WriteString("：")
+		b.WriteString(entry.text)
+		b.WriteString("\n")
+	}
+}
+
+func generationConversationContextMode(task callbacks.ReplyTaskPlanTraceData) string {
+	if looksLikeConversationRecapTask(task) {
+		return "recap"
+	}
+	relation := strings.ToLower(strings.TrimSpace(task.RelationToPrevious))
+	resolution := strings.ToLower(strings.TrimSpace(task.ResolutionState))
+	if resolution == runtimeIntentResolutionResolvedFromContext {
+		return "adjacent"
+	}
+	switch relation {
+	case "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
+		return "adjacent"
+	default:
+		return ""
+	}
+}
+
+func looksLikeConversationRecapTask(task callbacks.ReplyTaskPlanTraceData) bool {
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "conversation_recap", "conversation_summary", "conversation_history", "recap":
+		return true
+	}
+	for _, text := range []string{task.OriginalText, task.Text, task.ResolvedText} {
+		compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "，", "", ",", "", "？", "", "?", "").Replace(strings.ToLower(strings.TrimSpace(text)))
+		if compact == "" {
+			continue
+		}
+		if replyengine.ContainsAny(compact,
+			"刚刚都问了什么", "刚刚都问你什么", "刚才都问了什么", "刚才都问你什么", "刚刚问了什么", "刚才问了什么",
+			"刚刚聊了什么", "刚才聊了什么", "刚刚说了什么", "刚才说了什么", "刚刚回答了什么", "刚才回答了什么",
+			"刚刚你回答了什么", "刚才你回答了什么", "前面聊了什么", "前面问了什么", "前面回答了什么",
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func boundedGenerationHistoryEntries(history adapter.HistoryBuildResult) []boundedGenerationHistoryEntry {
+	entries := make([]boundedGenerationHistoryEntry, 0, len(history.Messages))
+	for _, message := range history.Messages {
+		if message == nil {
+			continue
+		}
+		text := strings.TrimSpace(message.Content)
+		if text == "" {
+			continue
+		}
+		speaker := ""
+		switch {
+		case strings.Contains(text, "[人工客服]"):
+			speaker = "人工客服"
+		case strings.Contains(text, "[AI客服]"):
+			speaker = "AI客服"
+		case strings.Contains(text, "[客户]"):
+			speaker = "客户"
+		case message.Role == schema.User:
+			speaker = "客户"
+		case message.Role == schema.Assistant:
+			speaker = "AI客服"
+		default:
+			continue
+		}
+		if strings.HasPrefix(text, "[历史消息]") {
+			if end := strings.Index(text, "] "); end >= 0 {
+				text = strings.TrimSpace(text[end+2:])
+			}
+		}
+		if text == "" {
+			continue
+		}
+		entries = append(entries, boundedGenerationHistoryEntry{speaker: speaker, text: preview(text, 1200)})
+	}
+	return entries
+}
+
+func adjacentGenerationHistoryEntries(entries []boundedGenerationHistoryEntry) []boundedGenerationHistoryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	assistantIndex := len(entries) - 1
+	if entries[assistantIndex].speaker != "AI客服" && entries[assistantIndex].speaker != "人工客服" {
+		return lastBoundedGenerationHistoryEntries(entries, 2)
+	}
+
+	ret := make([]boundedGenerationHistoryEntry, 0, 2)
+	for index := assistantIndex - 1; index >= 0; index-- {
+		if entries[index].speaker == "客户" {
+			ret = append(ret, entries[index])
+			break
+		}
+	}
+	ret = append(ret, entries[assistantIndex])
+	return ret
+}
+
+func lastBoundedGenerationHistoryEntries(entries []boundedGenerationHistoryEntry, limit int) []boundedGenerationHistoryEntry {
+	if limit <= 0 || len(entries) == 0 {
+		return nil
+	}
+	if len(entries) <= limit {
+		return append([]boundedGenerationHistoryEntry(nil), entries...)
+	}
+	return append([]boundedGenerationHistoryEntry(nil), entries[len(entries)-limit:]...)
 }
 
 func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData) *schema.Message {
@@ -150,7 +321,7 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 	}
 
 	var b strings.Builder
-	b.WriteString("【当前活跃回答任务】以下内容是 Generate 可使用的当前轮来源、补全问题和 Judge 已确认事实。更早原始历史与长期记忆已从 Generate 上下文移除；不得补答未列出的旧问题，也不得根据一个事实推导未确认能力。\n")
+	b.WriteString("【当前活跃回答任务】以下内容是 Generate 可使用的当前轮来源、补全问题和 Judge 已确认事实。更早原始历史与长期记忆默认不进入 Generate；只有明确依赖上下文的任务可以使用单独提供的有界会话上下文。不得补答未列出的旧问题，也不得根据一个事实推导未确认能力。\n")
 	for taskIndex, task := range taskPlans {
 		taskID := strings.TrimSpace(task.TaskID)
 		if taskID == "" {

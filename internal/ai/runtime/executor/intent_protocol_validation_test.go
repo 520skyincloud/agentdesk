@@ -80,6 +80,82 @@ func TestValidateRuntimeIntentDetectProtocolClearsFalseContextResolutionForSelfC
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolAcceptsRelationBoundShortContext(t *testing.T) {
+	tests := []struct {
+		name         string
+		text         string
+		resolvedText string
+		intent       string
+		subIntent    string
+		objective    string
+		relation     string
+		knowledge    bool
+	}{
+		{
+			name: "affirmative answer", text: "是的啊", resolvedText: "确认客户询问酒店是否有充电桩",
+			intent: "hotel_info", subIntent: "parking_facilities", objective: "availability", relation: "clarification_answer", knowledge: true,
+		},
+		{
+			name: "short confirmation", text: "对", resolvedText: "确认客户询问酒店是否有充电桩",
+			intent: "hotel_info", subIntent: "parking_facilities", objective: "availability", relation: "clarification_answer", knowledge: true,
+		},
+		{
+			name: "slot answer", text: "吴朝伟", resolvedText: "住客姓名是吴朝伟",
+			intent: "hotel_variable", subIntent: "guest_name", objective: "confirm", relation: "clarification_answer",
+		},
+		{
+			name: "elliptical follow up", text: "玩的勒", resolvedText: "酒店附近有什么适合游玩的地方",
+			intent: "hotel_info", subIntent: "surrounding_facilities", objective: "recommendation", relation: "reference_previous", knowledge: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+				Intent: tt.intent, SubIntent: tt.subIntent, Objective: tt.objective,
+				RelationToPrevious: tt.relation, ResolutionState: runtimeIntentResolutionResolvedFromContext,
+				Text: tt.text, ResolvedText: tt.resolvedText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: tt.knowledge,
+			}}}
+
+			if err := validateRuntimeIntentDetectProtocol(parsed, nil, tt.text); err != nil {
+				t.Fatalf("relation-bound short context must pass protocol validation: %v", err)
+			}
+			task := parsed.IntentTasks[0]
+			if task.Text != tt.text || task.ResolvedText != tt.resolvedText || task.ResolutionState != runtimeIntentResolutionResolvedFromContext {
+				t.Fatalf("valid contextual task must remain intact, got %#v", task)
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolDoesNotPolluteIndependentQuestionFromRelation(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+		RelationToPrevious: "clarification_answer", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Text: "早餐几点", ResolvedText: "麦田房型早餐几点", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点？"); err != nil {
+		t.Fatalf("independent current question must be repaired instead of inheriting history: %v", err)
+	}
+	task := parsed.IntentTasks[0]
+	if task.Text != "早餐几点" || task.ResolvedText != "早餐几点" || task.ResolutionState != runtimeIntentResolutionClear {
+		t.Fatalf("independent question must discard false historical resolution, got %#v", task)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolKeepsSourceRefsStrictForRelationBoundShortContext(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "parking_facilities", Objective: "availability",
+		RelationToPrevious: "clarification_answer", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Text: "是的啊", ResolvedText: "确认客户询问酒店是否有充电桩", SourceRefs: runtimeIntentSourceRefList{"U2"}, NeedsKnowledge: true,
+	}}}
+
+	err := validateRuntimeIntentDetectProtocol(parsed, nil, "是的啊")
+	if err == nil || !strings.Contains(err.Error(), "invalid ref") {
+		t.Fatalf("relation-bound context must not bypass sourceRefs validation, got %v", err)
+	}
+}
+
 func TestRepairRuntimeIntentDetectProtocolRepairsAdjacentRepeatReference(t *testing.T) {
 	currentText := "再说一遍，只要正确地址。"
 	adjacentAIReply := models.Message{

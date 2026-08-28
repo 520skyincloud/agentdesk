@@ -358,7 +358,8 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if candidateIndex := taskCandidates[taskIndex]; candidateIndex >= 0 && candidateIndex < len(candidates) {
 			candidateText = candidates[candidateIndex]
 		}
-		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText)
+		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText) ||
+			runtimeIntentProtocolRelationAuthorizesContextResolution(task, candidateText, sourceTexts)
 		resolution := semanticGateNormalizeResolution(task.ResolutionState)
 		if resolution == runtimeIntentResolutionResolvedFromContext && !candidateRequiresContext {
 			candidateIndex := taskCandidates[taskIndex]
@@ -382,6 +383,41 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolRelationAuthorizesContextResolution(task runtimeIntentTaskJSON, originalText string, sourceTexts []string) bool {
+	if !semanticGateRelationUsesPrevious(task.RelationToPrevious) ||
+		!runtimeIntentProtocolTaskOwnsOriginalSource(task, originalText, sourceTexts) ||
+		runtimeIntentProtocolOriginalIsIndependentQuestion(originalText) {
+		return false
+	}
+	resolvedText := strings.TrimSpace(task.ResolvedText)
+	return resolvedText != "" &&
+		normalizeRuntimeIntentProtocolAtomicText(resolvedText) != normalizeRuntimeIntentProtocolAtomicText(originalText) &&
+		!runtimeIntentAtomicCandidateRequiresContext(resolvedText)
+}
+
+func runtimeIntentProtocolTaskOwnsOriginalSource(task runtimeIntentTaskJSON, originalText string, sourceTexts []string) bool {
+	if normalizeRuntimeIntentProtocolAtomicText(task.Text) != normalizeRuntimeIntentProtocolAtomicText(originalText) {
+		return false
+	}
+	return runtimeIntentProtocolCandidateMatchesTaskSource(originalText, task.SourceRefs, sourceTexts)
+}
+
+func runtimeIntentProtocolOriginalIsIndependentQuestion(text string) bool {
+	compact := compactRuntimeIntentClause(text)
+	if compact == "" || isDependentIntentTaskClause(text) || runtimeIntentAtomicCandidateRequiresContext(text) ||
+		!runtimeIntentClauseHasSelfContainedQuestion(compact) {
+		return false
+	}
+	for _, marker := range []string{
+		"可不可以", "有没有", "是不是", "什么时候", "为什么", "是否", "能不能",
+		"怎么", "如何", "多少", "几个", "几瓶", "几点", "多久", "哪里", "在哪", "谁", "什么", "吗",
+	} {
+		compact = strings.ReplaceAll(compact, marker, "")
+	}
+	compact = strings.Trim(compact, "的了呢啊呀哈吧真")
+	return len([]rune(compact)) >= 2
 }
 
 func runtimeIntentProtocolTaskHasExecutableBusiness(task runtimeIntentTaskJSON) bool {

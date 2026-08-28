@@ -8,6 +8,8 @@ import (
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 func TestCurrentRuntimeIntentSemanticTextUsesCompleteVoiceTranscript(t *testing.T) {
@@ -397,5 +399,74 @@ func TestRuntimeIntentPromptTreatsVoiceLikeText(t *testing.T) {
 	}
 	if count := strings.Count(prompt, transcript); count != 1 {
 		t.Fatalf("expected the current voice transcript exactly once in prompt, got %d occurrences: %q", count, prompt)
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptUsesMemoryContentInsteadOfSourceLabel(t *testing.T) {
+	history := adapter.HistoryBuildResult{
+		MemoryMessage: schema.SystemMessage("以下是本会话更早消息的压缩记忆：客人偏好安静房。"),
+		MemorySource:  "conversation_session_summary",
+	}
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "有空调吗",
+	}}, history, nil)
+	if !strings.Contains(prompt, "客人偏好安静房") {
+		t.Fatalf("intent prompt must contain compressed memory content: %s", prompt)
+	}
+	if strings.Contains(prompt, history.MemorySource) {
+		t.Fatalf("memory source is a trace label and must not be exposed as memory content: %s", prompt)
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptExplainsContextDependentShortTurns(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "我是开电车来的"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "您是问酒店有没有充电桩吗？"},
+	}}
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		ID:          3,
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "是的啊",
+	}}, history, nil)
+	for _, expected := range []string{
+		"是的、对、可以",
+		"relationToPrevious=clarification_answer",
+		"resolutionState=resolved_from_context",
+		"客户只说‘不是’",
+		"ambiguous 或 unresolved",
+		"禁止虚构客户真正想问的对象",
+		"吴朝伟",
+		"房号为1208",
+		"玩的呢/玩的勒",
+		"不能按普通闲聊处理",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("context-dependent intent prompt missing %q: %s", expected, prompt)
+		}
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptMarksConversationRecap(t *testing.T) {
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "刚刚都问你什么了？",
+	}}, adapter.HistoryBuildResult{}, nil)
+	for _, expected := range []string{
+		"刚刚都问了什么",
+		"刚才聊了什么",
+		"你刚才回答了哪些",
+		"interaction/conversation_recap",
+		"relationToPrevious=reference_previous",
+		"resolutionState=resolved_from_context",
+		"不能当作新闲聊或 unresolved",
+		"不能重新执行历史业务任务",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("conversation recap prompt missing %q: %s", expected, prompt)
+		}
 	}
 }

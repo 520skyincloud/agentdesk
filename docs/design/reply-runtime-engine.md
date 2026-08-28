@@ -200,7 +200,7 @@ Resource 仍可先真实提交，知识任务随后按现有 deferred handoff �
 
 ## 7. Generate 上下文隔离
 
-Intent 仍可读取带角色的必要历史来做回指识别。进入 Generate 前会移除长期
+Intent 仍可读取带角色的必要历史来做回指识别。进入 Generate 前默认移除长期
 记忆和整段原始历史，并构建只包含以下内容的任务上下文：
 
 - 当前文本 Task 的 primary/context 来源。
@@ -208,6 +208,14 @@ Intent 仍可读取带角色的必要历史来做回指识别。进入 Generate 
 - Judge 选中的 `supportedFacts` 与必要值。
 - `missingAspects` 的禁止补全说明。
 - 必要的最近媒体对象。
+
+明确依赖上一轮的任务使用单独的有界会话上下文，不恢复无约束整段历史：
+
+- `clarification_answer`、`reference_previous`、纠正或
+  `resolved_from_context` 任务最多读取相邻两条角色消息。
+- `interaction/conversation_recap` 最多读取最近八条当前会话消息。
+- 有界历史只用于解释当前 Task，不会重新创建、激活或补答旧 Task。
+- 普通 `independent + clear` 任务仍完全看不到旧业务问题。
 
 原始知识上下文始终从 Generate 消息中移除。Generate 只读取 ReplyPlan 中 Judge
 选中的结构化事实，避免从未选中候选扩写能力或重新回答旧问题。

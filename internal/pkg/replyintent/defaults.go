@@ -29,7 +29,7 @@ func DefaultHotelIntentDetectPrompt() string {
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
 4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
-5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。
+5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、会话回顾，以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。客户明确问“刚刚都问了什么/刚才聊了什么/你刚才回答了哪些”时，使用 interaction/conversation_recap、relationToPrevious=reference_previous、resolutionState=resolved_from_context；这是有明确目标的会话回顾，不是 unresolved，也不能回答“没有具体问题”。
 
 公开经营主体信息边界：
 - “你们酒店/品牌/公司是谁创办的”“老板/创始人/董事长是谁”“某位公开经营者是谁、担任什么公开职务”属于 hotel_info/company_profile，needsKnowledge=true，必须查询知识库。
@@ -83,8 +83,12 @@ subIntent 字段纪律：
 上下文规则：
 - 图片/文件/语音识别内容只是上下文文本，不是单独意图分类。
 - 历史消息、媒体理解、长期记忆只用于解释“这个/刚才/还/继续/那”等指代；当前消息有新主题时，以当前消息为准。
-- 若紧邻的上一条 AI 客服消息正在就一个业务问题追问偏好、条件、范围或选项，客户当前的短回答就是该业务问题的连续补充，不是独立闲聊。必须继承上一轮业务意图和 subIntent，text 保留客户当前原话，resolvedText 写成“上一轮业务主题 + 当前补充条件”的完整检索问题。
+- 若紧邻的上一条 AI 客服消息正在就一个业务问题追问确认、偏好、条件、范围、身份字段或选项，客户当前的短回答就是该业务问题的连续补充，不是独立闲聊。必须继承上一轮业务意图和 subIntent，并使用 relationToPrevious=clarification_answer；能唯一补全时 resolutionState=resolved_from_context，text 保留客户当前原话，resolvedText 写成“上一轮业务主题 + 当前补充内容”的完整问题。
+- “是的啊/对/可以”等肯定答复，只要是在回答紧邻 AI 的明确业务问题，就必须承接该业务。例如 AI 问“是想问酒店有没有充电桩吗”，客户答“是的啊”，resolvedText 必须补全为“酒店有没有充电桩”，不能归 interaction/social 或 interaction/clarify。单独“不是”且没有同时给出正确目标时，必须保留纠正关系并标记 ambiguous 或 unresolved，不能虚构客户真正想问的内容。
+- AI 追问姓名、房号或其他必要字段后，客户只回复“吴朝伟”“1208”等字段值时，这是 clarification_answer；不能把姓名当作重新打招呼，也不能把房号当成无关数字。
 - 例如 AI 问“附近餐饮想吃什么口味”，客户答“麻辣口味的”时，输出 hotel_info/surrounding_facilities，needsKnowledge=true，text 写“麻辣口味的”，resolvedText 写“附近餐饮推荐，偏好麻辣口味”；若没有紧邻的业务追问，独立一句“麻辣口味的”可以归 interaction/clarify。
+- 同一周边话题中的省略追问也要补全对象。例如刚回答“附近有吃的”，客户接着说“玩的呢/玩的勒”，应输出 hotel_info/surrounding_facilities，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 补全为“酒店附近有什么可以游玩或休闲的地方”，不能按普通闲聊处理。
+- 会话回顾只回顾最近当前会话，不重新执行历史业务任务；Intent 只建立一个 interaction/conversation_recap 文本任务。
 - 只有紧邻 AI 的明确业务澄清问题才能触发上述继承；不能从更早历史里挑一个旧主题强行续接。
 - 不要沿用旧房号、旧人工事件、旧媒体主题覆盖当前新问题。`)
 }

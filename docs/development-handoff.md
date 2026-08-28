@@ -309,9 +309,12 @@ Executor 内正常只调用一次 Generate；协议错误、429、可重试 5xx�
 仍可由 AI 回复；两次失败后优先使用 Judge 已确认事实确定性兜底，避免客户空回复
 或看到内部错误。Intent、检索和 Judge 不重复执行或计费。
 
-Generate 上下文已隔离：Intent 仍可读必要角色历史，但 Generate 只接收当前 Task
-来源、`resolvedText`、选中事实、缺失方面和必要媒体对象，不再接收整段带角色
-标签的原始历史。媒体内容统一优先完整 `mediaText`，为空才使用 `mediaSummary`。
+Generate 上下文已隔离：Intent 仍可读必要角色历史；Generate 默认只接收当前
+Task 来源、`resolvedText`、选中事实、缺失方面和必要媒体对象。2026-08-28 修复
+了过度隔离：短确认、槽位回答、回指、纠正和会话回顾会按 TaskID 获得有界历史，
+普通承接最多相邻两条，会话回顾最多最近八条；独立新题仍看不到旧业务问题。
+长期记忆在 Intent 阶段读取真实摘要正文，不再误传 `conversation_session_summary`
+来源标签。媒体内容统一优先完整 `mediaText`，为空才使用 `mediaSummary`。
 
 事件消费和 Commit 形成两道防线：逐题协议无法解析、内部头部出现在正文、清理
 后为空，或仍含 `replyParts/taskId/coveredFactIds` 外形时均不得原样发送。精确位于

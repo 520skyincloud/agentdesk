@@ -527,6 +527,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("如果当前消息已经有独立的新主题，禁止沿用上一轮早餐、停车、投诉、安全、转人工等历史主题。")
 	b.WriteString("但若紧邻的上一条 AI 客服消息正在追问一个业务问题的偏好、条件、范围或选项，当前短回答属于该业务的连续补充：必须继承该业务 intent/subIntent；intentTasks[].text 保留客户当前原表达，intentTasks[].resolvedText 写成包含上一轮业务主题和当前补充条件的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应输出 hotel_info/surrounding_facilities 且 needsKnowledge=true，text 写‘麻辣口味的’，resolvedText 写‘附近餐饮推荐，偏好麻辣口味’。‘那麦田呢’、‘外卖地址再说一遍’等明确回指或复述请求，也必须在 resolvedText 中补全对象和所问方面；没有紧邻业务追问时，独立短语不得从更早历史强行继承旧主题。")
+	b.WriteString("客户明确问‘刚刚都问了什么’‘刚才聊了什么’‘你刚才回答了哪些’等会话回顾时，只建立一个 interaction/conversation_recap 文本任务，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 写明回顾最近当前会话；不能当作新闲聊或 unresolved，也不能重新执行历史业务任务。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
 	if instruction := buildAdjacentAIReplyRelationInstruction(history); instruction != "" {
 		b.WriteString("\n\n")
@@ -567,9 +568,9 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 			b.WriteString("\n")
 		}
 	}
-	if strings.TrimSpace(history.MemorySource) != "" {
+	if history.MemoryMessage != nil && strings.TrimSpace(history.MemoryMessage.Content) != "" {
 		b.WriteString("\n长期记忆摘要(最低优先级，房号等一次性入住事实不能当当前事实):\n")
-		b.WriteString(preview(history.MemorySource, 800))
+		b.WriteString(preview(history.MemoryMessage.Content, 800))
 	}
 	if len(configs) > 0 {
 		b.WriteString("\n\n启用的分类配置(用于理解分类含义，不要按关键词机械匹配):\n")
@@ -634,6 +635,9 @@ func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult)
 	b.WriteString(preview(aiReply, 240))
 	b.WriteString("\n")
 	b.WriteString("每个相关 intentTasks 项都要在 relationToPrevious 中表达与紧邻上一轮的关系：新主题用 independent，正常承接用 follow_up，回答 AI 追问用 clarification_answer，明确回指用 reference_previous，纠正用 correction；上一答复被明确否定、被指出矛盾或仍未解决同一问题时统一用 answer_rejected。\n")
+	b.WriteString("凡当前短句必须借助紧邻上下文才能理解，都必须同时正确输出 relationToPrevious、resolutionState 和 resolvedText，不能降级成新的 interaction/social 或泛化 clarify。AI 对明确业务问题作是/否追问后，客户回答‘是的、对、可以’等确认语时，继承该业务 intent/subIntent，使用 relationToPrevious=clarification_answer、resolutionState=resolved_from_context，并在 resolvedText 中写出完整业务问题和确认含义。客户只说‘不是’且没有同时给出正确目标时，relationToPrevious 使用 correction 或 clarification_answer，但 resolutionState 必须是 ambiguous 或 unresolved，resolvedText 只能写已知的否定含义，禁止虚构客户真正想问的对象。\n")
+	b.WriteString("AI 追问姓名、房号或其他必要字段后，客户只回复‘吴朝伟’‘1208’等字段值时，这是上一业务任务的槽位回答：继承原业务 intent/subIntent，relationToPrevious=clarification_answer；能唯一确定字段时 resolutionState=resolved_from_context，resolvedText 必须明确写成‘客户姓名为吴朝伟’‘房号为1208’这类完整语义，不能当作重新打招呼、普通数字或新闲聊。\n")
+	b.WriteString("紧邻周边话题中的省略追问也要补全真实对象。例如上一轮正在回答附近餐饮，客户接着说‘玩的呢/玩的勒’，这是询问酒店附近游玩或休闲地点，输出 hotel_info/surrounding_facilities、relationToPrevious=reference_previous、resolutionState=resolved_from_context，并补全 resolvedText；不能按普通闲聊处理。\n")
 	b.WriteString("只有以下语义关系输出 human_complaint_risk + answer_rejected，且 needsHumanRoute=true：客户明确否定上一答复；指出 AI 前后矛盾；指出答非所问并重申同一个问题；同一问题再次追问且上一答复仍未解决；拒绝 AI 给出的能力边界方案并要求无法满足的例外；引用真人客服说法或现场事实反驳上一答复。\n")
 	b.WriteString("明确示例（必须结合此前问题与紧邻 AI 答复判断，不能只看单个词）：AI 前一条说走路几分钟就到，客户说‘你刚才不是说要开车吗’属于前后矛盾型 answer_rejected；AI 只回答用品去哪里领取，客户说‘我问的是房间里有没有’属于答非所问型 answer_rejected；AI 说不能微信转账，客户说‘客服说可以微信转账’属于事实反驳型 answer_rejected。以上都输出 human_complaint_risk + answer_rejected。\n")
 	b.WriteString("以下不得输出 answer_rejected：提出独立新问题；正常补充收费、时间、支付等细节；正常回答 AI 刚才追问的房号、偏好、条件或选项；孤立的‘真的吗/为什么’但没有明确否定或矛盾；与上一业务答复无关的不满、吐槽或闲聊。此时按当前真实业务意图继续分类。")
