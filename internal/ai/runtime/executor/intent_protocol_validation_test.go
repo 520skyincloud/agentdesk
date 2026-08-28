@@ -24,6 +24,17 @@ func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testi
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolAcceptsServiceStateWithEllipticalAction(t *testing.T) {
+	currentText := "拖鞋没了，应该去哪里拿？"
+	task := validRuntimeIntentProtocolTask(currentText, "location")
+	task.Intent = "hotel_info"
+	task.SubIntent = "supplies_self_help"
+	task.Entities = runtimeIntentEntityList{{Text: "拖鞋", Type: "supply"}}
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, currentText); err != nil {
+		t.Fatalf("a service state and its subject-omitted action question must remain one model-owned task: %v", err)
+	}
+}
+
 func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReference(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",

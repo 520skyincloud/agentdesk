@@ -53,22 +53,30 @@ func currentTurnTaskCandidates(text string) []string {
 	}
 	candidates := make([]string, 0, len(parts))
 	seen := make(map[string]struct{}, len(parts))
+	pendingContext := ""
 	for _, part := range parts {
 		explicitQuestion := strings.Contains(part, runtimeIntentExplicitQuestionMarker)
 		part = strings.ReplaceAll(part, runtimeIntentExplicitQuestionMarker, "")
 		part = cleanRuntimeQuestionLine(part)
 		part = trimRuntimeTaskCandidateLead(part)
 		if part == "" || isRuntimeBurstStructureLine(part) || isIntentTaskLeadOnly(part) {
+			pendingContext = ""
 			continue
 		}
 		dependent := isRuntimeIntentOutputConstraintClauseWithExplicitQuestion(part, explicitQuestion) || isDependentIntentTaskClause(part) || runtimeIntentAtomicCandidateRequiresContext(part)
 		if dependent {
 			if len(candidates) > 0 {
 				candidates[len(candidates)-1] = strings.TrimSpace(candidates[len(candidates)-1] + "，" + part)
+				pendingContext = ""
 				continue
+			}
+			if pendingContext != "" {
+				part = strings.TrimSpace(pendingContext + "，" + part)
+				pendingContext = ""
 			}
 		}
 		if !dependent && !explicitQuestion && !runtimeBurstLineLooksLikeTask(part) && !runtimeIntentTaskLabelLooksLikeTask(part) {
+			pendingContext = part
 			continue
 		}
 		normalized := normalizeRuntimeKnowledgeQuery(part)
@@ -80,6 +88,7 @@ func currentTurnTaskCandidates(text string) []string {
 		}
 		seen[normalized] = struct{}{}
 		candidates = append(candidates, part)
+		pendingContext = ""
 	}
 	return candidates
 }
@@ -242,6 +251,12 @@ func isDependentIntentTaskClause(text string) bool {
 	for _, prefix := range []string{"刚才那个", "刚才的", "刚刚那个", "刚刚的", "前面那个", "前面的", "上面那个", "上面的", "那两瓶", "这两瓶", "这几瓶", "那些", "这些", "那个", "这个", "那", "这", "它们", "它", "都", "也"} {
 		compact = strings.TrimPrefix(compact, prefix)
 	}
+	for _, prefix := range []string{"应该", "需要", "可以", "能不能", "能", "要", "该"} {
+		if strings.HasPrefix(compact, prefix) && len(compact) > len(prefix) {
+			compact = strings.TrimPrefix(compact, prefix)
+			break
+		}
+	}
 	switch compact {
 	case "免费吗", "是免费的吗", "是不是免费的", "是不是都免费的", "是否免费", "收费吗", "收不收费", "要收费吗", "需要收费吗", "多少钱", "价格呢",
 		"多久", "几点", "什么时候", "在哪里", "在哪", "哪里", "怎么用", "怎么弄", "如何使用", "可以吗", "行吗", "对吗", "是吗", "这样对吗", "这样是吗", "那呢", "呢":
@@ -277,14 +292,14 @@ func runtimeIntentClauseHasSelfContainedQuestion(compact string) bool {
 }
 
 func runtimeIntentGenericFollowUpClause(compact string) bool {
-	for _, prefix := range []string{"什么时候", "在哪里", "几点", "多久", "在哪", "哪里", "怎么", "如何"} {
+	for _, prefix := range []string{"什么时候", "在哪里", "几点", "多久", "在哪", "去哪里", "到哪里", "哪里", "怎么", "如何"} {
 		if !strings.HasPrefix(compact, prefix) {
 			continue
 		}
 		tail := strings.Trim(strings.TrimPrefix(compact, prefix), "呀啊呢吗哈的了")
 		switch tail {
 		case "", "开始", "结束", "供应", "开放", "营业", "能用", "可以用", "能办", "可以办",
-			"吃", "办理", "申请", "下载", "能下载", "可以下载", "才能下载", "领取", "获取",
+			"办", "吃", "办理", "申请", "下载", "能下载", "可以下载", "才能下载", "领取", "获取",
 			"拿", "取", "拿取", "使用", "操作", "收费", "付款", "支付", "到账", "到", "走":
 			return true
 		default:

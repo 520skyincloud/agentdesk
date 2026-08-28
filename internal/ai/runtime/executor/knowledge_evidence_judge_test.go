@@ -1452,6 +1452,64 @@ func TestHighConfidenceServiceSupplyFAQRejectsSameLayerConflict(t *testing.T) {
 	}
 }
 
+func TestHighConfidenceHotelInfoSupplySelfHelpUsesStrictStoreFAQRescue(t *testing.T) {
+	for _, tt := range []struct {
+		query     string
+		objective string
+		item      string
+		question  string
+		answer    string
+		location  string
+	}{
+		{
+			query: "纸巾不够，在哪里拿", objective: "location", item: "纸巾",
+			question: "房间纸巾用完了怎么办", answer: "可前往1313对面洗衣房领取纸巾。", location: "1313对面洗衣房",
+		},
+		{
+			query: "浴巾需要加一条，怎么取", objective: "method", item: "浴巾",
+			question: "需要额外浴巾怎么办", answer: "可前往1313对面洗衣房自取浴巾。", location: "1313对面洗衣房",
+		},
+	} {
+		task := knowledgeEvidenceJudgeTask{
+			TaskID: "T1", Intent: "hotel_info", Query: tt.query, SubIntent: "supplies_self_help", Objective: tt.objective,
+			Entities: []knowledgeEvidenceJudgeEntity{{Text: tt.item, Type: "supply"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(1, 101, tt.item+"自取", "问题："+tt.question+"\n答案："+tt.answer, 0.91),
+			}},
+		}
+		question, _ := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+		if match := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query); match >= 0.94 {
+			t.Fatalf("test must exercise semantic rescue below exact FAQ matching, got %.3f", match)
+		}
+		selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+		if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "store_exact_faq_rescue" {
+			t.Fatalf("hotel_info supplies self-help must use the same strict store FAQ rescue: %#v ok=%v", selection, ok)
+		}
+		joined := ""
+		for _, fact := range selection.SupportedFacts {
+			joined += fact.Statement + " "
+		}
+		if !strings.Contains(joined, tt.location) || len(missingRequiredKnowledgeEvidenceAspects(task, selection.SupportedFacts)) != 0 {
+			t.Fatalf("rescued FAQ must fully cover the requested pickup answer: %#v", selection.SupportedFacts)
+		}
+	}
+}
+
+func TestHighConfidenceHotelInfoSemanticRescueStaysLimitedToSupplySelfHelp(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "hotel_info", Query: "附近有什么餐馆", SubIntent: "surrounding_facilities", Objective: "location",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "餐馆", Type: "place"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "餐馆", "问题：附近吃饭去哪里\n答案：可前往小丁小吃。", 0.93),
+		}},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("non-supply hotel information must continue to rely on exact matching or Judge: %#v", selection)
+	}
+}
+
 func TestHighConfidenceServiceRequestAcceptsActionableLocationWithoutMethodVerb(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",

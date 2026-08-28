@@ -113,6 +113,23 @@ func TestCurrentTurnTaskCandidatesKeepDependentAspectWithPreviousQuestion(t *tes
 	}
 }
 
+func TestCurrentTurnTaskCandidatesKeepServiceStateAndEllipticalActionTogether(t *testing.T) {
+	for _, tt := range []struct {
+		input string
+		want  string
+	}{
+		{input: "拖鞋没了，应该去哪里拿？", want: "拖鞋没了，应该去哪里拿"},
+		{input: "纸巾不够，需要去哪里取？", want: "纸巾不够，需要去哪里取"},
+		{input: "浴巾少了一条，应该怎么取？", want: "浴巾少了一条，应该怎么取"},
+		{input: "空调坏了，该怎么办？", want: "空调坏了，该怎么办"},
+	} {
+		got := currentTurnTaskCandidates(tt.input)
+		if len(got) != 1 || got[0] != tt.want {
+			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want one service task %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestCurrentTurnTaskCandidatesSkipsInstructionLeadButKeepsVoiceQuestions(t *testing.T) {
 	text := "麻烦分别告诉我，房间空调有没有，矿泉水配几瓶收不收费，入住要怎么操作。"
 	got := currentTurnTaskCandidates(text)

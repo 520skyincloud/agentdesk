@@ -2018,7 +2018,7 @@ func knowledgeEvidenceStoreServiceSemanticFAQMatches(
 	answer string,
 ) bool {
 	if strings.TrimSpace(candidate.Layer) != knowledgeEvidenceLayerStore ||
-		canonicalIntentCode(task.Intent) != "service_request" ||
+		!knowledgeEvidenceTaskAllowsStoreServiceSemanticFAQ(task) ||
 		candidate.Hit.Score < knowledgeEvidenceDirectFAQMinimumScore {
 		return false
 	}
@@ -2034,6 +2034,22 @@ func knowledgeEvidenceStoreServiceSemanticFAQMatches(
 		knowledgeEvidenceServiceOperationTarget(task.Query),
 		knowledgeEvidenceServiceOperationTarget(candidateText),
 	)
+}
+
+func knowledgeEvidenceTaskAllowsStoreServiceSemanticFAQ(task knowledgeEvidenceJudgeTask) bool {
+	if canonicalIntentCode(task.Intent) == "service_request" {
+		return true
+	}
+	if canonicalIntentCode(task.Intent) != "hotel_info" ||
+		strings.TrimSpace(task.SubIntent) != "supplies_self_help" {
+		return false
+	}
+	switch semanticGateNormalizeObjective(task.Objective) {
+	case "location", "method", "action_request":
+		return true
+	default:
+		return false
+	}
 }
 
 func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateID string, selectedQuestion string, selectedAnswer string, selectedQuestionMatch float64) bool {
