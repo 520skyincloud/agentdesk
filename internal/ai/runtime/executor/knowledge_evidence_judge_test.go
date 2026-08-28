@@ -1820,7 +1820,7 @@ func TestBuildKnowledgeEvidenceJudgeTasksCarriesIntentObjectiveAndEntities(t *te
 
 func TestKnowledgeEvidenceJudgePromptSupportsFAQRehydrationAndSameLayerCombination(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
-	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "完整答案单元规则", "事实、适用条件、操作建议、选择或比较方法", "不能只保留结论而省略后续怎么做", "关键动作原文或短语", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined", "有外卖机器人", "不能生成“能送到房间”"} {
+	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "最小完整答案规则", "未被客户询问的路线/时长/价格/延伸建议不得加入", "普通动作词不得放入 criticalValues", "同一完整句已经覆盖多个维度", "禁止再输出被该完整句包含的摘要或碎片", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined", "有外卖机器人", "不能生成“能送到房间”"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("expected judge prompt to contain %q, got %q", required, prompt)
 		}
@@ -1850,7 +1850,9 @@ func TestReconcileSelectedFAQGuidanceFactsRestoresOmittedAnswerUnit(t *testing.T
 		},
 	}
 
-	got := reconcileSelectedFAQGuidanceFacts("task-4", knowledgeEvidenceLayerStore, selection, candidates)
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "task-4", Query: "携程，抖音，美团的价格是一样的吗", Objective: "price",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
 	if len(got.SupportedFacts) != 3 {
 		t.Fatalf("selected FAQ condition and guidance must be restored as independent aspects, got %#v", got.SupportedFacts)
 	}
@@ -1859,7 +1861,7 @@ func TestReconcileSelectedFAQGuidanceFactsRestoresOmittedAnswerUnit(t *testing.T
 		t.Fatalf("unexpected restored condition fact: %#v", condition)
 	}
 	guidance := got.SupportedFacts[2]
-	if guidance.FactID != "task-4F3" || guidance.Aspect != "method" || !strings.Contains(guidance.Statement, "对比价格") || len(guidance.CriticalValues) != 1 || guidance.CriticalValues[0] != "对比" {
+	if guidance.FactID != "task-4F3" || guidance.Aspect != "method" || !strings.Contains(guidance.Statement, "对比价格") || len(guidance.CriticalValues) != 0 {
 		t.Fatalf("unexpected restored guidance fact: %#v", guidance)
 	}
 }
@@ -1880,9 +1882,14 @@ func TestReconcileSelectedFAQGuidanceFactsDoesNotDuplicateCoveredGuidance(t *tes
 		},
 	}
 
-	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "平台价格一样吗", Objective: "price",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
 	if len(got.SupportedFacts) != 1 {
 		t.Fatalf("equivalent comparison guidance must not be duplicated, got %#v", got.SupportedFacts)
+	}
+	if len(got.SupportedFacts[0].CriticalValues) != 0 {
+		t.Fatalf("comparison wording must remain semantic rather than literal: %#v", got.SupportedFacts)
 	}
 }
 
@@ -1904,48 +1911,63 @@ func TestReconcileSelectedFAQGuidanceFactsKeepsMissingCriticalOnMethodFact(t *te
 		},
 	}
 
-	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "平台价格一样吗", Objective: "price",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
 	if len(got.SupportedFacts) != 3 {
 		t.Fatalf("scope, condition, and method facts must remain independent, got %#v", got.SupportedFacts)
 	}
 	method := got.SupportedFacts[2]
-	if method.Aspect != "method" || !containsString(method.CriticalValues, "对比") {
-		t.Fatalf("comparison action must remain mandatory on its method fact, got %#v", method)
+	if method.Aspect != "method" || len(method.CriticalValues) != 0 || !strings.Contains(method.Statement, "对比") {
+		t.Fatalf("comparison action must remain in the fact statement without fixed wording, got %#v", method)
 	}
 	if containsString(got.SupportedFacts[0].CriticalValues, "对比") || containsString(got.SupportedFacts[1].CriticalValues, "对比") {
 		t.Fatalf("method values must not migrate into other aspects: %#v", got.SupportedFacts)
 	}
 }
 
-func TestReconcileSelectedFAQGuidanceFactsKeepsContactNumberAndReplyOptions(t *testing.T) {
-	selection := knowledgeEvidenceLayerSelection{
-		Decision:             knowledgeEvidenceDecisionDirectSingle,
-		SelectedCandidateIDs: []string{"T1C1"},
-		SupportedFacts: []knowledgeEvidenceFact{{
-			FactID: "T1F1", Aspect: "method", Statement: "发票备注可以联系平台客服。", CriticalValues: []string{"联系"},
-		}},
+func TestFinalizeKnowledgeEvidenceFactsKeepsLiteralValuesAndDropsParaphrasableWords(t *testing.T) {
+	facts := finalizeKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{}, []knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "method", Statement: "具体情况可以联系门店管家18256022128。", CriticalValues: []string{"联系", "18256022128"}},
+		{FactID: "T1F2", Aspect: "method", Statement: "请回复“确认”或“取消”。", CriticalValues: []string{"回复", "确认", "取消"}},
+		{FactID: "T1F3", Aspect: "time", Statement: "早餐时间是7:00-9:30。", CriticalValues: []string{"建议", "7:00-9:30", "1"}},
+	})
+	if len(facts) != 3 {
+		t.Fatalf("literal-bearing facts must remain, got %#v", facts)
 	}
-	candidates := map[string]knowledgeEvidenceJudgeCandidate{
-		"T1C1": {
-			CandidateID: "T1C1",
-			Layer:       knowledgeEvidenceLayerStore,
-			Hit:         rag.RetrieveResult{Content: "问题：老客户优惠和后续处理怎么咨询\n答案：发票备注可以联系平台客服。老客户优惠具体情况可以联系门店管家18256022128。需要继续处理时请回复“确认”或“取消”。"},
-		},
+	if containsString(facts[0].CriticalValues, "联系") || !containsString(facts[0].CriticalValues, "18256022128") {
+		t.Fatalf("phone must remain without forcing contact wording: %#v", facts[0])
 	}
+	if containsString(facts[1].CriticalValues, "回复") || !containsString(facts[1].CriticalValues, "确认") || !containsString(facts[1].CriticalValues, "取消") {
+		t.Fatalf("fixed options must remain without forcing reply wording: %#v", facts[1])
+	}
+	if containsString(facts[2].CriticalValues, "建议") || containsString(facts[2].CriticalValues, "1") || !containsString(facts[2].CriticalValues, "7:00-9:30") {
+		t.Fatalf("time must remain while list markers and suggestions are removed: %#v", facts[2])
+	}
+}
 
-	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
-	if len(got.SupportedFacts) != 3 {
-		t.Fatalf("different contact and reply actions must remain independent, got %#v", got.SupportedFacts)
-	}
-	contact := got.SupportedFacts[1]
-	if !containsString(contact.CriticalValues, "联系") || !containsString(contact.CriticalValues, "18256022128") {
-		t.Fatalf("contact guidance must preserve its phone number, got %#v", contact)
-	}
-	reply := got.SupportedFacts[2]
-	for _, value := range []string{"回复", "确认", "取消"} {
-		if !containsString(reply.CriticalValues, value) {
-			t.Fatalf("reply guidance must preserve option %q, got %#v", value, reply)
-		}
+func TestSanitizeKnowledgeEvidenceCriticalValuesDistinguishesOptionsFromListMarkers(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		statement string
+		values    []string
+		want      []string
+	}{
+		{name: "quoted options", statement: "请回复“1”或“2”。", values: []string{"回复", "1", "2"}, want: []string{"1", "2"}},
+		{name: "plain options", statement: "回复1或2都可以。", values: []string{"1", "2"}, want: []string{"1", "2"}},
+		{name: "single digit list", statement: "1. 早餐时间", values: []string{"1"}},
+		{name: "double digit list", statement: "10、早餐时间", values: []string{"10"}},
+		{name: "metro line", statement: "乘坐地铁1号线。", values: []string{"1"}, want: []string{"1"}},
+		{name: "floor", statement: "洗衣房在8楼。", values: []string{"8"}, want: []string{"8"}},
+		{name: "room number", statement: "房间号是1313。", values: []string{"1313"}, want: []string{"1313"}},
+		{name: "phone", statement: "电话是18256022128。", values: []string{"18256022128"}, want: []string{"18256022128"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeKnowledgeEvidenceCriticalValuesForStatement(tt.values, tt.statement)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Fatalf("unexpected sanitized values: got=%#v want=%#v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1962,12 +1984,14 @@ func TestReconcileSelectedFAQAnswerClausesKeepsNegativeBoundaryAndMethod(t *test
 			CandidateID: "T1C1",
 			Layer:       knowledgeEvidenceLayerStore,
 			Hit: rag.RetrieveResult{
-				Content: "问题：怎么办理入住\n答案：我们酒店没有传统前台，你可以通过入住机或小程序线上智能化方式办理入住。",
+				Content: "问题：怎么办理入住\n答案：我们酒店没有传统前台，你可以通过入住机或小程序线上智能化方式办理入住。酒店不提供早餐，也不支持微信支付。",
 			},
 		},
 	}
 
-	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "怎么办理入住", Objective: "method",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
 	if len(got.SupportedFacts) != 2 {
 		t.Fatalf("negative service boundary and check-in method must both be preserved, got %#v", got.SupportedFacts)
 	}
@@ -1981,9 +2005,105 @@ func TestReconcileSelectedFAQAnswerClausesKeepsNegativeBoundaryAndMethod(t *test
 	if boundary == nil || boundary.Aspect != "existence" || !containsString(boundary.CriticalValues, "传统前台") {
 		t.Fatalf("missing grounded traditional-front-desk boundary: %#v", got.SupportedFacts)
 	}
+	for _, fact := range got.SupportedFacts {
+		if strings.Contains(fact.Statement, "早餐") || strings.Contains(fact.Statement, "微信支付") {
+			t.Fatalf("unrelated negative FAQ extension or channel domain must not be restored: %#v", got.SupportedFacts)
+		}
+	}
 }
 
-func TestReconcileSelectedFAQAnswerClausesKeepsEveryIndependentFact(t *testing.T) {
+func TestReconcileSelectedFAQAnswerClausesKeepsSameDomainDoorBoundary(t *testing.T) {
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		SelectedCandidateIDs: []string{"T1C1"},
+		SupportedFacts: []knowledgeEvidenceFact{{
+			FactID: "T1F1", Aspect: "method", Statement: "完成登记后扫人脸开门。", CriticalValues: []string{"人脸", "开门"},
+		}},
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         rag.RetrieveResult{Content: "问题：酒店房门怎么打开\n答案：完成登记后扫人脸开门；无需房卡。"},
+		},
+	}
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "酒店房门怎么打开", Objective: "method",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
+	combined := ""
+	for _, fact := range got.SupportedFacts {
+		combined += fact.Statement
+	}
+	if !strings.Contains(combined, "扫人脸") || !strings.Contains(combined, "无需房卡") {
+		t.Fatalf("same-domain access method and boundary must both remain: %#v", got.SupportedFacts)
+	}
+}
+
+func TestReconcileSelectedFAQAnswerClausesAddsNewRequiredValuesWithinSameAspect(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		task         knowledgeEvidenceJudgeTask
+		initialFact  knowledgeEvidenceFact
+		content      string
+		mustContain  []string
+		mustCritical []string
+	}{
+		{
+			name:         "check-in channels",
+			task:         knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "怎么办理入住", Objective: "method"},
+			initialFact:  knowledgeEvidenceFact{FactID: "T1F1", Aspect: "method", Statement: "可以通过入住机办理入住。", CriticalValues: []string{"入住机"}},
+			content:      "问题：怎么办理入住\n答案：可以通过入住机办理入住；也可以通过小程序办理入住。",
+			mustContain:  []string{"入住机", "小程序"},
+			mustCritical: []string{"小程序"},
+		},
+		{
+			name:         "delivery address components",
+			task:         knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "外卖地址怎么填", Objective: "location"},
+			initialFact:  knowledgeEvidenceFact{FactID: "T1F1", Aspect: "location", Statement: "外卖地址填写丽斯未来酒店合肥南七店。", CriticalValues: []string{"丽斯未来酒店合肥南七店"}},
+			content:      "问题：外卖地址怎么填\n答案：外卖地址填写丽斯未来酒店合肥南七店；还要加对应楼层房间号。",
+			mustContain:  []string{"丽斯未来酒店合肥南七店", "对应楼层房间号"},
+			mustCritical: []string{"房号"},
+		},
+		{
+			name:         "wifi account and password",
+			task:         knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "WiFi账号密码是多少"},
+			initialFact:  knowledgeEvidenceFact{FactID: "T1F1", Aspect: "other", Statement: "WiFi账号是LISI。", CriticalValues: []string{"LISI"}},
+			content:      "问题：WiFi账号密码是多少\n答案：WiFi账号是LISI；WiFi密码是lis888888。",
+			mustContain:  []string{"LISI", "lis888888"},
+			mustCritical: []string{"lis888888"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			selection := knowledgeEvidenceLayerSelection{
+				Decision:             knowledgeEvidenceDecisionDirectSingle,
+				SelectedCandidateIDs: []string{"T1C1"},
+				SupportedFacts:       []knowledgeEvidenceFact{tt.initialFact},
+			}
+			candidates := map[string]knowledgeEvidenceJudgeCandidate{
+				"T1C1": {CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Content: tt.content}},
+			}
+			got := reconcileSelectedFAQGuidanceFactsForTask(tt.task, knowledgeEvidenceLayerStore, selection, candidates)
+			combined := ""
+			criticalValues := make([]string, 0, 4)
+			for _, fact := range got.SupportedFacts {
+				combined += fact.Statement
+				criticalValues = appendKnowledgeEvidenceCriticalValues(criticalValues, fact.CriticalValues)
+			}
+			for _, required := range tt.mustContain {
+				if !strings.Contains(combined, required) {
+					t.Fatalf("missing required same-aspect value %q: %#v", required, got.SupportedFacts)
+				}
+			}
+			for _, required := range tt.mustCritical {
+				if !knowledgeEvidenceContainsString(criticalValues, required) {
+					t.Fatalf("missing required critical value %q: %#v", required, got.SupportedFacts)
+				}
+			}
+		})
+	}
+}
+
+func TestReconcileSelectedFAQAnswerClausesKeepsOnlyFactsRequiredByCurrentTask(t *testing.T) {
 	selection := knowledgeEvidenceLayerSelection{
 		Decision:             knowledgeEvidenceDecisionDirectSingle,
 		SelectedCandidateIDs: []string{"T1C1"},
@@ -2001,18 +2121,11 @@ func TestReconcileSelectedFAQAnswerClausesKeepsEveryIndependentFact(t *testing.T
 		},
 	}
 
-	got := reconcileSelectedFAQGuidanceFacts("T1", knowledgeEvidenceLayerStore, selection, candidates)
-	if len(got.SupportedFacts) != 3 {
-		t.Fatalf("quantity, price and time must remain independent facts, got %#v", got.SupportedFacts)
-	}
-	seen := map[string]bool{}
-	for _, fact := range got.SupportedFacts {
-		seen[fact.Aspect] = true
-	}
-	for _, aspect := range []string{"quantity", "price", "time"} {
-		if !seen[aspect] {
-			t.Fatalf("missing %s fact after FAQ reconciliation: %#v", aspect, got.SupportedFacts)
-		}
+	got := reconcileSelectedFAQGuidanceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "房间里有几瓶矿泉水", Objective: "quantity",
+	}, knowledgeEvidenceLayerStore, selection, candidates)
+	if len(got.SupportedFacts) != 1 || got.SupportedFacts[0].Aspect != "quantity" || !strings.Contains(got.SupportedFacts[0].Statement, "两瓶") {
+		t.Fatalf("a quantity-only task must not inherit unasked price and replenishment time, got %#v", got.SupportedFacts)
 	}
 }
 

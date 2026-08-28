@@ -139,7 +139,7 @@ func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(
 	}
 }
 
-func TestDeterministicGeneratedReplyFallbackKeepsDistinctSubstringFacts(t *testing.T) {
+func TestDeterministicGeneratedReplyFallbackCompactsContainedComplementaryFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID:        "task-1",
@@ -153,8 +153,8 @@ func TestDeterministicGeneratedReplyFallbackKeepsDistinctSubstringFacts(t *testi
 	}}})
 
 	got := deterministicGeneratedReplyFallback(collector)
-	if strings.Count(got, "两瓶矿泉水") != 2 || !strings.Contains(got, "免费") {
-		t.Fatalf("fallback must preserve distinct fact statements even when one contains the other, got %q", got)
+	if got != "房间内有两瓶矿泉水，都是免费的。" || strings.Count(got, "两瓶矿泉水") != 1 {
+		t.Fatalf("one complete statement must cover contained quantity and price facts once, got %q", got)
 	}
 }
 
@@ -243,6 +243,58 @@ func TestDeterministicGeneratedReplyFallbackCompactsPoliteClauseVariantsWithoutL
 	want := strings.Join([]string{checkIn.Statement, doorAccess.Statement, waterQuantity.Statement, waterPrice.Statement}, " ")
 	if got := deterministicGeneratedReplyFallback(collector); got != want {
 		t.Fatalf("fallback must keep complete sentences and distinct quantity/price facts: got %q want %q", got, want)
+	}
+}
+
+func TestDeterministicGeneratedReplyFallbackCompactsProductionStyleFragments(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID:        "task-1",
+		Intent:        "hotel_info",
+		OutputKind:    "text",
+		ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "F1", Aspect: "existence", Statement: "酒店周边有丰富的餐饮选择，如罍街小吃街、贡街小吃街等。", CriticalValues: []string{"罍街小吃街", "贡街小吃街"}},
+			{FactID: "F2", Aspect: "method", Statement: "酒店周边有丰富的餐饮选择。", CriticalValues: []string{"选择"}},
+			{FactID: "F3", Aspect: "existence", Statement: "酒店附近的小丁小吃尤其推荐，需要驾车前往。", CriticalValues: []string{"小丁小吃"}},
+			{FactID: "F4", Aspect: "location", Statement: "另外酒店附近的小丁小吃尤其推荐。"},
+			{FactID: "F5", Aspect: "condition", Statement: "需要驾车前往。"},
+		},
+	}}})
+
+	got := deterministicGeneratedReplyFallback(collector)
+	if strings.Count(got, "餐饮选择") != 1 || strings.Count(got, "小丁小吃") != 1 || strings.Count(got, "驾车前往") != 1 {
+		t.Fatalf("production-style full facts and fragments must each be emitted once, got %q", got)
+	}
+}
+
+func TestDeterministicGeneratedReplyFallbackKeepsComplementaryAndConflictingContextsSeparate(t *testing.T) {
+	facts := []callbacks.KnowledgeEvidenceFactTraceData{
+		{FactID: "F1", Aspect: "quantity", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+		{FactID: "F2", Aspect: "price", Statement: "房间内的矿泉水免费。", CriticalValues: []string{"免费"}},
+		{FactID: "F3", Aspect: "existence", Statement: "合柴房型有办公桌。", CriticalValues: []string{"合柴"}},
+		{FactID: "F4", Aspect: "existence", Statement: "麦田房型有办公桌。", CriticalValues: []string{"麦田"}},
+		{FactID: "F5", Aspect: "time", Statement: "工作日早餐时间是7:00-9:00。", CriticalValues: []string{"工作日", "7:00-9:00"}},
+		{FactID: "F6", Aspect: "time", Statement: "周末早餐时间是8:00-10:00。", CriticalValues: []string{"周末", "8:00-10:00"}},
+		{FactID: "F7", Aspect: "capability", Statement: "可以开门。"},
+		{FactID: "F8", Aspect: "capability", Statement: "不可以开门。"},
+	}
+	compacted := compactGeneratedReplyFallbackFacts(replyFactRequirements(facts))
+	if len(compacted) != len(facts) {
+		t.Fatalf("different aspects, objects, conditions, and polarities must remain separate: %#v", compacted)
+	}
+}
+
+func TestDeterministicGeneratedReplyFallbackKeepsScopedSubstringAndPolarityFactsSeparate(t *testing.T) {
+	facts := []callbacks.KnowledgeEvidenceFactTraceData{
+		{FactID: "F1", Aspect: "price", Statement: "儿童早餐免费。", CriticalValues: []string{"免费"}},
+		{FactID: "F2", Aspect: "price", Statement: "早餐免费。", CriticalValues: []string{"免费"}},
+		{FactID: "F3", Aspect: "scope", Statement: "并非所有房间都可以开门。"},
+		{FactID: "F4", Aspect: "scope", Statement: "房间都可以开门。"},
+	}
+	compacted := compactGeneratedReplyFallbackFacts(replyFactRequirements(facts))
+	if len(compacted) != len(facts) {
+		t.Fatalf("narrower scope and opposite polarity facts must not swallow broader facts: %#v", compacted)
 	}
 }
 

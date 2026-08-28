@@ -688,7 +688,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 每层还必须输出 supportedFacts 和 missingAspects：
 - supportedFacts 只能写 selectedCandidateIds 原文明示或完整 FAQ 问答明确确认的原子事实。每条必须包含 factId、aspect、statement、criticalValues。
 - factId 在同一个 task 的同一知识层内必须唯一；aspect 只能是 existence、quantity、price、time、location、method、scope、condition、other。
-- statement 必须是可直接给后续回复使用的完整事实句，不要写推理过程。criticalValues 只列回复不可丢失的数量、金额、时间、电话、地址、房型名或其他关键原文；没有则输出空数组。
+- statement 必须是可直接给后续回复使用的完整事实句，不要写推理过程。criticalValues 只列不能自然改写的精确值，例如数量、金额、时间、电话、地址、房型名、账号密码、免费/收费或固定选项；“建议、选择、联系、回复、比较、办理”等普通动作词不得放入 criticalValues，没有精确值则输出空数组。
 - missingAspects 只写客户当前问题仍然缺失的事实维度或条件，使用简短中文短语。
 - direct_single/direct_combined 必须至少有一条 supportedFacts，且 missingAspects 为空；唯一例外是选中单条“转接/转人工”流程指令时，supportedFacts 和 missingAspects 都必须为空。
 - partial 必须同时包含至少一条 supportedFacts 和一条 missingAspects。
@@ -700,9 +700,9 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 
 肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
 
-完整答案单元规则：FAQ 中与客户当前问题直接相关的事实、适用条件、操作建议、选择或比较方法，都是彼此独立的答案单元，必须分别进入 supportedFacts，不能只保留结论而省略后续怎么做。操作建议和选择方法通常使用 method 或 condition；其中会改变客户下一步行动、且回复时不可丢失的关键动作原文或短语，也必须进入对应事实的 criticalValues。与当前问题无关的延伸内容不得为了凑齐答案而加入。
+最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
 
-对每个 selectedCandidateIds 对应的 faqAnswer，必须按句号、分号、逗号等语义边界逐个检查独立事实子句。一个答案同时包含否定/能力边界与办理方法、时间与地点、数量与费用等多个子句时，每个与当前问题有关的子句都必须由独立 supportedFacts 覆盖，不能只保留后半句的方法而漏掉前半句边界。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
+检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
 
 例如 FAQ 问题“问下房间的两瓶矿泉水是免费的吗？”、答案“是的，房间内的矿泉水都是免费的”，完整语义已经确认“房间内有两瓶矿泉水，并且免费”。它足以回答“房间里有几瓶矿泉水”，应判 direct_single；不能因为数量只写在 faqQuestion 中就丢掉这个已被肯定回答确认的事实。这个规则同样适用于其他 FAQ 中被肯定或否定答案确认的对象、数量与条件。
 
@@ -715,7 +715,7 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
 严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。输出格式：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内的矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":["没有可用于回答当前问题的通用知识证据"]}]}]}`)
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水，都是免费的。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内有两瓶矿泉水，都是免费的。","criticalValues":["免费"]}],"missingAspects":[]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":["没有可用于回答当前问题的通用知识证据"]}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
@@ -879,7 +879,7 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 		supportedFacts = groundedKnowledgeEvidenceFacts(expectedTask, layer, selectedIDs, supportedFacts)
 		supportedFacts = enrichKnowledgeEvidenceFactsFromSelectedFAQs(expectedTask, layer, selectedIDs, supportedFacts)
 	}
-	supportedFacts = canonicalizeKnowledgeEvidenceFacts(filterKnowledgeEvidenceFactsForTask(expectedTask, supportedFacts))
+	supportedFacts = finalizeKnowledgeEvidenceFactsForTask(expectedTask, supportedFacts)
 	if decision == knowledgeEvidenceDecisionDirectCombined && len(selectedIDs) == 1 {
 		decision = knowledgeEvidenceDecisionDirectSingle
 	}
@@ -1203,7 +1203,7 @@ func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts 
 		if !keep && requiredKnowledgeEvidenceAspect(required, "scope") && fact.Aspect == "existence" {
 			keep = true
 		}
-		if !keep && requiredKnowledgeEvidenceAspect(required, "method") && fact.Aspect == "existence" && knowledgeEvidenceTextHasNegativeBoundary(fact.Statement) {
+		if !keep && requiredKnowledgeEvidenceAspect(required, "method") && knowledgeEvidenceMethodBoundaryRelevantToTask(task, fact, facts) {
 			keep = true
 		}
 		if !keep && requiredKnowledgeEvidenceAspect(required, "price") && (knowledgeEvidenceQueryAsksComparison(task.Query) || knowledgeEvidenceQueryAsksPriceBoundary(task.Query)) {
@@ -1223,6 +1223,109 @@ func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts 
 		}
 	}
 	return ret
+}
+
+func finalizeKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	facts = filterKnowledgeEvidenceFactsForTask(task, facts)
+	return canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(facts))
+}
+
+func sanitizeKnowledgeEvidenceFacts(facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	for index := range facts {
+		facts[index].CriticalValues = sanitizeKnowledgeEvidenceCriticalValuesForStatement(facts[index].CriticalValues, facts[index].Statement)
+	}
+	return facts
+}
+
+func sanitizeKnowledgeEvidenceCriticalValues(values []string) []string {
+	return sanitizeKnowledgeEvidenceCriticalValuesForStatement(values, "")
+}
+
+func sanitizeKnowledgeEvidenceCriticalValuesForStatement(values []string, statement string) []string {
+	ret := make([]string, 0, len(values))
+	for _, rawValue := range values {
+		value := canonicalKnowledgeEvidenceCriticalValue(strings.TrimSpace(rawValue))
+		if value == "" || knowledgeEvidenceCriticalValueIsParaphrasable(value) {
+			continue
+		}
+		if knowledgeEvidenceCriticalValueIsBareSequence(value) && !knowledgeEvidenceBareSequenceIsMeaningful(statement, value) {
+			continue
+		}
+		ret = appendIfMissing(ret, value)
+	}
+	return ret
+}
+
+func canonicalKnowledgeEvidenceCriticalValue(value string) string {
+	switch normalizeRuntimeKnowledgeQuery(value) {
+	case "扫人脸", "刷人脸", "扫脸", "刷脸":
+		return "人脸"
+	case "app":
+		return "APP"
+	case "酒店名称", "门店名称", "酒店名", "门店名":
+		return "酒店名"
+	case "对应楼层", "所在楼层", "楼层":
+		return "楼层"
+	case "房间号", "门牌号", "房号":
+		return "房号"
+	default:
+		return value
+	}
+}
+
+func knowledgeEvidenceCriticalValueIsParaphrasable(value string) bool {
+	switch normalizeRuntimeKnowledgeQuery(value) {
+	case "建议", "选择", "联系", "回复", "对比", "比较", "通过", "使用", "操作", "办理", "申请", "下载", "点击", "输入":
+		return true
+	default:
+		return false
+	}
+}
+
+func knowledgeEvidenceCriticalValueIsBareSequence(value string) bool {
+	runes := []rune(normalizeCriticalValueText(value))
+	if len(runes) == 0 || len(runes) > 2 {
+		return false
+	}
+	for _, character := range runes {
+		if !strings.ContainsRune("0123456789一二三四五六七八九十", character) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceBareSequenceIsMeaningful(statement string, value string) bool {
+	statement = strings.TrimSpace(statement)
+	value = strings.TrimSpace(value)
+	if statement == "" || value == "" {
+		return false
+	}
+	for _, quoted := range []string{"“" + value + "”", `"` + value + `"`, "‘" + value + "’", "'" + value + "'", "「" + value + "」", "『" + value + "』"} {
+		if strings.Contains(statement, quoted) {
+			return true
+		}
+	}
+	for offset := 0; offset < len(statement); {
+		index := strings.Index(statement[offset:], value)
+		if index < 0 {
+			break
+		}
+		index += offset
+		prefixRunes := []rune(statement[:index])
+		if len(prefixRunes) > 4 {
+			prefixRunes = prefixRunes[len(prefixRunes)-4:]
+		}
+		prefix := string(prefixRunes)
+		suffix := statement[index+len(value):]
+		if containsAny(prefix, []string{"回复", "选择", "发送", "输入", "按", "选", "回", "发"}) ||
+			strings.HasPrefix(strings.TrimSpace(suffix), "号线") || strings.HasPrefix(strings.TrimSpace(suffix), "号") ||
+			strings.HasPrefix(strings.TrimSpace(suffix), "楼") || strings.HasPrefix(strings.TrimSpace(suffix), "层") {
+			return true
+		}
+		offset = index + len(value)
+	}
+	return false
 }
 
 func narrowKnowledgeEvidenceFactToTask(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact, required []string) knowledgeEvidenceFact {
@@ -1394,6 +1497,106 @@ func knowledgeEvidenceNegativeFactAnswersTask(task knowledgeEvidenceJudgeTask, f
 		}
 	}
 	return knowledgeEvidenceTextNGramSimilarity(query, statement) >= 0.22
+}
+
+func knowledgeEvidenceMethodChannels() []string {
+	return []string{
+		"传统前台", "前台", "入住机", "自助机", "登记机", "小程序", "短信链接", "二维码",
+		"房卡", "门锁密码", "密码", "人脸", "电话", "微信", "支付宝", "银行卡", "APP", "app",
+	}
+}
+
+func knowledgeEvidenceMethodDomain(text string) string {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	switch {
+	case containsAny(compact, []string{"支付", "付款", "转账", "缴费", "收款", "微信支付", "支付宝", "银行卡"}):
+		return "payment"
+	case containsAny(compact, []string{"开门", "房门", "门锁", "房卡", "刷脸", "扫脸", "扫人脸", "人脸", "门锁密码"}):
+		return "door_access"
+	case containsAny(compact, []string{"入住", "登记", "入住机", "登记机", "传统前台", "办理入住"}):
+		return "check_in"
+	case containsAny(compact, []string{"联系", "电话", "管家", "客服", "同事"}):
+		return "contact"
+	default:
+		return ""
+	}
+}
+
+func knowledgeEvidenceMethodChannelDomain(channel string) string {
+	switch normalizeRuntimeKnowledgeQuery(channel) {
+	case "传统前台", "前台", "入住机", "自助机", "登记机":
+		return "check_in"
+	case "房卡", "门锁密码", "密码", "人脸":
+		return "door_access"
+	case "微信", "支付宝", "银行卡":
+		return "payment"
+	case "电话":
+		return "contact"
+	default:
+		return ""
+	}
+}
+
+func knowledgeEvidenceTaskMethodDomain(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) string {
+	taskDomain := knowledgeEvidenceMethodDomain(task.Query)
+	if taskDomain == "" {
+		for _, fact := range facts {
+			if fact.Aspect == "method" {
+				if domain := knowledgeEvidenceMethodDomain(fact.Statement); domain != "" {
+					taskDomain = domain
+					break
+				}
+			}
+		}
+	}
+	return taskDomain
+}
+
+func knowledgeEvidenceRelevantMethodChannels(task knowledgeEvidenceJudgeTask, clause string, facts []knowledgeEvidenceFact) []string {
+	taskDomain := knowledgeEvidenceTaskMethodDomain(task, facts)
+	clauseDomain := knowledgeEvidenceMethodDomain(clause)
+	if taskDomain != "" && clauseDomain != "" && taskDomain != clauseDomain {
+		return nil
+	}
+	compact := normalizeRuntimeKnowledgeQuery(clause)
+	ret := make([]string, 0, 2)
+	for _, channel := range knowledgeEvidenceMethodChannels() {
+		if !strings.Contains(compact, normalizeRuntimeKnowledgeQuery(channel)) {
+			continue
+		}
+		channelDomain := knowledgeEvidenceMethodChannelDomain(channel)
+		if taskDomain != "" && channelDomain != "" && taskDomain != channelDomain {
+			continue
+		}
+		ret = appendIfMissing(ret, channel)
+	}
+	return ret
+}
+
+func knowledgeEvidenceMethodBoundaryRelevantToTask(task knowledgeEvidenceJudgeTask, boundary knowledgeEvidenceFact, facts []knowledgeEvidenceFact) bool {
+	if boundary.Aspect != "existence" || !knowledgeEvidenceTextHasNegativeBoundary(boundary.Statement) {
+		return false
+	}
+	taskDomain := knowledgeEvidenceTaskMethodDomain(task, facts)
+	boundaryDomain := knowledgeEvidenceMethodDomain(boundary.Statement)
+	if taskDomain != "" && boundaryDomain != "" && taskDomain != boundaryDomain {
+		return false
+	}
+	if knowledgeEvidenceNegativeFactAnswersTask(task, boundary) {
+		return true
+	}
+	if len(knowledgeEvidenceRelevantMethodChannels(task, boundary.Statement, facts)) == 0 {
+		return false
+	}
+	for _, fact := range facts {
+		if fact.Aspect != "method" || !knowledgeEvidenceFactSupportsAspect(fact, "method") {
+			continue
+		}
+		if len(knowledgeEvidenceRelevantMethodChannels(task, fact.Statement, facts)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func missingRequiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []string {
@@ -1680,8 +1883,8 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 	}
 	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, best.answer)
 	facts = enrichKnowledgeEvidenceFactsFromFAQUnit(task, best.question, best.answer, facts)
-	facts = filterKnowledgeEvidenceFactsForTask(task, facts)
-	facts = canonicalizeKnowledgeEvidenceFacts(groundedKnowledgeEvidenceFacts(task, layer, []string{best.candidate.CandidateID}, facts))
+	facts = groundedKnowledgeEvidenceFacts(task, layer, []string{best.candidate.CandidateID}, facts)
+	facts = finalizeKnowledgeEvidenceFactsForTask(task, facts)
 	if len(facts) == 0 || len(missingRequiredKnowledgeEvidenceAspects(task, facts)) > 0 {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
@@ -1706,8 +1909,8 @@ func knowledgeEvidenceJudgeCandidateCompletesTask(task knowledgeEvidenceJudgeTas
 	}
 	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, answer)
 	facts = enrichKnowledgeEvidenceFactsFromFAQUnit(task, question, answer, facts)
-	facts = filterKnowledgeEvidenceFactsForTask(task, facts)
-	facts = canonicalizeKnowledgeEvidenceFacts(groundedKnowledgeEvidenceFacts(task, candidate.Layer, []string{candidate.CandidateID}, facts))
+	facts = groundedKnowledgeEvidenceFacts(task, candidate.Layer, []string{candidate.CandidateID}, facts)
+	facts = finalizeKnowledgeEvidenceFactsForTask(task, facts)
 	if len(missingRequiredKnowledgeEvidenceAspects(task, facts)) > 0 {
 		return questionMatch, false
 	}
@@ -1792,11 +1995,6 @@ func deterministicKnowledgeEvidenceFactsFromFAQ(taskID string, answer string) []
 		aspect, criticalValue := knowledgeEvidenceAnswerClauseAspect(clause)
 		criticalValues := knowledgeEvidenceAnswerClauseCriticalValues(clause, criticalValue)
 		if aspect == "method" {
-			for _, cue := range []string{"通过", "使用", "扫码", "点击", "输入", "操作", "办理", "联系", "回复", "选择", "对比", "比较", "申请", "下载", "登记", "刷脸", "扫脸", "扫人脸", "开门"} {
-				if strings.Contains(clause, cue) {
-					criticalValues = appendIfMissing(criticalValues, cue)
-				}
-			}
 			for _, channel := range []string{"小程序", "入住机", "短信链接", "二维码", "房卡", "人脸", "电话", "微信", "支付宝", "银行卡", "APP", "app"} {
 				if strings.Contains(clause, channel) {
 					criticalValues = appendIfMissing(criticalValues, channel)
@@ -2779,6 +2977,7 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 		return selection
 	}
 	if intersection, ok := deterministicKnowledgeEvidenceIntersectionSelection(task, layer, selection.SelectedCandidateIDs); ok {
+		intersection.SupportedFacts = canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(intersection.SupportedFacts))
 		return intersection
 	}
 	taskID := task.TaskID
@@ -2801,11 +3000,18 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 			}
 			aspect, criticalValue := knowledgeEvidenceAnswerClauseAspect(clause)
 			criticalValues := knowledgeEvidenceAnswerClauseCriticalValues(clause, criticalValue)
+			criticalValues = appendKnowledgeEvidenceCriticalValues(
+				criticalValues,
+				knowledgeEvidenceFAQClauseConcreteValues(task, aspect, clause, selection.SupportedFacts),
+			)
 			if factIndex := knowledgeEvidenceAnswerClauseFactIndex(clause, aspect, criticalValue, criticalValues, selection.SupportedFacts); factIndex >= 0 {
 				selection.SupportedFacts[factIndex].CriticalValues = appendKnowledgeEvidenceCriticalValues(
 					selection.SupportedFacts[factIndex].CriticalValues,
 					criticalValues,
 				)
+				continue
+			}
+			if !knowledgeEvidenceFAQClauseRequiredForTask(task, aspect, clause, criticalValues, selection.SupportedFacts) {
 				continue
 			}
 			factID := nextKnowledgeEvidenceFactID(taskID, seenFactIDs)
@@ -2822,8 +3028,119 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 			})
 		}
 	}
-	selection.SupportedFacts = canonicalizeKnowledgeEvidenceFacts(filterKnowledgeEvidenceFactsForTask(task, selection.SupportedFacts))
+	selection.SupportedFacts = finalizeKnowledgeEvidenceFactsForTask(task, selection.SupportedFacts)
 	return selection
+}
+
+func knowledgeEvidenceFAQClauseRequiredForTask(task knowledgeEvidenceJudgeTask, aspect string, clause string, criticalValues []string, facts []knowledgeEvidenceFact) bool {
+	if knowledgeEvidenceFAQClauseAddsMissingConfiguration(task, clause, facts) {
+		return true
+	}
+	required := requiredKnowledgeEvidenceAspects(task)
+	if requiredKnowledgeEvidenceAspect(required, aspect) {
+		if !knowledgeEvidenceFactsCoverRequiredAspect(task, facts, aspect) {
+			return true
+		}
+		if knowledgeEvidenceFAQClauseAddsConcreteValue(aspect, clause, criticalValues, facts) {
+			return true
+		}
+	}
+	if knowledgeEvidenceTextHasNegativeBoundary(clause) {
+		if requiredKnowledgeEvidenceAspect(required, "existence") && knowledgeEvidenceNegativeFactAnswersTask(task, knowledgeEvidenceFact{Aspect: "existence", Statement: clause}) {
+			return true
+		}
+		if requiredKnowledgeEvidenceAspect(required, "method") && knowledgeEvidenceMethodBoundaryRelevantToTask(task, knowledgeEvidenceFact{Aspect: "existence", Statement: clause}, facts) {
+			return true
+		}
+	}
+	if requiredKnowledgeEvidenceAspect(required, "price") && (knowledgeEvidenceQueryAsksComparison(task.Query) || knowledgeEvidenceQueryAsksPriceBoundary(task.Query)) {
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		if (aspect == "condition" || aspect == "scope") && containsAny(compact, []string{"平台", "权益", "不同", "调整", "情况", "为准", "而定", "取决于"}) {
+			return true
+		}
+		return aspect == "method" && containsAny(compact, []string{"对比", "比较", "选择", "联系"})
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQClauseAddsMissingConfiguration(task knowledgeEvidenceJudgeTask, clause string, facts []knowledgeEvidenceFact) bool {
+	requested := knowledgeEvidenceConfigurationFields(task.Query)
+	if len(requested) == 0 {
+		return false
+	}
+	existing := make(map[string][]string, len(requested))
+	for _, fact := range facts {
+		for field, values := range knowledgeEvidenceConfigurationValues(fact.Statement) {
+			for _, value := range values {
+				existing[field] = appendIfMissing(existing[field], normalizeRuntimeKnowledgeQuery(value))
+			}
+		}
+	}
+	clauseValues := knowledgeEvidenceConfigurationValues(clause)
+	for _, field := range requested {
+		for _, value := range clauseValues[field] {
+			if !knowledgeEvidenceContainsString(existing[field], normalizeRuntimeKnowledgeQuery(value)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQClauseAddsConcreteValue(aspect string, clause string, criticalValues []string, facts []knowledgeEvidenceFact) bool {
+	values := sanitizeKnowledgeEvidenceCriticalValuesForStatement(criticalValues, clause)
+	for _, value := range values {
+		if !knowledgeEvidenceFactsContainConcreteValue(facts, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQClauseConcreteValues(task knowledgeEvidenceJudgeTask, aspect string, clause string, facts []knowledgeEvidenceFact) []string {
+	values := make([]string, 0, 4)
+	compact := normalizeRuntimeKnowledgeQuery(clause)
+	if aspect == "method" {
+		for _, channel := range knowledgeEvidenceRelevantMethodChannels(task, clause, facts) {
+			values = appendIfMissing(values, canonicalKnowledgeEvidenceCriticalValue(channel))
+		}
+	}
+	if aspect == "location" {
+		for _, slot := range []struct {
+			value   string
+			markers []string
+		}{
+			{value: "酒店名", markers: []string{"酒店名称", "门店名称", "酒店名", "门店名"}},
+			{value: "楼层", markers: []string{"对应楼层", "所在楼层", "楼层"}},
+			{value: "房号", markers: []string{"房间号", "门牌号", "房号"}},
+		} {
+			for _, marker := range slot.markers {
+				if strings.Contains(compact, normalizeRuntimeKnowledgeQuery(marker)) {
+					values = appendIfMissing(values, slot.value)
+					break
+				}
+			}
+		}
+	}
+	return values
+}
+
+func knowledgeEvidenceFactsContainConcreteValue(facts []knowledgeEvidenceFact, value string) bool {
+	value = canonicalKnowledgeEvidenceCriticalValue(strings.TrimSpace(value))
+	if value == "" {
+		return true
+	}
+	for _, fact := range facts {
+		if containsCriticalValue(fact.Statement, value) {
+			return true
+		}
+		for _, existing := range sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement) {
+			if normalizeCriticalValueText(existing) == normalizeCriticalValueText(value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func knowledgeEvidenceAnswerClauseIsGroundedFact(clause string) bool {
@@ -2936,8 +3253,12 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 	for _, match := range timeMatches {
 		values = appendIfMissing(values, strings.TrimSpace(match))
 	}
-	for _, match := range knowledgeEvidenceAnswerNumberPattern.FindAllString(clause, -1) {
+	for _, matchIndex := range knowledgeEvidenceAnswerNumberPattern.FindAllStringIndex(clause, -1) {
+		match := clause[matchIndex[0]:matchIndex[1]]
 		if knowledgeEvidenceNumberIsPartOfTime(match, timeMatches) {
+			continue
+		}
+		if knowledgeEvidenceCriticalValueIsBareSequence(match) && knowledgeEvidenceNumberIsListMarker(clause, matchIndex[0], matchIndex[1]) {
 			continue
 		}
 		values = appendIfMissing(values, strings.TrimSpace(match))
@@ -2960,6 +3281,20 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 		}
 	}
 	return values
+}
+
+func knowledgeEvidenceNumberIsListMarker(clause string, start int, end int) bool {
+	if start < 0 || end <= start || end > len(clause) {
+		return false
+	}
+	prefix := strings.TrimSpace(clause[:start])
+	prefix = strings.TrimSpace(strings.Trim(prefix, "-*•"))
+	if prefix != "" {
+		return false
+	}
+	suffix := strings.TrimLeft(clause[end:], " \t")
+	return strings.HasPrefix(suffix, ".") || strings.HasPrefix(suffix, "、") || strings.HasPrefix(suffix, ")") ||
+		strings.HasPrefix(suffix, "）") || strings.HasPrefix(suffix, ":") || strings.HasPrefix(suffix, "：")
 }
 
 func knowledgeEvidenceNumberIsPartOfTime(number string, timeMatches []string) bool {
@@ -3089,7 +3424,7 @@ func knowledgeEvidenceGuidanceFactIndex(clause string, aspect string, criticalVa
 			}
 		}
 	}
-	for _, literal := range criticalValues[1:] {
+	for _, literal := range criticalValues {
 		for index := range facts {
 			if strings.TrimSpace(facts[index].Aspect) != strings.TrimSpace(aspect) {
 				continue
@@ -3112,7 +3447,7 @@ var knowledgeEvidencePriceValuePattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?
 var knowledgeEvidenceConfigurationFieldMarkerPattern = regexp.MustCompile(`(?i)(?:wifi|wi-fi|无线网|无线网络)?\s*(账号|帐号|用户名|名称|名字|ssid|密码|口令)\s*(?:是|为|[:：])?\s*`)
 
 func knowledgeEvidenceGuidanceCriticalValues(clause string, criticalValue string) []string {
-	values := []string{criticalValue}
+	values := make([]string, 0, 3)
 	for _, match := range knowledgeEvidenceGuidanceNumberPattern.FindAllString(clause, -1) {
 		values = appendIfMissing(values, strings.TrimSpace(match))
 	}

@@ -155,6 +155,51 @@ func groupReplyFactRequirementsForInstruction(facts []replyFactRequirement) []re
 		}
 		ret = append(ret, item)
 	}
+	for {
+		merged := false
+		for containedIndex := 0; containedIndex < len(ret) && !merged; containedIndex++ {
+			for containerIndex := 0; containerIndex < len(ret); containerIndex++ {
+				if containedIndex == containerIndex || !replyFactInstructionGroupContains(ret[containerIndex], ret[containedIndex]) {
+					continue
+				}
+				container := ret[containerIndex]
+				contained := ret[containedIndex]
+				if containedIndex < containerIndex {
+					container.FactIDs = appendUniqueStrings(contained.FactIDs, container.FactIDs)
+					container.Aspects = appendUniqueStrings(contained.Aspects, container.Aspects)
+					container.CriticalValues = appendKnowledgeEvidenceCriticalValues(contained.CriticalValues, container.CriticalValues)
+					ret[containedIndex] = container
+					ret = append(ret[:containerIndex], ret[containerIndex+1:]...)
+				} else {
+					container.FactIDs = appendUniqueStrings(container.FactIDs, contained.FactIDs)
+					container.Aspects = appendUniqueStrings(container.Aspects, contained.Aspects)
+					container.CriticalValues = appendKnowledgeEvidenceCriticalValues(container.CriticalValues, contained.CriticalValues)
+					ret[containerIndex] = container
+					ret = append(ret[:containedIndex], ret[containedIndex+1:]...)
+				}
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			break
+		}
+	}
+	return ret
+}
+
+func replyFactInstructionGroupContains(container replyFactInstructionGroup, contained replyFactInstructionGroup) bool {
+	return generatedReplyFallbackFactContains(
+		replyFactRequirement{Aspect: strings.Join(container.Aspects, ","), Statement: container.Statement, CriticalValues: container.CriticalValues},
+		replyFactRequirement{Aspect: strings.Join(contained.Aspects, ","), Statement: contained.Statement, CriticalValues: contained.CriticalValues},
+	)
+}
+
+func appendUniqueStrings(existing []string, values []string) []string {
+	ret := append([]string(nil), existing...)
+	for _, value := range values {
+		ret = appendIfMissing(ret, value)
+	}
 	return ret
 }
 
@@ -205,6 +250,10 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		group := groupByTaskID(groups, taskID)
 		if err := validateCoveredFacts(part, group); err != nil {
 			return "", err
+		}
+		content = compactGeneratedReplyContent(content)
+		if content == "" {
+			return "", fmt.Errorf("%w: content for %s became empty after duplicate removal", errGeneratedReplyProtocol, taskID)
 		}
 		contentByTaskID[taskID] = content
 	}
@@ -264,7 +313,7 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 		if _, ok := covered[fact.FactID]; !ok {
 			return fmt.Errorf("%w: missing coveredFactId %s for %s", errGeneratedReplyProtocol, fact.FactID, group.TaskID)
 		}
-		for _, criticalValue := range fact.CriticalValues {
+		for _, criticalValue := range sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement) {
 			if !containsCriticalValue(part.Content, criticalValue) {
 				return fmt.Errorf("%w: content for %s is missing critical value %s", errGeneratedReplyProtocol, group.TaskID, criticalValue)
 			}
@@ -430,7 +479,7 @@ func generatedReplyBoundaryClaimGroundedByFacts(clause string, evidence []string
 }
 
 func generatedReplyBoundaryComparableText(text string, markers []string) string {
-	text = strings.ReplaceAll(normalizeRuntimeKnowledgeQuery(text), "所有", "全部")
+	text = strings.ReplaceAll(normalizeRuntimeKnowledgeQuery(normalizeCriticalValueText(text)), "所有", "全部")
 	for _, marker := range markers {
 		text = strings.ReplaceAll(text, marker, "")
 	}
@@ -650,7 +699,19 @@ func normalizeCriticalValueText(text string) string {
 			runes[index] = '-'
 		}
 	}
-	return string(runes)
+	return strings.NewReplacer(
+		"扫人脸", "人脸",
+		"刷人脸", "人脸",
+		"扫脸", "人脸",
+		"刷脸", "人脸",
+		"酒店名称", "酒店名",
+		"门店名称", "酒店名",
+		"门店名", "酒店名",
+		"对应楼层", "楼层",
+		"所在楼层", "楼层",
+		"房间号", "房号",
+		"门牌号", "房号",
+	).Replace(string(runes))
 }
 
 func isCriticalValueRangeSeparator(r rune) bool {
@@ -836,10 +897,126 @@ func replyFactRequirements(facts []callbacks.KnowledgeEvidenceFactTraceData) []r
 			FactID:         factID,
 			Aspect:         strings.TrimSpace(fact.Aspect),
 			Statement:      strings.TrimSpace(fact.Statement),
-			CriticalValues: append([]string(nil), fact.CriticalValues...),
+			CriticalValues: sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement),
 		})
 	}
 	return ret
+}
+
+func compactGeneratedReplyContent(content string) string {
+	sentences := splitGeneratedReplyDisplaySentences(content)
+	if len(sentences) < 2 {
+		return strings.TrimSpace(content)
+	}
+	redundant := make([]bool, len(sentences))
+	for containedIndex, contained := range sentences {
+		for containerIndex, container := range sentences {
+			if containerIndex == containedIndex || redundant[containedIndex] {
+				continue
+			}
+			if generatedReplyDisplaySentenceContains(container, contained) {
+				containerText := normalizeGeneratedReplyPresentationClause(container)
+				containedText := normalizeGeneratedReplyPresentationClause(contained)
+				if containerText == containedText && containerIndex > containedIndex {
+					continue
+				}
+				redundant[containedIndex] = true
+			}
+		}
+	}
+	var b strings.Builder
+	lastSentence := ""
+	for index, sentence := range sentences {
+		if !redundant[index] {
+			if b.Len() > 0 && !generatedReplySentenceHasTerminalPunctuation(lastSentence) {
+				b.WriteString("\n")
+			}
+			b.WriteString(sentence)
+			lastSentence = sentence
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func generatedReplySentenceHasTerminalPunctuation(sentence string) bool {
+	sentence = strings.TrimSpace(sentence)
+	if sentence == "" {
+		return false
+	}
+	runes := []rune(sentence)
+	return strings.ContainsRune("。！!？?；;", runes[len(runes)-1])
+}
+
+func splitGeneratedReplyDisplaySentences(content string) []string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	ret := make([]string, 0, 4)
+	start := 0
+	for index, character := range content {
+		if !strings.ContainsRune("。！!？?；;\n\r", character) {
+			continue
+		}
+		end := index + len(string(character))
+		if sentence := strings.TrimSpace(content[start:end]); sentence != "" {
+			ret = append(ret, sentence)
+		}
+		start = end
+	}
+	if start < len(content) {
+		if sentence := strings.TrimSpace(content[start:]); sentence != "" {
+			ret = append(ret, sentence)
+		}
+	}
+	return ret
+}
+
+func generatedReplyDisplaySentenceContains(container string, contained string) bool {
+	containerText := normalizeGeneratedReplyPresentationClause(container)
+	containedText := normalizeGeneratedReplyPresentationClause(contained)
+	if containerText == "" || containedText == "" || len([]rune(containerText)) < len([]rune(containedText)) {
+		return false
+	}
+	if containerText == containedText {
+		return true
+	}
+	return generatedReplyFallbackFactContains(
+		replyFactRequirement{Statement: container},
+		replyFactRequirement{Statement: contained},
+	)
+}
+
+func normalizeGeneratedReplyPresentationClause(text string) string {
+	normalized := normalizeRuntimeKnowledgeQuery(text)
+	for {
+		trimmed := normalized
+		for _, prefix := range []string{"另外", "此外", "同时", "然后", "以及", "并且", "还有", "再有", "我们的", "咱们的", "你们的", "您的", "你的", "我们", "咱们", "你们", "您", "你"} {
+			if strings.HasPrefix(trimmed, prefix) {
+				trimmed = strings.TrimPrefix(trimmed, prefix)
+				break
+			}
+		}
+		if trimmed == normalized {
+			break
+		}
+		normalized = trimmed
+	}
+	normalized = strings.ReplaceAll(normalized, "完成登记后", "完成登记")
+	for {
+		trimmed := normalized
+		for _, suffix := range []string{"啦", "呀", "啊", "哦"} {
+			if strings.HasSuffix(trimmed, suffix) {
+				trimmed = strings.TrimSuffix(trimmed, suffix)
+				break
+			}
+		}
+		if trimmed == normalized {
+			break
+		}
+		normalized = trimmed
+	}
+	return normalized
 }
 
 func firstNonEmptyReplyTaskText(values ...string) string {

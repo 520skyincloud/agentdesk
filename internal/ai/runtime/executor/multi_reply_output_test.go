@@ -49,6 +49,32 @@ func TestNormalizeGeneratedReplyPartsUnwrapsSingleTaskProtocol(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeneratedReplyPartsCompactsRepeatedCustomerSentences(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+	}}}
+	for name, content := range map[string]string{
+		"contained":        "完成登记扫人脸就可以开门，无需房卡。无需房卡。",
+		"identical":        "无需房卡。无需房卡。",
+		"mixed_capability": "酒店没有传统前台，可以通过入住机或小程序办理入住。可以通过入住机或小程序办理入住。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"replyParts":[{"taskId":"task-1","content":%q}]}`, content)
+			got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+			if err != nil {
+				t.Fatalf("compact repeated content: %v", err)
+			}
+			if name == "mixed_capability" {
+				if strings.Count(got, "可以通过入住机或小程序办理入住") != 1 {
+					t.Fatalf("contained method must appear once, got %q", got)
+				}
+			} else if strings.Count(got, "无需房卡") != 1 {
+				t.Fatalf("customer-visible fact must appear once, got %q", got)
+			}
+		})
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsUnwrapsMarkdownAndJSONStrings(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},
@@ -308,8 +334,90 @@ func TestValidateCoveredFactsDoesNotTreatParaphrasesAsCriticalValues(t *testing.
 		Content:        "完成登记后刷脸开门。",
 		CoveredFactIDs: []string{"F1"},
 	}
+	if err := validateCoveredFacts(part, group); err != nil {
+		t.Fatalf("equivalent face-recognition wording must pass: %v", err)
+	}
+	part.Content = "完成登记后使用房卡开门。"
 	if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) {
-		t.Fatalf("semantic paraphrases must not weaken critical-value validation, got %v", err)
+		t.Fatalf("the required face-recognition method must not be omitted, got %v", err)
+	}
+}
+
+func TestValidateCoveredFactsIgnoresGenericWordingButKeepsLiteralValues(t *testing.T) {
+	generic := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+		FactID: "F1", Statement: "建议对比价格后选择合适的平台。", CriticalValues: []string{"建议", "对比", "选择"},
+	}}}
+	part := generatedReplyPart{TaskID: "task-1", Content: "各平台价格可能不同，请按实际价格决定。", CoveredFactIDs: []string{"F1"}}
+	if err := validateCoveredFacts(part, generic); err != nil {
+		t.Fatalf("generic wording must not cause a protocol retry: %v", err)
+	}
+
+	for name, fact := range map[string]replyFactRequirement{
+		"phone":    {FactID: "F1", Statement: "门店管家电话是18256022128。", CriticalValues: []string{"18256022128"}},
+		"quantity": {FactID: "F1", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+		"amount":   {FactID: "F1", Statement: "延迟退房费用是30元。", CriticalValues: []string{"30元"}},
+		"time":     {FactID: "F1", Statement: "早餐时间是7:00-9:30。", CriticalValues: []string{"7:00-9:30"}},
+		"address":  {FactID: "F1", Statement: "外卖地址填写丽斯未来酒店合肥南七店。", CriticalValues: []string{"丽斯未来酒店合肥南七店"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{fact}}
+			missing := generatedReplyPart{TaskID: "task-1", Content: "相关信息已经确认。", CoveredFactIDs: []string{"F1"}}
+			if err := validateCoveredFacts(missing, group); !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("missing literal value must fail, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCoveredFactsKeepsBusinessActionTargets(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+		FactID: "F1", Statement: "完成登记后可以开门。", CriticalValues: []string{"登记", "开门"},
+	}}}
+	missing := generatedReplyPart{TaskID: "task-1", Content: "好的。", CoveredFactIDs: []string{"F1"}}
+	if err := validateCoveredFacts(missing, group); !errors.Is(err, errGeneratedReplyProtocol) {
+		t.Fatalf("business action targets must not be sanitized away, got %v", err)
+	}
+	complete := generatedReplyPart{TaskID: "task-1", Content: "完成登记后可以开门。", CoveredFactIDs: []string{"F1"}}
+	if err := validateCoveredFacts(complete, group); err != nil {
+		t.Fatalf("complete business action must pass: %v", err)
+	}
+}
+
+func TestValidateCoveredFactsNormalizesAddressComponentWording(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+		FactID: "F1", Aspect: "location", Statement: "外卖地址需要填写酒店名称、对应楼层和房间号。", CriticalValues: []string{"酒店名", "楼层", "房号"},
+	}}}
+	complete := generatedReplyPart{
+		TaskID: "task-1", Content: "外卖地址填写酒店名、所在楼层和房号。", CoveredFactIDs: []string{"F1"},
+	}
+	if err := validateCoveredFacts(complete, group); err != nil {
+		t.Fatalf("natural address component aliases must pass: %v", err)
+	}
+	for name, content := range map[string]string{
+		"missing_floor": "外卖地址填写酒店名和房号。",
+		"missing_room":  "外卖地址填写酒店名和所在楼层。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			part := generatedReplyPart{TaskID: "task-1", Content: content, CoveredFactIDs: []string{"F1"}}
+			if err := validateCoveredFacts(part, group); !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("missing address component must fail, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsKeepsDifferentScopeAndPolarity(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+	}}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"儿童早餐免费。早餐免费。并非所有房间都可以开门。房间都可以开门。"}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil {
+		t.Fatalf("normalize scoped facts: %v", err)
+	}
+	want := "儿童早餐免费。早餐免费。并非所有房间都可以开门。房间都可以开门。"
+	if got != want {
+		t.Fatalf("different scope or polarity must remain separate, got %q want %q", got, want)
 	}
 }
 
@@ -733,6 +841,26 @@ func TestBuildMultiReplyOutputInstructionGroupsSameStatementFactIDs(t *testing.T
 	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
 	if err != nil || got != statement {
 		t.Fatalf("one natural sentence must be allowed to cover equivalent fact IDs, got=%q err=%v", got, err)
+	}
+}
+
+func TestBuildMultiReplyOutputInstructionGroupsContainedFactIDs(t *testing.T) {
+	complete := "房间内有两瓶矿泉水，都是免费的。"
+	contained := "房间内有两瓶矿泉水。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", ResolvedText: "房间有几瓶矿泉水，收费吗", OutputKind: "text", ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "task-1F1", Aspect: "price", Statement: complete, CriticalValues: []string{"免费"}},
+			{FactID: "task-1F2", Aspect: "quantity", Statement: contained, CriticalValues: []string{"两瓶"}},
+		},
+	}}}
+
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	if strings.Count(instruction, complete) != 1 || strings.Contains(instruction, "："+contained) {
+		t.Fatalf("contained customer-facing fact must be displayed only through the complete sentence: %s", instruction)
+	}
+	if !strings.Contains(instruction, "task-1F1") || !strings.Contains(instruction, "task-1F2") {
+		t.Fatalf("all covered fact IDs must remain in the grouped instruction: %s", instruction)
 	}
 }
 

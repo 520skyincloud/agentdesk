@@ -471,40 +471,24 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 }
 
 func compactGeneratedReplyFallbackFacts(facts []replyFactRequirement) []replyFactRequirement {
-	deduplicated := make([]replyFactRequirement, 0, len(facts))
-	byStatement := make(map[string]int, len(facts))
-	for _, fact := range facts {
-		fact.Statement = strings.TrimSpace(fact.Statement)
-		normalized := normalizeRuntimeKnowledgeQuery(fact.Statement)
-		if normalized == "" {
-			continue
-		}
-		if index, ok := byStatement[normalized]; ok {
-			deduplicated[index].CriticalValues = appendKnowledgeEvidenceCriticalValues(deduplicated[index].CriticalValues, fact.CriticalValues)
-			continue
-		}
-		byStatement[normalized] = len(deduplicated)
-		deduplicated = append(deduplicated, fact)
-	}
-
-	ret := make([]replyFactRequirement, 0, len(deduplicated))
-	for containedIndex, contained := range deduplicated {
-		redundant := false
-		for containerIndex, container := range deduplicated {
-			if containerIndex != containedIndex && generatedReplyFallbackFactContains(container, contained) {
-				redundant = true
-				break
-			}
-		}
-		if !redundant {
-			ret = append(ret, contained)
-		}
+	groups := groupReplyFactRequirementsForInstruction(facts)
+	ret := make([]replyFactRequirement, 0, len(groups))
+	for _, group := range groups {
+		ret = append(ret, replyFactRequirement{
+			Aspect:         strings.Join(group.Aspects, ","),
+			Statement:      strings.TrimSpace(group.Statement),
+			CriticalValues: append([]string(nil), group.CriticalValues...),
+		})
 	}
 	return ret
 }
 
 func generatedReplyFallbackFactContains(container replyFactRequirement, contained replyFactRequirement) bool {
 	if !generatedReplyFallbackStatementContains(container.Statement, contained.Statement) {
+		return false
+	}
+	if knowledgeEvidenceTextHasNegativeBoundary(container.Statement) != knowledgeEvidenceTextHasNegativeBoundary(contained.Statement) &&
+		strings.Contains(strings.TrimSpace(contained.Aspect), "existence") {
 		return false
 	}
 	if knowledgeEvidenceFactContextSignature(container.Statement) != knowledgeEvidenceFactContextSignature(contained.Statement) {
@@ -514,6 +498,14 @@ func generatedReplyFallbackFactContains(container replyFactRequirement, containe
 }
 
 func generatedReplyFallbackStatementContains(containerStatement string, containedStatement string) bool {
+	containerText := normalizeGeneratedReplyPresentationClause(containerStatement)
+	containedText := normalizeGeneratedReplyPresentationClause(containedStatement)
+	if containerText == "" || containedText == "" || len([]rune(containerText)) <= len([]rune(containedText)) {
+		return false
+	}
+	if strings.HasPrefix(containerText, containedText) {
+		return true
+	}
 	containerClauses := generatedReplyFallbackNormalizedClauses(containerStatement)
 	containedClauses := generatedReplyFallbackNormalizedClauses(containedStatement)
 	if len(containerClauses) <= len(containedClauses) || len(containedClauses) == 0 {
@@ -537,27 +529,7 @@ func generatedReplyFallbackNormalizedClauses(statement string) []string {
 	clauses := splitGeneratedReplyFactClauses(statement)
 	ret := make([]string, 0, len(clauses))
 	for _, clause := range clauses {
-		normalized := normalizeRuntimeKnowledgeQuery(clause)
-		for _, prefix := range []string{"我们的", "咱们的", "你们的", "您的", "你的", "我们", "咱们", "你们", "您", "你"} {
-			if strings.HasPrefix(normalized, prefix) {
-				normalized = strings.TrimPrefix(normalized, prefix)
-				break
-			}
-		}
-		normalized = strings.ReplaceAll(normalized, "完成登记后", "完成登记")
-		for {
-			trimmed := normalized
-			for _, suffix := range []string{"啦", "呀", "啊", "哦"} {
-				if strings.HasSuffix(trimmed, suffix) {
-					trimmed = strings.TrimSuffix(trimmed, suffix)
-					break
-				}
-			}
-			if trimmed == normalized {
-				break
-			}
-			normalized = trimmed
-		}
+		normalized := normalizeGeneratedReplyPresentationClause(clause)
 		if normalized != "" {
 			ret = append(ret, normalized)
 		}
@@ -575,17 +547,6 @@ func generatedReplyFallbackCriticalValuesCovered(container replyFactRequirement,
 		return false
 	}
 
-	requireContainerValueOwnership := strings.TrimSpace(container.Aspect) == "" ||
-		strings.TrimSpace(contained.Aspect) == "" ||
-		strings.TrimSpace(container.Aspect) != strings.TrimSpace(contained.Aspect)
-	containerValues := make(map[string]struct{}, len(container.CriticalValues))
-	if requireContainerValueOwnership {
-		for _, value := range container.CriticalValues {
-			if normalized := normalizeRuntimeKnowledgeQuery(value); normalized != "" {
-				containerValues[normalized] = struct{}{}
-			}
-		}
-	}
 	for _, value := range contained.CriticalValues {
 		normalized := normalizeRuntimeKnowledgeQuery(value)
 		if normalized == "" {
@@ -595,9 +556,6 @@ func generatedReplyFallbackCriticalValuesCovered(container replyFactRequirement,
 			return false
 		}
 		if !criticalValuePolarityMatches(container.Statement, contained.Statement, value) {
-			return false
-		}
-		if _, ok := containerValues[normalized]; requireContainerValueOwnership && !ok {
 			return false
 		}
 	}
