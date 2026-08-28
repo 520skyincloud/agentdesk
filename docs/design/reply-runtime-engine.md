@@ -119,10 +119,19 @@ insufficient
 结果携带：
 
 ```text
+decisionSource
+candidateCount
 selectedCandidateIds
 supportedFacts[] { factId, aspect, statement, criticalValues }
 missingAspects[]
 ```
+
+`decisionSource` 记录每个 Task、每个知识层的真实裁决来源：正常 Judge 输出为
+`model`，严格门店完整 FAQ 救援为 `store_exact_faq_rescue`，确定性知识转接为
+`deterministic_handoff`。同一批次中的不同 Task 可以有不同来源，因此该字段不能
+只记录在 Judge 批次顶层。`candidateCount` 同时记录批次、Task 和知识层候选数量；
+`supportedFacts/missingAspects` 也按 Task 和知识层分别保存，禁止把门店层已覆盖事实
+与通用层缺失方面混成一份结果。
 
 事实维度限定为 `existence`、`quantity`、`price`、`time`、`location`、
 `method`、`scope`、`condition` 和 `other`。一个维度不能推导另一个维度：
@@ -283,6 +292,9 @@ Commit 会再次调用相同清理函数，并拒绝仍含 `replyParts`、`taskI
 - `pipeline.replyPlan.taskPlans[].selectedLayer/selectedCandidateIds`
 - `pipeline.replyPlan.taskPlans[].supportedFacts/missingAspects`
 - `pipeline.evidenceJudge.tasks[].layers[]`
+- `pipeline.evidenceJudge.candidateCount`
+- `pipeline.evidenceJudge.tasks[].candidateCount/decisionSource`
+- `pipeline.evidenceJudge.tasks[].layers[].candidateCount/decisionSource`
 - `pipeline.generate.attemptCount`
 - `pipeline.generate.fallbackMode`
 - `pipeline.generate.composedMessageCount`
@@ -291,6 +303,14 @@ Commit 会再次调用相同清理函数，并拒绝仍含 `replyParts`、`taskI
 这些字段用于定位漏题、事实缺失、错误外推、协议恢复和内部标记拦截；应用日志
 仍应只打印必要预览和 ID，不另行输出客户敏感全文。Trace 结构不改变外部 API
 或客户消息结构。
+
+Retriever 的原始候选摘要和条目在 Judge 运行前写入 Trace。即使 Judge 将所有 Task
+判为 `insufficient`、清空 Generate 可见上下文并提前进入接待，Trace 仍保留真实
+召回数量、排名、知识库和候选条目。`pipeline.retriever.count` 明确表示合并去重后的
+`RawHits` 原始候选数，不表示进入上下文的 `Hits/ContextResults` 数；对应 Items
+记录每条原始候选是否进入上下文及其淘汰原因。这份原始 Trace 只用于排障，不会
+重新暴露给 Generate。Judge Trace 随后保存最终选中层、事实边界和转接决定，二者
+不能因 all-pending 早退而丢失。
 
 ## 10. 验证、发布与回滚
 

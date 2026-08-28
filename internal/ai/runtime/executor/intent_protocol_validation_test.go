@@ -301,7 +301,7 @@ func TestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSub
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolLeavesSemanticTaskCountToModel(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRequiresCoverageForExplicitDistinctTargets(t *testing.T) {
 	currentText := "入住方式和开门方式分别说，不要混在一起。"
 	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
@@ -314,8 +314,8 @@ func TestValidateRuntimeIntentDetectProtocolLeavesSemanticTaskCountToModel(t *te
 		SourceRefs:         runtimeIntentSourceRefList{"U1"},
 		NeedsKnowledge:     true,
 	}}}
-	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err != nil {
-		t.Fatalf("local validation must not override the model's semantic task count, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err == nil || !strings.Contains(err.Error(), "atomic question") {
+		t.Fatalf("explicitly separate answer targets must trigger Intent protocol repair, got %v", err)
 	}
 
 	distinct := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
@@ -858,14 +858,45 @@ func TestValidateRuntimeIntentDetectProtocolRejectsUnknownSourceRef(t *testing.T
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolDoesNotInferMissingTaskCountLocally(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRejectsMissingObviousAtomicQuestion(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("你们有没有外卖机器人", "availability"),
 		validRuntimeIntentProtocolTask("外卖地址怎么填", "method"),
 	}}
 	err := validateRuntimeIntentDetectProtocol(parsed, nil, "你们有没有外卖机器人？外卖地址怎么填？布草是不是一客一换？")
-	if err != nil {
-		t.Fatalf("task count belongs to IntentDetect; local validation must only verify returned task provenance, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "atomic question 3 of 3") {
+		t.Fatalf("an obvious unanswered atomic question must trigger Intent protocol repair, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAllowsRelatedAspectsInOneCompoundTask(t *testing.T) {
+	for _, tt := range []struct {
+		text       string
+		entityText string
+		entityType string
+	}{
+		{text: "矿泉水有几瓶？矿泉水免费吗？", entityText: "矿泉水", entityType: "supply"},
+		{text: "早餐几点开始？位置在哪里？", entityText: "早餐", entityType: "service"},
+		{text: "矿泉水几瓶？收费情况呢？", entityText: "矿泉水", entityType: "supply"},
+	} {
+		task := validRuntimeIntentProtocolTask(tt.text, "compound_information")
+		task.Entities = runtimeIntentEntityList{{Text: tt.entityText, Type: tt.entityType}}
+		if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, tt.text); err != nil {
+			t.Fatalf("one compound task may cover related aspects of one subject for %q: %v", tt.text, err)
+		}
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRejectsUnrelatedQuestionsHiddenInCompoundTask(t *testing.T) {
+	text := "早餐几点？停车免费吗？"
+	task := validRuntimeIntentProtocolTask(text, "compound_information")
+	task.Entities = runtimeIntentEntityList{
+		{Text: "早餐", Type: "service"},
+		{Text: "停车", Type: "service"},
+	}
+	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, text)
+	if err == nil || !strings.Contains(err.Error(), "atomic question") {
+		t.Fatalf("unrelated answer targets must remain separate model-owned tasks, got %v", err)
 	}
 }
 
@@ -912,19 +943,25 @@ func TestRuntimeIntentProtocolDoesNotTreatUnderstandingMarkerAsHistoricalReferen
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolAcceptsCurrentTurnSourceResolution(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRequiresPrimaryTaskForEachBusinessSource(t *testing.T) {
 	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [文字] 有没有停车场",
 		"2. [文字] 我开电车来的你懂我意思吗",
 	})
-	task := validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability")
-	task.RelationToPrevious = "independent"
-	task.ResolutionState = "resolved_from_context"
-	task.ResolvedText = "酒店停车场有没有电车充电桩"
-	task.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	charging := validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability")
+	charging.RelationToPrevious = "independent"
+	charging.ResolutionState = "resolved_from_context"
+	charging.ResolvedText = "酒店停车场有没有电车充电桩"
+	charging.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
 
-	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, burst); err != nil {
-		t.Fatalf("validated current-turn sourceRefs must authorize context resolution: %v", err)
+	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{charging}}, nil, burst)
+	if err == nil || !strings.Contains(err.Error(), "source U1") {
+		t.Fatalf("an independent parking question cannot be consumed only as charging context, got %v", err)
+	}
+
+	parking := validRuntimeIntentProtocolTask("有没有停车场", "availability")
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{parking, charging}}, nil, burst); err != nil {
+		t.Fatalf("parking and context-resolved charging tasks must both pass in source order: %v", err)
 	}
 }
 
@@ -1013,7 +1050,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsInventedOrOmittedCoarseSpanTa
 
 	omitted := append(runtimeIntentTaskList(nil), base[:2]...)
 	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: omitted}, nil, currentText); err != nil {
-		t.Fatalf("local code must not infer a missing semantic task from residual text, got %v", err)
+		t.Fatalf("unpunctuated residual text must remain model-owned instead of being locally split, got %v", err)
 	}
 }
 

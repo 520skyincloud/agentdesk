@@ -348,6 +348,11 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if err := validateRuntimeIntentProtocolModelOwnedSources(tasks, sourceTexts); err != nil {
 			return err
 		}
+		if requireSemantics {
+			if err := validateRuntimeIntentProtocolAtomicCoverageBySource(tasks, sourceTexts); err != nil {
+				return err
+			}
+		}
 	} else if len(candidates) > 0 && (requireSemantics || len(candidates) > 1) {
 		var err error
 		taskCandidates, err = assignRuntimeIntentProtocolCandidates(tasks, candidates, sourceTexts)
@@ -428,6 +433,177 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 		}
 	}
 	return nil
+}
+
+// validateRuntimeIntentProtocolAtomicCoverageBySource is a conservative
+// completeness check. IntentDetect still owns task boundaries; local code only
+// rejects obvious punctuated omissions and never creates or rewrites a task.
+func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
+	for sourceIndex, sourceText := range sourceTexts {
+		candidates := currentTurnTaskCandidates(sourceText)
+		if len(candidates) == 0 {
+			continue
+		}
+
+		sourceTasks := make([]runtimeIntentTaskJSON, 0, len(tasks))
+		for _, task := range tasks {
+			if !runtimeIntentProtocolTaskHasExecutableBusiness(task) || len(task.SourceRefs) == 0 ||
+				runtimeIntentSourceRefIndex(task.SourceRefs[0]) != sourceIndex {
+				continue
+			}
+			sourceTasks = append(sourceTasks, task)
+		}
+		if len(candidates) == 1 {
+			if len(sourceTasks) == 0 {
+				return fmt.Errorf("current-turn source U%d does not cover atomic question 1 of 1: %s", sourceIndex+1, strings.TrimSpace(candidates[0]))
+			}
+			continue
+		}
+
+		covered := make([]bool, len(candidates))
+		usedExactTasks := make([]bool, len(sourceTasks))
+		for candidateIndex, candidate := range candidates {
+			candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+			for taskIndex, task := range sourceTasks {
+				if usedExactTasks[taskIndex] || normalizeRuntimeIntentProtocolAtomicText(task.Text) != candidateText {
+					continue
+				}
+				covered[candidateIndex] = true
+				usedExactTasks[taskIndex] = true
+				break
+			}
+		}
+
+		for _, task := range sourceTasks {
+			if semanticGateNormalizeObjective(task.Objective) != "compound_information" {
+				continue
+			}
+			candidateIndexes := runtimeIntentProtocolCompoundCoveredCandidateIndexes(task, candidates)
+			if len(candidateIndexes) == 0 || !runtimeIntentProtocolCompoundCandidatesAreRelated(task, sourceText, candidates, candidateIndexes) {
+				continue
+			}
+			for _, candidateIndex := range candidateIndexes {
+				covered[candidateIndex] = true
+			}
+		}
+
+		for candidateIndex, isCovered := range covered {
+			if !isCovered {
+				return fmt.Errorf("current-turn source U%d does not cover atomic question %d of %d: %s", sourceIndex+1, candidateIndex+1, len(candidates), strings.TrimSpace(candidates[candidateIndex]))
+			}
+		}
+	}
+	return nil
+}
+
+func runtimeIntentProtocolCompoundCoveredCandidateIndexes(task runtimeIntentTaskJSON, candidates []string) []int {
+	taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
+	if taskText == "" {
+		return nil
+	}
+	ret := make([]int, 0, len(candidates))
+	for candidateIndex, candidate := range candidates {
+		candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+		if candidateText != "" && strings.Contains(taskText, candidateText) {
+			ret = append(ret, candidateIndex)
+		}
+	}
+	return ret
+}
+
+func runtimeIntentProtocolCompoundCandidatesAreRelated(task runtimeIntentTaskJSON, sourceText string, candidates []string, candidateIndexes []int) bool {
+	if len(candidateIndexes) <= 1 {
+		return true
+	}
+	if runtimeIntentProtocolCompoundCandidatesShareEntity(task, candidates, candidateIndexes) {
+		return true
+	}
+	if normalizeRuntimeIntentProtocolAtomicText(task.Text) != normalizeRuntimeIntentProtocolAtomicText(sourceText) {
+		return false
+	}
+	subject := runtimeIntentProtocolCompoundSingleConcreteSubject(task, candidates, candidateIndexes)
+	if subject == "" {
+		return false
+	}
+	hasAnchoredCandidate := false
+	for _, candidateIndex := range candidateIndexes {
+		if candidateIndex < 0 || candidateIndex >= len(candidates) {
+			return false
+		}
+		candidateText := normalizeRuntimeKnowledgeQuery(candidates[candidateIndex])
+		if strings.Contains(candidateText, subject) {
+			hasAnchoredCandidate = true
+			continue
+		}
+		if !runtimeIntentProtocolDependentAspectCandidate(candidateText) {
+			return false
+		}
+	}
+	return hasAnchoredCandidate
+}
+
+func runtimeIntentProtocolCompoundCandidatesShareEntity(task runtimeIntentTaskJSON, candidates []string, candidateIndexes []int) bool {
+	for _, entity := range task.Entities {
+		entityText := normalizeRuntimeKnowledgeQuery(entity.Text)
+		if !runtimeIntentConcreteEntityText(entityText) {
+			continue
+		}
+		shared := true
+		for _, candidateIndex := range candidateIndexes {
+			if candidateIndex < 0 || candidateIndex >= len(candidates) ||
+				!strings.Contains(normalizeRuntimeKnowledgeQuery(candidates[candidateIndex]), entityText) {
+				shared = false
+				break
+			}
+		}
+		if shared {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolCompoundSingleConcreteSubject(task runtimeIntentTaskJSON, candidates []string, candidateIndexes []int) string {
+	subject := ""
+	for _, entity := range task.Entities {
+		entityText := normalizeRuntimeKnowledgeQuery(entity.Text)
+		if !runtimeIntentConcreteEntityText(entityText) || runtimeIntentProtocolAspectOnlyEntity(entityText) {
+			continue
+		}
+		appears := false
+		for _, candidateIndex := range candidateIndexes {
+			if candidateIndex >= 0 && candidateIndex < len(candidates) &&
+				strings.Contains(normalizeRuntimeKnowledgeQuery(candidates[candidateIndex]), entityText) {
+				appears = true
+				break
+			}
+		}
+		if !appears {
+			continue
+		}
+		if subject != "" && subject != entityText {
+			return ""
+		}
+		subject = entityText
+	}
+	return subject
+}
+
+func runtimeIntentProtocolAspectOnlyEntity(text string) bool {
+	switch normalizeRuntimeKnowledgeQuery(text) {
+	case "位置", "地址", "收费", "费用", "价格", "免费", "数量", "时间", "方式", "流程", "范围", "条件", "要求", "情况":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeIntentProtocolDependentAspectCandidate(text string) bool {
+	text = strings.Trim(normalizeRuntimeKnowledgeQuery(text), "啊呀呢吧哈啦哦嘛么的了")
+	return containsAnyPrefix(text, []string{
+		"位置", "地址", "收费", "费用", "价格", "免费", "数量", "几瓶", "几个", "多少", "时间", "几点", "多久", "什么时候",
+		"哪里", "在哪", "怎么", "如何", "方式", "流程", "范围", "条件", "有什么要求", "需要什么",
+	})
 }
 
 func runtimeIntentProtocolCurrentTurnContextAuthorizesResolution(task runtimeIntentTaskJSON, originalText string, sourceTexts []string) bool {
