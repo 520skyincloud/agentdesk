@@ -460,6 +460,95 @@ func TestNormalizeGeneratedReplyPartsAllowsDeliveryScopeWhenFactSupportsIt(t *te
 	}
 }
 
+func TestValidateGeneratedReplyFactAspectBoundariesRejectsSameAspectExpansion(t *testing.T) {
+	for name, test := range map[string]struct {
+		content string
+		facts   []replyFactRequirement
+	}{
+		"quantity": {
+			content: "房间内有两瓶矿泉水，另外还有四瓶收费的。",
+			facts: []replyFactRequirement{
+				{FactID: "F1", Aspect: "quantity", Statement: "房间内有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+				{FactID: "F2", Aspect: "price", Statement: "房间内矿泉水免费。", CriticalValues: []string{"免费"}},
+			},
+		},
+		"location": {
+			content: "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号，也可以写壹间公寓。",
+			facts: []replyFactRequirement{{
+				FactID: "F1", Aspect: "location", Statement: "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。", CriticalValues: []string{"丽斯未来酒店合肥南七店", "房间号"},
+			}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateGeneratedReplyFactAspectBoundaries(test.content, test.facts); err == nil {
+				t.Fatalf("same-aspect unsupported expansion must be rejected: %q", test.content)
+			}
+		})
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesRejectsUnsupportedExistenceCapabilityAndPolicy(t *testing.T) {
+	facts := []replyFactRequirement{{
+		FactID: "F1", Aspect: "existence", Statement: "酒店提供早餐。",
+	}}
+	for name, content := range map[string]string{
+		"existence":  "酒店提供早餐，还配备健身房。",
+		"capability": "酒店提供早餐，也支持代客泊车。",
+		"policy":     "酒店提供早餐，儿童必须单独购买。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateGeneratedReplyFactAspectBoundaries(content, facts); err == nil || !strings.Contains(err.Error(), "unsupported "+name+" claim") {
+				t.Fatalf("unsupported %s expansion must be rejected: content=%q err=%v", name, content, err)
+			}
+		})
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesAllowsGroundedCapabilityAndPolicyParaphrase(t *testing.T) {
+	facts := []replyFactRequirement{
+		{FactID: "F1", Aspect: "scope", Statement: "酒店允许携带宠物。"},
+		{FactID: "F2", Aspect: "condition", Statement: "办理入住需要身份证。"},
+	}
+	if err := validateGeneratedReplyFactAspectBoundaries("可以携带宠物，入住必须带身份证。", facts); err != nil {
+		t.Fatalf("grounded capability and policy paraphrases should pass, got %v", err)
+	}
+	if err := validateGeneratedReplyFactAspectBoundaries("宠物可入住，入住要带身份证。", facts); err != nil {
+		t.Fatalf("common grounded capability and policy word forms should pass, got %v", err)
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesRejectsFactsHiddenBehindUncertainty(t *testing.T) {
+	facts := []replyFactRequirement{{
+		FactID: "F1", Aspect: "other", Statement: ungroundedKnowledgeSafeReply, CriticalValues: []string{"暂时没法准确回答"},
+	}}
+	content := "这个我暂时没法准确回答，酒店有健身房但其他细节无法确认。"
+	if err := validateGeneratedReplyFactAspectBoundaries(content, facts); err == nil || !strings.Contains(err.Error(), "unsupported existence claim") {
+		t.Fatalf("uncertainty wording must not hide an invented hotel fact, got %v", err)
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesRecognizesCommonClaimWordForms(t *testing.T) {
+	facts := []replyFactRequirement{{FactID: "F1", Aspect: "other", Statement: "不好意思，暂时无法确认。"}}
+	for name, content := range map[string]string{
+		"existence":  "房费含早餐。",
+		"capability": "宠物可入住。",
+		"policy":     "入住要带身份证。",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateGeneratedReplyFactAspectBoundaries(content, facts); err == nil || !strings.Contains(err.Error(), "unsupported "+name+" claim") {
+				t.Fatalf("common %s claim form must be checked, content=%q err=%v", name, content, err)
+			}
+		})
+	}
+}
+
+func TestValidateGeneratedReplyFactAspectBoundariesAllowsNaturalServiceOffer(t *testing.T) {
+	facts := []replyFactRequirement{{FactID: "F1", Aspect: "existence", Statement: "酒店提供早餐。"}}
+	if err := validateGeneratedReplyFactAspectBoundaries("酒店提供早餐，有需要随时说。", facts); err != nil {
+		t.Fatalf("non-factual service offer should not trigger the existence or policy guard, got %v", err)
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsAcceptsUniqueTaskLocalFactID(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{

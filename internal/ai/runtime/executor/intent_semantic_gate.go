@@ -29,8 +29,13 @@ type runtimeIntentTaskSemantics struct {
 }
 
 type runtimeIntentSemanticGateContext struct {
-	HasAdjacentContext      bool
-	RequireSemanticContract bool
+	// HasAdjacentContext is retained for focused legacy tests. Production uses
+	// the explicit fields so ordinary references do not weaken the stricter
+	// answer-rejection adjacency rule.
+	HasAdjacentContext           bool
+	HasResolvableAdjacentContext bool
+	HasAdjacentAIReply           bool
+	RequireSemanticContract      bool
 }
 
 type runtimeIntentSemanticViolation struct {
@@ -73,11 +78,16 @@ func applyRuntimeIntentSemanticConsistencyGate(
 		}
 		return result
 	}
-	result.Intent.IntentTasks, result.TaskSemantics, result.Violations = semanticGateDropRedundantInvalidResourceTasks(
-		result.Intent.IntentTasks,
-		result.TaskSemantics,
-		result.Violations,
-	)
+	// A V2 result has already passed strict protocol validation. Keep its task
+	// count and order model-owned; the legacy cleanup remains available only for
+	// older profiles that did not enforce the complete task contract.
+	if !context.RequireSemanticContract {
+		result.Intent.IntentTasks, result.TaskSemantics, result.Violations = semanticGateDropRedundantInvalidResourceTasks(
+			result.Intent.IntentTasks,
+			result.TaskSemantics,
+			result.Violations,
+		)
+	}
 	mode = runtimeIntentSemanticContractMode(result.Intent.IntentTasks, result.TaskSemantics, context.RequireSemanticContract)
 	result.ContractMode = mode
 
@@ -147,7 +157,7 @@ func applyRuntimeIntentSemanticConsistencyGate(
 				Detail:    "ambiguous or unresolved task cannot execute knowledge, resource, tool, or handoff actions",
 			})
 		case runtimeIntentResolutionResolvedFromContext:
-			if !context.HasAdjacentContext || !semanticGateRelationUsesPrevious(semantic.RelationToPrevious) {
+			if !semanticGateHasResolvableAdjacentContext(context) || !semanticGateRelationUsesPrevious(semantic.RelationToPrevious) {
 				task = semanticGateClarificationTask(task)
 				allTasksClear = false
 				result.Violations = append(result.Violations, runtimeIntentSemanticViolation{
@@ -157,9 +167,6 @@ func applyRuntimeIntentSemanticConsistencyGate(
 				})
 			}
 		case runtimeIntentResolutionClear:
-			if semantic.RelationToPrevious == "independent" {
-				task.ResolvedText = strings.TrimSpace(task.Text)
-			}
 		default:
 			task = semanticGateClarificationTask(task)
 			allTasksClear = false
@@ -174,7 +181,7 @@ func applyRuntimeIntentSemanticConsistencyGate(
 		answerRejectedRelation := semantic.RelationToPrevious == "answer_rejected"
 		if answerRejectedIntent || answerRejectedRelation {
 			switch {
-			case !context.HasAdjacentContext:
+			case !semanticGateHasAdjacentAIReply(context):
 				task.Intent = "interaction"
 				task.SubIntent = "frustration"
 				task.Objective = "social"
@@ -242,6 +249,14 @@ func applyRuntimeIntentSemanticConsistencyGate(
 	result.Intent = semanticGateRecomputeIntent(result.Intent, result.TaskSemantics)
 	result.SuppressLegacyConfidenceFallback = allTasksClear
 	return result
+}
+
+func semanticGateHasResolvableAdjacentContext(context runtimeIntentSemanticGateContext) bool {
+	return context.HasResolvableAdjacentContext || context.HasAdjacentContext
+}
+
+func semanticGateHasAdjacentAIReply(context runtimeIntentSemanticGateContext) bool {
+	return context.HasAdjacentAIReply || context.HasAdjacentContext
 }
 
 func semanticGateClarifyDuplicatesBusinessTask(tasks []callbacks.IntentTaskTraceData, semantics []runtimeIntentTaskSemantics, sourceIndex int) bool {

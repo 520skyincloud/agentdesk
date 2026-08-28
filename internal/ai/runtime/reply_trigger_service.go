@@ -375,13 +375,12 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 		Eq("sender_type", enums.IMSenderTypeCustomer).
 		In("message_type", []string{string(enums.IMMessageTypeText), string(enums.IMMessageTypeVoice), string(enums.IMMessageTypeImage), string(enums.IMMessageTypeLocation), string(enums.IMMessageTypeMiniProgram), string(enums.IMMessageTypeAttachment)}).
 		Lte("id", message.ID).
-		Gte("sent_at", message.SentAt.Add(-aiReplyBurstTextWindow)).
-		Asc("id").
+		Desc("id").
 		Limit(12)
 	if latestOutbound := s.latestOutboundMessageBefore(conversationID, message.SessionNo, message.ID); latestOutbound != nil {
 		cnd.Gt("id", latestOutbound.ID)
 	}
-	items := svc.MessageService.Find(cnd)
+	items := contiguousRecentCustomerBurstMessages(svc.MessageService.Find(cnd), message)
 	if len(items) <= 1 {
 		return message
 	}
@@ -402,6 +401,29 @@ func (s *aiReplyService) mergeRecentCustomerBurstMessage(conversationID int64, m
 	merged := message
 	merged.Content = utils.BuildRuntimeCustomerBurstEnvelope(parts)
 	return merged
+}
+
+func contiguousRecentCustomerBurstMessages(items []models.Message, current models.Message) []models.Message {
+	if len(items) == 0 || current.SentAt == nil {
+		return items
+	}
+	selected := make([]models.Message, 0, len(items))
+	newerAt := *current.SentAt
+	for _, item := range items {
+		if item.ID > current.ID || item.SentAt == nil {
+			continue
+		}
+		gap := newerAt.Sub(*item.SentAt)
+		if gap > aiReplyBurstTextWindow {
+			break
+		}
+		selected = append(selected, item)
+		newerAt = *item.SentAt
+	}
+	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
+		selected[left], selected[right] = selected[right], selected[left]
+	}
+	return selected
 }
 
 func runtimeBurstMessageText(message models.Message) string {

@@ -5,8 +5,10 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
+	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/utils"
 )
 
 func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testing.T) {
@@ -46,12 +48,10 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	}
 
 	parsed.IntentTasks[0].Text = "麦田房型有没有办公桌？"
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err != nil {
-		t.Fatalf("model-completed text must not invalidate a self-contained resolved reference: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err == nil || !strings.Contains(err.Error(), "literal span") {
+		t.Fatalf("context completion belongs in resolvedText; rewritten task text must fail, got %v", err)
 	}
-	if parsed.IntentTasks[0].Text != "那麦田呢" {
-		t.Fatalf("protocol validation must restore customer text while preserving resolvedText, got %#v", parsed.IntentTasks[0])
-	}
+	parsed.IntentTasks[0].Text = "那麦田呢？"
 
 	parsed.IntentTasks[0].ResolutionState = "clear"
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err == nil || !strings.Contains(err.Error(), "must be resolved_from_context") {
@@ -59,7 +59,7 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolClearsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRejectsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
 		SubIntent:          "delivery_address",
@@ -71,12 +71,12 @@ func TestValidateRuntimeIntentDetectProtocolClearsFalseContextResolutionForSelfC
 		SourceRefs:         runtimeIntentSourceRefList{"U1"},
 		NeedsKnowledge:     true,
 	}}}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "外卖地址怎么填？"); err != nil {
-		t.Fatalf("self-contained current question must be repaired instead of rejecting the whole intent: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "外卖地址怎么填？"); err == nil || !strings.Contains(err.Error(), "requires context-dependent original text") {
+		t.Fatalf("self-contained current question with false context resolution must fail strict validation, got %v", err)
 	}
 	task := parsed.IntentTasks[0]
-	if task.Text != "外卖地址怎么填" || task.ResolvedText != "外卖地址怎么填" || task.ResolutionState != runtimeIntentResolutionClear {
-		t.Fatalf("false context resolution must be cleared without old-topic leakage, got %#v", task)
+	if task.Text != "外卖地址怎么填？" || task.ResolvedText != "麦田房型的外卖地址怎么填" || task.ResolutionState != runtimeIntentResolutionResolvedFromContext {
+		t.Fatalf("strict validation must not mutate the model task in place, got %#v", task)
 	}
 }
 
@@ -127,19 +127,19 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsRelationBoundShortContext(t *
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolDoesNotPolluteIndependentQuestionFromRelation(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRejectsIndependentQuestionWithFalseHistoricalRelation(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
 		RelationToPrevious: "clarification_answer", ResolutionState: runtimeIntentResolutionResolvedFromContext,
 		Text: "早餐几点", ResolvedText: "麦田房型早餐几点", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
 	}}}
 
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点？"); err != nil {
-		t.Fatalf("independent current question must be repaired instead of inheriting history: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点？"); err == nil || !strings.Contains(err.Error(), "requires context-dependent original text") {
+		t.Fatalf("independent current question with false historical relation must fail strict validation, got %v", err)
 	}
 	task := parsed.IntentTasks[0]
-	if task.Text != "早餐几点" || task.ResolvedText != "早餐几点" || task.ResolutionState != runtimeIntentResolutionClear {
-		t.Fatalf("independent question must discard false historical resolution, got %#v", task)
+	if task.Text != "早餐几点" || task.ResolvedText != "麦田房型早餐几点" || task.ResolutionState != runtimeIntentResolutionResolvedFromContext {
+		t.Fatalf("strict validation must leave the rejected model task unchanged, got %#v", task)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSub
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCandidates(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolLeavesSemanticTaskCountToModel(t *testing.T) {
 	currentText := "入住方式和开门方式分别说，不要混在一起。"
 	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
@@ -314,8 +314,8 @@ func TestValidateRuntimeIntentDetectProtocolRequiresDistinctTasksForExplicitCand
 		SourceRefs:         runtimeIntentSourceRefList{"U1"},
 		NeedsKnowledge:     true,
 	}}}
-	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err == nil || !strings.Contains(err.Error(), "atomic question") {
-		t.Fatalf("one compound task must not cover two explicit candidates, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err != nil {
+		t.Fatalf("local validation must not override the model's semantic task count, got %v", err)
 	}
 
 	distinct := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
@@ -362,7 +362,7 @@ func TestValidateRuntimeIntentDetectProtocolUsesExactTextOwnershipForOverlapping
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRestoresUniqueDuplicateGap(t *testing.T) {
+func TestRepairRuntimeIntentDetectProtocolDoesNotRewriteDuplicateGap(t *testing.T) {
 	currentText := "我一次问五个：WiFi账号密码是什么、怎么办入住、房门怎么开、发票怎么开、停车收费吗？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("WiFi账号密码是什么", "general_guidance"),
@@ -379,15 +379,15 @@ func TestRepairRuntimeIntentDetectProtocolRestoresUniqueDuplicateGap(t *testing.
 
 	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
 
-	if len(parsed.IntentTasks) != 5 || parsed.IntentTasks[2].Text != "房门怎么开" || parsed.IntentTasks[2].ResolvedText != "酒店房门怎么开" {
-		t.Fatalf("unique duplicate gap must restore only task text: %#v", parsed.IntentTasks)
+	if len(parsed.IntentTasks) != 5 || parsed.IntentTasks[2].Text != "怎么办入住" || parsed.IntentTasks[2].ResolvedText != "酒店房门怎么开" {
+		t.Fatalf("local protocol repair must not rewrite model-owned task boundaries: %#v", parsed.IntentTasks)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
-		t.Fatalf("repaired five-question ownership must pass validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil {
+		t.Fatal("duplicate model task must remain a protocol error for the existing Intent retry")
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolUsesUniqueTaskSemanticsForDependentResolvedText(t *testing.T) {
+func TestRepairRuntimeIntentDetectProtocolDoesNotInferMissingTaskFromSemantics(t *testing.T) {
 	currentText := "早餐几点？房门怎么开？发票怎么开？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("早餐几点", "time"),
@@ -403,11 +403,11 @@ func TestRepairRuntimeIntentDetectProtocolUsesUniqueTaskSemanticsForDependentRes
 	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
 
 	task := parsed.IntentTasks[1]
-	if task.Text != "房门怎么开" || task.ResolvedText != "房门怎么开" {
-		t.Fatalf("unique entity and objective must restore a dependent resolvedText safely: %#v", task)
+	if task.Text != "早餐几点" || task.ResolvedText != "这个怎么开" {
+		t.Fatalf("local protocol repair must not infer a missing model task: %#v", task)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
-		t.Fatalf("semantically repaired ownership must pass validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err == nil {
+		t.Fatal("invalid duplicate ownership must remain a protocol error")
 	}
 }
 
@@ -449,7 +449,7 @@ func TestRepairRuntimeIntentDetectProtocolKeepsAmbiguousDuplicateStrict(t *testi
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolNormalizesRoomFeatureIntersectionObjective(t *testing.T) {
+func TestRepairRuntimeIntentDetectProtocolDoesNotRewriteModelObjective(t *testing.T) {
 	currentText := "哪些房型既有沙发又有办公桌？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_type_features", Objective: "recommendation",
@@ -465,11 +465,11 @@ func TestRepairRuntimeIntentDetectProtocolNormalizesRoomFeatureIntersectionObjec
 
 	repairRuntimeIntentDetectProtocol(&parsed, currentText, runtimeIntentProtocolRepairContext{}, true)
 
-	if got := parsed.IntentTasks[0].Objective; got != "compound_information" {
-		t.Fatalf("room-feature intersection must use compound_information, got %q", got)
+	if got := parsed.IntentTasks[0].Objective; got != "recommendation" {
+		t.Fatalf("local protocol repair must not rewrite the model objective, got %q", got)
 	}
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, currentText); err != nil {
-		t.Fatalf("normalized room-feature intersection must pass validation: %v", err)
+		t.Fatalf("source-grounded model task should remain protocol-valid, got %v", err)
 	}
 }
 
@@ -507,7 +507,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTask
 				validRuntimeIntentProtocolTask("停车免费吗", "price"),
 				validRuntimeIntentProtocolTask("发票怎么开", "method"),
 			},
-			wantError: "extra executable business task",
+			wantError: "not a literal span",
 		},
 		{
 			name: "duplicate task",
@@ -515,7 +515,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTask
 				validRuntimeIntentProtocolTask("早餐几点", "time"),
 				validRuntimeIntentProtocolTask("早餐几点", "time"),
 			},
-			wantError: "duplicates atomic question",
+			wantError: "repeats or overlaps",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -625,7 +625,7 @@ func TestImmediatelyPreviousAIReplyDoesNotCrossNonAIMessageBehindServiceNotice(t
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONDefaultsMissingResourceTaskObjective(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONDoesNotDefaultMissingV2ResourceTaskObjective(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"intentTasks":[{
 			"intent":"hotel_variable",
@@ -644,15 +644,20 @@ func TestParseRuntimeIntentDetectJSONDefaultsMissingResourceTaskObjective(t *tes
 	if err != nil {
 		t.Fatalf("parse resource task: %v", err)
 	}
-	if got := parsed.IntentTasks[0].Objective; got != "action_request" {
-		t.Fatalf("expected resource task objective default, got %q", got)
+	if got := parsed.IntentTasks[0].Objective; got != "" {
+		t.Fatalf("V2 parse must preserve the missing objective for strict validation, got %q", got)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "入住小程序发我"); err != nil {
-		t.Fatalf("defaulted resource task must pass strict protocol validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "入住小程序发我"); err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("missing V2 objective must be rejected instead of locally synthesized, got %v", err)
+	}
+	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"","text":""}]}`}
+	applyLegacyRuntimeIntentProtocolDefaults(&parsed, legacy)
+	if parsed.IntentTasks[0].Objective != "action_request" {
+		t.Fatalf("legacy compatibility may still default the explicit resource task, got %#v", parsed.IntentTasks[0])
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONRepairsExplicitResourceTaskInsideMultipleTasks(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONLeavesV2ResourceSemanticsModelOwned(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"primaryIntent":"hotel_info",
 		"intentTasks":[
@@ -686,15 +691,21 @@ func TestParseRuntimeIntentDetectJSONRepairsExplicitResourceTaskInsideMultipleTa
 	if err != nil {
 		t.Fatalf("parse multi-task intent: %v", err)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "怎么办理入住？小程序也发我一下。"); err != nil {
-		t.Fatalf("repaired multi-task intent must pass strict protocol validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "怎么办理入住？小程序也发我一下。"); err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("invalid V2 resource task must fail before local defaults, got %v", err)
 	}
 	if len(parsed.IntentTasks) != 2 {
 		t.Fatalf("expected two intent tasks, got %#v", parsed.IntentTasks)
 	}
 	resourceTask := parsed.IntentTasks[1]
+	if resourceTask.Intent != "interaction" || resourceTask.Objective != "" || resourceTask.ResourceAction != "send_miniprogram" {
+		t.Fatalf("V2 parse must not rewrite model semantics, got %#v", resourceTask)
+	}
+	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"","text":""}]}`}
+	applyLegacyRuntimeIntentProtocolDefaults(&parsed, legacy)
+	resourceTask = parsed.IntentTasks[1]
 	if resourceTask.Intent != "hotel_variable" || resourceTask.Objective != "action_request" || !resourceTask.NeedsResource || resourceTask.ResourceAction != "provide_mini_program" {
-		t.Fatalf("expected explicit resource task to be normalized, got %#v", resourceTask)
+		t.Fatalf("legacy resource compatibility must remain available, got %#v", resourceTask)
 	}
 
 	converted := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks))
@@ -703,7 +714,7 @@ func TestParseRuntimeIntentDetectJSONRepairsExplicitResourceTaskInsideMultipleTa
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONRepairsBoundedResourceObjectiveAlias(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONDoesNotRepairV2ResourceObjectiveAlias(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"intentTasks":[{
 			"intent":"hotel_variable",
@@ -721,11 +732,17 @@ func TestParseRuntimeIntentDetectJSONRepairsBoundedResourceObjectiveAlias(t *tes
 		t.Fatalf("parse bounded resource alias: %v", err)
 	}
 	resourceTask := parsed.IntentTasks[0]
-	if resourceTask.Objective != "action_request" || resourceTask.ResourceAction != "provide_mini_program" || !resourceTask.NeedsResource {
-		t.Fatalf("expected bounded resource alias to be normalized, got %#v", resourceTask)
+	if resourceTask.Objective != "resource" || resourceTask.ResourceAction != "" || resourceTask.NeedsResource {
+		t.Fatalf("V2 parse must leave resource aliases untouched for validation, got %#v", resourceTask)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "小程序也发我一下"); err != nil {
-		t.Fatalf("normalized bounded resource alias must pass strict validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "小程序也发我一下"); err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("V2 resource objective alias must be rejected, got %v", err)
+	}
+	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"","text":""}]}`}
+	applyLegacyRuntimeIntentProtocolDefaults(&parsed, legacy)
+	resourceTask = parsed.IntentTasks[0]
+	if resourceTask.Objective != "action_request" || resourceTask.ResourceAction != "provide_mini_program" || !resourceTask.NeedsResource {
+		t.Fatalf("legacy bounded resource alias must remain compatible, got %#v", resourceTask)
 	}
 }
 
@@ -841,14 +858,14 @@ func TestValidateRuntimeIntentDetectProtocolRejectsUnknownSourceRef(t *testing.T
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsMissingAtomicQuestion(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolDoesNotInferMissingTaskCountLocally(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("你们有没有外卖机器人", "availability"),
 		validRuntimeIntentProtocolTask("外卖地址怎么填", "method"),
 	}}
 	err := validateRuntimeIntentDetectProtocol(parsed, nil, "你们有没有外卖机器人？外卖地址怎么填？布草是不是一客一换？")
-	if err == nil || !strings.Contains(err.Error(), "atomic question 3 of 3") {
-		t.Fatalf("expected atomic coverage error, got %v", err)
+	if err != nil {
+		t.Fatalf("task count belongs to IntentDetect; local validation must only verify returned task provenance, got %v", err)
 	}
 }
 
@@ -860,6 +877,114 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsCompleteAtomicQuestions(t *te
 	}}
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "你们有没有外卖机器人？外卖地址怎么填？布草是不是一客一换？"); err != nil {
 		t.Fatalf("expected complete protocol to pass, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAcceptsOrderedSpansFromUnpunctuatedParagraph(t *testing.T) {
+	currentText := "我饿了 有啥吃的推荐没 以及明天要去附近玩 你知道哪里好玩吗  还有啊 我怎么把门打开啊 有没有停车场 我开电车来的你懂我意思吗  发票咋开"
+	tasks := runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("我饿了 有啥吃的推荐没", "recommendation"),
+		validRuntimeIntentProtocolTask("明天要去附近玩 你知道哪里好玩吗", "recommendation"),
+		validRuntimeIntentProtocolTask("我怎么把门打开啊", "method"),
+		validRuntimeIntentProtocolTask("有没有停车场", "availability"),
+		validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability"),
+		validRuntimeIntentProtocolTask("发票咋开", "method"),
+	}
+	tasks[4].RelationToPrevious = "reference_previous"
+	tasks[4].ResolutionState = "resolved_from_context"
+	tasks[4].ResolvedText = "酒店停车场有没有充电桩"
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: tasks}, nil, currentText); err != nil {
+		t.Fatalf("ordered literal spans must be accepted for an uncertain coarse paragraph: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolUsesModelOwnedBurstSources(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 好困啊",
+		"2. [文字] 有没有咖啡",
+	})
+	coffee := validRuntimeIntentProtocolTask("有没有咖啡", "availability")
+	coffee.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{coffee}}, nil, burst); err != nil {
+		t.Fatalf("one model-owned task may consume an adjacent context source, got %v", err)
+	}
+
+	orderedBurst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 早餐几点还有停车收费吗",
+		"2. [文字] 发票咋开",
+	})
+	breakfast := validRuntimeIntentProtocolTask("早餐几点", "time")
+	parking := validRuntimeIntentProtocolTask("停车收费吗", "price")
+	invoice := validRuntimeIntentProtocolTask("发票咋开", "method")
+	invoice.SourceRefs = runtimeIntentSourceRefList{"U2"}
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{breakfast, parking, invoice}}, nil, orderedBurst); err != nil {
+		t.Fatalf("same-source model tasks followed by the next URef must pass, got %v", err)
+	}
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{invoice, breakfast, parking}}, nil, orderedBurst); err == nil || !strings.Contains(err.Error(), "source order") {
+		t.Fatalf("out-of-order model tasks must fail source provenance, got %v", err)
+	}
+}
+
+func TestNormalizeModelIntentTraceDoesNotLocallyResplitV2Tasks(t *testing.T) {
+	text := "早餐几点还有停车收费吗然后发票咋开"
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "hotel_info", SubIntent: "breakfast", Objective: "time", RelationToPrevious: "independent", ResolutionState: "clear", Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "parking", Objective: "price", RelationToPrevious: "independent", ResolutionState: "clear", Text: "停车收费吗", ResolvedText: "停车收费吗", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+			{Intent: "hotel_info", SubIntent: "invoice", Objective: "method", RelationToPrevious: "independent", ResolutionState: "clear", Text: "发票咋开", ResolvedText: "发票咋开", SourceRefs: []string{"U1"}, NeedsKnowledge: true},
+		},
+	}
+	got := normalizeModelIntentTrace(intent, RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: text}}, adapter.HistoryBuildResult{}, nil)
+	if len(got.IntentTasks) != 3 {
+		t.Fatalf("V2 task count must remain model-owned, got %#v", got.IntentTasks)
+	}
+	for index, want := range []string{"早餐几点", "停车收费吗", "发票咋开"} {
+		if got.IntentTasks[index].Text != want || len(got.IntentTasks[index].SourceRefs) != 1 || got.IntentTasks[index].SourceRefs[0] != "U1" {
+			t.Fatalf("V2 task %d was locally rewritten: %#v", index, got.IntentTasks[index])
+		}
+	}
+}
+
+func TestNormalizeModelIntentTracePreservesV2PrimaryAndContextSourceOrder(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 好困啊",
+		"2. [文字] 有没有咖啡",
+	})
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "coffee", Objective: "availability", RelationToPrevious: "reference_previous", ResolutionState: "resolved_from_context",
+			Text: "有没有咖啡", ResolvedText: "酒店有没有咖啡", SourceRefs: []string{"U2", "U1"}, NeedsKnowledge: true,
+		}},
+	}
+
+	got := normalizeModelIntentTrace(intent, RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: burst}}, adapter.HistoryBuildResult{}, nil)
+	if len(got.IntentTasks) != 1 || len(got.IntentTasks[0].SourceRefs) != 2 || got.IntentTasks[0].SourceRefs[0] != "U2" || got.IntentTasks[0].SourceRefs[1] != "U1" {
+		t.Fatalf("V2 primary/context binding must remain exactly model-owned, got %#v", got.IntentTasks)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRejectsInventedOrOmittedCoarseSpanTask(t *testing.T) {
+	currentText := "早餐几点 还有停车收费吗 然后发票咋开"
+	base := runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("早餐几点", "time"),
+		validRuntimeIntentProtocolTask("停车收费吗", "price"),
+		validRuntimeIntentProtocolTask("发票咋开", "method"),
+	}
+
+	invented := append(runtimeIntentTaskList(nil), base...)
+	invented = append(invented, validRuntimeIntentProtocolTask("有没有健身房", "availability"))
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: invented}, nil, currentText); err == nil || !strings.Contains(err.Error(), "literal span") {
+		t.Fatalf("invented task must fail ordered span ownership, got %v", err)
+	}
+
+	omitted := append(runtimeIntentTaskList(nil), base[:2]...)
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: omitted}, nil, currentText); err != nil {
+		t.Fatalf("local code must not infer a missing semantic task from residual text, got %v", err)
 	}
 }
 

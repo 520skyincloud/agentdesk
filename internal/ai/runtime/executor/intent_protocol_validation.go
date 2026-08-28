@@ -22,9 +22,7 @@ func repairRuntimeIntentDetectProtocol(parsed *runtimeIntentDetectJSON, currentT
 		return
 	}
 	tasks := []runtimeIntentTaskJSON(parsed.IntentTasks)
-	repairRuntimeIntentProtocolDuplicateOwnership(tasks, candidates, currentTurnIntentSourceTexts(currentText))
 	repairRuntimeIntentProtocolRepeatReference(tasks, candidates, context)
-	repairRuntimeIntentProtocolIntersectionObjective(tasks, candidates)
 }
 
 func repairRuntimeIntentProtocolRepeatReference(tasks []runtimeIntentTaskJSON, candidates []string, context runtimeIntentProtocolRepairContext) bool {
@@ -338,12 +336,19 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		}
 	}
 
-	candidates := currentTurnTaskCandidates(currentText)
+	var candidates []string
+	if !requireSourceRefs || len(sourceTexts) == 0 {
+		candidates = currentTurnTaskCandidates(currentText)
+	}
 	taskCandidates := make([]int, len(tasks))
 	for index := range taskCandidates {
 		taskCandidates[index] = -1
 	}
-	if len(candidates) > 0 && (requireSemantics || len(candidates) > 1) {
+	if requireSourceRefs && len(sourceTexts) > 0 {
+		if err := validateRuntimeIntentProtocolModelOwnedSources(tasks, sourceTexts); err != nil {
+			return err
+		}
+	} else if len(candidates) > 0 && (requireSemantics || len(candidates) > 1) {
 		var err error
 		taskCandidates, err = assignRuntimeIntentProtocolCandidates(tasks, candidates, sourceTexts)
 		if err != nil {
@@ -362,14 +367,6 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 			runtimeIntentProtocolRelationAuthorizesContextResolution(task, candidateText, sourceTexts)
 		resolution := semanticGateNormalizeResolution(task.ResolutionState)
 		if resolution == runtimeIntentResolutionResolvedFromContext && !candidateRequiresContext {
-			candidateIndex := taskCandidates[taskIndex]
-			if candidateIndex >= 0 && candidateIndex < len(candidates) {
-				originalText := strings.TrimSpace(candidates[candidateIndex])
-				tasks[taskIndex].Text = originalText
-				tasks[taskIndex].ResolvedText = originalText
-				tasks[taskIndex].ResolutionState = runtimeIntentResolutionClear
-				continue
-			}
 			return fmt.Errorf("intentTasks[%d].resolutionState resolved_from_context requires context-dependent original text", taskIndex)
 		}
 		if candidateRequiresContext && runtimeIntentProtocolTaskHasExecutableBusiness(task) {
@@ -380,6 +377,52 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 				runtimeIntentAtomicCandidateRequiresContext(task.ResolvedText) {
 				return fmt.Errorf("intentTasks[%d].resolvedText must be a self-contained question after context resolution", taskIndex)
 			}
+		}
+	}
+	return nil
+}
+
+// validateRuntimeIntentProtocolModelOwnedSources verifies only provenance and
+// order. IntentDetect alone decides how many tasks exist and where their
+// semantic boundaries are; local code must not infer a competing task count.
+func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
+	referencedSources := make([]bool, len(sourceTexts))
+	lastPrimarySource := -1
+	nextSourcePosition := make([]int, len(sourceTexts))
+
+	for taskIndex, task := range tasks {
+		for _, ref := range task.SourceRefs {
+			refIndex := runtimeIntentSourceRefIndex(ref)
+			if refIndex >= 0 && refIndex < len(referencedSources) {
+				referencedSources[refIndex] = true
+			}
+		}
+		primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+		if primarySource < lastPrimarySource {
+			return fmt.Errorf("intentTasks[%d] is out of current-turn source order", taskIndex)
+		}
+		lastPrimarySource = primarySource
+
+		sourceText := normalizeRuntimeIntentProtocolAtomicText(sourceTexts[primarySource])
+		taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
+		if sourceText == "" || taskText == "" {
+			return fmt.Errorf("intentTasks[%d].text cannot be grounded in its primary source", taskIndex)
+		}
+		searchFrom := nextSourcePosition[primarySource]
+		relativeIndex := strings.Index(sourceText[searchFrom:], taskText)
+		if relativeIndex < 0 {
+			if strings.Contains(sourceText, taskText) {
+				return fmt.Errorf("intentTasks[%d].text repeats or overlaps an earlier task in the same source", taskIndex)
+			}
+			return fmt.Errorf("intentTasks[%d].text is not a literal span of its primary source", taskIndex)
+		}
+		start := searchFrom + relativeIndex
+		nextSourcePosition[primarySource] = start + len(taskText)
+	}
+
+	for sourceIndex, referenced := range referencedSources {
+		if !referenced {
+			return fmt.Errorf("current-turn source U%d is not covered by any intentTask sourceRefs", sourceIndex+1)
 		}
 	}
 	return nil

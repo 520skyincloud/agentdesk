@@ -46,6 +46,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
 	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
+	if collector.Data.Pipeline.Intent.DetectedIntent == "intent_detect_unavailable" {
+		return completeIntentDetectUnavailable(summary, collector)
+	}
 	if summary.SkipReply {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
@@ -107,6 +110,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		collector.Data.Pipeline.Validate.Reason = "direct hotel variable commit prepared"
 		summary.TraceData = collector.Marshal()
 		return summary, nil
+	}
+	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
+		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
 	}
 
 	toolDefs, err := factory.NewToolFactory().BuildMCPTools(req.AIAgent)
@@ -200,6 +206,142 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		collector.Data.Pipeline.Validate.Reason = summary.ErrorMessage
 	}
 	syncSkillSummaryFromCollector(summary, collector)
+	summary.TraceData = collector.Marshal()
+	return summary, nil
+}
+
+func completeIntentDetectUnavailable(summary *RunResult, collector *callbacks.RuntimeTraceCollector) (*RunResult, error) {
+	const reply = "不好意思，刚才这段我没完整理解好。麻烦把几个问题分开再发一下，我会逐个回答。"
+	summary.Status = "completed"
+	summary.ReplyText = reply
+	summary.ModelName = collector.Data.Model.Name
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = reply
+	collector.Data.Output.FinishReason = "intent_detect_safe_fallback"
+	collector.Data.Pipeline.Generate.Status = "skipped"
+	collector.Data.Pipeline.Generate.Reason = "IntentDetect failed after protocol repair; blocked ungrounded hotel fact generation"
+	collector.Data.Pipeline.Generate.FallbackMode = "intent_detect_safe_reply"
+	collector.Data.Pipeline.Validate.Status = "passed"
+	collector.Data.Pipeline.Validate.Reason = "local safe reply contains no ungrounded hotel facts"
+	summary.TraceData = collector.Marshal()
+	return summary, nil
+}
+
+const ungroundedKnowledgeSafeReply = "不好意思，这个我暂时没法准确回答。"
+
+func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (callbacks.ReplyPlanTraceData, []string) {
+	ungrounded := make(map[int]string)
+	for index, task := range plan.TaskPlans {
+		if !isUngroundedKnowledgeReplyTask(task) {
+			continue
+		}
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		ungrounded[index] = taskID
+	}
+	if len(ungrounded) == 0 {
+		return plan, nil
+	}
+
+	hasExecutableSibling := false
+	for index, task := range plan.TaskPlans {
+		if _, blocked := ungrounded[index]; blocked {
+			continue
+		}
+		if runtimeReplyTaskIsExecutable(task) {
+			hasExecutableSibling = true
+			break
+		}
+	}
+	if !hasExecutableSibling {
+		return plan, nil
+	}
+
+	plan.TaskPlans = append([]callbacks.ReplyTaskPlanTraceData(nil), plan.TaskPlans...)
+	isolatedTaskIDs := make([]string, 0, len(ungrounded))
+	for index := range plan.TaskPlans {
+		taskID, blocked := ungrounded[index]
+		if !blocked {
+			continue
+		}
+		isolatedTaskIDs = append(isolatedTaskIDs, taskID)
+		plan.TaskPlans[index].TaskID = taskID
+		plan.TaskPlans[index].Output = "knowledge_safe_fallback"
+		plan.TaskPlans[index].SelectedLayer = "runtime_safe_fallback"
+		plan.TaskPlans[index].SelectedCandidateIDs = nil
+		plan.TaskPlans[index].SupportedFacts = []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID:         taskID + "FSafe",
+			Aspect:         "other",
+			Statement:      ungroundedKnowledgeSafeReply,
+			CriticalValues: []string{"暂时没法准确回答"},
+		}}
+		plan.TaskPlans[index].MissingAspects = appendIfMissing(plan.TaskPlans[index].MissingAspects, "缺少可核验的知识证据")
+	}
+	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
+	plan.DoNot = appendIfMissing(plan.DoNot, "标记为知识安全兜底的任务只能表达无法准确回答，不得补充任何酒店事实")
+	return plan, isolatedTaskIDs
+}
+
+func ungroundedKnowledgeReplyTaskIDs(plan callbacks.ReplyPlanTraceData) []string {
+	ret := make([]string, 0)
+	for index, task := range plan.TaskPlans {
+		if !isUngroundedKnowledgeReplyTask(task) {
+			continue
+		}
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		ret = append(ret, taskID)
+	}
+	return ret
+}
+
+func isUngroundedKnowledgeReplyTask(task callbacks.ReplyTaskPlanTraceData) bool {
+	if !isReplyRequiredTextTask(task) || !runtimeReplyTaskUsesKnowledge(task) {
+		return false
+	}
+	hasFact := false
+	for _, fact := range task.SupportedFacts {
+		if strings.TrimSpace(fact.Statement) != "" {
+			hasFact = true
+			break
+		}
+	}
+	return strings.TrimSpace(task.SelectedLayer) == "" || !hasFact
+}
+
+func runtimeReplyTaskIsExecutable(task callbacks.ReplyTaskPlanTraceData) bool {
+	if isReplyRequiredTextTask(task) {
+		return true
+	}
+	switch strings.TrimSpace(task.OutputKind) {
+	case "resource", "handoff":
+		return true
+	case "context_only":
+		return false
+	}
+	return strings.TrimSpace(task.Output) != "" && strings.TrimSpace(task.Output) != "context_only"
+}
+
+func completeUngroundedKnowledgeFallback(summary *RunResult, collector *callbacks.RuntimeTraceCollector, taskIDs []string) (*RunResult, error) {
+	reply := strings.TrimSpace(deterministicGeneratedReplyFallback(collector))
+	if reply == "" {
+		reply = ungroundedKnowledgeSafeReply
+	}
+	summary.Status = "completed"
+	summary.ReplyText = reply
+	summary.ModelName = collector.Data.Model.Name
+	collector.Data.Status = summary.Status
+	collector.Data.Output.ReplyText = reply
+	collector.Data.Output.FinishReason = "knowledge_evidence_safe_fallback"
+	collector.Data.Pipeline.Generate.Status = "skipped"
+	collector.Data.Pipeline.Generate.Reason = "knowledge task lacked selected grounded evidence: " + strings.Join(taskIDs, ",")
+	collector.Data.Pipeline.Generate.FallbackMode = "deterministic_knowledge_evidence_guard"
+	collector.Data.Pipeline.Validate.Status = "passed"
+	collector.Data.Pipeline.Validate.Reason = "ungrounded knowledge tasks were blocked before free generation"
 	summary.TraceData = collector.Marshal()
 	return summary, nil
 }

@@ -15,6 +15,7 @@ import (
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/securex"
+	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/services"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -144,8 +145,11 @@ func TestRuntimeIntentDetectPromptRequiresSpecificHotelInfoSubIntent(t *testing.
 	for _, expected := range []string{
 		"subIntent 字段纪律",
 		"checkin_process",
-		"“我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process",
+		"只输出客户实际提出的 hotel_info/checkin_process 任务",
+		"不要为系统自动发送的小程序再造第二个 intentTask",
 		"只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时",
+		"interaction/weather_query",
+		"needsTool=true",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent detect prompt missing %q: %s", expected, prompt)
@@ -598,7 +602,7 @@ func TestNormalizeModelIntentTraceRepairsFacilityAvailabilityWithoutRoomCollecti
 	}
 }
 
-func TestNormalizeModelIntentTraceDropsDuplicateInvalidCheckinResourcePseudoTask(t *testing.T) {
+func TestNormalizeModelIntentTracePreservesV2InvalidCheckinTaskForFailClosedHandling(t *testing.T) {
 	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "怎么办理入住"}}
 	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
 		PrimaryIntent:            "hotel_info",
@@ -634,20 +638,76 @@ func TestNormalizeModelIntentTraceDropsDuplicateInvalidCheckinResourcePseudoTask
 		},
 	}, req, adapter.HistoryBuildResult{}, nil)
 
-	if intent.PrimaryIntent != "hotel_info" || intent.NeedsClarification || !intent.NeedsKnowledge || !intent.NeedsResource {
-		t.Fatalf("duplicate invalid resource task must not derail checkin, got %#v", intent)
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsClarification || !intent.NeedsKnowledge || !intent.NeedsResource {
+		t.Fatalf("invalid V2 task must remain visible without erasing the valid checkin task, got %#v", intent)
 	}
 	if len(intent.IntentTasks) != 2 {
-		t.Fatalf("expected checkin knowledge plus one valid mini program task, got %#v", intent.IntentTasks)
+		t.Fatalf("V2 normalization must preserve the model-owned task count, got %#v", intent.IntentTasks)
 	}
 	if task := intent.IntentTasks[0]; task.Intent != "hotel_info" || task.SubIntent != "checkin_process" || !task.NeedsKnowledge {
 		t.Fatalf("expected original checkin knowledge task to survive, got %#v", task)
 	}
-	if task := intent.IntentTasks[1]; task.Intent != "hotel_variable" || task.SubIntent != "mini_program" || task.ResourceAction != "provide_mini_program" || !task.NeedsResource {
-		t.Fatalf("expected deterministic valid mini program task, got %#v", task)
+	if task := intent.IntentTasks[1]; task.Intent != "interaction" || task.SubIntent != "clarify" {
+		t.Fatalf("invalid task should fail closed in place instead of being deleted, got %#v", task)
 	}
-	if !strings.Contains(intent.Reason, "redundant_invalid_resource_task_dropped") {
-		t.Fatalf("expected cleanup to remain visible in intent reason, got %q", intent.Reason)
+	if !containsString(intent.ResourceActions, "provide_mini_program") || !intent.NeedsResource {
+		t.Fatalf("automatic mini program must remain a top-level resource action, got %#v", intent)
+	}
+	if strings.Contains(intent.Reason, "redundant_invalid_resource_task_dropped") {
+		t.Fatalf("V2 must not run legacy task-count repair, got %q", intent.Reason)
+	}
+}
+
+func TestV2CheckinMiniProgramUsesTopLevelActionWithSourceBoundReplyPlan(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "怎么办理入住"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		IntentConfidence:         0.91,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			Text: "怎么办理入住", ResolvedText: "酒店怎么办理入住", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+		}},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if len(intent.IntentTasks) != 1 || !containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("V2 IntentTasks must remain model-owned while the automatic resource action survives, got %#v", intent)
+	}
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 {
+		t.Fatalf("expected one knowledge task and one top-level resource action, got %#v", plan.TaskPlans)
+	}
+	resourceTask := plan.TaskPlans[1]
+	if resourceTask.Output != "structured_resource_commit" || resourceTask.ResourceAction != "provide_mini_program" || len(resourceTask.SourceRefs) != 1 || resourceTask.SourceRefs[0] != "U1" {
+		t.Fatalf("mini program ReplyPlan action must retain the checkin source binding, got %#v", resourceTask)
+	}
+}
+
+func TestBuildReplyTaskPlansPreservesV2ModelTaskCount(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+			{
+				Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U2"}, NeedsKnowledge: true,
+			},
+		},
+	}
+
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 {
+		t.Fatalf("V2 ReplyPlan must preserve the model-owned task count, got %#v", plan.TaskPlans)
+	}
+	if plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[1].TaskID != "task-2" {
+		t.Fatalf("V2 ReplyPlan must retain task order, got %#v", plan.TaskPlans)
 	}
 }
 
@@ -1323,7 +1383,7 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
 	}}
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	if !strings.Contains(prompt, "每个独立问题或动作都要在 intentTasks 中有对应任务") || !strings.Contains(prompt, "不能只分类最后一条") {
+	if !strings.Contains(prompt, "每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask") || !strings.Contains(prompt, "不能只处理最后一句或最后一个问题") {
 		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
 	}
 	for _, expected := range []string{"[CURRENT_TURN_SOURCE_REFS]", "U1: 早餐有吗", "U2: 停车免费吗", "resolvedText", "sourceRefs[0]"} {
@@ -1349,7 +1409,7 @@ func TestDefaultRuntimeIntentContractDeclaresResolvedTextAndSourceRefs(t *testin
 	}
 }
 
-func TestCurrentTurnBoundaryUsesActualBurstWhenIntentMissesTasks(t *testing.T) {
+func TestCurrentTurnBoundaryDoesNotLocallyRecreateIntentTasks(t *testing.T) {
 	req := RunInput{UserMessage: models.Message{
 		MessageType: enums.IMMessageTypeText,
 		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
@@ -1365,8 +1425,8 @@ func TestCurrentTurnBoundaryUsesActualBurstWhenIntentMissesTasks(t *testing.T) {
 		}},
 	}
 	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, intent)
-	if !strings.Contains(instruction, "当前轮包含连续多问") || !strings.Contains(instruction, "不要只回答主意图或最后一个问题") {
-		t.Fatalf("expected actual burst to enforce multi-question generation coverage, got %q", instruction)
+	if strings.Contains(instruction, "当前轮包含连续多问") {
+		t.Fatalf("Generate boundary must follow IntentDetect tasks instead of locally re-splitting the burst, got %q", instruction)
 	}
 }
 
@@ -2674,6 +2734,34 @@ func TestRuntimePipelineWeatherQueryStaysSocialConfirmAndUsesTool(t *testing.T) 
 	}
 	if !plan.ToolKnowledge.ToolTriggered || plan.ToolKnowledge.KnowledgeTriggered {
 		t.Fatalf("expected tool trace without knowledge, got %#v", plan.ToolKnowledge)
+	}
+}
+
+func TestNormalizeModelIntentTraceKeepsWeatherToolInMixedHotelInfoTurn(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "早餐几点，合肥今天什么天气"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		IntentConfidence:         0.91,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "早餐几点", ResolvedText: "酒店早餐几点", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+			{
+				Intent: "interaction", SubIntent: "weather_query", Objective: "general_guidance",
+				RelationToPrevious: "independent", ResolutionState: "clear",
+				Text: "合肥今天什么天气", ResolvedText: "合肥今天什么天气", SourceRefs: []string{"U1"}, NeedsTool: true,
+			},
+		},
+	}, req, adapter.HistoryBuildResult{}, nil)
+
+	if intent.PrimaryIntent != "hotel_info" || !intent.NeedsKnowledge || !intent.NeedsTool || intent.ResourceAction != "get_weather" || !containsString(intent.ToolCodes, toolx.BuiltinWeather.Code) {
+		t.Fatalf("mixed hotel knowledge and weather must preserve the forced weather tool, got %#v", intent)
+	}
+	if instruction := buildWeatherToolInstruction(intent); !strings.Contains(instruction, "必须调用 get_weather") {
+		t.Fatalf("mixed weather task must disclose the tool requirement, got %q", instruction)
 	}
 }
 

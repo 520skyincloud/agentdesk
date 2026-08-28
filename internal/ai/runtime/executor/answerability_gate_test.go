@@ -83,10 +83,15 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 		},
 	}
 	gate := newTestKnowledgePolicyGate(retriever)
+	intent := hotelInfoIntent()
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{
+		{Intent: "hotel_info", Text: "能开专票不", ResolvedText: "能开专票不", NeedsKnowledge: true},
+		{Intent: "hotel_info", Text: "WiFi是哪个", ResolvedText: "WiFi是哪个", NeedsKnowledge: true},
+	}
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request: newKnowledgePolicyRunInput("客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\n能开专票不\nWiFi是哪个", "1"),
 		Summary: &RunResult{},
-		Intent:  hotelInfoIntent(),
+		Intent:  intent,
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
@@ -105,12 +110,12 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 }
 
-func TestMergeRuntimeKnowledgeQueriesBackfillsIntentMissedBurstQuestions(t *testing.T) {
+func TestMergeRuntimeKnowledgeQueriesTrustsIntentTaskBoundaries(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪"
 	got := mergeRuntimeKnowledgeQueries(query, []string{"剃须刀在哪"}, nil)
-	want := []string{"早餐有吗", "停车免费吗", "剃须刀在哪"}
+	want := []string{"剃须刀在哪"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("expected uncovered burst questions to be restored in customer order, got %#v", got)
+		t.Fatalf("retrieval must use IntentDetect tasks without local re-splitting, got %#v", got)
 	}
 }
 
@@ -120,6 +125,15 @@ func TestMergeRuntimeKnowledgeQueriesDoesNotTurnPureContextIntoTask(t *testing.T
 	want := []string{"有没有咖啡"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("expected pure context to remain attached to the actual question, got %#v", got)
+	}
+}
+
+func TestMergeRuntimeKnowledgeQueriesWithoutIntentTaskKeepsWholeTurn(t *testing.T) {
+	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐几点\n2. [消息] 停车免费吗\n3. [消息] 发票咋开"
+	got := mergeRuntimeKnowledgeQueries(query, nil, nil)
+	want := []string{query}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("missing model tasks may use only one coarse query, got %#v", got)
 	}
 }
 
@@ -275,25 +289,25 @@ func TestRuntimeIntentEvidenceQueryEnrichesKnownShortLabels(t *testing.T) {
 	}
 }
 
-func TestMergeRuntimeKnowledgeQueriesFiltersResourceWhenIntentMissedKnowledgeTask(t *testing.T) {
+func TestMergeRuntimeKnowledgeQueriesDoesNotInventKnowledgeBesideResourceTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})
-	want := []string{"早餐几点"}
+	var want []string
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("expected the missed knowledge question to be restored without retrieving the resource task, got %#v", got)
+		t.Fatalf("retrieval must not locally invent a task omitted by IntentDetect, got %#v", got)
 	}
 }
 
-func TestMergeRuntimeKnowledgeQueriesKeepsSingleLineKnowledgeResidual(t *testing.T) {
+func TestMergeRuntimeKnowledgeQueriesDoesNotLocallySplitNonKnowledgeTask(t *testing.T) {
 	tests := []struct {
 		query       string
 		resource    string
 		wantQueries []string
 	}{
-		{query: "定位发我，早餐几点", resource: "定位发我", wantQueries: []string{"早餐几点"}},
-		{query: "定位发我，早餐几点", resource: "定位", wantQueries: []string{"早餐几点"}},
-		{query: "把入住小程序发我，空调坏了怎么办", resource: "把入住小程序发我", wantQueries: []string{"空调坏了怎么办"}},
-		{query: "把入住小程序发我，空调坏了怎么办", resource: "入住小程序", wantQueries: []string{"空调坏了怎么办"}},
+		{query: "定位发我，早餐几点", resource: "定位发我", wantQueries: nil},
+		{query: "定位发我，早餐几点", resource: "定位", wantQueries: nil},
+		{query: "把入住小程序发我，空调坏了怎么办", resource: "把入住小程序发我", wantQueries: nil},
+		{query: "把入住小程序发我，空调坏了怎么办", resource: "入住小程序", wantQueries: nil},
 	}
 	for _, tt := range tests {
 		got := mergeRuntimeKnowledgeQueries(tt.query, nil, []string{tt.resource})
@@ -592,10 +606,15 @@ func TestKnowledgePolicyDoesNotLetSupplyFastPathHideMixedKnowledgeQuestions(t *t
 		newRetriever: func(models.AIAgent) knowledgeContextRetriever { return retriever },
 		judge:        judge,
 	}
+	intent := hotelInfoIntent()
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{
+		{Intent: "hotel_info", Text: "wifi和停车都发我一下", ResolvedText: "wifi和停车都发我一下", NeedsKnowledge: true},
+		{Intent: "hotel_info", Text: "房间没纸巾", ResolvedText: "房间没纸巾", NeedsKnowledge: true},
+	}
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request: newKnowledgePolicyRunInput("客人刚才连续发了几条消息，请一起理解，不要只回复最后一句：\nwifi和停车都发我一下\n房间没纸巾", "1"),
 		Summary: &RunResult{},
-		Intent:  hotelInfoIntent(),
+		Intent:  intent,
 	})
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
@@ -931,6 +950,102 @@ func TestBuildRunMessagesMarksHandoffWhenNoContext(t *testing.T) {
 	}
 	if !messagesContainContent(messages, "早餐几点") {
 		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	}
+}
+
+func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingInteractionSibling(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "interaction", Text: "谢谢", OutputKind: "text", ReplyRequired: true, Output: "text_reply"},
+	}})
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(nil).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点，谢谢", ""),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusNoContext {
+		t.Fatalf("unexpected answerability status: %q", state.AnswerabilityStatus)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("missing knowledge must not create a global handoff when an interaction sibling can still run: %#v", summary)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
+		t.Fatalf("knowledge task must be deferred independently, got %#v", trace)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != "task-2" {
+		t.Fatalf("interaction sibling must remain active after deferring knowledge, got %#v", plan.TaskPlans)
+	}
+}
+
+func TestKnowledgePolicyKeepsPureMissingKnowledgeHandoff(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}})
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(nil).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点", ""),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusNoContext || !summary.handoffDirective {
+		t.Fatalf("pure knowledge request must keep the existing direct handoff behavior, state=%#v summary=%#v", state, summary)
+	}
+	if collector.Data.Pipeline.EvidenceJudge.DeferredHandoff {
+		t.Fatalf("pure knowledge request must not be converted into a deferred mixed-task handoff: %#v", collector.Data.Pipeline.EvidenceJudge)
+	}
+	if len(collector.Data.Pipeline.ReplyPlan.TaskPlans) != 1 {
+		t.Fatalf("pure knowledge task must remain intact for the existing handoff flow: %#v", collector.Data.Pipeline.ReplyPlan.TaskPlans)
+	}
+}
+
+func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibling(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_variable", Text: "定位发我", OutputKind: "resource", Output: "structured_resource_commit", ResourceAction: "provide_location"},
+	}})
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(nil).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点，定位发我", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusUnanswerable {
+		t.Fatalf("unexpected answerability status: %q", state.AnswerabilityStatus)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("unavailable retriever must not create a global handoff for a mixed resource run: %#v", summary)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
+		t.Fatalf("knowledge task must be deferred when the retriever is unavailable, got %#v", trace)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != "task-2" || plan.TaskPlans[0].OutputKind != "resource" {
+		t.Fatalf("resource sibling must remain executable, got %#v", plan.TaskPlans)
 	}
 }
 

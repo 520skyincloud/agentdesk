@@ -150,6 +150,9 @@ func runtimeIntentAtomicCandidateRequiresContext(candidate string) bool {
 	if len([]rune(compact)) <= 10 && containsAnyPrefix(compact, []string{"这", "那", "刚才", "刚刚", "前面", "上面", "之前", "同样"}) {
 		return true
 	}
+	if containsAny(compact, []string{"你懂我意思吗", "你明白我意思吗", "明白我意思吧"}) {
+		return true
+	}
 	return containsAny(compact, []string{"再说一遍", "再复述", "重新说", "上一个", "刚才那个", "前面那个", "上面那个", "同样呢"})
 }
 

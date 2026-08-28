@@ -381,10 +381,12 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 		if task.Intent == "" && task.Output == "" {
 			return
 		}
-		for index, existing := range tasks {
-			if existing.Intent == task.Intent && existing.SubIntent == task.SubIntent && existing.Objective == task.Objective && existing.RelationToPrevious == task.RelationToPrevious && existing.ResolutionState == task.ResolutionState && existing.OriginalText == task.OriginalText && existing.ResolvedText == task.ResolvedText && existing.Output == task.Output && existing.ResourceAction == task.ResourceAction {
-				tasks[index].SourceRefs = mergeReplyTaskSourceRefs(existing.SourceRefs, task.SourceRefs)
-				return
+		if !intent.SemanticContractExpected {
+			for index, existing := range tasks {
+				if existing.Intent == task.Intent && existing.SubIntent == task.SubIntent && existing.Objective == task.Objective && existing.RelationToPrevious == task.RelationToPrevious && existing.ResolutionState == task.ResolutionState && existing.OriginalText == task.OriginalText && existing.ResolvedText == task.ResolvedText && existing.Output == task.Output && existing.ResourceAction == task.ResourceAction {
+					tasks[index].SourceRefs = mergeReplyTaskSourceRefs(existing.SourceRefs, task.SourceRefs)
+					return
+				}
 			}
 		}
 		tasks = append(tasks, task)
@@ -392,23 +394,14 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 	for _, item := range intent.IntentTasks {
 		add(replyTaskPlanFromIntentTask(item))
 	}
-	if len(tasks) == 0 {
-		for _, action := range intent.ResourceActions {
-			add(callbacks.ReplyTaskPlanTraceData{
-				Intent:         "hotel_variable",
-				SubIntent:      hotelVariableResourceTypeFromAction(action),
-				Output:         "structured_resource_commit",
-				ResourceAction: action,
-			})
+	for _, action := range intent.ResourceActions {
+		if !semanticGateAllowedResourceAction(action) || replyTaskPlansContainResourceAction(tasks, action) {
+			continue
 		}
+		add(replyTaskPlanForTopLevelResourceAction(intent, action))
 	}
-	if len(tasks) == 0 && strings.TrimSpace(intent.ResourceAction) != "" {
-		add(callbacks.ReplyTaskPlanTraceData{
-			Intent:         "hotel_variable",
-			SubIntent:      hotelVariableResourceTypeFromAction(intent.ResourceAction),
-			Output:         "structured_resource_commit",
-			ResourceAction: intent.ResourceAction,
-		})
+	if action := strings.TrimSpace(intent.ResourceAction); semanticGateAllowedResourceAction(action) && !replyTaskPlansContainResourceAction(tasks, action) {
+		add(replyTaskPlanForTopLevelResourceAction(intent, action))
 	}
 	if len(tasks) == 0 {
 		output := "text_reply"
@@ -429,6 +422,41 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 		})
 	}
 	return finalizeReplyTaskPlans(tasks)
+}
+
+func replyTaskPlansContainResourceAction(tasks []callbacks.ReplyTaskPlanTraceData, action string) bool {
+	action = strings.TrimSpace(action)
+	for _, task := range tasks {
+		if strings.TrimSpace(task.ResourceAction) == action {
+			return true
+		}
+	}
+	return false
+}
+
+func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, action string) callbacks.ReplyTaskPlanTraceData {
+	plan := callbacks.ReplyTaskPlanTraceData{
+		Intent:         "hotel_variable",
+		SubIntent:      hotelVariableResourceTypeFromAction(action),
+		Objective:      "action_request",
+		Output:         "structured_resource_commit",
+		ResourceAction: action,
+	}
+	for _, task := range intent.IntentTasks {
+		matchesAction := strings.TrimSpace(task.ResourceAction) == action
+		matchesCheckin := action == "provide_mini_program" && task.Intent == "hotel_info" && isCheckinProcessSubIntent(task.SubIntent)
+		if !matchesAction && !matchesCheckin {
+			continue
+		}
+		plan.RelationToPrevious = task.RelationToPrevious
+		plan.ResolutionState = task.ResolutionState
+		plan.Text = task.ResolvedText
+		plan.OriginalText = task.Text
+		plan.ResolvedText = task.ResolvedText
+		plan.SourceRefs = append([]string(nil), task.SourceRefs...)
+		break
+	}
+	return plan
 }
 
 func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.ReplyTaskPlanTraceData {

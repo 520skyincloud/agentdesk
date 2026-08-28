@@ -271,8 +271,8 @@ func isRuntimeIntentOutputConstraintClauseWithExplicitQuestion(text string, expl
 func runtimeIntentClauseHasSelfContainedQuestion(compact string) bool {
 	return containsAny(compact, []string{
 		"吗", "是否", "有没有", "能不能", "可不可以", "是不是",
-		"怎么", "如何", "多少", "几个", "几瓶", "几点", "多久", "什么时候",
-		"哪里", "在哪", "为什么", "谁", "什么",
+		"怎么", "咋", "如何", "多少", "几个", "几瓶", "几点", "多久", "什么时候",
+		"哪里", "在哪", "为什么", "谁", "什么", "啥",
 	})
 }
 

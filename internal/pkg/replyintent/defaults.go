@@ -29,7 +29,7 @@ func DefaultHotelIntentDetectPrompt() string {
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
 4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
-5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、会话回顾，以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；不明确时 subIntent=clarify 且 needsClarification=true，只追问一个关键点。客户明确问“刚刚都问了什么/刚才聊了什么/你刚才回答了哪些”时，使用 interaction/conversation_recap、relationToPrevious=reference_previous、resolutionState=resolved_from_context；这是有明确目标的会话回顾，不是 unresolved，也不能回答“没有具体问题”。
+5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、会话回顾，以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；天气查询例外，必须输出 interaction/weather_query、needsTool=true。其他不明确表达使用 subIntent=clarify 且 needsClarification=true，只追问一个关键点。客户明确问“刚刚都问了什么/刚才聊了什么/你刚才回答了哪些”时，使用 interaction/conversation_recap、relationToPrevious=reference_previous、resolutionState=resolved_from_context；这是有明确目标的会话回顾，不是 unresolved，也不能回答“没有具体问题”。
 
 公开经营主体信息边界：
 - “你们酒店/品牌/公司是谁创办的”“老板/创始人/董事长是谁”“某位公开经营者是谁、担任什么公开职务”属于 hotel_info/company_profile，needsKnowledge=true，必须查询知识库。
@@ -60,7 +60,7 @@ hotel_info 与 hotel_variable 的硬边界：
 - 混合任务示例：“定位发我，小程序也发一下，停车在哪”必须有 3 个 intentTasks：hotel_variable/location、hotel_variable/mini_program、hotel_info/parking。
 - 情绪、感谢、纠错语气或背景陈述和明确业务问题共同出现时，不要为语气再造一个必须回复的 interaction 任务；把它的 URef 作为业务任务的上下文 sourceRef。若仍输出了 interaction，运行时会将其降为 context_only，不会要求 Generate 单独回答。
 - 连续短句共同组成一个诉求时只建一个业务任务。例如“好困啊”紧接“有没有咖啡”，应形成咖啡任务，sourceRefs[0] 指向“有没有咖啡”，并把“好困啊”的 URef 作为上下文；不能之后再补答困倦。
-- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；办理入住同时包含 checkin_process 与小程序资源任务时，primaryIntent=hotel_info；其他混合变量请求若存在 hotel_variable 任务，primaryIntent=hotel_variable；否则忽略只表达语气的 interaction 任务，primaryIntent=按用户原顺序出现的第一个业务任务；若没有业务任务，primaryIntent=interaction。
+- 顶层汇总规则：若存在 human_complaint_risk 任务，primaryIntent=human_complaint_risk；混合变量请求若存在 hotel_variable 任务，primaryIntent=hotel_variable；否则忽略只表达语气的 interaction 任务，primaryIntent=按用户原顺序出现的第一个业务任务；若没有业务任务，primaryIntent=interaction。
 - needsKnowledge=true 当且仅当任一任务 needsKnowledge=true 或 intent=hotel_info。
 - needsResource=true 当且仅当任一任务 needsResource=true 或 intent=hotel_variable。
 
@@ -77,8 +77,9 @@ resourceActions 字段纪律：
 subIntent 字段纪律：
 - subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
 - hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities、company_profile。
-- “我要办理入住/怎么入住/入住怎么弄”必须按顺序输出 hotel_info/checkin_process 和 hotel_variable/mini_program/provide_mini_program 两个任务；主意图保持 hotel_info，知识步骤先回答，小程序由 Commit 阶段另行发送。
+- “我要办理入住/怎么入住/入住怎么弄”只输出客户实际提出的 hotel_info/checkin_process 任务；不要为系统自动发送的小程序再造第二个 intentTask。运行时会在 Intent 之后按产品策略附加小程序资源动作，由 Commit 阶段另行发送。
 - 只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时，才只输出 hotel_variable/provide_mini_program。
+- 天气、温度、降雨等实时查询使用 interaction/weather_query，任务 needsTool=true；和酒店知识问题同时出现时两个任务都要保留，顶层 needsKnowledge=true 且 needsTool=true。
 
 上下文规则：
 - 图片/文件/语音识别内容只是上下文文本，不是单独意图分类。

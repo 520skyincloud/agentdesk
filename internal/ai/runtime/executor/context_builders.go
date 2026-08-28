@@ -61,6 +61,14 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if collector != nil {
 		activeReplyPlan = collector.Data.Pipeline.ReplyPlan
 		hasDeferredKnowledge = collector.Data.Pipeline.EvidenceJudge.DeferredHandoff
+		if isolatedPlan, taskIDs := isolateUngroundedKnowledgeReplyTasks(activeReplyPlan); len(taskIDs) > 0 {
+			activeReplyPlan = isolatedPlan
+			collector.Data.Pipeline.ReplyPlan = isolatedPlan
+			collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+				collector.Data.Pipeline.Validate.Reason,
+				"isolated ungrounded knowledge task(s) while preserving independent executable tasks: "+strings.Join(taskIDs, ","),
+			)
+		}
 	}
 	if instruction := buildCurrentTurnBoundaryInstructionForReplyPlan(req, history, plan.Intent, activeReplyPlan); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
@@ -691,7 +699,7 @@ func buildCurrentTurnBoundaryInstructionForReplyPlan(req RunInput, history adapt
 	if intent.PrimaryIntent == "hotel_info" || intent.PrimaryIntent == "service_request" {
 		parts = append(parts, "酒店信息/服务请求：只围绕当前问题使用知识库结果，不要把同一会话里的其他酒店问题一起回答。知识库已经给出答案时必须直接回答，不能说正在查、稍后查、内部确认或后续处理。如果明确的酒店业务问题没有可用答案，进入接待路由，不要对客户说资料没写明或没查到。")
 	}
-	if len(activeTaskTexts) > 1 || (len(replyPlan.TaskPlans) == 0 && (len(intent.IntentTasks) > 1 || isMultiQuestionCurrentTurn(currentText))) {
+	if len(activeTaskTexts) > 1 || (len(replyPlan.TaskPlans) == 0 && len(intent.IntentTasks) > 1) {
 		parts = append(parts, "当前轮包含连续多问：必须按客户消息顺序逐项覆盖当前轮每个问题；不要只回答主意图或最后一个问题。已检索到的知识必须直接答；没有可用答案的酒店业务项进入接待路由，不能说“资料没写明”“帮你查/我查一下”。")
 	}
 	if intent.PrimaryIntent == "service_request" {
@@ -758,10 +766,19 @@ func looksLikeReturningCustomerTurn(text string) bool {
 }
 
 func buildWeatherToolInstruction(intent callbacks.IntentTraceData) string {
-	if strings.TrimSpace(intent.SubIntent) != "weather_query" && strings.TrimSpace(intent.ResourceAction) != "get_weather" {
+	if strings.TrimSpace(intent.SubIntent) != "weather_query" && strings.TrimSpace(intent.ResourceAction) != "get_weather" && !runtimeIntentHasWeatherTask(intent) {
 		return ""
 	}
 	return "当前阶段已识别为天气查询。你必须调用 get_weather 工具获取真实天气后再回复；不要直接说你查不到、以手机天气为准。若当前消息没有明确城市或地点，先简短追问城市；若有城市或地点，直接把它作为 location 调用工具。"
+}
+
+func runtimeIntentHasWeatherTask(intent callbacks.IntentTraceData) bool {
+	for _, task := range intent.IntentTasks {
+		if canonicalIntentCode(task.Intent) == "interaction" && strings.TrimSpace(task.SubIntent) == "weather_query" {
+			return true
+		}
+	}
+	return false
 }
 
 func buildRecentMediaContextInstruction(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) string {

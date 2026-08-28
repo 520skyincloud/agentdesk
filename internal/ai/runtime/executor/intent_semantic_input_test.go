@@ -75,6 +75,25 @@ func TestCurrentTurnTaskCandidatesDetectSingleParagraphQuestions(t *testing.T) {
 	}
 }
 
+func TestRuntimeIntentPromptAlwaysDelegatesTaskBoundariesToModel(t *testing.T) {
+	for _, text := range []string{
+		"我想问 酒店早餐几点开始",
+		"我饿了 有啥吃的推荐没",
+		"有早餐吗 在哪里吃",
+		"我饿了 有啥吃的推荐没 以及明天要去附近玩 你知道哪里好玩吗  还有啊 我怎么把门打开啊 有没有停车场 我开电车来的你懂我意思吗  发票咋开",
+	} {
+		prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+			SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: text,
+		}}, adapter.HistoryBuildResult{}, nil)
+		if !strings.Contains(prompt, "【当前轮逐题识别】") || !strings.Contains(prompt, "任务数量和边界只能由你根据完整语义判断") {
+			t.Fatalf("every current turn must delegate task boundaries to IntentDetect, got %q", prompt)
+		}
+		if strings.Contains(prompt, "[POSSIBLE_ATOMIC_TASKS]") {
+			t.Fatalf("local candidate guesses must not be disclosed to IntentDetect, got %q", prompt)
+		}
+	}
+}
+
 func TestCurrentTurnTaskCandidatesKeepDependentAspectWithPreviousQuestion(t *testing.T) {
 	for _, text := range []string{
 		"房间有几瓶矿泉水，免费吗？",
@@ -370,8 +389,8 @@ func TestSingleQuestionVoiceDoesNotTriggerMultiQuestionCoverage(t *testing.T) {
 		t.Fatal("expected a single voice question not to trigger multi-question coverage")
 	}
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	if strings.Contains(prompt, "【当前轮多任务覆盖】") {
-		t.Fatalf("single voice question must not receive multi-question instructions: %q", prompt)
+	if !strings.Contains(prompt, "【当前轮逐题识别】") || strings.Contains(prompt, "[POSSIBLE_ATOMIC_TASKS]") {
+		t.Fatalf("voice task count must be decided by IntentDetect without local candidates: %q", prompt)
 	}
 }
 
@@ -385,14 +404,15 @@ func TestRuntimeIntentPromptTreatsVoiceLikeText(t *testing.T) {
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
 	for _, expected := range []string{
 		"U1: 早餐几点，停车免费吗，房间有几瓶矿泉水？",
-		"【当前轮多任务覆盖】",
-		"C1: 早餐几点",
-		"C2: 停车免费吗",
-		"C3: 房间有几瓶矿泉水",
+		"【当前轮逐题识别】",
+		"任务数量和边界只能由你根据完整语义判断",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected voice intent prompt to contain %q, got %q", expected, prompt)
 		}
+	}
+	if strings.Contains(prompt, "[POSSIBLE_ATOMIC_TASKS]") || strings.Contains(prompt, "C1: 早餐几点") {
+		t.Fatalf("voice prompt must not disclose locally guessed task boundaries: %q", prompt)
 	}
 	if strings.Contains(prompt, "U1: voice.amr") || strings.Contains(prompt, "语音摘要是") {
 		t.Fatalf("voice filename or lossy summary must not replace the transcript: %q", prompt)

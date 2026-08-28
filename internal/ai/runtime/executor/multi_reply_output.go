@@ -283,49 +283,55 @@ func validateGeneratedReplyFactAspectBoundaries(content string, facts []replyFac
 	if len(facts) == 0 {
 		return nil
 	}
-	allowed := make(map[string]bool, len(facts))
 	evidence := make([]string, 0, len(facts))
 	for _, fact := range facts {
-		if aspect := strings.TrimSpace(fact.Aspect); aspect != "" {
-			allowed[aspect] = true
-		}
 		if statement := strings.TrimSpace(fact.Statement); statement != "" {
 			evidence = append(evidence, statement)
 		}
 	}
-	if len(evidence) == 0 || len(allowed) == 0 {
+	if len(evidence) == 0 {
 		return nil
 	}
 	for _, clause := range splitGeneratedReplyFactClauses(content) {
-		if generatedReplyClauseIsUncertaintyBoundary(clause) {
+		if generatedReplyClauseIsPureUncertaintyBoundary(clause) || generatedReplyClauseIsBareAffirmation(clause) || generatedReplyClauseIsServiceOffer(clause) {
 			continue
 		}
 		for _, boundary := range generatedReplyFactAspectBoundaries() {
-			if allowed[boundary.Aspect] || !containsAny(normalizeCriticalValueText(clause), boundary.Markers) {
+			if !generatedReplyTextHasBoundaryClaim(clause, boundary) {
 				continue
 			}
-			if generatedReplyBoundaryClaimGroundedByFacts(clause, evidence, boundary.Markers) {
+			if generatedReplyBoundaryClaimGroundedByFacts(clause, evidence, boundary) {
 				continue
 			}
 			return fmt.Errorf("content adds unsupported %s claim", boundary.Aspect)
 		}
-		if !allowed["time"] && generatedReplyTimeClaimPattern.MatchString(normalizeCriticalValueText(clause)) && !generatedReplyTimeClaimGroundedByFacts(clause, evidence) {
+		if generatedReplyTimeClaimPattern.MatchString(normalizeCriticalValueText(clause)) && !generatedReplyTimeClaimGroundedByFacts(clause, evidence) {
 			return fmt.Errorf("content adds unsupported time claim")
+		}
+		if !generatedReplyLiteralClaimsGroundedByFacts(clause, evidence, generatedReplyQuantityClaimPattern) {
+			return fmt.Errorf("content adds unsupported quantity claim")
+		}
+		if !generatedReplyLiteralClaimsGroundedByFacts(clause, evidence, generatedReplyPriceClaimPattern) {
+			return fmt.Errorf("content adds unsupported price claim")
 		}
 	}
 	return nil
 }
 
 type generatedReplyFactAspectBoundary struct {
-	Aspect  string
-	Markers []string
+	Aspect       string
+	Markers      []string
+	ClaimPattern *regexp.Regexp
 }
 
 func generatedReplyFactAspectBoundaries() []generatedReplyFactAspectBoundary {
 	return []generatedReplyFactAspectBoundary{
 		{Aspect: "scope", Markers: []string{"送到", "送至", "送上", "送进", "送达", "配送", "送房", "房门口", "所有房间", "全部房间", "每个房间", "任何房间", "都能", "都可以", "均可"}},
-		{Aspect: "method", Markers: []string{"通过", "使用", "扫码", "点击", "输入", "操作", "办理", "联系", "自动送", "帮您送", "帮你送", "给您送", "给你送", "已安排", "已经安排", "马上送", "稍后送"}},
+		{Aspect: "method", Markers: []string{"通过", "使用", "扫码", "点击", "输入", "操作", "办理", "填写", "可以写", "联系", "自动送", "帮您送", "帮你送", "给您送", "给你送", "已安排", "已经安排", "马上送", "稍后送"}},
 		{Aspect: "location", Markers: []string{"位于", "地址是", "地址为", "一楼", "前台", "在房间里", "在房间内", "门口", "楼层", "旁边", "对面"}},
+		{Aspect: "existence", Markers: []string{"不提供", "未提供", "没有", "未配备", "不配备", "不含", "设有", "配备", "提供", "包含"}, ClaimPattern: generatedReplyExistenceClaimPattern},
+		{Aspect: "capability", Markers: []string{"不支持", "不允许", "不可以", "不能够", "不能", "可以", "能够", "支持", "允许"}, ClaimPattern: generatedReplyCapabilityClaimPattern},
+		{Aspect: "policy", Markers: []string{"不需要", "必须", "需要", "仅限", "只能", "不得", "禁止", "要求", "规定", "应当"}, ClaimPattern: generatedReplyPolicyClaimPattern},
 	}
 }
 
@@ -347,29 +353,119 @@ func splitGeneratedReplyFactClauses(content string) []string {
 	return ret
 }
 
-func generatedReplyClauseIsUncertaintyBoundary(clause string) bool {
-	return containsAny(normalizeCriticalValueText(clause), []string{
-		"不清楚", "不确定", "无法确认", "没法确认", "暂时不能确认", "资料没写", "资料未写", "没有写明", "未说明", "需要确认", "要问门店", "以门店实际为准",
-	})
-}
-
-func generatedReplyBoundaryClaimGroundedByFacts(clause string, evidence []string, markers []string) bool {
-	normalizedClause := normalizeRuntimeKnowledgeQuery(clause)
-	if normalizedClause == "" {
-		return false
-	}
-	clauseNegative := knowledgeEvidenceTextHasNegativeBoundary(normalizedClause)
-	for _, fact := range evidence {
-		normalizedFact := normalizeRuntimeKnowledgeQuery(fact)
-		if normalizedFact == "" || !containsAny(normalizedFact, markers) || clauseNegative != knowledgeEvidenceTextHasNegativeBoundary(normalizedFact) {
-			continue
-		}
-		if strings.Contains(normalizedFact, normalizedClause) || strings.Contains(normalizedClause, normalizedFact) || knowledgeEvidenceTextNGramSimilarity(normalizedClause, normalizedFact) >= 0.72 {
+func generatedReplyClauseIsPureUncertaintyBoundary(clause string) bool {
+	normalized := normalizeCriticalValueText(clause)
+	normalized = strings.TrimSpace(strings.NewReplacer(
+		"不好意思", "",
+		"抱歉", "",
+		"这个问题", "",
+		"这个", "",
+		"这点", "",
+		"我", "",
+		"目前", "",
+		"暂时", "",
+	).Replace(normalized))
+	for _, marker := range []string{
+		"不清楚", "不确定", "无法确认", "没法确认", "没法准确回答", "不能准确回答", "暂时不能确认", "资料没写", "资料未写", "没有写明", "未说明", "需要确认", "要问门店", "以门店实际为准",
+	} {
+		if strings.HasPrefix(normalized, marker) {
 			return true
 		}
 	}
 	return false
 }
+
+func generatedReplyClauseIsBareAffirmation(clause string) bool {
+	switch normalizeRuntimeKnowledgeQuery(clause) {
+	case "有", "有的", "是", "是的", "对", "对的", "没错", "可以", "可以的", "能", "能的", "没问题":
+		return true
+	default:
+		return false
+	}
+}
+
+func generatedReplyClauseIsServiceOffer(clause string) bool {
+	return containsAny(normalizeCriticalValueText(clause), []string{
+		"有需要随时说", "有需要可以说", "有问题随时说", "有问题可以说", "需要的话随时说", "还有需要的话", "其他需要的话",
+	})
+}
+
+func generatedReplyTextHasBoundaryClaim(text string, boundary generatedReplyFactAspectBoundary) bool {
+	normalized := normalizeCriticalValueText(text)
+	if boundary.ClaimPattern != nil && boundary.ClaimPattern.MatchString(normalized) {
+		return true
+	}
+	for _, marker := range boundary.Markers {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedReplyBoundaryClaimGroundedByFacts(clause string, evidence []string, boundary generatedReplyFactAspectBoundary) bool {
+	normalizedClause := normalizeRuntimeKnowledgeQuery(clause)
+	if normalizedClause == "" {
+		return false
+	}
+	clauseNegative := knowledgeEvidenceTextHasNegativeBoundary(normalizedClause)
+	comparableClause := generatedReplyBoundaryComparableText(normalizedClause, boundary.Markers)
+	for _, fact := range evidence {
+		for _, factClause := range splitGeneratedReplyFactClauses(fact) {
+			normalizedFact := normalizeRuntimeKnowledgeQuery(factClause)
+			if normalizedFact == "" || !generatedReplyTextHasBoundaryClaim(normalizedFact, boundary) || clauseNegative != knowledgeEvidenceTextHasNegativeBoundary(normalizedFact) {
+				continue
+			}
+			if strings.Contains(normalizedFact, normalizedClause) || strings.Contains(normalizedClause, normalizedFact) || knowledgeEvidenceTextNGramSimilarity(normalizedClause, normalizedFact) >= 0.72 {
+				return true
+			}
+			comparableFact := generatedReplyBoundaryComparableText(normalizedFact, boundary.Markers)
+			if comparableClause != "" && comparableFact != "" &&
+				(strings.Contains(comparableFact, comparableClause) || strings.Contains(comparableClause, comparableFact) || knowledgeEvidenceTextNGramSimilarity(comparableClause, comparableFact) >= 0.72) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func generatedReplyBoundaryComparableText(text string, markers []string) string {
+	text = strings.ReplaceAll(normalizeRuntimeKnowledgeQuery(text), "所有", "全部")
+	for _, marker := range markers {
+		text = strings.ReplaceAll(text, marker, "")
+	}
+	return strings.NewReplacer(
+		"我们酒店", "",
+		"本酒店", "",
+		"本门店", "",
+		"酒店", "",
+		"门店", "",
+		"这边", "",
+		"目前", "",
+		"另外", "",
+		"房费", "",
+		"含", "",
+		"有", "",
+		"不可", "",
+		"可", "",
+		"要", "",
+		"得", "",
+		"应", "",
+		"办理入住", "入住",
+		"携带身份证", "身份证",
+		"带身份证", "身份证",
+		"出示身份证", "身份证",
+		"携带宠物", "宠物入住",
+		"带宠物", "宠物入住",
+		"有的", "",
+		"是的", "",
+		"可以的", "",
+	).Replace(text)
+}
+
+var generatedReplyExistenceClaimPattern = regexp.MustCompile(`(^|酒店|门店|本店|店里|这里|客房|房间|房内|房费|套餐|价格)(有|没有|无|含|不含)([^需问]|$)`)
+var generatedReplyCapabilityClaimPattern = regexp.MustCompile(`(^|宠物|客人|房间|客房|酒店|门店|机器人|停车场|小程序|发票|订单|会员).{0,8}(可|不可)(入住|使用|办理|携带|进入|送|开门|退房|支付|投屏|充电|停车)`)
+var generatedReplyPolicyClaimPattern = regexp.MustCompile(`(^|入住|退房|登记|开门|发票|停车|早餐|宠物|儿童).{0,8}(要|得|应)(带|提供|出示|支付|办理|登记|遵守|收费|购买)`)
 
 func generatedReplyTimeClaimGroundedByFacts(clause string, evidence []string) bool {
 	claims := generatedReplyTimeClaimPattern.FindAllString(normalizeCriticalValueText(clause), -1)
@@ -392,6 +488,25 @@ func generatedReplyTimeClaimGroundedByFacts(clause string, evidence []string) bo
 }
 
 var generatedReplyTimeClaimPattern = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十两]+)(?:分钟|小时|天|工作日)|[0-9]{1,2}[:：][0-9]{2}`)
+var generatedReplyQuantityClaimPattern = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十百两]+)(?:瓶|个|份|间|张|次|台|套)`)
+var generatedReplyPriceClaimPattern = regexp.MustCompile(`(?:免费|不收费|免收费用|收费|[0-9]+(?:\.[0-9]+)?元)`)
+
+func generatedReplyLiteralClaimsGroundedByFacts(clause string, evidence []string, pattern *regexp.Regexp) bool {
+	claims := pattern.FindAllString(normalizeCriticalValueText(clause), -1)
+	for _, claim := range claims {
+		grounded := false
+		for _, fact := range evidence {
+			if strings.Contains(normalizeCriticalValueText(fact), claim) {
+				grounded = true
+				break
+			}
+		}
+		if !grounded {
+			return false
+		}
+	}
+	return true
+}
 
 func normalizeCoveredFactID(rawFactID string, group textReplyTaskGroup) (string, error) {
 	rawFactID = strings.TrimSpace(rawFactID)

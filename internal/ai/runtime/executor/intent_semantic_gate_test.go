@@ -83,7 +83,7 @@ func TestIntentSemanticGateInformationObjectiveReclassifiesServiceRequest(t *tes
 		ResolutionState:    "clear",
 	}}
 
-	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{})
+	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{RequireSemanticContract: true})
 	task := got.Intent.IntentTasks[0]
 	if task.Intent != "hotel_info" || !task.NeedsKnowledge {
 		t.Fatalf("information request should become hotel_info knowledge, got %#v", task)
@@ -143,6 +143,39 @@ func TestIntentSemanticGateServiceStatusDoesNotBecomeStaticHotelInfo(t *testing.
 	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{HasAdjacentContext: true})
 	if task := got.Intent.IntentTasks[0]; task.Intent != "service_request" {
 		t.Fatalf("an existing service status is not static hotel information, got %#v", task)
+	}
+}
+
+func TestIntentSemanticGateSeparatesResolvableContextFromAdjacentAIReply(t *testing.T) {
+	referenceIntent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "surrounding_facilities",
+			Text: "玩的勒", ResolvedText: "酒店附近有什么适合游玩的地方", NeedsKnowledge: true,
+		}},
+	}
+	referenceSemantics := []runtimeIntentTaskSemantics{{
+		Objective: "recommendation", RelationToPrevious: "reference_previous", ResolutionState: "resolved_from_context",
+	}}
+	context := runtimeIntentSemanticGateContext{HasResolvableAdjacentContext: true, HasAdjacentAIReply: false}
+	reference := applyRuntimeIntentSemanticConsistencyGate(referenceIntent, referenceSemantics, context)
+	if task := reference.Intent.IntentTasks[0]; task.Intent != "hotel_info" || task.SubIntent != "surrounding_facilities" || !task.NeedsKnowledge {
+		t.Fatalf("ordinary reference must be allowed by adjacent conversational context, got %#v", task)
+	}
+
+	rejectedIntent := callbacks.IntentTraceData{
+		PrimaryIntent: "human_complaint_risk",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "human_complaint_risk", SubIntent: "answer_rejected",
+			Text: "你刚才答非所问", ResolvedText: "你刚才答非所问", NeedsHumanRoute: true,
+		}},
+	}
+	rejectedSemantics := []runtimeIntentTaskSemantics{{
+		Objective: "complaint", RelationToPrevious: "answer_rejected", ResolutionState: "clear",
+	}}
+	rejected := applyRuntimeIntentSemanticConsistencyGate(rejectedIntent, rejectedSemantics, context)
+	if task := rejected.Intent.IntentTasks[0]; task.Intent != "interaction" || task.SubIntent != "frustration" || task.NeedsHumanRoute {
+		t.Fatalf("answer rejection must still require a genuinely adjacent AI reply, got %#v", task)
 	}
 }
 
@@ -258,7 +291,7 @@ func TestIntentSemanticGateClarifyTaskRepairsResolutionState(t *testing.T) {
 	}
 }
 
-func TestIntentSemanticGateIndependentTaskCannotExpandResolvedText(t *testing.T) {
+func TestIntentSemanticGatePreservesLegitimateIndependentResolvedText(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:    "hotel_info",
 		IntentConfidence: 0.86,
@@ -266,7 +299,7 @@ func TestIntentSemanticGateIndependentTaskCannotExpandResolvedText(t *testing.T)
 			Intent:         "hotel_info",
 			SubIntent:      "delivery_robot",
 			Text:           "有外卖机器人吗",
-			ResolvedText:   "外卖机器人能不能送到房间",
+			ResolvedText:   "酒店有没有外卖机器人",
 			NeedsKnowledge: true,
 		}},
 	}
@@ -277,8 +310,8 @@ func TestIntentSemanticGateIndependentTaskCannotExpandResolvedText(t *testing.T)
 	}}
 
 	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{})
-	if task := got.Intent.IntentTasks[0]; task.ResolvedText != "有外卖机器人吗" {
-		t.Fatalf("independent task must not expand the customer's request, got %#v", task)
+	if task := got.Intent.IntentTasks[0]; task.ResolvedText != "酒店有没有外卖机器人" {
+		t.Fatalf("semantic gate must preserve the model's legitimate self-contained wording, got %#v", task)
 	}
 }
 
@@ -362,6 +395,34 @@ func TestIntentSemanticGateIncompleteNewContractFailsClosed(t *testing.T) {
 	}
 }
 
+func TestIntentSemanticGateV2PreservesModelTaskCount(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info",
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "checkin_process", Text: "怎么办理入住", ResolvedText: "怎么办理入住",
+				SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+			{
+				Intent: "interaction", SubIntent: "clarify", Text: "怎么办理入住", ResolvedText: "怎么办理入住",
+				SourceRefs: []string{"U1"},
+			},
+		},
+	}
+	semantics := []runtimeIntentTaskSemantics{
+		{Objective: "method", RelationToPrevious: "independent", ResolutionState: "clear"},
+		{Objective: "resource", RelationToPrevious: "independent", ResolutionState: "clear"},
+	}
+
+	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{RequireSemanticContract: true})
+	if len(got.Intent.IntentTasks) != 2 || len(got.TaskSemantics) != 2 {
+		t.Fatalf("V2 semantic gate must not delete model-owned tasks, got tasks=%#v semantics=%#v", got.Intent.IntentTasks, got.TaskSemantics)
+	}
+	if hasSemanticGateViolation(got.Violations, "redundant_invalid_resource_task_dropped") {
+		t.Fatalf("V2 must not run legacy task-count repair, got %#v", got.Violations)
+	}
+}
+
 func TestIntentSemanticGateLegacyProfileIgnoresPartialSemanticFields(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:  "hotel_info",
@@ -419,7 +480,7 @@ func TestIntentSemanticGateIncompleteTaskDoesNotEraseOtherClearTasks(t *testing.
 	}
 }
 
-func TestIntentSemanticGateDropsDuplicateInvalidResourcePseudoTask(t *testing.T) {
+func TestIntentSemanticGateV2DoesNotDropDuplicateInvalidResourcePseudoTask(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent: "hotel_info",
 		IntentTasks: []callbacks.IntentTaskTraceData{
@@ -463,20 +524,20 @@ func TestIntentSemanticGateDropsDuplicateInvalidResourcePseudoTask(t *testing.T)
 	}
 
 	got := applyRuntimeIntentSemanticConsistencyGate(intent, semantics, runtimeIntentSemanticGateContext{RequireSemanticContract: true})
-	if got.ContractMode != runtimeIntentSemanticContractActive {
-		t.Fatalf("redundant invalid resource task must not invalidate clear business tasks, got %q", got.ContractMode)
+	if got.ContractMode != runtimeIntentSemanticContractInvalid {
+		t.Fatalf("invalid V2 task must remain visible for fail-closed handling, got %q", got.ContractMode)
 	}
-	if len(got.Intent.IntentTasks) != 2 || len(got.TaskSemantics) != 2 {
-		t.Fatalf("expected only the duplicate pseudo task to be dropped, got tasks=%#v semantics=%#v", got.Intent.IntentTasks, got.TaskSemantics)
+	if len(got.Intent.IntentTasks) != 3 || len(got.TaskSemantics) != 3 {
+		t.Fatalf("V2 semantic gate must preserve model-owned task count, got tasks=%#v semantics=%#v", got.Intent.IntentTasks, got.TaskSemantics)
 	}
-	if got.Intent.NeedsClarification || got.Intent.PrimaryIntent != "hotel_info" || !got.Intent.NeedsKnowledge {
-		t.Fatalf("clear business tasks should continue normally, got %#v", got.Intent)
+	if !got.Intent.NeedsClarification || got.Intent.PrimaryIntent != "hotel_info" || !got.Intent.NeedsKnowledge {
+		t.Fatalf("valid business tasks must survive beside the isolated invalid task, got %#v", got.Intent)
 	}
-	if !got.SuppressLegacyConfidenceFallback {
-		t.Fatal("remaining complete semantic tasks should remain authoritative")
+	if got.SuppressLegacyConfidenceFallback {
+		t.Fatal("an invalid V2 task must not suppress fail-closed handling")
 	}
-	if !hasSemanticGateViolation(got.Violations, "redundant_invalid_resource_task_dropped") {
-		t.Fatalf("expected dropped task to remain observable in violations, got %#v", got.Violations)
+	if hasSemanticGateViolation(got.Violations, "redundant_invalid_resource_task_dropped") {
+		t.Fatalf("V2 must not run legacy task-count repair, got %#v", got.Violations)
 	}
 }
 
@@ -588,8 +649,8 @@ func TestIntentSemanticGateFromTraceUsesCurrentTaskContract(t *testing.T) {
 	if got.ContractMode != runtimeIntentSemanticContractActive || !got.SuppressLegacyConfidenceFallback {
 		t.Fatalf("expected active clear trace contract, got %#v", got)
 	}
-	if task := got.Intent.IntentTasks[0]; task.Intent != "hotel_info" || task.ResolvedText != task.Text {
-		t.Fatalf("trace-backed gate did not repair task, got %#v", task)
+	if task := got.Intent.IntentTasks[0]; task.Intent != "hotel_info" || task.ResolvedText != "房间有空调吗" {
+		t.Fatalf("trace-backed gate must preserve the legitimate resolved question, got %#v", task)
 	}
 }
 

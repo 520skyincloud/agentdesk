@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -547,6 +548,65 @@ func TestMergeRecentCustomerBurstMessageStartsAfterLastOutbound(t *testing.T) {
 	}
 	if strings.Contains(merged.Content, "定位发我一个") || strings.Contains(merged.Content, "连续发") {
 		t.Fatalf("expected previous answered location question excluded, got: %s", merged.Content)
+	}
+}
+
+func TestMergeRecentCustomerBurstMessageUsesAdjacentGapInsteadOfTotalSpan(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(10016)
+	contents := []string{"早餐几点", "停车免费吗", "发票怎么开"}
+	offsets := []time.Duration{0, 4 * time.Second, 9 * time.Second}
+	var current models.Message
+	for index, content := range contents {
+		sentAt := now.Add(offsets[index])
+		item := models.Message{
+			ID: int64(index + 1), ConversationID: conversationID, SessionNo: 1,
+			ClientMsgID: fmt.Sprintf("adjacent-%d", index+1), SeqNo: int64(index + 1),
+			SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText,
+			Content: content, SentAt: &sentAt,
+		}
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", index+1, err)
+		}
+		current = item
+	}
+
+	merged := service.mergeRecentCustomerBurstMessage(conversationID, current)
+	for _, content := range contents {
+		if !strings.Contains(merged.Content, content) {
+			t.Fatalf("adjacent burst must preserve %q across a total span above eight seconds: %q", content, merged.Content)
+		}
+	}
+}
+
+func TestMergeRecentCustomerBurstMessageKeepsNewestTwelveIncludingTrigger(t *testing.T) {
+	setupRuntimeReplyMessageTestDB(t)
+	service := newAIReplyService()
+	now := time.Now()
+	conversationID := int64(10017)
+	var current models.Message
+	for index := 0; index < 13; index++ {
+		sentAt := now.Add(time.Duration(index) * time.Second)
+		item := models.Message{
+			ID: int64(index + 1), ConversationID: conversationID, SessionNo: 1,
+			ClientMsgID: fmt.Sprintf("latest-%d", index+1), SeqNo: int64(index + 1),
+			SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText,
+			Content: fmt.Sprintf("第%d个问题怎么处理", index+1), SentAt: &sentAt,
+		}
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", index+1, err)
+		}
+		current = item
+	}
+
+	merged := service.mergeRecentCustomerBurstMessage(conversationID, current)
+	if !strings.Contains(merged.Content, "第13个问题怎么处理") {
+		t.Fatalf("latest trigger must remain in the capped burst: %q", merged.Content)
+	}
+	if strings.Contains(merged.Content, "第1个问题怎么处理") {
+		t.Fatalf("the newest twelve should be retained instead of the oldest twelve: %q", merged.Content)
 	}
 }
 

@@ -254,12 +254,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err == nil {
-		repairRuntimeIntentDetectProtocol(
-			&parsed,
-			currentRuntimeIntentSemanticText(req),
-			buildRuntimeIntentProtocolRepairContext(history),
-			runtimeIntentProfileExpectsTaskSemantics(profile),
-		)
+		applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
 		err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
 	}
 	if err != nil {
@@ -274,12 +269,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err == nil {
-			repairRuntimeIntentDetectProtocol(
-				&parsed,
-				currentRuntimeIntentSemanticText(req),
-				buildRuntimeIntentProtocolRepairContext(history),
-				runtimeIntentProfileExpectsTaskSemantics(profile),
-			)
+			applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
 			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
 		}
 		if err != nil {
@@ -507,16 +497,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
 	}
-	if isMultiQuestionCurrentTurn(currentDisplayText) {
-		b.WriteString("\n\n【当前轮多任务覆盖】当前轮包含或很可能包含多个独立问题或动作。必须从头扫描到尾；每个独立问题或动作都要在 intentTasks 中有对应任务，并保持客户原顺序，不能只分类最后一条或最后一项。纯背景、情绪或补充条件可以并入相关任务，不要凭空新增业务任务。输出前逐项核对当前轮，遗漏任一独立问题或动作都属于协议错误。")
-		if candidates := currentTurnTaskCandidates(currentDisplayText); shouldDiscloseRuntimeIntentTaskCandidates(sourceTexts, candidates) {
-			b.WriteString("\n[POSSIBLE_ATOMIC_TASKS]\n")
-			for index, candidate := range candidates {
-				b.WriteString(fmt.Sprintf("C%d: %s\n", index+1, candidate))
-			}
-			b.WriteString("以上只是按通用语句结构提取的逐题检查提示，不是业务分类结论；你必须结合完整原文判断哪些是独立任务、哪些只是同一任务的条件或背景。不同对象或不同知识主题的问题不得为了省事合并成 compound_information；若这里列出 N 个彼此独立的问题，必须输出 N 个对应任务。只有同一对象的紧密条件（例如矿泉水数量和是否免费）才能保留为一个 compound_information。sourceRefs 仍只引用 URef。")
-		}
-	}
+	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息都可能包含 0 个、1 个或多个任务，任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序。不同对象或不同知识主题必须拆开；只有同一对象紧密相关的多个方面才可合成 compound_information。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，不能只处理最后一句或最后一个问题。")
 	b.WriteString("\n\n当前消息类型: ")
 	b.WriteString(string(req.UserMessage.MessageType))
 	if timeLabel := adapter.RuntimeMessageTimeLabel(&req.UserMessage); timeLabel != "" {
@@ -593,13 +574,6 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	return b.String()
 }
 
-func shouldDiscloseRuntimeIntentTaskCandidates(sourceTexts []string, candidates []string) bool {
-	if len(candidates) <= 1 {
-		return false
-	}
-	return len(sourceTexts) <= 1 || len(candidates) > len(sourceTexts)
-}
-
 func currentTurnIntentSourceTexts(currentDisplayText string) []string {
 	currentDisplayText = strings.TrimSpace(currentDisplayText)
 	if currentDisplayText == "" {
@@ -647,6 +621,23 @@ func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult)
 func hasImmediatelyPreviousAIReply(history adapter.HistoryBuildResult) bool {
 	_, ok := immediatelyPreviousAIReply(history)
 	return ok
+}
+
+func hasResolvableAdjacentIntentContext(history adapter.HistoryBuildResult) bool {
+	if history.LatestRawItem != nil {
+		item := *history.LatestRawItem
+		if !utils.IsAIServiceNoticeMessage(&item) && strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item)) != "" {
+			return true
+		}
+	}
+	for index := len(history.RawItems) - 1; index >= 0; index-- {
+		item := history.RawItems[index]
+		if utils.IsAIServiceNoticeMessage(&item) || strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item)) == "" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, bool) {
@@ -711,8 +702,14 @@ func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, erro
 		}
 		return parsed, err
 	}
-	applyRuntimeIntentProtocolDefaults(&parsed)
 	return parsed, nil
+}
+
+func applyLegacyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON, profile *models.ReplyIntentProfile) {
+	if runtimeIntentProfileExpectsTaskSemantics(profile) {
+		return
+	}
+	applyRuntimeIntentProtocolDefaults(parsed)
 }
 
 func applyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON) {
@@ -794,20 +791,10 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 	if droppedUngroundedTasks > 0 {
 		intent.Reason = appendIntentReason(intent.Reason, fmt.Sprintf("current-turn grounding dropped %d unbound intent task(s)", droppedUngroundedTasks))
 	}
-	var repairedAtomicTasks int
-	intent.IntentTasks, repairedAtomicTasks = repairRuntimeIntentAtomicKnowledgeTasks(
-		intent.IntentTasks,
-		currentRuntimeIntentSemanticText(req),
-		currentSourceTexts,
-		intent.SemanticContractExpected,
-	)
-	if repairedAtomicTasks > 0 {
-		intent.Reason = appendIntentReason(intent.Reason, fmt.Sprintf("local atomic repair produced %d current-turn knowledge task(s)", repairedAtomicTasks))
-	}
-	intent.IntentTasks = repairRuntimeIntentTaskSourceRefs(intent.IntentTasks, currentSourceTexts)
 	semanticGate := applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
-		HasAdjacentContext:      hasImmediatelyPreviousAIReply(history),
-		RequireSemanticContract: intent.SemanticContractExpected,
+		HasResolvableAdjacentContext: hasResolvableAdjacentIntentContext(history),
+		HasAdjacentAIReply:           hasImmediatelyPreviousAIReply(history),
+		RequireSemanticContract:      intent.SemanticContractExpected,
 	})
 	intent = semanticGate.Intent
 	for _, violation := range semanticGate.Violations {
@@ -902,7 +889,11 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 	if shouldAttachCheckinMiniProgramTask(intent, req) {
 		intent = ensureCheckinProcessMiniProgramTask(intent, req)
 	}
-	intent.IntentTasks = repairRuntimeIntentTaskSourceRefs(intent.IntentTasks, currentSourceTexts)
+	// V2 sourceRefs are model-owned and have already passed strict provenance
+	// validation. Only legacy profiles may use the old compatibility repair.
+	if !intent.SemanticContractExpected {
+		intent.IntentTasks = repairRuntimeIntentTaskSourceRefs(intent.IntentTasks, currentSourceTexts)
+	}
 	if len(intent.ResourceActions) > 0 && intent.PrimaryIntent != "human_complaint_risk" {
 		intent.NeedsResource = true
 		if strings.TrimSpace(intent.ResourceAction) == "" {
@@ -918,6 +909,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 	if intentHasMixedHotelInfoTask(intent) && intent.PrimaryIntent != "human_complaint_risk" {
 		intent.NeedsKnowledge = true
 	}
+	intent = enforceRuntimeWeatherToolAction(intent)
 	intent = enforceHumanRouteFlagByIntentCategory(intent)
 	if intent.DetectedIntent == "" {
 		intent.DetectedIntent = intent.PrimaryIntent
@@ -1240,12 +1232,17 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 	if strings.TrimSpace(intent.SubIntent) == "" || intent.SubIntent == "check_in" || intent.SubIntent == "checkin" {
 		intent.SubIntent = "checkin_process"
 	}
+	if intent.SemanticContractExpected {
+		intent.Reason = appendIntentReason(intent.Reason, "checkin_process attached mini program resource action")
+		return intent
+	}
 	currentText := strings.TrimSpace(currentRuntimeIntentSemanticText(req))
 	if currentText == "" {
 		currentText = "办理入住"
 	}
 	hasKnowledgeTask := false
 	hasMiniProgramTask := false
+	checkinSourceRefs := make([]string, 0)
 	for i := range intent.IntentTasks {
 		if intent.IntentTasks[i].Intent == "hotel_info" && isCheckinProcessSubIntent(intent.IntentTasks[i].SubIntent) {
 			intent.IntentTasks[i].SubIntent = "checkin_process"
@@ -1262,8 +1259,13 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 			if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
 				intent.IntentTasks[i].Text = currentText
 			}
+			if len(checkinSourceRefs) == 0 {
+				checkinSourceRefs = append([]string(nil), intent.IntentTasks[i].SourceRefs...)
+			}
 			hasKnowledgeTask = true
 		}
+	}
+	for i := range intent.IntentTasks {
 		if intent.IntentTasks[i].Intent == "hotel_variable" && strings.TrimSpace(intent.IntentTasks[i].ResourceAction) == "provide_mini_program" {
 			intent.IntentTasks[i].SubIntent = "mini_program"
 			intent.IntentTasks[i].NeedsResource = true
@@ -1278,6 +1280,9 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 			}
 			if strings.TrimSpace(intent.IntentTasks[i].Text) == "" {
 				intent.IntentTasks[i].Text = "发送入住小程序入口"
+			}
+			if len(intent.IntentTasks[i].SourceRefs) == 0 && len(checkinSourceRefs) > 0 {
+				intent.IntentTasks[i].SourceRefs = append([]string(nil), checkinSourceRefs...)
 			}
 			hasMiniProgramTask = true
 		}
@@ -1302,12 +1307,34 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 			RelationToPrevious: "independent",
 			ResolutionState:    runtimeIntentResolutionClear,
 			Text:               "发送入住小程序入口",
+			SourceRefs:         append([]string(nil), checkinSourceRefs...),
 			NeedsResource:      true,
 			ResourceAction:     "provide_mini_program",
 			Reason:             "checkin process should also provide configured mini program entry",
 		})
 	}
 	intent.Reason = appendIntentReason(intent.Reason, "checkin_process attached mini program resource action")
+	return intent
+}
+
+func enforceRuntimeWeatherToolAction(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	hasWeatherTask := false
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		if canonicalIntentCode(task.Intent) != "interaction" || strings.TrimSpace(task.SubIntent) != "weather_query" {
+			continue
+		}
+		task.NeedsTool = true
+		hasWeatherTask = true
+	}
+	if !hasWeatherTask && strings.TrimSpace(intent.SubIntent) != "weather_query" && strings.TrimSpace(intent.ResourceAction) != "get_weather" {
+		return intent
+	}
+	intent.NeedsTool = true
+	intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinWeather.Code)
+	if len(intent.ResourceActions) == 0 {
+		intent.ResourceAction = "get_weather"
+	}
 	return intent
 }
 

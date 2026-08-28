@@ -275,52 +275,24 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 }
 
 func mergeRuntimeKnowledgeQueries(query string, taskQueries []string, nonKnowledgeQueries []string) []string {
-	burstQueries := splitRuntimeKnowledgeQueries(query)
-	if len(taskQueries) == 0 && len(nonKnowledgeQueries) == 0 {
-		return burstQueries
-	}
-	if len(burstQueries) <= 1 {
-		if len(taskQueries) > 0 {
-			return append([]string(nil), taskQueries...)
-		}
-		if len(burstQueries) == 1 && runtimeKnowledgeQueryMatchesAny(nonKnowledgeQueries, burstQueries[0]) {
-			if residual := runtimeKnowledgeResidualQueries(burstQueries[0], nonKnowledgeQueries); len(residual) > 0 {
-				return residual
-			}
-			return nil
-		}
-		return burstQueries
-	}
-
-	ret := make([]string, 0, len(burstQueries)+len(taskQueries))
-	usedTasks := make([]bool, len(taskQueries))
-	for _, burstQuery := range burstQueries {
-		matched := -1
-		for index, taskQuery := range taskQueries {
-			if usedTasks[index] || !runtimeKnowledgeQueryCovers(taskQuery, burstQuery) {
-				continue
-			}
-			matched = index
-			break
-		}
-		if matched >= 0 {
-			ret = appendRuntimeKnowledgeQuery(ret, taskQueries[matched])
-			usedTasks[matched] = true
-			continue
-		}
-		if runtimeKnowledgeQueryMatchesAny(nonKnowledgeQueries, burstQuery) {
-			continue
-		}
-		if runtimeBurstLineLooksLikeTask(burstQuery) {
-			ret = appendRuntimeKnowledgeQuery(ret, burstQuery)
-		}
-	}
-	for index, taskQuery := range taskQueries {
-		if !usedTasks[index] {
+	if len(taskQueries) > 0 {
+		ret := make([]string, 0, len(taskQueries))
+		for _, taskQuery := range taskQueries {
 			ret = appendRuntimeKnowledgeQuery(ret, taskQuery)
 		}
+		return ret
 	}
-	return ret
+	if len(nonKnowledgeQueries) > 0 {
+		return nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	// IntentDetect owns semantic task boundaries. If no model task is
+	// available, retrieval may use the original turn only as one coarse query;
+	// it must not reconstruct omitted tasks from punctuation or keywords.
+	return []string{query}
 }
 
 func runtimeKnowledgeQueryMatchesAny(queries []string, query string) bool {
@@ -388,7 +360,7 @@ func runtimeBurstLineLooksLikeTask(query string) bool {
 		return false
 	}
 	return strings.ContainsAny(query, "?？") || containsAny(compact, []string{
-		"吗", "么", "呢", "哪", "什么", "怎么", "如何", "谁", "多少", "几", "多久", "几点", "为什么", "有没有", "能不能", "可不可以", "是否", "是不是",
+		"吗", "么", "呢", "哪", "什么", "啥", "怎么", "咋", "如何", "谁", "多少", "几", "多久", "几点", "为什么", "有没有", "能不能", "可不可以", "是否", "是不是",
 		"帮我", "给我", "发我", "我要", "我想", "请问", "麻烦", "转人工", "投诉",
 		"没了", "没有", "坏了", "堵了", "打不开", "不制冷", "失败", "拿不出", "太吵", "很吵",
 	})
@@ -1985,7 +1957,9 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	configuredKnowledgeIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 	if len(configuredKnowledgeIDs) == 0 {
-		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有配置可用知识库")
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题没有配置可用知识库") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有配置可用知识库")
+		}
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but no knowledge configured", nil)
@@ -1994,6 +1968,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
+		deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用")
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
@@ -2002,7 +1977,9 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	knowledgeIDs := retriever.KnowledgeBaseIDs()
 	state.KnowledgeIDs = append([]int64(nil), knowledgeIDs...)
 	if len(knowledgeIDs) == 0 {
-		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有可用知识库")
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题没有可用知识库") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有可用知识库")
+		}
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but retriever has no knowledge", nil)
@@ -2164,6 +2141,66 @@ func runtimeReplyPlanHasIndependentNonKnowledgeWork(plan callbacks.ReplyPlanTrac
 		}
 	}
 	return false
+}
+
+func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, reason string) bool {
+	if state == nil || state.Input.Collector == nil {
+		return false
+	}
+	plan := state.Input.Collector.Data.Pipeline.ReplyPlan
+	if !runtimeReplyPlanHasIndependentNonKnowledgeWork(plan) {
+		return false
+	}
+
+	pending := make([]runtimeKnowledgeQuestionDisposition, 0)
+	for index, task := range plan.TaskPlans {
+		if !runtimeReplyTaskUsesKnowledge(task) {
+			continue
+		}
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		query := strings.TrimSpace(task.ResolvedText)
+		if query == "" {
+			query = strings.TrimSpace(task.Text)
+		}
+		pending = append(pending, runtimeKnowledgeQuestionDisposition{
+			TaskID:       taskID,
+			Query:        query,
+			NeedsHandoff: true,
+		})
+	}
+	if len(pending) == 0 {
+		return false
+	}
+
+	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(state.Input.Request.Conversation.ID) {
+		return true
+	}
+
+	activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
+	state.Input.Collector.SetReplyPlan(activePlan)
+	judgeTrace := state.Input.Collector.Data.Pipeline.EvidenceJudge
+	if strings.TrimSpace(judgeTrace.SchemaVersion) == "" {
+		judgeTrace.SchemaVersion = knowledgeEvidenceJudgeSchemaVersion
+	}
+	if strings.TrimSpace(judgeTrace.Status) == "" {
+		judgeTrace.Status = "skipped"
+	}
+	if strings.TrimSpace(judgeTrace.Reason) == "" {
+		judgeTrace.Reason = "knowledge source unavailable before evidence judging"
+	}
+	judgeTrace.DeferredHandoff = true
+	judgeTrace.DeferredHandoffReason = deferredRuntimeKnowledgeHandoffReason(pending)
+	if strings.TrimSpace(reason) != "" {
+		judgeTrace.DeferredHandoffReason = strings.TrimSpace(reason) + "；" + judgeTrace.DeferredHandoffReason
+	}
+	for _, item := range pending {
+		judgeTrace.DeferredTaskIDs = appendIfMissing(judgeTrace.DeferredTaskIDs, item.TaskID)
+	}
+	state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
+	return true
 }
 
 func markKnowledgeNoContextHandoffDirective(input answerabilityGateInput, reason string) {
