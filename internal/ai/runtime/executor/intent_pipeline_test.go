@@ -1192,6 +1192,33 @@ func TestParseRuntimeIntentDetectJSONToleratesLooseListFields(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONUnwrapsSingleCompleteMarkdownFence(t *testing.T) {
+	payload := "```json\n" + `{
+		"primaryIntent":"hotel_info",
+		"subIntent":"breakfast",
+		"confidence":0.9,
+		"needsKnowledge":true,
+		"needsTool":false,
+		"needsResource":false,
+		"needsHumanRoute":false,
+		"needsClarification":false,
+		"resourceType":"",
+		"resourceAction":"",
+		"resourceActions":[],
+		"secondaryIntents":[],
+		"intentTasks":[{"intent":"hotel_info","subIntent":"breakfast","objective":"time","relationToPrevious":"independent","resolutionState":"clear","entities":[],"text":"早餐几点","resolvedText":"早餐几点","sourceRefs":["U1"],"needsKnowledge":true,"needsResource":false,"needsTool":false,"needsHumanRoute":false,"resourceAction":"","reason":"早餐时间"}],
+		"reason":"早餐时间"
+	}` + "\n```"
+
+	parsed, err := parseRuntimeIntentDetectJSON(payload)
+	if err != nil {
+		t.Fatalf("one complete JSON fence should be unwrapped safely: %v", err)
+	}
+	if parsed.PrimaryIntent != "hotel_info" || len(parsed.IntentTasks) != 1 || parsed.IntentTasks[0].Text != "早餐几点" {
+		t.Fatalf("unexpected fenced Intent JSON: %#v", parsed)
+	}
+}
+
 func TestParseRuntimeIntentDetectJSONToleratesLooseEntityForms(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"primaryIntent":"hotel_info",

@@ -216,6 +216,15 @@ func TestCurrentTurnTaskCandidatesKeepsServiceAndHotelInfoQuestionsSeparate(t *t
 	}
 }
 
+func TestCurrentTurnTaskCandidatesKeepsBareServiceActionWithPremise(t *testing.T) {
+	for _, text := range []string{"拖鞋没了，怎么办？", "拖鞋没了，咋办？"} {
+		got := currentTurnTaskCandidates(text)
+		if len(got) != 1 || !strings.Contains(got[0], "拖鞋没了") {
+			t.Fatalf("bare action question must stay with its business premise for %q, got %#v", text, got)
+		}
+	}
+}
+
 func TestCurrentTurnTaskCandidatesKeepsBusinessColon(t *testing.T) {
 	got := currentTurnTaskCandidates("WiFi账号：密码是什么？")
 	want := []string{"WiFi账号：密码是什么"}

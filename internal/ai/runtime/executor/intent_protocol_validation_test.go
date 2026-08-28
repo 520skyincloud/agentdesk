@@ -70,6 +70,262 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	}
 }
 
+func TestRepairRuntimeIntentDetectProtocolRestoresDependentSourceText(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "有早餐吗？",
+		AdjacentAIReply:      "酒店不提供早餐。",
+	}
+
+	repairRuntimeIntentDetectProtocol(&parsed, "几点？", context, true)
+	task := parsed.IntentTasks[0]
+	if task.Text != "几点" || task.ResolvedText != "早餐几点" {
+		t.Fatalf("repair must restore the literal dependent source without changing its self-contained query: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "几点？"); err != nil {
+		t.Fatalf("restored dependent source must pass the normal protocol: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRejectsUnrelatedResolvedTopic(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "早餐", Type: "service"}},
+		Text:     "早餐几点", ResolvedText: "早餐几点", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "停车收费吗？",
+		AdjacentAIReply:      "停车是免费的。",
+	}
+
+	repairRuntimeIntentDetectProtocol(&parsed, "几点？", context, true)
+	if task := parsed.IntentTasks[0]; task.Text != "早餐几点" || task.ResolvedText != "早餐几点" {
+		t.Fatalf("an unrelated topic must not be silently rebound to the current short question: %#v", task)
+	}
+
+	parsed.IntentTasks[0].Text = "几点"
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "几点？", context, true); err == nil || !strings.Contains(err.Error(), "not grounded") {
+		t.Fatalf("a literal short question with an invented topic must still trigger Intent repair: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsWelcomeOnlyHistory(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Text: "几点", ResolvedText: "早餐几点", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{AdjacentAIReply: "您好，欢迎入住。"}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "几点？", context, true); err == nil || !strings.Contains(err.Error(), "adjacent customer question") {
+		t.Fatalf("a welcome message alone cannot supply a business topic: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRemovesPreviousQuestionFromResolvedReference(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{
+			{Text: "麦田房型", Type: "room_type"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: "那麦田呢", ResolvedText: "合柴房型有办公桌吗？麦田房型有办公桌吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴房型有办公桌吗？",
+		AdjacentAIReply:      "合柴房型有办公桌。",
+	}
+
+	repairRuntimeIntentDetectProtocol(&parsed, "那麦田呢？", context, true)
+	task := parsed.IntentTasks[0]
+	if task.Text != "那麦田呢" || task.ResolvedText != "麦田房型有办公桌吗" {
+		t.Fatalf("resolved reference must keep only the current answer target: %#v", task)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "那麦田呢？"); err != nil {
+		t.Fatalf("cleaned reference must pass the normal protocol: %v", err)
+	}
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err != nil {
+		t.Fatalf("cleaned reference must pass the history-aware protocol: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedPreviousTarget(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{
+			{Text: "麦田", Type: "room_type"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: "那麦田呢", ResolvedText: "合柴房型有办公桌吗？艺林房型有办公桌吗？麦田房型有办公桌吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴房型有办公桌吗？",
+		AdjacentAIReply:      "合柴房型有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "previous customer question") {
+		t.Fatalf("a resolved reference retaining the previous answer target must trigger the existing Intent repair: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredReplacementEntity(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Text: "那麦田呢", ResolvedText: "合柴房型有办公桌吗？麦田房型有办公桌吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴房型有办公桌吗？",
+		AdjacentAIReply:      "合柴房型有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "declared current entity") {
+		t.Fatalf("an explicit replacement without a declared current entity must trigger Intent repair: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomType(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{
+			{Text: "麦田", Type: "room_type"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: "那麦田呢", ResolvedText: "合柴和麦田房型都有办公桌吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴房型有办公桌吗？",
+		AdjacentAIReply:      "合柴房型有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "previous answer target") {
+		t.Fatalf("a merged resolvedText must not keep the old room type as another answer target: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomTypeWithoutSuffix(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{
+			{Text: "麦田", Type: "room_type"},
+			{Text: "办公桌", Type: "facility"},
+		},
+		Text: "那麦田呢", ResolvedText: "合柴和麦田都有办公桌吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴有办公桌吗？",
+		AdjacentAIReply:      "合柴有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "previous answer target") {
+		t.Fatalf("old room types must be rejected even when the previous question omitted the room-type suffix: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsAddedEntity(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{
+			{Text: "麦田", Type: "room_type"},
+			{Text: "办公桌", Type: "facility"},
+			{Text: "沙发", Type: "facility"},
+		},
+		Text: "那麦田呢", ResolvedText: "麦田房型有办公桌和沙发吗？",
+		SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴房型有办公桌吗？",
+		AdjacentAIReply:      "合柴房型有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "沙发") {
+		t.Fatalf("a resolved reference must not add a new entity absent from the adjacent context: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextAcceptsAvailabilityReplacement(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "早餐", Type: "service"}},
+		Text:     "那早餐呢", ResolvedText: "有早餐吗", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "有夜宵吗？",
+		AdjacentAIReply:      "酒店不提供夜宵。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那早餐呢？", context, true); err != nil {
+		t.Fatalf("an explicit replacement with the same adjacent business aspect must remain valid: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextKeepsPronounFollowUp(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "door_access", Objective: "method",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "房门", Type: "facility"}},
+		Text:     "这个怎么开", ResolvedText: "房门怎么打开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "房门怎么打开？",
+		AdjacentAIReply:      "完成登记后可以刷脸开门。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "这个怎么开？", context, true); err != nil {
+		t.Fatalf("a pronoun follow-up must not be mistaken for an explicit new entity: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsUnsupportedReplacementPredicate(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "麦田", Type: "room_type"}},
+		Text:     "那麦田呢", ResolvedText: "麦田有沙发吗", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "合柴有办公桌吗？",
+		AdjacentAIReply:      "合柴有办公桌。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那麦田呢？", context, true); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("an explicit replacement cannot invent a different predicate when the model omits that entity: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedServiceTarget(t *testing.T) {
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "availability",
+		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "早餐", Type: "service"}},
+		Text:     "那早餐呢", ResolvedText: "夜宵和早餐都有吗", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+	}}}
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "有夜宵吗？",
+		AdjacentAIReply:      "酒店不提供夜宵。",
+	}
+
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "那早餐呢？", context, true); err == nil || !strings.Contains(err.Error(), "previous answer target") {
+		t.Fatalf("old service targets must not survive an explicit replacement: %v", err)
+	}
+}
+
 func TestValidateRuntimeIntentDetectProtocolRejectsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
@@ -1015,14 +1271,14 @@ func TestValidateRuntimeIntentDetectProtocolKeepsBreakfastFollowUpsInSourceOrder
 
 	timeTask := validRuntimeIntentProtocolTask("几点？", "time")
 	timeTask.SubIntent = "breakfast"
-	timeTask.RelationToPrevious = "reference_previous"
+	timeTask.RelationToPrevious = "independent"
 	timeTask.ResolutionState = runtimeIntentResolutionResolvedFromContext
 	timeTask.ResolvedText = "早餐几点提供？"
 	timeTask.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
 
 	location := validRuntimeIntentProtocolTask("在哪吃？", "location")
 	location.SubIntent = "breakfast"
-	location.RelationToPrevious = "reference_previous"
+	location.RelationToPrevious = "independent"
 	location.ResolutionState = runtimeIntentResolutionResolvedFromContext
 	location.ResolvedText = "早餐在哪里吃？"
 	location.SourceRefs = runtimeIntentSourceRefList{"U3", "U1"}
@@ -1035,6 +1291,64 @@ func TestValidateRuntimeIntentDetectProtocolKeepsBreakfastFollowUpsInSourceOrder
 	outOfOrder := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{availability, location, timeTask}}
 	if err := validateRuntimeIntentDetectProtocol(outOfOrder, nil, burst); err == nil || !strings.Contains(err.Error(), "source order") {
 		t.Fatalf("out-of-order breakfast follow-ups must fail validation, got %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRestoresBurstDependentSourceTexts(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 有早餐吗？",
+		"2. [文字] 几点？",
+		"3. [文字] 在哪吃？",
+	})
+	availability := validRuntimeIntentProtocolTask("有早餐吗？", "availability")
+	availability.SubIntent = "breakfast"
+	timeTask := validRuntimeIntentProtocolTask("早餐几点提供？", "time")
+	timeTask.SubIntent = "breakfast"
+	timeTask.RelationToPrevious = "independent"
+	timeTask.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	timeTask.ResolvedText = "早餐几点提供？"
+	timeTask.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	location := validRuntimeIntentProtocolTask("早餐在哪里吃？", "location")
+	location.SubIntent = "breakfast"
+	location.RelationToPrevious = "independent"
+	location.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	location.ResolvedText = "早餐在哪里吃？"
+	location.SourceRefs = runtimeIntentSourceRefList{"U3", "U1"}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{availability, timeTask, location}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, burst, runtimeIntentProtocolRepairContext{}, true)
+	if parsed.IntentTasks[1].Text != "几点" || parsed.IntentTasks[2].Text != "在哪吃" {
+		t.Fatalf("each burst task must recover its own literal primary source: %#v", parsed.IntentTasks)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, burst); err != nil {
+		t.Fatalf("repaired burst references must pass the base protocol: %v", err)
+	}
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, burst, runtimeIntentProtocolRepairContext{}, true); err != nil {
+		t.Fatalf("repaired burst references must remain grounded in their declared current-turn sources: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolRejectsWrongBurstTopic(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 停车收费吗？",
+		"2. [文字] 几点？",
+	})
+	parking := validRuntimeIntentProtocolTask("停车收费吗？", "price")
+	wrong := validRuntimeIntentProtocolTask("早餐几点？", "time")
+	wrong.SubIntent = "breakfast"
+	wrong.RelationToPrevious = "independent"
+	wrong.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	wrong.ResolvedText = "早餐几点？"
+	wrong.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{parking, wrong}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, burst, runtimeIntentProtocolRepairContext{}, true)
+	if parsed.IntentTasks[1].Text != "早餐几点？" {
+		t.Fatalf("an unrelated burst topic must not be silently rebound: %#v", parsed.IntentTasks[1])
+	}
+	parsed.IntentTasks[1].Text = "几点"
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, burst, runtimeIntentProtocolRepairContext{}, true); err == nil || !strings.Contains(err.Error(), "not grounded") {
+		t.Fatalf("a literal burst follow-up with an invented topic must trigger Intent repair: %v", err)
 	}
 }
 

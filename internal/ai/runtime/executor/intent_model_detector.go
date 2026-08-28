@@ -240,6 +240,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	}
 	scope := resolveRuntimeIntentScope(req)
 	profile := resolveRuntimeIntentProfile(scope)
+	currentText := currentRuntimeIntentSemanticText(req)
+	protocolRepairContext := buildRuntimeIntentProtocolRepairContext(history)
+	protocolRepairEnabled := runtimeIntentProfileExpectsTaskSemantics(profile)
 	messages := []*schema.Message{
 		schema.SystemMessage(runtimeIntentDetectSystemPromptForProfile(profile)),
 		schema.UserMessage(buildRuntimeIntentDetectUserPrompt(req, history, configs)),
@@ -255,7 +258,11 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err == nil {
 		applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
-		err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
+		repairRuntimeIntentDetectProtocol(&parsed, currentText, protocolRepairContext, protocolRepairEnabled)
+		err = validateRuntimeIntentDetectProtocol(parsed, profile, currentText)
+		if err == nil {
+			err = validateRuntimeIntentResolvedReferenceContext(parsed, currentText, protocolRepairContext, protocolRepairEnabled)
+		}
 	}
 	if err != nil {
 		retryStartedAt := time.Now()
@@ -270,14 +277,18 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err == nil {
 			applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
-			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentRuntimeIntentSemanticText(req))
+			repairRuntimeIntentDetectProtocol(&parsed, currentText, protocolRepairContext, protocolRepairEnabled)
+			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentText)
+			if err == nil {
+				err = validateRuntimeIntentResolvedReferenceContext(parsed, currentText, protocolRepairContext, protocolRepairEnabled)
+			}
 		}
 		if err != nil {
 			return callbacks.IntentTraceData{}, err
 		}
 	}
 	sourceRefsValidated := runtimeIntentProfileExpectsSourceRefs(profile) &&
-		len(currentTurnIntentSourceTexts(currentRuntimeIntentSemanticText(req))) > 0
+		len(currentTurnIntentSourceTexts(currentText)) > 0
 	return callbacks.IntentTraceData{
 		DetectedIntent:           parsed.PrimaryIntent,
 		MatchedIntentCode:        parsed.PrimaryIntent,
@@ -692,7 +703,11 @@ func customerMessageBeforeAdjacentAIReply(history adapter.HistoryBuildResult) st
 }
 
 func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, error) {
-	content = strings.TrimSpace(content)
+	var err error
+	content, err = unwrapRuntimeIntentJSONFence(content)
+	if err != nil {
+		return runtimeIntentDetectJSON{}, err
+	}
 	var parsed runtimeIntentDetectJSON
 	decoder := json.NewDecoder(strings.NewReader(content))
 	decoder.DisallowUnknownFields()
@@ -707,6 +722,29 @@ func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, erro
 		return parsed, err
 	}
 	return parsed, nil
+}
+
+func unwrapRuntimeIntentJSONFence(content string) (string, error) {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "```") {
+		return content, nil
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) < 3 {
+		return "", fmt.Errorf("incomplete Markdown JSON fence")
+	}
+	opening := strings.ToLower(strings.TrimSpace(lines[0]))
+	if opening != "```" && opening != "```json" {
+		return "", fmt.Errorf("unsupported Markdown fence %q", lines[0])
+	}
+	if strings.TrimSpace(lines[len(lines)-1]) != "```" {
+		return "", fmt.Errorf("incomplete Markdown JSON fence")
+	}
+	body := strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+	if body == "" || strings.Contains(body, "```") {
+		return "", fmt.Errorf("Markdown JSON fence must contain exactly one JSON object")
+	}
+	return body, nil
 }
 
 func applyLegacyRuntimeIntentProtocolDefaults(parsed *runtimeIntentDetectJSON, profile *models.ReplyIntentProfile) {
