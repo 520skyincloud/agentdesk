@@ -794,7 +794,7 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesGroundedConsensus
 		Query:     "麦田房型有办公桌吗？",
 		Objective: "availability",
 		Entities: []knowledgeEvidenceJudgeEntity{
-			{Text: "麦田", Type: "room_type"},
+			{Text: "麦田房型", Type: "room_type"},
 			{Text: "办公桌", Type: "facility"},
 		},
 		Candidates: []knowledgeEvidenceJudgeCandidate{
@@ -831,6 +831,9 @@ func TestRepairHighConfidenceInsufficientKnowledgeSelectionUsesGroundedConsensus
 	}
 	if len(store.SupportedFacts) != 1 || !strings.Contains(store.SupportedFacts[0].Statement, "麦田") || !containsString(store.SupportedFacts[0].CriticalValues, "办公桌") {
 		t.Fatalf("repair must keep only grounded answer text and entities: %#v", store.SupportedFacts)
+	}
+	if !containsString(store.SupportedFacts[0].CriticalValues, "麦田房型") {
+		t.Fatalf("room-type suffix normalization must retain the customer's original entity in the grounded fact: %#v", store.SupportedFacts)
 	}
 	if general := selections["task-1"][knowledgeEvidenceLayerGeneral]; general.Decision != knowledgeEvidenceDecisionInsufficient {
 		t.Fatalf("general layer must remain insufficient: %#v", general)
@@ -1455,6 +1458,7 @@ func TestHighConfidenceServiceSupplyFAQRejectsSameLayerConflict(t *testing.T) {
 func TestHighConfidenceHotelInfoSupplySelfHelpUsesStrictStoreFAQRescue(t *testing.T) {
 	for _, tt := range []struct {
 		query     string
+		subIntent string
 		objective string
 		item      string
 		question  string
@@ -1462,16 +1466,24 @@ func TestHighConfidenceHotelInfoSupplySelfHelpUsesStrictStoreFAQRescue(t *testin
 		location  string
 	}{
 		{
-			query: "纸巾不够，在哪里拿", objective: "location", item: "纸巾",
+			query: "纸巾不够，在哪里拿", subIntent: "supplies_location", objective: "location", item: "纸巾",
 			question: "房间纸巾用完了怎么办", answer: "可前往1313对面洗衣房领取纸巾。", location: "1313对面洗衣房",
 		},
 		{
-			query: "浴巾需要加一条，怎么取", objective: "method", item: "浴巾",
+			query: "浴巾需要加一条，怎么取", subIntent: "amenity_pickup", objective: "method", item: "浴巾",
 			question: "需要额外浴巾怎么办", answer: "可前往1313对面洗衣房自取浴巾。", location: "1313对面洗衣房",
+		},
+		{
+			query: "剃须刀在哪", subIntent: "amenity_location", objective: "location", item: "剃须刀",
+			question: "剃须刀有吗", answer: "酒店提供一次性剃须刀，放置在1313房间对面的洗衣房内，可自行取用。", location: "1313房间对面的洗衣房",
+		},
+		{
+			query: "牙刷没有了，怎么获取或补充", subIntent: "supplies_self_help", objective: "method", item: "牙刷",
+			question: "牙刷不够怎么办", answer: "可前往1313对面洗衣房自取牙刷。", location: "1313对面洗衣房",
 		},
 	} {
 		task := knowledgeEvidenceJudgeTask{
-			TaskID: "T1", Intent: "hotel_info", Query: tt.query, SubIntent: "supplies_self_help", Objective: tt.objective,
+			TaskID: "T1", Intent: "hotel_info", Query: tt.query, SubIntent: tt.subIntent, Objective: tt.objective,
 			Entities: []knowledgeEvidenceJudgeEntity{{Text: tt.item, Type: "supply"}},
 			Candidates: []knowledgeEvidenceJudgeCandidate{{
 				CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
@@ -1484,7 +1496,7 @@ func TestHighConfidenceHotelInfoSupplySelfHelpUsesStrictStoreFAQRescue(t *testin
 		}
 		selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
 		if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "store_exact_faq_rescue" {
-			t.Fatalf("hotel_info supplies self-help must use the same strict store FAQ rescue: %#v ok=%v", selection, ok)
+			t.Fatalf("hotel_info operation task must use the same strict store FAQ rescue: %#v ok=%v", selection, ok)
 		}
 		joined := ""
 		for _, fact := range selection.SupportedFacts {
@@ -1507,6 +1519,20 @@ func TestHighConfidenceHotelInfoSemanticRescueStaysLimitedToSupplySelfHelp(t *te
 	}
 	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
 		t.Fatalf("non-supply hotel information must continue to rely on exact matching or Judge: %#v", selection)
+	}
+}
+
+func TestHighConfidenceHotelInfoSupplyRescueKeepsMinimumScore(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "hotel_info", Query: "纸巾不够用了，怎么获取或补充", SubIntent: "supplies_self_help", Objective: "method",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "纸巾", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "纸巾自取", "问题：房间纸巾用完了怎么办\n答案：可前往1313对面洗衣房领取纸巾。", 0.81),
+		}},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("semantic store rescue must not lower the fixed score threshold: %#v", selection)
 	}
 }
 

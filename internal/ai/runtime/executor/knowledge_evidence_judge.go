@@ -702,6 +702,8 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 
 FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。rawContent 只用于核对原文。
 
+用品补充和自取问题必须结合客户状态与 FAQ 答案中的动作判断完整性。例如客户说“纸巾不够了，怎么补充”，同一用品的门店 FAQ 即使问题写成“纸巾用完了怎么办”，只要答案明确给出“前往某处领取/自取”的地点和动作，就已经完整覆盖 method；不能仅因问题措辞不同判 insufficient，也不能改选通用层的“转接”。
+
 肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
 
 最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
@@ -2026,7 +2028,7 @@ func knowledgeEvidenceStoreServiceSemanticFAQMatches(
 	if len(requiredEntities) == 0 || !knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) {
 		return false
 	}
-	candidateText := strings.Join([]string{question, candidate.Hit.Title}, " ")
+	candidateText := strings.Join([]string{question, answer, candidate.Hit.Title}, " ")
 	if !knowledgeEvidenceFAQSharesTaskSubject(task.Query, candidateText) {
 		return false
 	}
@@ -2040,16 +2042,25 @@ func knowledgeEvidenceTaskAllowsStoreServiceSemanticFAQ(task knowledgeEvidenceJu
 	if canonicalIntentCode(task.Intent) == "service_request" {
 		return true
 	}
-	if canonicalIntentCode(task.Intent) != "hotel_info" ||
-		strings.TrimSpace(task.SubIntent) != "supplies_self_help" {
+	if canonicalIntentCode(task.Intent) != "hotel_info" || isSpatialFactSubIntent(task.SubIntent) {
 		return false
 	}
 	switch semanticGateNormalizeObjective(task.Objective) {
 	case "location", "method", "action_request":
-		return true
+		return knowledgeEvidenceTaskHasSupplySubject(task)
 	default:
 		return false
 	}
+}
+
+func knowledgeEvidenceTaskHasSupplySubject(task knowledgeEvidenceJudgeTask) bool {
+	for _, entity := range task.Entities {
+		if strings.EqualFold(strings.TrimSpace(entity.Type), "supply") {
+			return true
+		}
+	}
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	return subIntent == "supplies_self_help" || strings.HasPrefix(subIntent, "supplies_") || strings.HasPrefix(subIntent, "supply_")
 }
 
 func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateID string, selectedQuestion string, selectedAnswer string, selectedQuestionMatch float64) bool {
@@ -2380,7 +2391,7 @@ func normalizedKnowledgeEvidenceEntities(entities []knowledgeEvidenceJudgeEntity
 	ret := make([]string, 0, len(entities))
 	seen := make(map[string]struct{}, len(entities))
 	for _, entity := range entities {
-		value := normalizeRuntimeKnowledgeQuery(entity.Text)
+		value := normalizeKnowledgeEvidenceEntityText(entity)
 		if len([]rune(value)) < 2 {
 			continue
 		}
@@ -2393,11 +2404,21 @@ func normalizedKnowledgeEvidenceEntities(entities []knowledgeEvidenceJudgeEntity
 	return ret
 }
 
+func normalizeKnowledgeEvidenceEntityText(entity knowledgeEvidenceJudgeEntity) string {
+	value := normalizeRuntimeKnowledgeQuery(entity.Text)
+	if strings.TrimSpace(entity.Type) == "room_type" {
+		for _, suffix := range []string{"房型", "客房"} {
+			value = strings.TrimSuffix(value, suffix)
+		}
+	}
+	return value
+}
+
 func requiredKnowledgeEvidenceSubjectEntities(task knowledgeEvidenceJudgeTask) []string {
 	query := normalizeKnowledgeEvidenceSubjectForMatch(task.Query)
 	ret := make([]string, 0, len(task.Entities))
 	for _, entity := range task.Entities {
-		value := normalizeKnowledgeEvidenceSubjectForMatch(entity.Text)
+		value := normalizeKnowledgeEvidenceSubjectForMatch(normalizeKnowledgeEvidenceEntityText(entity))
 		if len([]rune(value)) < 2 || !strings.Contains(query, value) || knowledgeEvidenceContainsString([]string{"酒店", "门店", "房间", "客房", "房型", "客户", "服务", "问题", "地址", "位置"}, value) {
 			continue
 		}
@@ -2506,7 +2527,7 @@ func highConfidenceKnowledgeConsensusSelection(task knowledgeEvidenceJudgeTask, 
 	targetText := bestTarget
 	predicateText := bestPredicate
 	for _, entity := range task.Entities {
-		value := normalizeRuntimeKnowledgeQuery(entity.Text)
+		value := normalizeKnowledgeEvidenceEntityText(entity)
 		if value == bestTarget {
 			targetText = strings.TrimSpace(entity.Text)
 		}
