@@ -235,7 +235,7 @@ func runtimeIntentTaskLabelLooksLikeTask(text string) bool {
 }
 
 func isDependentIntentTaskClause(text string) bool {
-	compact := compactRuntimeIntentClause(text)
+	compact := strings.Trim(compactRuntimeIntentClause(text), "，,。.!！?？；;：:")
 	for _, prefix := range []string{"另外", "还有", "顺便", "然后", "而且"} {
 		compact = strings.TrimPrefix(compact, prefix)
 	}

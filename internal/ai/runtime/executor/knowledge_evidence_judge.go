@@ -2155,6 +2155,9 @@ func knowledgeEvidenceFAQAnswersConflict(left string, right string) bool {
 }
 
 func knowledgeEvidenceLocationSignatures(text string) []string {
+	if explicit := knowledgeEvidenceExplicitPickupLocationSignatures(text); len(explicit) > 0 {
+		return explicit
+	}
 	compact := normalizeRuntimeKnowledgeQuery(text)
 	ret := make([]string, 0, 3)
 	for _, item := range []struct {
@@ -2171,6 +2174,51 @@ func knowledgeEvidenceLocationSignatures(text string) []string {
 		}
 	}
 	return ret
+}
+
+func knowledgeEvidenceExplicitPickupLocationSignatures(text string) []string {
+	ret := make([]string, 0, 2)
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		pickupIndex := firstKnowledgeEvidenceTextMarkerIndex(compact, []string{"领取", "自取", "拿取", "取用", "去拿"})
+		if pickupIndex <= 0 {
+			continue
+		}
+		prefix := compact[:pickupIndex]
+		locationStart := -1
+		locationMarkerLength := 0
+		for _, marker := range []string{"前往", "到", "在"} {
+			if index := strings.LastIndex(prefix, marker); index >= 0 {
+				locationStart = index
+				locationMarkerLength = len(marker)
+				break
+			}
+		}
+		if locationStart < 0 {
+			continue
+		}
+		location := strings.TrimSpace(prefix[locationStart+locationMarkerLength:])
+		location = strings.Trim(location, "，,。；;！!？?：:")
+		for _, suffix := range []string{"可以", "可", "自行", "直接", "去"} {
+			location = strings.TrimSuffix(location, suffix)
+		}
+		location = strings.TrimSpace(location)
+		if length := len([]rune(location)); length < 2 || length > 48 {
+			continue
+		}
+		ret = appendIfMissing(ret, location)
+	}
+	return ret
+}
+
+func firstKnowledgeEvidenceTextMarkerIndex(text string, markers []string) int {
+	first := -1
+	for _, marker := range markers {
+		if index := strings.Index(text, marker); index >= 0 && (first < 0 || index < first) {
+			first = index
+		}
+	}
+	return first
 }
 
 func knowledgeEvidenceStringSetsConflict(left []string, right []string) bool {

@@ -992,6 +992,41 @@ func TestValidateRuntimeIntentDetectProtocolUsesModelOwnedBurstSources(t *testin
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolKeepsBreakfastFollowUpsInSourceOrder(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 有早餐吗？",
+		"2. [文字] 几点？",
+		"3. [文字] 在哪吃？",
+	})
+
+	availability := validRuntimeIntentProtocolTask("有早餐吗？", "availability")
+	availability.SubIntent = "breakfast"
+
+	timeTask := validRuntimeIntentProtocolTask("几点？", "time")
+	timeTask.SubIntent = "breakfast"
+	timeTask.RelationToPrevious = "reference_previous"
+	timeTask.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	timeTask.ResolvedText = "早餐几点提供？"
+	timeTask.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+
+	location := validRuntimeIntentProtocolTask("在哪吃？", "location")
+	location.SubIntent = "breakfast"
+	location.RelationToPrevious = "reference_previous"
+	location.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	location.ResolvedText = "早餐在哪里吃？"
+	location.SourceRefs = runtimeIntentSourceRefList{"U3", "U1"}
+
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{availability, timeTask, location}}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, burst); err != nil {
+		t.Fatalf("breakfast follow-ups must each own their source and preserve source order: %v", err)
+	}
+
+	outOfOrder := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{availability, location, timeTask}}
+	if err := validateRuntimeIntentDetectProtocol(outOfOrder, nil, burst); err == nil || !strings.Contains(err.Error(), "source order") {
+		t.Fatalf("out-of-order breakfast follow-ups must fail validation, got %v", err)
+	}
+}
+
 func TestNormalizeModelIntentTraceDoesNotLocallyResplitV2Tasks(t *testing.T) {
 	text := "早餐几点还有停车收费吗然后发票咋开"
 	intent := callbacks.IntentTraceData{

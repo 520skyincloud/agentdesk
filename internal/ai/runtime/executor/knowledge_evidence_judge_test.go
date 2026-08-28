@@ -1512,6 +1512,42 @@ func TestHighConfidenceServiceSupplyFAQRejectsNonnumericLocationConflict(t *test
 	}
 }
 
+func TestHighConfidenceServiceSupplyFAQRejectsArbitraryPickupLocationConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往布草间领取。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋领取", "问题：额外拖鞋去哪里拿\n答案：可以到储物柜自取。", 0.92)},
+		},
+	}
+	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("arbitrary conflicting pickup locations must block deterministic rescue: %#v", selection)
+	}
+}
+
+func TestHighConfidenceServiceSupplyFAQAllowsDetailedAndShortPickupLocation(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往二楼布草间领取。", 0.93)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "拖鞋领取", "问题：额外拖鞋去哪里拿\n答案：可以到布草间自取。", 0.92)},
+		},
+	}
+	selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+	if !ok || selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("detailed and short forms of the same pickup location must remain compatible: %#v ok=%v", selection, ok)
+	}
+}
+
+func TestKnowledgeEvidenceExplicitPickupLocationPrefersActionPreposition(t *testing.T) {
+	got := knowledgeEvidenceExplicitPickupLocationSignatures("可前往签到处领取。")
+	if len(got) != 1 || got[0] != "签到处" {
+		t.Fatalf("a character inside the location must not replace the action preposition: %#v", got)
+	}
+}
+
 func TestHighConfidenceServiceSupplyFAQRejectsPickupDeliveryConflict(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",

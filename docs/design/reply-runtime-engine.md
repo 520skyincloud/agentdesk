@@ -128,7 +128,8 @@ missingAspects[]
 
 `decisionSource` 记录每个 Task、每个知识层的真实裁决来源：正常 Judge 输出为
 `model`，严格门店完整 FAQ 救援为 `store_exact_faq_rescue`，确定性知识转接为
-`deterministic_handoff`。同一批次中的不同 Task 可以有不同来源，因此该字段不能
+`deterministic_handoff`；既有的通用层完整 FAQ、枚举或交集确定性恢复记为
+`deterministic_faq_rescue`。同一批次中的不同 Task 可以有不同来源，因此该字段不能
 只记录在 Judge 批次顶层。`candidateCount` 同时记录批次、Task 和知识层候选数量；
 `supportedFacts/missingAspects` 也按 Task 和知识层分别保存，禁止把门店层已覆盖事实
 与通用层缺失方面混成一份结果。
@@ -146,7 +147,9 @@ Judge 只输出完整回答当前 Task 所需的最小事实集合。同一完�
 
 同一知识层内可以用 `direct_combined` 组合多条属于同一门店、同一对象和同一
 适用范围的证据。不得跨门店库和通用库拼接，也不得组合不同房型、时间条件或
-相互冲突的内容。FAQ 的问题与答案按一个完整语义单元理解；“问题中写两瓶、
+相互冲突的内容。用品自取 FAQ 的地点冲突按答案中的明确地点短语判断，不依赖
+有限地点名称清单；完整地点与其简称可以兼容，两个不同地点则禁止本地救援。
+FAQ 的问题与答案按一个完整语义单元理解；“问题中写两瓶、
 答案肯定免费”可以形成数量和价格事实，但答案为“转接”时不能把问题文字当作
 已确认事实。
 

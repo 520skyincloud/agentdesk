@@ -191,6 +191,14 @@ func TestCurrentTurnTaskCandidatesTrimsCountedQuestionLeadBeforeColon(t *testing
 	}
 }
 
+func TestCurrentTurnTaskCandidatesKeepsServiceAndHotelInfoQuestionsSeparate(t *testing.T) {
+	got := currentTurnTaskCandidates("拖鞋没了咋办，有停车不？")
+	want := []string{"拖鞋没了咋办", "有停车不"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("service request and parking question must remain separate model candidates, got %#v", got)
+	}
+}
+
 func TestCurrentTurnTaskCandidatesKeepsBusinessColon(t *testing.T) {
 	got := currentTurnTaskCandidates("WiFi账号：密码是什么？")
 	want := []string{"WiFi账号：密码是什么"}
