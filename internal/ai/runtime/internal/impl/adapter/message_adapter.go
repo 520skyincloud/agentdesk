@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	"agent-desk/internal/models"
@@ -14,6 +16,15 @@ import (
 
 const defaultHistoryLimit = 15
 
+var runtimeCurrentTurnSourcePattern = regexp.MustCompile(`^\s*(?:\d+\s*[.．、]\s*)?\[(消息|文字|图片|语音|文件|定位|小程序|表情|视频|动画表情)(\d*)\]\s*`)
+
+type CurrentTurnSource struct {
+	Ref         string
+	MessageID   int64
+	MessageType enums.IMMessageType
+	Text        string
+}
+
 type HistoryBuildResult struct {
 	Messages        []*schema.Message
 	RawItems        []models.Message
@@ -21,6 +32,93 @@ type HistoryBuildResult struct {
 	MemoryMessage   *schema.Message
 	MemorySource    string
 	MemoryItemCount int
+}
+
+// BuildCurrentTurnSources preserves the physical customer-message identity
+// behind the U1..Un references used by Intent. Burst envelopes created before
+// message IDs were embedded remain readable, but only the final item can be
+// tied back to the current physical message with certainty.
+func BuildCurrentTurnSources(message models.Message) []CurrentTurnSource {
+	content := strings.TrimSpace(message.Content)
+	if !utils.IsRuntimeCustomerBurstEnvelope(content) {
+		text := currentTurnSourceText(message)
+		if text == "" {
+			return nil
+		}
+		return []CurrentTurnSource{{
+			Ref:         "U1",
+			MessageID:   message.ID,
+			MessageType: message.MessageType,
+			Text:        text,
+		}}
+	}
+
+	items := utils.RuntimeCustomerBurstItems(content)
+	ret := make([]CurrentTurnSource, 0, len(items))
+	for index, item := range items {
+		text := utils.RuntimeCustomerBurstItemText(item)
+		if text == "" {
+			continue
+		}
+		messageType, messageID := parseRuntimeCurrentTurnSource(item)
+		if messageID <= 0 && index == len(items)-1 {
+			messageID = message.ID
+		}
+		if messageType == "" && index == len(items)-1 {
+			messageType = message.MessageType
+		}
+		ret = append(ret, CurrentTurnSource{
+			Ref:         "U" + strconv.Itoa(len(ret)+1),
+			MessageID:   messageID,
+			MessageType: messageType,
+			Text:        text,
+		})
+	}
+	return ret
+}
+
+func currentTurnSourceText(message models.Message) string {
+	if message.MessageType == enums.IMMessageTypeVoice {
+		mediaText, mediaSummary, status := utils.RuntimeMediaUnderstandingFromPayload(message.Payload)
+		if strings.TrimSpace(status) != "understood" {
+			return ""
+		}
+		if text := strings.TrimSpace(mediaText); text != "" {
+			return text
+		}
+		return strings.TrimSpace(mediaSummary)
+	}
+	return buildRuntimeMessageText(&message)
+}
+
+func parseRuntimeCurrentTurnSource(item string) (enums.IMMessageType, int64) {
+	matches := runtimeCurrentTurnSourcePattern.FindStringSubmatch(strings.TrimSpace(item))
+	if len(matches) != 3 {
+		return "", 0
+	}
+	messageID, _ := strconv.ParseInt(matches[2], 10, 64)
+	return runtimeCurrentTurnMessageType(matches[1]), messageID
+}
+
+func runtimeCurrentTurnMessageType(label string) enums.IMMessageType {
+	switch strings.TrimSpace(label) {
+	case "图片":
+		return enums.IMMessageTypeImage
+	case "语音":
+		return enums.IMMessageTypeVoice
+	case "文件":
+		return enums.IMMessageTypeAttachment
+	case "定位":
+		return enums.IMMessageTypeLocation
+	case "小程序":
+		return enums.IMMessageTypeMiniProgram
+	case "表情", "动画表情":
+		return enums.IMMessageTypeGIF
+	case "视频":
+		return enums.IMMessageTypeVideo
+	default:
+		return enums.IMMessageTypeText
+	}
 }
 
 func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit int) HistoryBuildResult {

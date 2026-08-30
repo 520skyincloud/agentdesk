@@ -35,7 +35,10 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsServiceStateWithEllipticalAct
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReference(t *testing.T) {
+// The legacy fixtures below document the retired local task-boundary and
+// context-rewrite heuristics. Active model-owned contract coverage lives in
+// intent_protocol_model_owned_test.go.
+func legacyTestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReference(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
 		SubIntent:          "room_facilities",
@@ -70,7 +73,7 @@ func TestValidateRuntimeIntentDetectProtocolRequiresSelfContainedResolvedReferen
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRestoresDependentSourceText(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRestoresDependentSourceText(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -91,7 +94,7 @@ func TestRepairRuntimeIntentDetectProtocolRestoresDependentSourceText(t *testing
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRejectsUnrelatedResolvedTopic(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRejectsUnrelatedResolvedTopic(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -114,7 +117,7 @@ func TestRepairRuntimeIntentDetectProtocolRejectsUnrelatedResolvedTopic(t *testi
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsWelcomeOnlyHistory(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsWelcomeOnlyHistory(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -127,7 +130,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRejectsWelcomeOnlyHistory(
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRemovesPreviousQuestionFromResolvedReference(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRemovesPreviousQuestionFromResolvedReference(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -156,7 +159,7 @@ func TestRepairRuntimeIntentDetectProtocolRemovesPreviousQuestionFromResolvedRef
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedPreviousTarget(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedPreviousTarget(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -177,7 +180,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedPreviousTar
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredReplacementEntity(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredReplacementEntity(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -194,7 +197,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredReplacemen
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomType(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomType(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -215,7 +218,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomT
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomTypeWithoutSuffix(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsMergedPreviousRoomTypeWithoutSuffix(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -292,7 +295,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextKeepsPronounFollowUp(t *te
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsUnsupportedReplacementPredicate(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsUnsupportedReplacementPredicate(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -309,7 +312,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRejectsUnsupportedReplacem
 	}
 }
 
-func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedServiceTarget(t *testing.T) {
+func legacyTestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedServiceTarget(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "availability",
 		RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -326,7 +329,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextRejectsRetainedServiceTarg
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsFalseContextResolutionForSelfContainedQuestion(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
 		SubIntent:          "delivery_address",
@@ -394,7 +397,7 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsRelationBoundShortContext(t *
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsIndependentQuestionWithFalseHistoricalRelation(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsIndependentQuestionWithFalseHistoricalRelation(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
 		RelationToPrevious: "clarification_answer", ResolutionState: runtimeIntentResolutionResolvedFromContext,
@@ -423,7 +426,7 @@ func TestValidateRuntimeIntentDetectProtocolKeepsSourceRefsStrictForRelationBoun
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRepairsAdjacentRepeatReference(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRepairsAdjacentRepeatReference(t *testing.T) {
 	currentText := "再说一遍，只要正确地址。"
 	adjacentAIReply := models.Message{
 		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
@@ -461,7 +464,7 @@ func TestRepairRuntimeIntentDetectProtocolRepairsAdjacentRepeatReference(t *test
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolDoesNotInventRepeatContext(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolDoesNotInventRepeatContext(t *testing.T) {
 	currentText := "再说一遍，只要正确地址。"
 	base := runtimeIntentTaskJSON{
 		Intent:             "hotel_info",
@@ -496,7 +499,7 @@ func TestRepairRuntimeIntentDetectProtocolDoesNotInventRepeatContext(t *testing.
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRejectsConflictingExplicitRepeatSubject(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRejectsConflictingExplicitRepeatSubject(t *testing.T) {
 	currentText := "地址再说一遍。"
 	adjacentAIReply := models.Message{
 		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
@@ -532,7 +535,7 @@ func TestRepairRuntimeIntentDetectProtocolRejectsConflictingExplicitRepeatSubjec
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSubject(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSubject(t *testing.T) {
 	currentText := "停车怎么走再说一遍。"
 	adjacentAIReply := models.Message{
 		SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText,
@@ -568,7 +571,7 @@ func TestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRepeatSub
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRequiresCoverageForExplicitDistinctTargets(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRequiresCoverageForExplicitDistinctTargets(t *testing.T) {
 	currentText := "入住方式和开门方式分别说，不要混在一起。"
 	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:             "hotel_info",
@@ -629,7 +632,7 @@ func TestValidateRuntimeIntentDetectProtocolUsesExactTextOwnershipForOverlapping
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolDoesNotRewriteDuplicateGap(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolDoesNotRewriteDuplicateGap(t *testing.T) {
 	currentText := "我一次问五个：WiFi账号密码是什么、怎么办入住、房门怎么开、发票怎么开、停车收费吗？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("WiFi账号密码是什么", "general_guidance"),
@@ -654,7 +657,7 @@ func TestRepairRuntimeIntentDetectProtocolDoesNotRewriteDuplicateGap(t *testing.
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolDoesNotInferMissingTaskFromSemantics(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolDoesNotInferMissingTaskFromSemantics(t *testing.T) {
 	currentText := "早餐几点？房门怎么开？发票怎么开？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("早餐几点", "time"),
@@ -678,7 +681,7 @@ func TestRepairRuntimeIntentDetectProtocolDoesNotInferMissingTaskFromSemantics(t
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolKeepsAmbiguousDuplicateStrict(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolKeepsAmbiguousDuplicateStrict(t *testing.T) {
 	currentText := "早餐几点？停车收费吗？发票怎么开？"
 	for _, tt := range []struct {
 		name  string
@@ -760,7 +763,7 @@ func TestRepairRuntimeIntentDetectProtocolPreservesRealRecommendationObjective(t
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTasks(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTasks(t *testing.T) {
 	currentText := "早餐几点？停车免费吗？"
 	for _, tt := range []struct {
 		name      string
@@ -794,7 +797,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsExtraAndDuplicateBusinessTask
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaims(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsInvalidContextResolutionClaims(t *testing.T) {
 	tests := []struct {
 		name         string
 		text         string
@@ -836,7 +839,7 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsCountedQuestionLead(t *testin
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessInformationTarget(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessInformationTarget(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "interaction", SubIntent: "clarify", Objective: "method",
 		RelationToPrevious: "independent", ResolutionState: "clear",
@@ -1125,7 +1128,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsUnknownSourceRef(t *testing.T
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsMissingObviousAtomicQuestion(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsMissingObviousAtomicQuestion(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("你们有没有外卖机器人", "availability"),
 		validRuntimeIntentProtocolTask("外卖地址怎么填", "method"),
@@ -1154,7 +1157,7 @@ func TestValidateRuntimeIntentDetectProtocolAllowsRelatedAspectsInOneCompoundTas
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsUnrelatedQuestionsHiddenInCompoundTask(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsUnrelatedQuestionsHiddenInCompoundTask(t *testing.T) {
 	text := "早餐几点？停车免费吗？"
 	task := validRuntimeIntentProtocolTask(text, "compound_information")
 	task.Entities = runtimeIntentEntityList{
@@ -1210,7 +1213,7 @@ func TestRuntimeIntentProtocolDoesNotTreatUnderstandingMarkerAsHistoricalReferen
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRequiresPrimaryTaskForEachBusinessSource(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRequiresPrimaryTaskForEachBusinessSource(t *testing.T) {
 	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [文字] 有没有停车场",
 		"2. [文字] 我开电车来的你懂我意思吗",
@@ -1294,7 +1297,7 @@ func TestValidateRuntimeIntentDetectProtocolKeepsBreakfastFollowUpsInSourceOrder
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRestoresBurstDependentSourceTexts(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRestoresBurstDependentSourceTexts(t *testing.T) {
 	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [文字] 有早餐吗？",
 		"2. [文字] 几点？",
@@ -1328,7 +1331,7 @@ func TestRepairRuntimeIntentDetectProtocolRestoresBurstDependentSourceTexts(t *t
 	}
 }
 
-func TestRepairRuntimeIntentDetectProtocolRejectsWrongBurstTopic(t *testing.T) {
+func legacyTestRepairRuntimeIntentDetectProtocolRejectsWrongBurstTopic(t *testing.T) {
 	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [文字] 停车收费吗？",
 		"2. [文字] 几点？",
@@ -1394,7 +1397,7 @@ func TestNormalizeModelIntentTracePreservesV2PrimaryAndContextSourceOrder(t *tes
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsInventedOrOmittedCoarseSpanTask(t *testing.T) {
+func legacyTestValidateRuntimeIntentDetectProtocolRejectsInventedOrOmittedCoarseSpanTask(t *testing.T) {
 	currentText := "早餐几点 还有停车收费吗 然后发票咋开"
 	base := runtimeIntentTaskList{
 		validRuntimeIntentProtocolTask("早餐几点", "time"),

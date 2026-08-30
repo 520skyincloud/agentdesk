@@ -452,6 +452,13 @@ func TestRuntimeBurstMessageTextRejectsUnfinishedVoice(t *testing.T) {
 	}
 }
 
+func TestTimePrefixForBurstIncludesPhysicalMessageID(t *testing.T) {
+	message := models.Message{ID: 7788, MessageType: enums.IMMessageTypeVoice}
+	if got := timePrefixForBurst(message, 2); got != "2. [语音7788] " {
+		t.Fatalf("burst source must preserve the physical message ID, got %q", got)
+	}
+}
+
 func TestMergeRecentCustomerBurstMessageSkipsPreviousSession(t *testing.T) {
 	setupRuntimeReplyMessageTestDB(t)
 	service := newAIReplyService()

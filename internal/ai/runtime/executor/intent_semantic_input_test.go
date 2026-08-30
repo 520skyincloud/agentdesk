@@ -70,8 +70,8 @@ func TestCurrentTurnTaskCandidatesDetectSingleParagraphQuestions(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected three task candidates, got %#v", got)
 	}
-	if !isMultiQuestionCurrentTurn(text) {
-		t.Fatal("expected single-paragraph questions to trigger multi-task coverage")
+	if isMultiQuestionCurrentTurn(text) {
+		t.Fatal("one physical source must not be reclassified as a multi-source burst by local heuristics")
 	}
 }
 
@@ -291,8 +291,8 @@ func TestCurrentTurnTaskCandidatesKeepSelfContainedOnlyQuestionsIndependent(t *t
 		if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
 			t.Fatalf("currentTurnTaskCandidates(%q)=%#v, want %#v", tt.input, got, tt.want)
 		}
-		if !isMultiQuestionCurrentTurn(tt.input) {
-			t.Fatalf("self-contained only-question must keep multi-question coverage: %q", tt.input)
+		if isMultiQuestionCurrentTurn(tt.input) {
+			t.Fatalf("IntentDetect, not local punctuation, must own task count for one physical source: %q", tt.input)
 		}
 	}
 }

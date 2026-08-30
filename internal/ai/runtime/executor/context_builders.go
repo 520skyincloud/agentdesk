@@ -323,11 +323,18 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 		return nil
 	}
 
-	sourceTexts := currentTurnIntentSourceTexts(currentRuntimeIntentSemanticText(req))
-	sourceByRef := make(map[string]string, len(sourceTexts))
-	for index, text := range sourceTexts {
-		if text = strings.TrimSpace(text); text != "" {
-			sourceByRef[fmt.Sprintf("U%d", index+1)] = text
+	currentSources := adapter.BuildCurrentTurnSources(req.UserMessage)
+	sourceTexts := make([]string, 0, len(currentSources))
+	sourceByRef := make(map[string]string, len(currentSources))
+	for index, source := range currentSources {
+		text := strings.TrimSpace(source.Text)
+		if text != "" {
+			ref := strings.TrimSpace(source.Ref)
+			if ref == "" {
+				ref = fmt.Sprintf("U%d", index+1)
+			}
+			sourceTexts = append(sourceTexts, text)
+			sourceByRef[ref] = text
 		}
 	}
 
@@ -747,10 +754,7 @@ func isMultiQuestionCurrentTurn(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if utils.IsRuntimeCustomerBurstEnvelope(trimmed) && len(utils.RuntimeCustomerBurstItems(trimmed)) > 1 {
-		return true
-	}
-	return len(currentTurnTaskCandidates(trimmed)) > 1
+	return utils.IsRuntimeCustomerBurstEnvelope(trimmed) && len(utils.RuntimeCustomerBurstItems(trimmed)) > 1
 }
 
 func shouldAttachRecentMediaUnderstandingToCurrentTurn(req RunInput, history adapter.HistoryBuildResult, intent callbacks.IntentTraceData) bool {

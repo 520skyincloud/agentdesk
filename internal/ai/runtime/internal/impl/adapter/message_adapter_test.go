@@ -7,12 +7,65 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/utils"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
+
+func TestBuildCurrentTurnSourcesPreservesPhysicalMessageIdentity(t *testing.T) {
+	message := models.Message{
+		ID:          102,
+		MessageType: enums.IMMessageTypeVoice,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息101] 有早餐吗？",
+			"2. [语音102] 几点，在哪里吃？",
+		}),
+	}
+
+	got := BuildCurrentTurnSources(message)
+	if len(got) != 2 {
+		t.Fatalf("expected two physical sources, got %#v", got)
+	}
+	if got[0].Ref != "U1" || got[0].MessageID != 101 || got[0].MessageType != enums.IMMessageTypeText || got[0].Text != "有早餐吗？" {
+		t.Fatalf("unexpected first source: %#v", got[0])
+	}
+	if got[1].Ref != "U2" || got[1].MessageID != 102 || got[1].MessageType != enums.IMMessageTypeVoice || got[1].Text != "几点，在哪里吃？" {
+		t.Fatalf("unexpected second source: %#v", got[1])
+	}
+}
+
+func TestBuildCurrentTurnSourcesUsesCompleteVoiceTranscript(t *testing.T) {
+	message := models.Message{
+		ID:          201,
+		MessageType: enums.IMMessageTypeVoice,
+		Content:     "voice.amr",
+		Payload:     `{"mediaText":"早餐几点，停车免费吗？","mediaSummary":"客户咨询早餐。","mediaUnderstandingStatus":"understood"}`,
+	}
+
+	got := BuildCurrentTurnSources(message)
+	if len(got) != 1 || got[0].MessageID != 201 || got[0].MessageType != enums.IMMessageTypeVoice || got[0].Text != "早餐几点，停车免费吗？" {
+		t.Fatalf("voice source must use the full understood transcript: %#v", got)
+	}
+}
+
+func TestBuildCurrentTurnSourcesLegacyBurstOnlyBindsFinalPhysicalMessage(t *testing.T) {
+	message := models.Message{
+		ID:          302,
+		MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息] 有早餐吗？",
+			"2. [消息] 几点？",
+		}),
+	}
+
+	got := BuildCurrentTurnSources(message)
+	if len(got) != 2 || got[0].MessageID != 0 || got[1].MessageID != 302 {
+		t.Fatalf("legacy burst must only infer the final physical ID: %#v", got)
+	}
+}
 
 func TestBuildHistoryMessagesOnlyUsesMessagesBeforeCurrent(t *testing.T) {
 	setupAdapterHistoryTestDB(t)

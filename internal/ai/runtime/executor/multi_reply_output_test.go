@@ -26,6 +26,29 @@ func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
 	}
 }
 
+func TestSinglePhysicalSourceWithMultipleModelTasksRequiresReplyParts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", OutputKind: "text", ReplyRequired: true,
+			Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U1"},
+		},
+		{
+			TaskID: "task-2", Intent: "hotel_info", SubIntent: "parking", OutputKind: "text", ReplyRequired: true,
+			Text: "停车免费吗", ResolvedText: "停车免费吗", SourceRefs: []string{"U1"},
+		},
+	}}
+
+	if !replyPlanRequiresStructuredOutput(plan, false) {
+		t.Fatal("two model-owned tasks from one physical message must require per-task replyParts")
+	}
+	instruction := buildMultiReplyOutputInstruction(plan, false)
+	for _, expected := range []string{`"taskId":"task-1"`, `"taskId":"task-2"`, "早餐几点", "停车免费吗"} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("single-source multi-task contract missing %q: %s", expected, instruction)
+		}
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsOrdersPartsByTask(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},
