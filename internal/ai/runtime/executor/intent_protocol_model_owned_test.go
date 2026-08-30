@@ -79,7 +79,7 @@ func TestValidateRuntimeIntentDetectProtocolRejectsReversedPrimarySourceOrder(t 
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRejectsExactDuplicateDespiteDifferentResolution(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolAllowsDistinctResolvedTasks(t *testing.T) {
 	first := validRuntimeIntentProtocolTask("那麦田呢", "availability")
 	first.SubIntent = "room_facilities"
 	first.RelationToPrevious = "reference_previous"
@@ -88,9 +88,132 @@ func TestValidateRuntimeIntentDetectProtocolRejectsExactDuplicateDespiteDifferen
 	second := first
 	second.ResolvedText = "麦田房型是否配有办公桌"
 
-	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{first, second}}, nil, "那麦田呢？")
-	if err == nil || !strings.Contains(err.Error(), "exactly duplicates") {
-		t.Fatalf("resolvedText changes must not let an exact duplicate task evade validation: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{first, second}}, nil, "那麦田呢？"); err != nil {
+		t.Fatalf("different resolvedText values are not exact duplicates: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolCollapsesExactDuplicatesAndMergesSources(t *testing.T) {
+	first := validRuntimeIntentProtocolTask("早餐几点", "time")
+	first.SourceRefs = runtimeIntentSourceRefList{"U1"}
+	second := first
+	second.SourceRefs = runtimeIntentSourceRefList{"U1", "U2"}
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{first, second}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, "", runtimeIntentProtocolRepairContext{}, true)
+	if len(parsed.IntentTasks) != 1 {
+		t.Fatalf("exact duplicate tasks must collapse locally, got %#v", parsed.IntentTasks)
+	}
+	if got := []string(parsed.IntentTasks[0].SourceRefs); strings.Join(got, ",") != "U1,U2" {
+		t.Fatalf("collapsed duplicate must stably merge sourceRefs, got %#v", got)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolRequiresEveryCurrentSourceReference(t *testing.T) {
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 有早餐吗？",
+		"2. [消息102] 几点开始？",
+		"3. [消息103] 在哪里吃？",
+	})
+	task := validRuntimeIntentProtocolTask("在哪里吃", "location")
+	task.SourceRefs = runtimeIntentSourceRefList{"U3"}
+	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, current)
+	if err == nil || !strings.Contains(err.Error(), "U1") {
+		t.Fatalf("an unreferenced current-turn source must fail without inferring task count, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAllowsManyToManySourceOwnership(t *testing.T) {
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 有早餐吗？",
+		"2. [消息102] 几点开始？",
+	})
+	availability := validRuntimeIntentProtocolTask("有早餐吗", "availability")
+	availability.SourceRefs = runtimeIntentSourceRefList{"U1"}
+	timeTask := validRuntimeIntentProtocolTask("几点开始", "time")
+	timeTask.RelationToPrevious = "independent"
+	timeTask.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	timeTask.ResolvedText = "早餐几点开始"
+	timeTask.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	location := validRuntimeIntentProtocolTask("早餐在哪里吃", "location")
+	location.SourceRefs = runtimeIntentSourceRefList{"U1"}
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{availability, location, timeTask}}, nil, current); err != nil {
+		t.Fatalf("one URef may own multiple tasks and one task may consume multiple URefs: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRequiresAuthorizedContext(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("几点", "time")
+	task.RelationToPrevious = "independent"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "早餐几点"
+
+	for name, current := range map[string]string{
+		"single_source": "几点？",
+		"future_source": utils.BuildRuntimeCustomerBurstEnvelope([]string{"1. [消息101] 几点？", "2. [消息102] 有早餐吗？"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := task
+			if name == "future_source" {
+				candidate.SourceRefs = runtimeIntentSourceRefList{"U1", "U2"}
+			}
+			err := validateRuntimeIntentResolvedReferenceContext(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{candidate}}, current, runtimeIntentProtocolRepairContext{}, true)
+			if err == nil || !strings.Contains(err.Error(), "authorized context") {
+				t.Fatalf("resolved current-turn context must use a second earlier URef, got %v", err)
+			}
+		})
+	}
+
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{"1. [消息101] 有早餐吗？", "2. [消息102] 几点？"})
+	task.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	if err := validateRuntimeIntentResolvedReferenceContext(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, current, runtimeIntentProtocolRepairContext{}, true); err != nil {
+		t.Fatalf("a grounded earlier current-turn source must authorize resolution: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextAcceptsAdjacentHumanServicePair(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("几点", "time")
+	task.RelationToPrevious = "follow_up"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "早餐几点开始"
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "有早餐吗？",
+		AdjacentServiceReply: "有的。",
+	}
+	if err := validateRuntimeIntentResolvedReferenceContext(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, "几点？", context, true); err != nil {
+		t.Fatalf("a real adjacent customer and human-service reply pair must authorize resolution: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextAcceptsSameTurnFollowUpRefs(t *testing.T) {
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 有早餐吗？",
+		"2. [消息102] 几点开始？",
+	})
+	task := validRuntimeIntentProtocolTask("几点开始", "time")
+	task.RelationToPrevious = "follow_up"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "早餐几点开始"
+	task.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+	if err := validateRuntimeIntentResolvedReferenceContext(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, current, runtimeIntentProtocolRepairContext{}, true); err != nil {
+		t.Fatalf("real earlier current-turn URefs must authorize resolution even when relation is follow_up: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsUngroundedSubjectWithoutEntities(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("几点", "time")
+	task.RelationToPrevious = "follow_up"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "早餐几点开始"
+	task.Entities = nil
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "停车场可以停车吗？",
+		AdjacentServiceReply: "可以停车。",
+	}
+	err := validateRuntimeIntentResolvedReferenceContext(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, "几点？", context, true)
+	if err == nil || !strings.Contains(err.Error(), "not grounded") {
+		t.Fatalf("an empty entity list must not allow parking context to become a breakfast question: %v", err)
 	}
 }
 

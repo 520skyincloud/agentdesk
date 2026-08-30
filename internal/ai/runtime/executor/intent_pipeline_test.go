@@ -1006,6 +1006,40 @@ func TestBuildReplyPlanKeepsAmbiguousOrUnresolvedClarify(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelOwnedAmbiguousTaskClearsActionsWithoutChangingSibling(t *testing.T) {
+	for _, resolution := range []string{runtimeIntentResolutionAmbiguous, runtimeIntentResolutionUnresolved} {
+		t.Run(resolution, func(t *testing.T) {
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent:            "human_complaint_risk",
+				SemanticContractExpected: true,
+				SourceRefsValidated:      true,
+				IntentTasks: []callbacks.IntentTaskTraceData{
+					{
+						Intent: "human_complaint_risk", SubIntent: "explicit_handoff", ResolutionState: resolution,
+						Text: "这个", ResolvedText: "这个", SourceRefs: []string{"U1"},
+						NeedsKnowledge: true, NeedsResource: true, NeedsTool: true, NeedsHumanRoute: true, ResourceAction: "provide_location",
+					},
+					{
+						Intent: "hotel_info", SubIntent: "breakfast", Objective: "time", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+						Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U2"}, NeedsKnowledge: true,
+					},
+				},
+			}
+			got := normalizeModelIntentTrace(intent, RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "这个\n早餐几点"}}, adapter.HistoryBuildResult{}, nil)
+			if len(got.IntentTasks) != 2 {
+				t.Fatalf("ambiguous task and clear sibling must both remain, got %#v", got.IntentTasks)
+			}
+			clarify := got.IntentTasks[0]
+			if clarify.Intent != "interaction" || clarify.SubIntent != "clarify" || clarify.NeedsKnowledge || clarify.NeedsResource || clarify.NeedsTool || clarify.NeedsHumanRoute || clarify.ResourceAction != "" {
+				t.Fatalf("%s task must become a bounded clarification with no actions: %#v", resolution, clarify)
+			}
+			if sibling := got.IntentTasks[1]; sibling.Intent != "hotel_info" || !sibling.NeedsKnowledge || sibling.ResolutionState != runtimeIntentResolutionClear {
+				t.Fatalf("clear sibling must remain executable: %#v", sibling)
+			}
+		})
+	}
+}
+
 func TestBuildReplyPlanKeepsResolvedClarifyWithoutBusinessMatch(t *testing.T) {
 	plan := buildReplyPlan(callbacks.IntentTraceData{
 		PrimaryIntent: "interaction",
