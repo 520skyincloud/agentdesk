@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/utils"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -261,6 +262,54 @@ func TestConversationRecapContextModeSupportsSubtypeAndExplicitQuestion(t *testi
 				t.Fatalf("expected recap context mode, got %q", got)
 			}
 		})
+	}
+}
+
+func TestFollowUpReceivesAdjacentBoundedConversationContext(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", RelationToPrevious: "follow_up", ResolutionState: "clear",
+		Text: "几点结束", ResolvedText: "早餐几点结束", OutputKind: "text", ReplyRequired: true,
+	}
+	if got := generationConversationContextMode(task); got != "adjacent" {
+		t.Fatalf("follow_up must receive adjacent bounded context, got %q", got)
+	}
+	contextMessage := buildBoundedGenerationConversationContext(adapter.HistoryBuildResult{Messages: []*schema.Message{
+		schema.UserMessage("有早餐吗？"),
+		schema.AssistantMessage("有的。", nil),
+	}}, []callbacks.ReplyTaskPlanTraceData{task})
+	if contextMessage == nil || !strings.Contains(contextMessage.Content, "有早餐吗") || !strings.Contains(contextMessage.Content, "有的") {
+		t.Fatalf("follow_up bounded context must contain the adjacent pair, got %#v", contextMessage)
+	}
+}
+
+func TestFollowUpDoesNotTreatTwoWaitingCustomerMessagesAsAdjacentServiceContext(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", RelationToPrevious: "follow_up", ResolutionState: "resolved_from_context",
+		Text: "几点结束", ResolvedText: "早餐几点结束", OutputKind: "text", ReplyRequired: true,
+	}
+	contextMessage := buildBoundedGenerationConversationContext(adapter.HistoryBuildResult{Messages: []*schema.Message{
+		schema.UserMessage("停车免费吗？"),
+		schema.UserMessage("有没有充电桩？"),
+	}}, []callbacks.ReplyTaskPlanTraceData{task})
+	if contextMessage != nil {
+		t.Fatalf("waiting customer messages are current work, not an adjacent customer/service answer pair: %q", contextMessage.Content)
+	}
+}
+
+func TestSetCurrentTurnSourcesTracePersistsPhysicalIdentity(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	message := models.Message{
+		ID: 702, MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [文字701] 有早餐吗？",
+			"2. [语音702] 几点结束？",
+		}),
+	}
+	setCurrentTurnSourcesTrace(collector, message)
+	got := collector.Data.Input.CurrentTurnSources
+	if len(got) != 2 || got[0].Ref != "U1" || got[0].MessageID != 701 || got[0].MessageType != string(enums.IMMessageTypeText) || got[0].Text != "有早餐吗？" ||
+		got[1].Ref != "U2" || got[1].MessageID != 702 || got[1].MessageType != string(enums.IMMessageTypeVoice) || got[1].Text != "几点结束？" {
+		t.Fatalf("runtime Trace must persist URef/messageId/messageType/text, got %#v", got)
 	}
 }
 

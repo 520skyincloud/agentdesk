@@ -160,6 +160,7 @@ func (c *RuntimeTraceCollector) SetReplyPlan(data ReplyPlanTraceData) {
 	data.DoNot = append([]string(nil), data.DoNot...)
 	data.TaskPlans = append([]ReplyTaskPlanTraceData(nil), data.TaskPlans...)
 	for index := range data.TaskPlans {
+		data.TaskPlans[index].Entities = append([]IntentEntityTraceData(nil), data.TaskPlans[index].Entities...)
 		data.TaskPlans[index].SourceRefs = append([]string(nil), data.TaskPlans[index].SourceRefs...)
 		data.TaskPlans[index].SelectedCandidateIDs = append([]string(nil), data.TaskPlans[index].SelectedCandidateIDs...)
 		data.TaskPlans[index].SupportedFacts = cloneKnowledgeEvidenceFacts(data.TaskPlans[index].SupportedFacts)

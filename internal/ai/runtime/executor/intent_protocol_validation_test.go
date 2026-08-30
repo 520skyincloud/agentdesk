@@ -11,7 +11,7 @@ import (
 	"agent-desk/internal/pkg/utils"
 )
 
-func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRequiresCompleteV2Semantics(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:       "hotel_info",
 		Text:         "早餐几点",
@@ -20,7 +20,20 @@ func TestValidateRuntimeIntentDetectProtocolRejectsMissingTaskSemantics(t *testi
 	}}}
 	err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点")
 	if err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("expected missing semantic field error, got %v", err)
+		t.Fatalf("active V2 output must require objective: %v", err)
+	}
+	parsed.IntentTasks[0].RelationToPrevious = "independent"
+	parsed.IntentTasks[0].ResolutionState = "clear"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("relation and resolution cannot make a missing objective valid: %v", err)
+	}
+	parsed.IntentTasks[0].Objective = "time"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err != nil {
+		t.Fatalf("complete valid V2 semantics must pass: %v", err)
+	}
+	parsed.IntentTasks[0].Objective = "not_a_real_objective"
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("unknown objective must remain invalid, got %v", err)
 	}
 }
 
@@ -895,7 +908,29 @@ func TestImmediatelyPreviousAIReplyDoesNotCrossNonAIMessageBehindServiceNotice(t
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONDoesNotDefaultMissingV2ResourceTaskObjective(t *testing.T) {
+func TestBuildRuntimeIntentProtocolRepairContextAcceptsHumanReplyPair(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "有早餐吗？"},
+		{ID: 2, SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "有的。"},
+	}}
+	context := buildRuntimeIntentProtocolRepairContext(history)
+	if !strings.Contains(context.PreviousCustomerText, "有早餐吗？") || !strings.Contains(context.AdjacentServiceReply, "有的。") || context.AdjacentAIReply != "" {
+		t.Fatalf("ordinary context resolution must accept a real adjacent human-service pair without treating it as AI: %#v", context)
+	}
+}
+
+func TestBuildRuntimeIntentProtocolRepairContextRejectsServiceNoticeOnly(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "有早餐吗？"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "帮您转接同事啦～", ClientMsgID: "ai_handoff_success_direct_1_1"},
+	}}
+	context := buildRuntimeIntentProtocolRepairContext(history)
+	if context.PreviousCustomerText != "" || context.AdjacentServiceReply != "" {
+		t.Fatalf("a service notice is not a service answer pair: %#v", context)
+	}
+}
+
+func TestParseRuntimeIntentDetectJSONRejectsMissingV2ResourceTaskObjective(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"intentTasks":[{
 			"intent":"hotel_variable",

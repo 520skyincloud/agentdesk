@@ -10,6 +10,7 @@ import (
 
 type runtimeIntentProtocolRepairContext struct {
 	AdjacentAIReply      string
+	AdjacentServiceReply string
 	PreviousCustomerText string
 }
 
@@ -18,10 +19,52 @@ func repairRuntimeIntentDetectProtocol(parsed *runtimeIntentDetectJSON, currentT
 	// code deliberately does not rewrite text/resolvedText or infer a competing
 	// task count from punctuation and keywords. The parameters remain in the
 	// signature for compatibility with legacy profiles and focused tests.
-	_ = parsed
+	if parsed != nil {
+		parsed.IntentTasks = collapseExactRuntimeIntentTasks(parsed.IntentTasks)
+	}
 	_ = currentText
 	_ = context
 	_ = enforce
+}
+
+func collapseExactRuntimeIntentTasks(tasks runtimeIntentTaskList) runtimeIntentTaskList {
+	if len(tasks) < 2 {
+		return tasks
+	}
+	ret := make(runtimeIntentTaskList, 0, len(tasks))
+	indexByKey := make(map[string]int, len(tasks))
+	for _, task := range tasks {
+		key := runtimeIntentProtocolExactTaskKey(task)
+		if index, exists := indexByKey[key]; exists {
+			ret[index].SourceRefs = mergeRuntimeIntentProtocolSourceRefs(ret[index].SourceRefs, task.SourceRefs)
+			continue
+		}
+		indexByKey[key] = len(ret)
+		ret = append(ret, task)
+	}
+	return ret
+}
+
+func mergeRuntimeIntentProtocolSourceRefs(current runtimeIntentSourceRefList, incoming runtimeIntentSourceRefList) runtimeIntentSourceRefList {
+	ret := append(runtimeIntentSourceRefList(nil), current...)
+	seen := make(map[string]struct{}, len(ret)+len(incoming))
+	for _, ref := range ret {
+		if normalized := strings.ToUpper(strings.TrimSpace(ref)); normalized != "" {
+			seen[normalized] = struct{}{}
+		}
+	}
+	for _, ref := range incoming {
+		normalized := strings.ToUpper(strings.TrimSpace(ref))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		ret = append(ret, normalized)
+	}
+	return ret
 }
 
 func repairRuntimeIntentProtocolCurrentTurnReferences(tasks []runtimeIntentTaskJSON, sourceTexts []string) int {
@@ -196,15 +239,20 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 			continue
 		}
 		contextParts := make([]string, 0, len(task.SourceRefs)+2)
-		for refIndex, ref := range task.SourceRefs {
-			sourceIndex := runtimeIntentSourceRefIndex(ref)
-			if sourceIndex < 0 || sourceIndex >= len(sourceTexts) || refIndex == 0 {
-				continue
+		relation := semanticGateNormalizeRelation(task.RelationToPrevious)
+		earlierSources, hasEarlierSources := runtimeIntentProtocolEarlierCurrentTurnSources(task, sourceTexts)
+		adjacentReply := ""
+		switch {
+		case hasEarlierSources:
+			contextParts = append(contextParts, earlierSources...)
+		case semanticGateRelationUsesPrevious(relation):
+			adjacentReply = runtimeIntentProtocolAdjacentServiceReply(context)
+			if strings.TrimSpace(context.PreviousCustomerText) == "" || adjacentReply == "" {
+				return fmt.Errorf("intentTasks[%d] resolved_from_context requires an adjacent customer and service reply pair", taskIndex)
 			}
-			contextParts = append(contextParts, sourceTexts[sourceIndex])
-		}
-		if semanticGateRelationUsesPrevious(task.RelationToPrevious) {
-			contextParts = append(contextParts, context.PreviousCustomerText, context.AdjacentAIReply)
+			contextParts = append(contextParts, context.PreviousCustomerText, adjacentReply)
+		default:
+			return fmt.Errorf("intentTasks[%d] resolved_from_context has no authorized context relation", taskIndex)
 		}
 		candidate := strings.TrimSpace(task.Text)
 		if candidate == "" && len(task.SourceRefs) > 0 {
@@ -213,11 +261,56 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 				candidate = sourceTexts[primaryIndex]
 			}
 		}
-		if err := validateRuntimeIntentProtocolResolvedEntities(task, candidate, strings.Join(contextParts, " ")); err != nil {
+		contextText := strings.Join(contextParts, " ")
+		grounded := runtimeIntentProtocolResolvedReferenceGroundedInText(task, candidate, contextText)
+		if !hasEarlierSources {
+			groundingContext := context
+			groundingContext.AdjacentAIReply = adjacentReply
+			grounded = runtimeIntentProtocolResolvedReferenceGrounded(task, candidate, groundingContext)
+		}
+		if !grounded {
+			return fmt.Errorf("intentTasks[%d] resolvedText is not grounded in its authorized context", taskIndex)
+		}
+		if err := validateRuntimeIntentProtocolResolvedEntities(task, candidate, contextText); err != nil {
 			return fmt.Errorf("intentTasks[%d] %w", taskIndex, err)
 		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolEarlierCurrentTurnSources(task runtimeIntentTaskJSON, sourceTexts []string) ([]string, bool) {
+	if len(task.SourceRefs) < 2 || len(sourceTexts) < 2 {
+		return nil, false
+	}
+	primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+	if primaryIndex <= 0 || primaryIndex >= len(sourceTexts) {
+		return nil, false
+	}
+	ret := make([]string, 0, len(task.SourceRefs)-1)
+	seen := make(map[int]struct{}, len(task.SourceRefs)-1)
+	for _, ref := range task.SourceRefs[1:] {
+		index := runtimeIntentSourceRefIndex(ref)
+		if index < 0 || index >= primaryIndex || index >= len(sourceTexts) {
+			continue
+		}
+		if _, exists := seen[index]; exists {
+			continue
+		}
+		text := strings.TrimSpace(sourceTexts[index])
+		if text == "" {
+			continue
+		}
+		seen[index] = struct{}{}
+		ret = append(ret, text)
+	}
+	return ret, len(ret) > 0
+}
+
+func runtimeIntentProtocolAdjacentServiceReply(context runtimeIntentProtocolRepairContext) string {
+	if reply := strings.TrimSpace(context.AdjacentServiceReply); reply != "" {
+		return reply
+	}
+	return strings.TrimSpace(context.AdjacentAIReply)
 }
 
 func validateRuntimeIntentCurrentTurnReferenceContexts(parsed runtimeIntentDetectJSON, currentText string) error {
@@ -918,7 +1011,7 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 // semantic boundaries are; local code must not infer a competing task count.
 func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
 	lastPrimarySource := -1
-	seenTasks := make(map[string]int, len(tasks))
+	referencedSources := make([]bool, len(sourceTexts))
 
 	for taskIndex, task := range tasks {
 		primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
@@ -926,22 +1019,37 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 			return fmt.Errorf("intentTasks[%d] is out of current-turn source order", taskIndex)
 		}
 		lastPrimarySource = primarySource
-		key := runtimeIntentProtocolExactTaskKey(task)
-		if previousIndex, exists := seenTasks[key]; exists {
-			return fmt.Errorf("intentTasks[%d] exactly duplicates intentTasks[%d]", taskIndex, previousIndex)
+		for _, ref := range task.SourceRefs {
+			index := runtimeIntentSourceRefIndex(ref)
+			if index >= 0 && index < len(referencedSources) {
+				referencedSources[index] = true
+			}
 		}
-		seenTasks[key] = taskIndex
+	}
+	for sourceIndex, referenced := range referencedSources {
+		if !referenced {
+			return fmt.Errorf("current-turn source U%d is not referenced by any intent task", sourceIndex+1)
+		}
 	}
 	return nil
 }
 
 func runtimeIntentProtocolExactTaskKey(task runtimeIntentTaskJSON) string {
+	entities := make([]string, 0, len(task.Entities))
+	for _, entity := range task.Entities {
+		entities = append(entities, strings.ToLower(strings.TrimSpace(entity.Type))+":"+normalizeRuntimeKnowledgeQuery(entity.Text))
+	}
 	parts := []string{
 		canonicalIntentCode(task.Intent),
 		strings.ToLower(strings.TrimSpace(task.SubIntent)),
 		semanticGateNormalizeObjective(task.Objective),
+		semanticGateNormalizeRelation(task.RelationToPrevious),
+		semanticGateNormalizeResolution(task.ResolutionState),
 		normalizeRuntimeIntentProtocolAtomicText(task.Text),
-		strings.Join([]string(task.SourceRefs), ","),
+		normalizeRuntimeIntentProtocolAtomicText(task.ResolvedText),
+		strings.Join(entities, ","),
+		fmt.Sprintf("%t|%t|%t|%t", task.NeedsKnowledge, task.NeedsResource, task.NeedsTool, task.NeedsHumanRoute),
+		strings.TrimSpace(task.ResourceAction),
 	}
 	return strings.Join(parts, "|")
 }

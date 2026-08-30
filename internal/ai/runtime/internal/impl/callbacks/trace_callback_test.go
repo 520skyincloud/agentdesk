@@ -45,6 +45,8 @@ func TestReplyTaskPlanSemanticTraceFieldsAreSerialized(t *testing.T) {
 		Objective:          "compound_information",
 		RelationToPrevious: "reference_previous",
 		ResolutionState:    "resolved_from_context",
+		Entities:           []IntentEntityTraceData{{Text: "办公桌", Type: "facility"}},
+		NeedsKnowledge:     true,
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -55,6 +57,8 @@ func TestReplyTaskPlanSemanticTraceFieldsAreSerialized(t *testing.T) {
 		`"objective":"compound_information"`,
 		`"relationToPrevious":"reference_previous"`,
 		`"resolutionState":"resolved_from_context"`,
+		`"entities":[{"text":"办公桌","type":"facility"}]`,
+		`"needsKnowledge":true`,
 	} {
 		if !strings.Contains(serialized, expected) {
 			t.Fatalf("reply task semantic trace missing %q: %s", expected, serialized)

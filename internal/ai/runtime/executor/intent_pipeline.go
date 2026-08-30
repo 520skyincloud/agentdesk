@@ -31,7 +31,7 @@ func buildRuntimePipelinePlan(req RunInput, history adapter.HistoryBuildResult) 
 
 func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, detector runtimeIntentModelDetector) runtimePipelinePlan {
 	currentText := currentRuntimeIntentSemanticText(req)
-	intent, promptPack, configured := detectRuntimeIntentWithModel(ctx, req, history, detector)
+	intent, promptPack, configured, manualResume := detectRuntimeIntentForPipeline(ctx, req, history, detector)
 	if !configured {
 		intent = intentDetectUnavailableIntent("IntentDetect model unavailable; entering interaction")
 		promptPack = selectIntentPromptPack(intent)
@@ -39,6 +39,9 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
 	replyPlan := buildReplyPlan(intent, promptPack)
+	if manualResume {
+		replyPlan = restoreManualResumeFrozenTaskIDs(ctx, replyPlan)
+	}
 	prompt := buildIntentStagePrompt(promptPack, replyPlan)
 	return runtimePipelinePlan{
 		Normalize: callbacks.NormalizeTraceData{
@@ -415,10 +418,14 @@ func buildReplyTaskPlans(intent callbacks.IntentTraceData) []callbacks.ReplyTask
 			output = "human_route_confirmation_or_dispatch"
 		}
 		add(callbacks.ReplyTaskPlanTraceData{
-			Intent:         intent.PrimaryIntent,
-			SubIntent:      intent.SubIntent,
-			Output:         output,
-			ResourceAction: intent.ResourceAction,
+			Intent:          intent.PrimaryIntent,
+			SubIntent:       intent.SubIntent,
+			NeedsKnowledge:  intent.NeedsKnowledge,
+			NeedsResource:   intent.NeedsResource,
+			NeedsTool:       intent.NeedsTool,
+			NeedsHumanRoute: intent.NeedsHumanRoute,
+			Output:          output,
+			ResourceAction:  intent.ResourceAction,
 		})
 	}
 	return finalizeReplyTaskPlans(tasks)
@@ -439,6 +446,7 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 		Intent:         "hotel_variable",
 		SubIntent:      hotelVariableResourceTypeFromAction(action),
 		Objective:      "action_request",
+		NeedsResource:  true,
 		Output:         "structured_resource_commit",
 		ResourceAction: action,
 	}
@@ -450,10 +458,15 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 		}
 		plan.RelationToPrevious = task.RelationToPrevious
 		plan.ResolutionState = task.ResolutionState
+		plan.Entities = append([]callbacks.IntentEntityTraceData(nil), task.Entities...)
 		plan.Text = task.ResolvedText
 		plan.OriginalText = task.Text
 		plan.ResolvedText = task.ResolvedText
 		plan.SourceRefs = append([]string(nil), task.SourceRefs...)
+		plan.NeedsKnowledge = task.NeedsKnowledge
+		plan.NeedsResource = true
+		plan.NeedsTool = task.NeedsTool
+		plan.NeedsHumanRoute = task.NeedsHumanRoute
 		break
 	}
 	return plan
@@ -476,10 +489,15 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		Objective:          task.Objective,
 		RelationToPrevious: task.RelationToPrevious,
 		ResolutionState:    task.ResolutionState,
+		Entities:           append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
 		Text:               task.ResolvedText,
 		OriginalText:       task.Text,
 		ResolvedText:       task.ResolvedText,
 		SourceRefs:         append([]string(nil), task.SourceRefs...),
+		NeedsKnowledge:     task.NeedsKnowledge,
+		NeedsResource:      task.NeedsResource,
+		NeedsTool:          task.NeedsTool,
+		NeedsHumanRoute:    task.NeedsHumanRoute,
 		Output:             output,
 		ResourceAction:     task.ResourceAction,
 	}

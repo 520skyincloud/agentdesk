@@ -8,6 +8,7 @@ import (
 	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
@@ -28,6 +29,7 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		collector.Data.Input.ContextMemoryMessageCount = history.MemoryItemCount
 		collector.Data.Input.KnowledgeBaseIDs = utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 		collector.Data.Input.CurrentUserMessagePreview = preview(currentRuntimeIntentSemanticText(req), 120)
+		setCurrentTurnSourcesTrace(collector, req.UserMessage)
 	}
 	plan := buildRuntimePipelinePlanWithModel(ctx, req, history, nil)
 	if collector != nil {
@@ -91,6 +93,21 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		hasDeferredKnowledge,
 	)))
 	return messages
+}
+
+func setCurrentTurnSourcesTrace(collector *callbacks.RuntimeTraceCollector, message models.Message) {
+	if collector == nil {
+		return
+	}
+	collector.Data.Input.CurrentTurnSources = nil
+	for _, source := range adapter.BuildCurrentTurnSources(message) {
+		collector.Data.Input.CurrentTurnSources = append(collector.Data.Input.CurrentTurnSources, callbacks.CurrentTurnSourceTraceData{
+			Ref:         source.Ref,
+			MessageID:   source.MessageID,
+			MessageType: string(source.MessageType),
+			Text:        source.Text,
+		})
+	}
 }
 
 func buildActiveGenerationUserMessageText(currentText string, intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData, hasDeferredKnowledge bool) string {
@@ -177,6 +194,11 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 	if len(entries) == 0 {
 		return nil
 	}
+	adjacentEntries := adjacentGenerationHistoryEntries(entries)
+	recapEntries := lastBoundedGenerationHistoryEntries(entries, 8)
+	if len(adjacentTaskIDs) > 0 && len(adjacentEntries) == 0 && len(recapTaskIDs) == 0 {
+		return nil
+	}
 
 	var b strings.Builder
 	b.WriteString("【当前任务所需的有界会话上下文】下列历史只供明确标注的任务使用，不会重新成为待回答任务；不得补答、复述或续写其他旧问题。\n")
@@ -184,13 +206,13 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 		b.WriteString("相邻上下文适用任务：")
 		b.WriteString(strings.Join(adjacentTaskIDs, "、"))
 		b.WriteString("。只用下面最多两条消息理解当前短答、指代、纠正或槽位答案，最终仍只回答当前活跃任务。\n")
-		appendBoundedGenerationHistoryEntries(&b, adjacentGenerationHistoryEntries(entries))
+		appendBoundedGenerationHistoryEntries(&b, adjacentEntries)
 	}
 	if len(recapTaskIDs) > 0 {
 		b.WriteString("会话回顾上下文适用任务：")
 		b.WriteString(strings.Join(recapTaskIDs, "、"))
 		b.WriteString("。可以按时间顺序概括下面最多八条最近消息；不要声称客户此前没有提问，也不要带出未列出的更早内容。\n")
-		appendBoundedGenerationHistoryEntries(&b, lastBoundedGenerationHistoryEntries(entries, 8))
+		appendBoundedGenerationHistoryEntries(&b, recapEntries)
 	}
 	return schema.SystemMessage(strings.TrimSpace(b.String()))
 }
@@ -221,7 +243,7 @@ func generationConversationContextMode(task callbacks.ReplyTaskPlanTraceData) st
 		return "adjacent"
 	}
 	switch relation {
-	case "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
+	case "follow_up", "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
 		return "adjacent"
 	default:
 		return ""
@@ -293,7 +315,7 @@ func adjacentGenerationHistoryEntries(entries []boundedGenerationHistoryEntry) [
 	}
 	assistantIndex := len(entries) - 1
 	if entries[assistantIndex].speaker != "AI客服" && entries[assistantIndex].speaker != "人工客服" {
-		return lastBoundedGenerationHistoryEntries(entries, 2)
+		return nil
 	}
 
 	ret := make([]boundedGenerationHistoryEntry, 0, 2)
