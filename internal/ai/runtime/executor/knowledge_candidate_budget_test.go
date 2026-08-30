@@ -147,6 +147,28 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsStorePriorityWhenOnlyOneSlotF
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsRawCandidatesForConflictChecks(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "马桶堵了怎么办",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "转接", "问题：马桶堵了怎么办\n答案：转接", 0.99)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "处理", "问题：马桶堵了怎么办\n答案：可以先使用马桶吸处理。", 0.80)},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: judgeTestHit(2, 201, "通用处理", "问题：马桶堵了怎么办\n答案：请联系门店处理。", 0.79)},
+		},
+	}
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "action_request"}, 1)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 {
+		t.Fatalf("expected one budgeted Judge candidate: %#v", limited)
+	}
+	if len(limited[0].RawCandidates) != 3 {
+		t.Fatalf("all raw candidates must remain available for deterministic conflict checks: %#v", limited[0].RawCandidates)
+	}
+	if limited[0].Candidates[0].CandidateID != "T1C2" {
+		t.Fatalf("a competing complete factual answer must occupy the tight slot before handoff: %#v", limited[0].Candidates)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsTwoStoreCandidatesAndGeneralFallback(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",
@@ -309,7 +331,7 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetUsesGeneralFallbackOnlyWithoutComp
 	}
 }
 
-func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesExactStoreHandoff(t *testing.T) {
+func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesCompleteStoreAnswerWhenHandoffConflicts(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",
 		Query:  "房间门锁打不开怎么办",
@@ -321,8 +343,8 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesExactStoreHandoff(t *te
 	}
 
 	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "method"}, 1)
-	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C2" {
-		t.Fatalf("exact store handoff must win the tightest quota: %#v", limited)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C1" {
+		t.Fatalf("a complete store answer must win a tight quota when the same layer also contains handoff: %#v", limited)
 	}
 	if index := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(knowledgeEvidenceJudgeTask{
 		TaskID: "T2",
@@ -332,6 +354,23 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesExactStoreHandoff(t *te
 		},
 	}, knowledgeEvidenceLayerStore); index >= 0 {
 		t.Fatalf("handoff directive must not count as a complete factual FAQ, got index %d", index)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsExactStoreHandoffWithoutFactualConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "房间门锁打不开怎么办",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：房间空调打不开怎么办\n答案：请检查空调面板。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.70, Content: "问题：房间门锁打不开怎么办\n答案：转接"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：门锁打不开怎么办\n答案：请联系工作人员。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "method"}, 1)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C2" {
+		t.Fatalf("an uncontested exact store handoff must retain the tight slot: %#v", limited)
 	}
 }
 

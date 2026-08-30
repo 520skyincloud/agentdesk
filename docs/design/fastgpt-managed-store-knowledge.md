@@ -31,58 +31,72 @@ For every atomic task, the store-specific and general datasets are searched in
 parallel with their existing thresholds. `RawHits` retains the candidates from
 both layers. All atomic tasks that returned candidates are then sent through
 one shared batch evidence Judge call, including tasks that currently have
-candidates from only one layer. The Judge classifies each candidate as:
+candidates from only one layer. The current protocol is
+`knowledge_evidence_judge.v2`; it returns one decision per task and knowledge
+layer:
 
 ```text
-direct      -> directly and sufficiently answers the atomic question
-supporting  -> relevant, but insufficient without a direct answer
-unrelated   -> answers a different question or does not support the fact asked
+direct_single   -> one selected FAQ fully answers the atomic question
+direct_combined -> multiple selected FAQs in the same layer fully answer it
+partial         -> selected facts are usable, but named aspects are still missing
+insufficient    -> the layer has no authorized answer
+protocol_invalid / timeout / malformed -> Judge execution or protocol failure
 ```
 
-The Judge does not answer the customer and does not choose the final knowledge
-layer. After classification, deterministic runtime code applies the following
-order independently for each atomic task:
+The Judge returns the selected Candidate IDs, supported facts, critical values,
+and missing aspects. It does not answer the customer. Deterministic runtime code
+then applies the following order independently for each atomic task:
 
 ```text
-store has direct evidence
--> expose store direct + store supporting evidence only
-
-otherwise general has direct evidence
--> expose general direct + general supporting evidence only
-
-neither layer has direct evidence
--> expose no knowledge answer for that task
+uncontested exact store handoff directive
+-> complete store answer
+-> complete general answer
+-> partial store answer
+-> partial general answer
+-> existing reception route
 ```
 
-This preserves `store direct > general direct`: scores are never compared
-across layers, and a higher-scoring general answer cannot override a direct
-store answer. Conversely, an unrelated store candidate cannot hide a direct
-general answer. Generate and handoff decisions read only the rebuilt selected
-evidence; `RawHits` and the `pipeline.evidenceJudge` trace retain the diagnostic
-candidate and decision data.
+Scores are never compared across layers. A higher-scoring general answer cannot
+override a valid store answer, and an invalid store protocol result is not
+treated as a clean store miss. Generate and handoff decisions read only
+`EffectiveHits` rebuilt from the winning selected Candidate IDs. `RawHits` and
+the `pipeline.evidenceJudge` trace retain diagnostic candidates and decisions,
+but are never exposed to Generate.
 
-The Judge uses the internal `knowledge_judge_llm` model-profile slot. One reply
-execution makes at most one Judge call for all candidate-bearing atomic tasks;
-the normalized limit is 4 seconds, 2,048 output tokens, and zero retries. A
-missing model configuration, model error, timeout, or invalid protocol response
-does not fail or restart the reply pipeline. Runtime records a `fallback` trace
-and preserves the pre-Judge deterministic selection:
+The Judge uses the internal `knowledge_judge_llm` model-profile slot. A normal
+reply execution makes one Judge call for all candidate-bearing atomic tasks. If
+that call times out or returns a malformed/protocol-invalid result that affects
+the final selection, runtime isolates the affected task-layer without rerunning
+Judge, Intent, or retrieval. It does not preserve or expose a pre-Judge selection:
 
 ```text
-store has an effective retrieval hit -> keep store hits
-otherwise -> keep general hits
+valid selected store answer -> expose only that selected evidence
+otherwise valid selected general answer -> expose only that selected evidence
+protocol failure -> clear effective context and use a safe local reply
 ```
 
-The fallback does not add another Intent, retrieval, Judge, or Generate call.
-If the store-layer lookup itself fails, runtime still must not treat that
-failure as a clean miss and fall back to general knowledge.
+Every reply run calls Judge at most once. A protocol failure never becomes a
+human handoff and never reaches free Generate; `RawHits` remains diagnostic
+only. If the store-layer decision fails, runtime still must not treat that
+failure as a clean miss and fall back to general knowledge. Already valid
+task-layer selections and facts remain frozen while only the failed task-layer
+is isolated.
 
-For a multi-question message, questions with direct evidence remain available
-to the single Generate call. Questions with no direct evidence or whose
-selected answer is a handoff directive are removed from Generate. When both
-kinds occur together, the knowledge answer is committed first and the existing
-handoff-confirmation service is invoked afterward for only the deferred tasks;
-if every task needs handoff, the existing pre-Generate handoff path is used.
+The Judge keeps one immutable usage event per reply run. Pricing and token field
+semantics are unchanged, and protocol failure does not manufacture an extra
+provider call or usage record. Exact handoff fallback is also withheld when the
+same layer still contains a complete factual
+FAQ in `RawCandidates`; under a one-candidate quota, that factual answer is
+preserved instead of silently auto-dispatching the customer.
+
+For a multi-question message, each task closes independently. Valid selected
+evidence remains available to the single Generate call. A task with a Judge
+protocol failure receives only the fixed local safe
+reply; it does not clear a successful sibling task and does not trigger human
+handoff. A selected exact handoff directive or a genuine no-evidence service
+task continues through the existing reception flow. When answers and reception
+tasks coexist, the grounded answers are preserved before the deferred direct
+handoff is committed.
 
 The same release also adds two scoped prompt policies without adding model
 calls: `answer_rejected` is disclosed to Intent only when the physically
@@ -128,9 +142,10 @@ atomic `dataset_id` restore rather than a reply-runtime rollback.
 Before cutover, verify at least:
 
 - staging training has completed with no failed items;
-- representative general questions return the intended direct FAQ;
-- store-specific gold answers still produce store direct evidence;
-- weak or unrelated candidates are classified as `unrelated` by the Judge;
+- representative general questions return the intended selected FAQ and facts;
+- store-specific gold answers still produce a complete store decision;
+- weak or unrelated candidates produce `insufficient` without becoming a
+  protocol failure;
 - the staging dataset belongs to the same Store Team as the store dataset.
 
 ## Operational behavior

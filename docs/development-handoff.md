@@ -68,6 +68,11 @@ docker compose build agent-desk && docker compose up -d agent-desk
 
 ## 2026-08-21 回复知识裁决与通用库收口
 
+> 历史快照：本节记录 2026-08-21 当时的 V1 行为，不再代表当前运行契约。
+> 当前链路以 `docs/design/reply-runtime-engine.md` 和本文 2026-08-31 的
+> “Judge 非破坏式裁决收口”章节为准，禁止据此恢复
+> `direct/supporting/unrelated`、零异常重试或 Judge 失败转接人工的旧逻辑。
+
 ### 目标与运行边界
 
 本轮基于生产基线 `003dfb7` 做局部修复，生产回滚基线命名为“原神”。
@@ -473,3 +478,45 @@ go test -p=1 \
 本轮与 `codex/customer-audit` 在上述三个非 adapter 文件存在同文件演进，后续
 合并需保留双方语义；与 `codex/ai-billing` 无同文件交集。回滚只需切回
 `f6ca7b7` release，不涉及数据库回滚。
+
+## 2026-08-31 Judge 非破坏式裁决收口
+
+本轮基于 `40cc24b` 只修改知识裁决、检索结果重建和内部 Trace。Retriever 的
+`RawHits` 永远保留两层原始候选，`EffectiveHits/Hits/ContextResults/ContextText`
+只保存 Judge 最终授权的胜出层；Judge 失败不会再通过重建结果覆盖原始候选。
+
+Judge 协议状态明确区分 `insufficient`、`protocol_invalid`、`timeout` 和
+`malformed`。未知 Candidate、重复或缺失知识层、非法枚举交集以及显式对象或房型
+错配按 Task/Layer 隔离，不再伪装成“资料不足”并误触发人工。模型已选 Candidate
+的 Fact JSON 无法使用时，只从该 FAQ 原文机械重建事实，不允许本地换 Candidate、
+按分数改判或跨 FAQ 拼接对象；未知但有原文依据的 aspect 归一为 `other`。
+
+每轮仍只调用一次 Judge。协议失败不重跑 Judge、Intent 或 Retriever，授权知识
+上下文保持为空，ReplyPlan 在 Generate 前进入既有确定性安全短答：该 Task 只携带
+固定安全事实，不允许自由生成酒店事实、不转人工，也不向客户暴露 RawHits 或内部协议。
+同一批次中已成功 Task 的 `SelectedLayer/SupportedFacts` 必须继续保留，不能被失败
+Task 清空或一起降级。内部
+`pipeline.evidenceJudge.latencyMs` 记录这一次 Judge 的实际耗时。
+
+Judge 请求沿用原稳定 usage 事件键。计价公式、Token 字段和 provider receipt 语义
+没有变化，协议异常不会增加第二次模型调用或额外费用事件。
+
+严格 FAQ 恢复只接受 FAQ 问法或显式 alias 的机械相等，不读取向量分数或字符
+相似度；知识转接还要求答案严格为“转接/转人工”，同层同问法存在正文冲突时禁止
+直接转接。同层 `RawCandidates` 只要还有完整正文答案，精确转接也不能吞掉 Judge
+异常；紧预算先保留完整正文。多主体、多维度完整性按客户问题里的主体与维度配对
+核验，不把多个分句做全组合，“不确定/待确认”不能算确定事实。非精确转接候选即使
+被模型包装成 supportedFact，也必须按
+`protocol_invalid` 隔离；转接候选不得参与 `partial/direct_combined`。门店合法
+完整答案继续覆盖通用层；门店协议失败时通用层不能越级。
+
+`knowledge_evidence_judge.go` 中旧的 `highConfidence*` 和 score-rescue helper 本轮
+按最小改动保留给历史隔离测试，但生产 `JudgeBatch/apply` 已无调用，并有回归测试
+保证高召回分、语义相似但非机械相等的 FAQ 不能绕过 Judge。不得在后续个案修复中
+重新接入；若删除，应作为独立清理提交处理。
+
+本轮无数据库表、Migration、外部 API、DTO、枚举、WebSocket、前端、模型配置、
+计价公式、Intent、消息收敛、人工状态机或 Outbox 改动。Judge 仍保持每轮一次真实
+调用和一条 usage 事件。与
+`codex/customer-audit`、`codex/ai-billing` 的当前远端差异不要求本提交改变共享
+契约；合并时需保留本轮 `trace_callback.go` 的向后兼容新增字段。

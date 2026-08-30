@@ -101,6 +101,7 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 	CandidateCount       int                                    `json:"candidateCount,omitempty"`
 	SelectedLayer        string                                 `json:"selectedLayer,omitempty"`
 	DecisionSource       string                                 `json:"decisionSource,omitempty"`
+	Disposition          string                                 `json:"disposition,omitempty"`
 	SelectedCandidateIDs []string                               `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData       `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                               `json:"missingAspects,omitempty"`

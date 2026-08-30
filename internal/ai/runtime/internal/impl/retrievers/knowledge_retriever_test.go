@@ -1,6 +1,7 @@
 package retrievers
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -117,6 +118,29 @@ func TestRebuildKnowledgeRetrieveSelectionKeepsEveryJudgeAuthorizedHit(t *testin
 		if !strings.Contains(result.ContextText, expected) {
 			t.Fatalf("selected evidence %q missing from context: %q", expected, result.ContextText)
 		}
+	}
+}
+
+func TestRebuildKnowledgeRetrieveSelectionKeepsRawHitsImmutable(t *testing.T) {
+	rawHits := []rag.RetrieveResult{
+		{KnowledgeBaseID: 3, SourceRecordID: "store-1", Content: "门店答案", Score: 0.82},
+		{KnowledgeBaseID: 4, SourceRecordID: "general-1", Content: "通用答案", Score: 0.96},
+	}
+	result := &KnowledgeRetrieveResult{
+		RawHits: append([]rag.RetrieveResult(nil), rawHits...),
+		Hits:    append([]rag.RetrieveResult(nil), rawHits...),
+	}
+
+	RebuildKnowledgeRetrieveSelection(result, rawHits[:1])
+
+	if !reflect.DeepEqual(result.RawHits, rawHits) {
+		t.Fatalf("judge selection mutated raw retrieval: got=%#v want=%#v", result.RawHits, rawHits)
+	}
+	if len(result.EffectiveHits) != 1 || result.EffectiveHits[0].SourceRecordID != "store-1" {
+		t.Fatalf("effective evidence was not stored separately: %#v", result.EffectiveHits)
+	}
+	if !reflect.DeepEqual(result.Hits, result.EffectiveHits) {
+		t.Fatalf("compatibility Hits view diverged from EffectiveHits: hits=%#v effective=%#v", result.Hits, result.EffectiveHits)
 	}
 }
 

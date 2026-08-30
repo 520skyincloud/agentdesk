@@ -51,6 +51,7 @@ type KnowledgeRetrieveResult struct {
 	Query            string
 	Options          KnowledgeRetrieveOptions
 	RawHits          []rag.RetrieveResult
+	EffectiveHits    []rag.RetrieveResult
 	Hits             []rag.RetrieveResult
 	ContextResults   []rag.RetrieveResult
 	ContextText      string
@@ -188,7 +189,8 @@ func applyKnowledgeBasePriority(result *KnowledgeRetrieveResult, storeKnowledgeB
 		return
 	}
 	result.RawHits = append([]rag.RetrieveResult(nil), rawHits...)
-	result.Hits = selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs, rawHits)
+	result.EffectiveHits = selectPrioritizedKnowledgeLayer(storeKnowledgeBaseIDs, knowledgeBaseIDs, rawHits)
+	result.Hits = append([]rag.RetrieveResult(nil), result.EffectiveHits...)
 }
 
 // RebuildKnowledgeRetrieveSelection applies an already-authorized evidence
@@ -202,7 +204,10 @@ func RebuildKnowledgeRetrieveSelection(result *KnowledgeRetrieveResult, hits []r
 		rawHits = append([]rag.RetrieveResult(nil), result.Hits...)
 		result.RawHits = append([]rag.RetrieveResult(nil), rawHits...)
 	}
-	result.Hits = append([]rag.RetrieveResult(nil), hits...)
+	result.EffectiveHits = append([]rag.RetrieveResult(nil), hits...)
+	// Hits remains a compatibility view for the existing Generate and trace
+	// pipeline. RawHits is never rebuilt from the Judge selection.
+	result.Hits = append([]rag.RetrieveResult(nil), result.EffectiveHits...)
 	contextMaxTokens := result.Options.ContextMaxTokens
 	if contextMaxTokens <= 0 {
 		contextMaxTokens = defaultRuntimeKnowledgeContextTokens

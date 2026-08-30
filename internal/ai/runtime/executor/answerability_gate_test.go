@@ -455,7 +455,7 @@ func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetActionLedger(buildInitialActionLedger(hotelInfoIntent()))
 	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
-		Request:   newKnowledgePolicyRunInput("马桶堵了", "1"),
+		Request:   newKnowledgePolicyRunInput("马桶堵了怎么办", "1"),
 		Summary:   summary,
 		Collector: collector,
 		Intent:    hotelInfoIntent(),

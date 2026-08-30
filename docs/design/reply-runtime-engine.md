@@ -1,6 +1,6 @@
 # Reply Runtime Engine
 
-本文只描述当前生产基线 `18b19997fe1c5663e0fdecbb4b80d26775abd993`
+本文只描述当前生产基线 `40cc24be3972ab341af7f0ef83a4732e9630ad87`
 之上的现行回复链路和本轮工作区实现。真实代码优先于历史交接材料；旧 FAQ、
 旧 Hook Bridge 和旧独立 Agent 设计不属于本文架构依据。
 
@@ -121,13 +121,21 @@ Intent 返回后还会经过纯本地 Semantic Consistency Gate，不增加模�
 ## 4. Judge V2 与知识层级
 
 现有 Judge 使用 `knowledge_evidence_judge.v2`，对每个原子任务分别裁决
-`store` 和 `general` 两层：
+`store` 和 `general` 两层。模型协议只允许四种业务裁决：
 
 ```text
 direct_single
 direct_combined
 partial
 insufficient
+```
+
+以下三种是运行时记录的调用或协议失败状态，不是模型对“资料是否足够”的业务判断：
+
+```text
+protocol_invalid
+timeout
+malformed
 ```
 
 结果携带：
@@ -141,9 +149,10 @@ missingAspects[]
 ```
 
 `decisionSource` 记录每个 Task、每个知识层的真实裁决来源：正常 Judge 输出为
-`model`，严格门店完整 FAQ 救援为 `store_exact_faq_rescue`，确定性知识转接为
-`deterministic_handoff`；既有的通用层完整 FAQ、枚举或交集确定性恢复记为
-`deterministic_faq_rescue`。同一批次中的不同 Task 可以有不同来源，因此该字段不能
+`model`；模型已经选定 Candidate、但事实结构需要从该 FAQ 原文机械重建时为
+`model_selected_repair`；FAQ 问法或显式 alias 与当前 Task 机械相等时的严格恢复为
+`exact_faq_fallback`；同样满足严格相等且答案仅为“转接/转人工”时为
+`deterministic_handoff`。同一批次中的不同 Task 可以有不同来源，因此该字段不能
 只记录在 Judge 批次顶层。`candidateCount` 同时记录批次、Task 和知识层候选数量；
 `supportedFacts/missingAspects` 也按 Task 和知识层分别保存，禁止把门店层已覆盖事实
 与通用层缺失方面混成一份结果。
@@ -167,12 +176,20 @@ FAQ 的问题与答案按一个完整语义单元理解；“问题中写两瓶�
 答案肯定免费”可以形成数量和价格事实，但答案为“转接”时不能把问题文字当作
 已确认事实。
 
-严格门店完整 FAQ 救援继续要求当前门店、分数不低于既有直接阈值、对象和操作
-一致、覆盖全部必要方面且同层无冲突。它适用于真实 `service_request`，也适用于
-Intent 合理归类为 `hotel_info/supplies_self_help` 的用品位置和取用方法咨询；周边、
-路线、价格、政策等其他 `hotel_info` 子类不会因此放宽。用品操作匹配同时读取 FAQ
-问题与答案，答案中明确的“前往、领取、自取、取用”等动作可以完整覆盖客户的获取
-方式；FAQ 问题措辞不同不能让通用“转接”覆盖门店正文。
+严格 FAQ 恢复按知识层独立执行，不读取向量分数，也不使用字符相似度或语义近似
+改判。只有 FAQ 问法或显式 alias 与当前 Task 在去除标点、礼貌前后缀后机械相等，
+同层所有相同问法答案不冲突，并且单条 FAQ 能机械重建完整事实时才允许恢复。
+答案仅为“转接/转人工”时只形成该层的确定性知识转接；不得把 FAQ 问题文字当作
+事实，也不得跨 FAQ、跨知识层拼接对象、范围或条件。同层 `RawCandidates` 中只要
+还存在一条能够完整回答当前 Task 的正文 FAQ，精确转接就视为有竞争答案，不能在
+Judge 异常时自动恢复为转接；紧预算优先保留完整正文，并在有余量时同时交给 Judge。
+模型若在非精确问法下选择
+转接候选并把它包装成普通事实，或者让转接候选参与 `partial/direct_combined`，该
+知识层直接记为 `protocol_invalid`，候选正文不得进入 Generate。
+
+源码中仍保留一组只供历史隔离测试使用的 `highConfidence*` / score-rescue helper，
+当前 `JudgeBatch -> applyKnowledgeEvidenceJudgeOutcome` 生产路径没有调用它们。后续
+清理应单独进行；禁止为解决线上个案把这些按分数或相似度改判的旧入口重新接回。
 
 房型成员问题会把实体中的“房型/客房”后缀规范化后再与肯定枚举成员对齐。例如
 “部分房型配备办公桌，如合柴、麦田和艺林”可以确认“合柴房型有办公桌”，但仍不能
@@ -181,7 +198,7 @@ Intent 合理归类为 `hotel_info/supplies_self_help` 的用品位置和取用�
 代码的胜出顺序固定为：
 
 ```text
-门店转接指令
+无竞争正文的门店精确转接指令
 -> 门店完整答案
 -> 通用完整答案
 -> 门店部分答案
@@ -193,8 +210,20 @@ Intent 合理归类为 `hotel_info/supplies_self_help` 的用品位置和取用�
 `missingAspects` 交给现有 deferred handoff 逻辑；是否实际接待仍遵循既有接待
 策略。Generate 只能看到胜出层的选中证据，不能看到被淘汰层或冲突候选。
 
-Judge 批次候选总预算固定为 28。有限配额先保留门店精确转接规则和能够完整回答
-当前 Task 的门店 FAQ，再补门店互补证据；只有门店没有完整答案时，通用层才占用
+模型返回的 Candidate ID 和事实 JSON 采用非破坏式校验：本地代码不会改选另一个
+Candidate，也不会再次按分数或字符相似度做语义裁决。Fact JSON/aspect/
+criticalValues 无法使用时，只允许从模型已经选中的 FAQ 问题与答案机械重建事实；
+若所选 FAQ 与 Intent 给出的结构化实体、明确房型或适用范围不一致，则该知识层记为
+`protocol_invalid`。`partial` 只需覆盖同一主体下已经确认的部分事实，不要求把仍然
+缺失的实体伪装成已覆盖；`direct_combined` 则不能跨房型、对象或范围拼接。
+完整性同时按客户问题中的主体与事实维度配对检查。例如同时询问矿泉水和枕头的
+数量、费用时，不能用“矿泉水免费 + 枕头两个”冒充四个槽位都完整；多房型、多设施
+也只接受明确分句中的配对，不做笛卡尔积。“不确定、待确认、资料未写明”等边界
+可以作为条件说明，但不能充当存在性、数量、费用、位置或方法的确定证据。
+
+Judge 批次候选总预算固定为 28。有限配额先保留无竞争正文的门店精确转接规则和
+能够完整回答当前 Task 的门店 FAQ；两者冲突且配额只有一条时先保留完整正文，再补
+门店互补证据；只有门店没有完整答案时，通用层才占用
 兜底槽位。普通问题与 `compound_information` 共用这条必保规则，语义多样性只能
 用于填充剩余槽位，不能挤掉完整门店答案。
 
@@ -203,9 +232,15 @@ Judge 批次候选总预算固定为 28。有限配额先保留门店精确转�
 不同事实 aspect 不通过文本相似度改写为同一句；数量、价格、位置、存在性、时间、
 方法、范围和条件分别保留，肯定与否定事实永远不能合并。
 
-Judge 不可用、超时、调用失败或协议非法时不重试，也不降级为直接使用原始召回。
-相关任务按 `insufficient` 处理，未经选择的 Hits/Context 会被清空；同轮独立
-Resource 仍可先真实提交，知识任务随后按现有 deferred handoff 处理。
+每轮只调用一次 Judge。Judge 不可用、超时、调用失败或出现会影响最终选择的
+`protocol_invalid/malformed` 时，不重跑 Judge、Intent 或 Retriever，也不降级为使用原始召回；
+失败 Task 本身不新增人工接待，并在 Generate 前进入确定性安全短答。未经选择的
+`Hits/ContextResults/ContextText` 会被清空，`RawHits` 只保留在内部 Trace 中用于
+排障。协议失败只隔离对应 Task/Layer；同轮已经合法的选择和事实会被冻结保留，
+不能被失败题清空。同轮已有合法门店完整答案时，不会因为无关通用层协议问题增加
+模型调用。若同轮另一个 Task 已经得到部分事实或严格知识转接，
+其已确认事实、缺失方面接待动作和转接顺序继续保留；协议失败 Task 不能吞掉这些
+兄弟任务，也不能把局部异常描述成“整个知识库不可用”。
 
 ## 5. 逐题生成与本地合并
 
@@ -321,6 +356,7 @@ Commit 会再次调用相同清理函数，并拒绝仍含 `replyParts`、`taskI
 - `pipeline.replyPlan.taskPlans[].supportedFacts/missingAspects`
 - `pipeline.evidenceJudge.tasks[].layers[]`
 - `pipeline.evidenceJudge.candidateCount`
+- `pipeline.evidenceJudge.attemptCount`
 - `pipeline.evidenceJudge.tasks[].candidateCount/decisionSource`
 - `pipeline.evidenceJudge.tasks[].layers[].candidateCount/decisionSource`
 - `pipeline.generate.attemptCount`
@@ -363,7 +399,8 @@ Resource/Handoff/Outbox 既有行为不变。
 隔离企微客户最终投递和生产观察必须单独记录真实结果；未执行时不得写成已通过。
 
 本轮没有数据库表、Migration、外部 API、DTO、枚举、WebSocket、前端、权限、
-模型供应商、计费或 Token 统计口径变更。代码可直接回滚到基线 `18b1999`；
+模型供应商、计价公式或 Token 统计字段变更。每轮只有一条 Judge usage/费用事件，
+沿用现有稳定事件键；协议异常不会额外产生第二次 Judge 用量。发布 A 可直接回滚到基线 `40cc24b`；
 无数据结构需要反向迁移。生产 Intent Profile 或运行配置若在部署阶段另行更新，
 必须独立备份和恢复。
 
@@ -375,5 +412,6 @@ Resource/Handoff/Outbox 既有行为不变。
 修改的交接文档 `docs/development-handoff.md`。合并时必须同时保留两边代码语义并
 合并文档记录，不能用整文件覆盖解决冲突。
 
-当前工作区与 `codex/ai-billing` 没有同文件交集，也没有修改计费语义。每次提交
-和 push 前仍需重新 `git fetch origin` 并核对交集，因为并行分支会继续变化。
+当前工作区与 `codex/ai-billing` 没有同文件交集，也没有修改计价公式或 usage 字段
+语义；Judge 仍维持每轮一次真实调用和一条稳定 usage 记录。每次提交和 push 前
+仍需重新 `git fetch origin` 并核对交集，因为并行分支会继续变化。
