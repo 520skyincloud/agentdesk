@@ -315,14 +315,14 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 }
 
 func buildRuntimeIntentProtocolRepairContext(history adapter.HistoryBuildResult) runtimeIntentProtocolRepairContext {
-	adjacentAIReply, ok := immediatelyPreviousAIReply(history)
-	if !ok {
-		return runtimeIntentProtocolRepairContext{}
+	previousCustomerText, adjacentServiceReply, _, hasServicePair := immediatelyPreviousServiceReplyPair(history)
+	adjacentAIReply, _ := immediatelyPreviousAIReply(history)
+	context := runtimeIntentProtocolRepairContext{AdjacentAIReply: adjacentAIReply}
+	if hasServicePair {
+		context.AdjacentServiceReply = adjacentServiceReply
+		context.PreviousCustomerText = previousCustomerText
 	}
-	return runtimeIntentProtocolRepairContext{
-		AdjacentAIReply:      adjacentAIReply,
-		PreviousCustomerText: customerMessageBeforeAdjacentAIReply(history),
-	}
+	return context
 }
 
 func recordIntentModelUsage(req RunInput, aiConfig models.AIConfig, credentialRevision int64, message *schema.Message, receipt *usagex.Receipt, attempt int, latencyMS int64, callErr error) {
@@ -696,6 +696,51 @@ func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, boo
 	return "", false
 }
 
+func immediatelyPreviousServiceReplyPair(history adapter.HistoryBuildResult) (string, string, enums.IMSenderType, bool) {
+	items := history.RawItems
+	if history.LatestRawItem != nil && (len(items) == 0 || items[len(items)-1].ID != history.LatestRawItem.ID) {
+		items = append(append([]models.Message(nil), items...), *history.LatestRawItem)
+	}
+	serviceIndex := -1
+	serviceReply := ""
+	serviceSender := enums.IMSenderType("")
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		if utils.IsAIServiceNoticeMessage(&item) {
+			continue
+		}
+		content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+		if content == "" {
+			continue
+		}
+		if item.SenderType != enums.IMSenderTypeAI && item.SenderType != enums.IMSenderTypeAgent {
+			return "", "", "", false
+		}
+		serviceIndex = index
+		serviceReply = content
+		serviceSender = item.SenderType
+		break
+	}
+	if serviceIndex < 0 {
+		return "", "", "", false
+	}
+	for index := serviceIndex - 1; index >= 0; index-- {
+		item := items[index]
+		if utils.IsAIServiceNoticeMessage(&item) {
+			continue
+		}
+		content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+		if content == "" {
+			continue
+		}
+		if item.SenderType != enums.IMSenderTypeCustomer {
+			return "", "", "", false
+		}
+		return content, serviceReply, serviceSender, true
+	}
+	return "", "", "", false
+}
+
 func customerMessageBeforeAdjacentAIReply(history adapter.HistoryBuildResult) string {
 	if !hasImmediatelyPreviousAIReply(history) {
 		return ""
@@ -989,7 +1034,14 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 
 func normalizeModelOwnedIntentTaskActions(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
 	for index := range intent.IntentTasks {
-		intent.IntentTasks[index] = semanticGateRestrictTaskActions(intent.IntentTasks[index])
+		task := intent.IntentTasks[index]
+		switch semanticGateNormalizeResolution(task.ResolutionState) {
+		case runtimeIntentResolutionAmbiguous, runtimeIntentResolutionUnresolved:
+			task = semanticGateClarificationTask(task)
+		default:
+			task = semanticGateRestrictTaskActions(task)
+		}
+		intent.IntentTasks[index] = task
 	}
 	return intent
 }

@@ -55,6 +55,26 @@ func TestIntentSemanticGateRequiredContractRejectsMissingSemanticFields(t *testi
 	}
 }
 
+func TestRuntimeIntentSemanticContractRequiresCompleteV2Semantics(t *testing.T) {
+	tasks := []callbacks.IntentTaskTraceData{{Intent: "hotel_info"}}
+	semantics := []runtimeIntentTaskSemantics{{RelationToPrevious: "independent", ResolutionState: "clear"}}
+	if got := runtimeIntentSemanticContractMode(tasks, semantics, true); got != runtimeIntentSemanticContractInvalid {
+		t.Fatalf("active V2 output must reject a missing objective, got %q", got)
+	}
+	semantics[0].Objective = "not_real"
+	if got := runtimeIntentSemanticContractMode(tasks, semantics, true); got != runtimeIntentSemanticContractInvalid {
+		t.Fatalf("a nonempty invalid objective must still fail, got %q", got)
+	}
+	semantics[0] = runtimeIntentTaskSemantics{Objective: "time", RelationToPrevious: "not_real", ResolutionState: "clear"}
+	if got := runtimeIntentSemanticContractMode(tasks, semantics, true); got != runtimeIntentSemanticContractInvalid {
+		t.Fatalf("relation enum remains strict, got %q", got)
+	}
+	semantics[0] = runtimeIntentTaskSemantics{Objective: "time", RelationToPrevious: "independent", ResolutionState: "not_real"}
+	if got := runtimeIntentSemanticContractMode(tasks, semantics, true); got != runtimeIntentSemanticContractInvalid {
+		t.Fatalf("resolution enum remains strict, got %q", got)
+	}
+}
+
 func TestIntentSemanticGateInformationObjectiveReclassifiesServiceRequest(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:    "service_request",

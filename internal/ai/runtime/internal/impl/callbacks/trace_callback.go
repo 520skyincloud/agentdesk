@@ -139,6 +139,13 @@ type InstructionTraceSummary struct {
 	HasToolRule   bool
 }
 
+type CurrentTurnSourceTraceData struct {
+	Ref         string `json:"ref,omitempty"`
+	MessageID   int64  `json:"messageId,omitempty"`
+	MessageType string `json:"messageType,omitempty"`
+	Text        string `json:"text,omitempty"`
+}
+
 type RuntimeTraceData struct {
 	Version   string         `json:"version"`
 	Status    string         `json:"status"`
@@ -166,15 +173,16 @@ type RuntimeTraceData struct {
 		HasToolRule   bool     `json:"hasToolRule,omitempty"`
 	} `json:"instruction"`
 	Input struct {
-		HistoryMessageCount       int      `json:"historyMessageCount,omitempty"`
-		ContextMemorySource       string   `json:"contextMemorySource,omitempty"`
-		ContextMemoryMessageCount int      `json:"contextMemoryMessageCount,omitempty"`
-		KnowledgeBaseIDs          []int64  `json:"knowledgeBaseIds,omitempty"`
-		ToolCodes                 []string `json:"toolCodes,omitempty"`
-		StaticToolCodes           []string `json:"staticToolCodes,omitempty"`
-		DynamicToolCodes          []string `json:"dynamicToolCodes,omitempty"`
-		ToolSearchEnabled         bool     `json:"toolSearchEnabled,omitempty"`
-		CurrentUserMessagePreview string   `json:"currentUserMessagePreview,omitempty"`
+		HistoryMessageCount       int                          `json:"historyMessageCount,omitempty"`
+		ContextMemorySource       string                       `json:"contextMemorySource,omitempty"`
+		ContextMemoryMessageCount int                          `json:"contextMemoryMessageCount,omitempty"`
+		KnowledgeBaseIDs          []int64                      `json:"knowledgeBaseIds,omitempty"`
+		ToolCodes                 []string                     `json:"toolCodes,omitempty"`
+		StaticToolCodes           []string                     `json:"staticToolCodes,omitempty"`
+		DynamicToolCodes          []string                     `json:"dynamicToolCodes,omitempty"`
+		ToolSearchEnabled         bool                         `json:"toolSearchEnabled,omitempty"`
+		CurrentUserMessagePreview string                       `json:"currentUserMessagePreview,omitempty"`
+		CurrentTurnSources        []CurrentTurnSourceTraceData `json:"currentTurnSources,omitempty"`
 	} `json:"input"`
 	Pipeline struct {
 		Normalize     NormalizeTraceData              `json:"normalize,omitempty"`
@@ -357,10 +365,15 @@ type ReplyTaskPlanTraceData struct {
 	Objective            string                           `json:"objective,omitempty"`
 	RelationToPrevious   string                           `json:"relationToPrevious,omitempty"`
 	ResolutionState      string                           `json:"resolutionState,omitempty"`
+	Entities             []IntentEntityTraceData          `json:"entities,omitempty"`
 	Text                 string                           `json:"text,omitempty"`
 	OriginalText         string                           `json:"originalText,omitempty"`
 	ResolvedText         string                           `json:"resolvedText,omitempty"`
 	SourceRefs           []string                         `json:"sourceRefs,omitempty"`
+	NeedsKnowledge       bool                             `json:"needsKnowledge,omitempty"`
+	NeedsResource        bool                             `json:"needsResource,omitempty"`
+	NeedsTool            bool                             `json:"needsTool,omitempty"`
+	NeedsHumanRoute      bool                             `json:"needsHumanRoute,omitempty"`
 	OutputKind           string                           `json:"outputKind,omitempty"`
 	ReplyRequired        bool                             `json:"replyRequired,omitempty"`
 	Output               string                           `json:"output,omitempty"`

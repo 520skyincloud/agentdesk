@@ -12,6 +12,7 @@ import (
 
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/replyruntime"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 
@@ -406,8 +407,20 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 		})
 		return true
 	}
+	currentSourceMessageID := current.LatestWaitingMessageID
+	if currentSourceMessageID <= 0 {
+		currentSourceMessageID = current.OriginMessageID
+	}
+	if !s.CanCommitRequest(current.ConversationID, requestID, currentSourceMessageID) {
+		current = repositories.AIManualResumeTaskRepository.Get(sqls.DB(), task.ID)
+		if current == nil || current.TaskStatus != aiManualResumeTaskRunning {
+			return true
+		}
+		s.cancelTask(current, "manual resume was invalidated before rebuilding the deferred snapshot")
+		return true
+	}
 	conversation := ConversationService.Get(current.ConversationID)
-	message := s.resolveResumeMessage(current)
+	message, resumeSnapshot, hasResumeSnapshot := s.resolveResumeMessageWithSnapshot(current)
 	if conversation == nil || message == nil {
 		s.failOrRetry(current, fmt.Errorf("manual resume conversation or message is unavailable"), now)
 		return true
@@ -431,13 +444,16 @@ func (s *aiManualResumeTaskService) processOne(task models.AIManualResumeTask, n
 	messageCopy := *message
 	messageCopy.RequestID = requestID
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	if hasResumeSnapshot {
+		ctx = replyruntime.WithManualResumeSnapshot(ctx, resumeSnapshot)
+	}
 	err = TriggerAIReplySyncHook(ctx, *conversation, messageCopy)
 	cancel()
 	current = repositories.AIManualResumeTaskRepository.Get(sqls.DB(), task.ID)
 	if current == nil || current.TaskStatus != aiManualResumeTaskRunning {
 		return true
 	}
-	currentSourceMessageID := current.LatestWaitingMessageID
+	currentSourceMessageID = current.LatestWaitingMessageID
 	if currentSourceMessageID <= 0 {
 		currentSourceMessageID = current.OriginMessageID
 	}
@@ -615,8 +631,13 @@ func (s *aiManualResumeTaskService) latestCustomerMessageWithDB(db *gorm.DB, con
 }
 
 func (s *aiManualResumeTaskService) resolveResumeMessage(task *models.AIManualResumeTask) *models.Message {
+	message, _, _ := s.resolveResumeMessageWithSnapshot(task)
+	return message
+}
+
+func (s *aiManualResumeTaskService) resolveResumeMessageWithSnapshot(task *models.AIManualResumeTask) (*models.Message, replyruntime.ManualResumeSnapshot, bool) {
 	if task == nil {
-		return nil
+		return nil, replyruntime.ManualResumeSnapshot{}, false
 	}
 	messageID := task.LatestWaitingMessageID
 	if messageID <= 0 {
@@ -624,7 +645,7 @@ func (s *aiManualResumeTaskService) resolveResumeMessage(task *models.AIManualRe
 	}
 	message := MessageService.Get(messageID)
 	if message == nil || message.ConversationID != task.ConversationID || message.SenderType != enums.IMSenderTypeCustomer || message.RecalledAt != nil {
-		return nil
+		return nil, replyruntime.ManualResumeSnapshot{}, false
 	}
 	startID := task.OriginMessageID
 	if startID <= 0 || startID > message.ID {
@@ -637,7 +658,8 @@ func (s *aiManualResumeTaskService) resolveResumeMessage(task *models.AIManualRe
 		Lte("id", message.ID).
 		Where("recalled_at IS NULL AND send_status <> ?", enums.IMMessageStatusRecalled).
 		Asc("seq_no").Asc("id"))
-	sources := s.manualResumeSources(task, waitingMessages)
+	snapshot, hasSnapshot := s.manualResumeExecutionSnapshot(task, waitingMessages)
+	sources := manualResumeSourcesFromSnapshot(snapshot)
 	parts := make([]string, 0, len(sources))
 	for index, source := range sources {
 		if text := strings.TrimSpace(source.Text); text != "" {
@@ -647,93 +669,395 @@ func (s *aiManualResumeTaskService) resolveResumeMessage(task *models.AIManualRe
 	if len(parts) > 0 {
 		copyMessage := *message
 		copyMessage.Content = utils.BuildRuntimeCustomerBurstEnvelope(parts)
-		return &copyMessage
+		return &copyMessage, snapshot, hasSnapshot
 	}
-	return message
+	return message, snapshot, hasSnapshot
 }
 
 type manualResumeSource struct {
+	Ref         string
 	MessageID   int64
 	MessageType enums.IMMessageType
 	Text        string
 }
 
-type manualResumeDeferredTask struct {
-	TaskID             string   `json:"taskId"`
-	Text               string   `json:"text"`
-	OriginalText       string   `json:"originalText"`
-	ResolvedText       string   `json:"resolvedText"`
-	SourceRefs         []string `json:"sourceRefs"`
-	RelationToPrevious string   `json:"relationToPrevious"`
-	ResolutionState    string   `json:"resolutionState"`
-	MissingAspects     []string `json:"missingAspects"`
-}
+type manualResumeDeferredTask = replyruntime.ManualResumeTaskPlan
 
 type manualResumeTraceProjection struct {
 	Runtime struct {
+		Status string `json:"status"`
+		Input  struct {
+			CurrentTurnSources []replyruntime.ManualResumeSource `json:"currentTurnSources"`
+		} `json:"input"`
 		Pipeline struct {
 			ReplyPlan struct {
-				TaskPlans []manualResumeDeferredTask `json:"taskPlans"`
+				TaskPlans []replyruntime.ManualResumeTaskPlan `json:"taskPlans"`
 			} `json:"replyPlan"`
 			EvidenceJudge struct {
 				DeferredTaskIDs []string `json:"deferredTaskIds"`
 			} `json:"evidenceJudge"`
 		} `json:"pipeline"`
+		Output struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"output"`
+		Error struct {
+			Stage string `json:"stage"`
+		} `json:"error"`
 	} `json:"runtime"`
 }
 
 func (s *aiManualResumeTaskService) manualResumeSources(task *models.AIManualResumeTask, waitingMessages []models.Message) []manualResumeSource {
+	snapshot, _ := s.manualResumeExecutionSnapshot(task, waitingMessages)
+	return manualResumeSourcesFromSnapshot(snapshot)
+}
+
+func (s *aiManualResumeTaskService) manualResumeExecutionSnapshot(task *models.AIManualResumeTask, waitingMessages []models.Message) (replyruntime.ManualResumeSnapshot, bool) {
 	if task == nil {
-		return nil
+		return replyruntime.ManualResumeSnapshot{}, false
 	}
 	origin := MessageService.Get(task.OriginMessageID)
+	runLogID, deferredTasks, tracedSources, hasDeferredSnapshot := s.manualResumeDeferredSnapshot(task)
 	originalTurn := s.manualResumeOriginalTurn(origin)
-	deferredTasks, hasDeferredSnapshot := s.manualResumeDeferredTasks(task)
-
-	sources := make([]manualResumeSource, 0, len(deferredTasks)+len(waitingMessages))
-	if hasDeferredSnapshot {
-		sourceIndexByMessageID := make(map[int64]int, len(deferredTasks))
-		for _, deferredTask := range deferredTasks {
-			sourceMessage := manualResumeTaskSourceMessage(deferredTask, originalTurn, origin)
-			text := manualResumeDeferredTaskText(deferredTask)
-			if text == "" && sourceMessage != nil {
-				text = manualResumeMessageText(*sourceMessage)
-			}
-			if text == "" {
-				continue
-			}
-			source := manualResumeSource{Text: text}
-			if sourceMessage != nil {
-				source.MessageID = sourceMessage.ID
-				source.MessageType = sourceMessage.MessageType
-			}
-			if source.MessageID > 0 {
-				if sourceIndex, exists := sourceIndexByMessageID[source.MessageID]; exists {
-					sources[sourceIndex].Text = appendManualResumeSourceText(sources[sourceIndex].Text, source.Text)
-					continue
-				}
-				sourceIndexByMessageID[source.MessageID] = len(sources)
-			}
-			sources = append(sources, source)
-		}
-	}
-	if !hasDeferredSnapshot || len(sources) == 0 {
+	sources, traceSourcesValidated := s.manualResumeResolvedTraceSources(task, tracedSources, originalTurn)
+	traceSourcesInvalid := len(tracedSources) > 0 && len(sources) == 0
+	if len(sources) == 0 {
 		for _, item := range originalTurn {
 			if source, ok := manualResumeSourceFromMessage(item); ok {
 				sources = append(sources, source)
 			}
 		}
+		traceSourcesValidated = false
+	}
+	if traceSourcesInvalid {
+		hasDeferredSnapshot = false
+		deferredTasks = nil
 	}
 
+	newSources := make([]manualResumeSource, 0, len(waitingMessages))
 	for _, item := range waitingMessages {
 		if task.OriginMessageID > 0 && item.ID <= task.OriginMessageID {
 			continue
 		}
 		if source, ok := manualResumeSourceFromMessage(item); ok {
-			sources = append(sources, source)
+			if !manualResumeSourcesContainMessageID(sources, source.MessageID) {
+				sources = append(sources, source)
+				newSources = append(newSources, source)
+			}
 		}
 	}
-	return sources
+
+	oldRefToNew := make(map[string]string, len(sources)*2)
+	for index := range sources {
+		newRef := fmt.Sprintf("U%d", index+1)
+		oldRefToNew[newRef] = newRef
+		if oldRef := strings.ToUpper(strings.TrimSpace(sources[index].Ref)); oldRef != "" {
+			oldRefToNew[oldRef] = newRef
+		}
+		sources[index].Ref = newRef
+	}
+	for index := range newSources {
+		for _, source := range sources {
+			if source.MessageID == newSources[index].MessageID {
+				newSources[index].Ref = source.Ref
+				break
+			}
+		}
+	}
+	legacySourceRepair := false
+	originRef := manualResumeSourceRefByMessageID(sources, task.OriginMessageID)
+	for taskIndex := range deferredTasks {
+		mappedRefs := make([]string, 0, len(deferredTasks[taskIndex].SourceRefs))
+		for _, ref := range deferredTasks[taskIndex].SourceRefs {
+			mapped := oldRefToNew[strings.ToUpper(strings.TrimSpace(ref))]
+			if mapped == "" {
+				hasDeferredSnapshot = false
+				mappedRefs = nil
+				break
+			}
+			mappedRefs = append(mappedRefs, mapped)
+		}
+		if !hasDeferredSnapshot {
+			break
+		}
+		if len(mappedRefs) == 0 {
+			if originRef == "" {
+				hasDeferredSnapshot = false
+				break
+			}
+			mappedRefs = []string{originRef}
+			legacySourceRepair = true
+		}
+		deferredTasks[taskIndex].SourceRefs = mappedRefs
+	}
+
+	contractMode := ""
+	sourcesValidated := false
+	if hasDeferredSnapshot && len(deferredTasks) > 0 {
+		contractMode, sourcesValidated = manualResumeSnapshotContract(deferredTasks, sources, traceSourcesValidated && !legacySourceRepair)
+		if contractMode == "" {
+			hasDeferredSnapshot = false
+			deferredTasks = nil
+		}
+	}
+	if !hasDeferredSnapshot {
+		deferredTasks = nil
+	}
+
+	snapshot := replyruntime.ManualResumeSnapshot{
+		RunLogID:         runLogID,
+		ContractMode:     contractMode,
+		SourcesValidated: sourcesValidated,
+		FrozenTasks:      append([]replyruntime.ManualResumeTaskPlan(nil), deferredTasks...),
+		Sources:          make([]replyruntime.ManualResumeSource, 0, len(sources)),
+		NewSources:       make([]replyruntime.ManualResumeSource, 0, len(newSources)),
+	}
+	for _, source := range sources {
+		snapshot.Sources = append(snapshot.Sources, manualResumeTraceSource(source))
+	}
+	for _, source := range newSources {
+		snapshot.NewSources = append(snapshot.NewSources, manualResumeTraceSource(source))
+	}
+	return snapshot, hasDeferredSnapshot && len(deferredTasks) > 0
+}
+
+func (s *aiManualResumeTaskService) manualResumeResolvedTraceSources(task *models.AIManualResumeTask, traced []replyruntime.ManualResumeSource, originalTurn []models.Message) ([]manualResumeSource, bool) {
+	if task == nil || len(traced) == 0 {
+		return nil, false
+	}
+	ret := make([]manualResumeSource, 0, len(traced))
+	seenRefs := make(map[string]struct{}, len(traced))
+	seenMessageIDs := make(map[int64]struct{}, len(traced))
+	strict := true
+	lastMessageID := int64(0)
+	for sourceIndex, tracedSource := range traced {
+		ref := strings.ToUpper(strings.TrimSpace(tracedSource.Ref))
+		if ref != fmt.Sprintf("U%d", sourceIndex+1) {
+			return nil, false
+		}
+		if _, exists := seenRefs[ref]; exists {
+			return nil, false
+		}
+		seenRefs[ref] = struct{}{}
+
+		messageID := tracedSource.MessageID
+		if messageID <= 0 {
+			strict = false
+			index := manualResumeSourceRefIndex(ref)
+			if index < 0 || index >= len(originalTurn) {
+				return nil, false
+			}
+			messageID = originalTurn[index].ID
+		}
+		if _, exists := seenMessageIDs[messageID]; exists {
+			return nil, false
+		}
+		message := MessageService.Get(messageID)
+		if message == nil || message.ConversationID != task.ConversationID || message.SenderType != enums.IMSenderTypeCustomer ||
+			message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled || message.ID <= lastMessageID {
+			return nil, false
+		}
+		source, ok := manualResumeSourceFromMessage(*message)
+		if !ok {
+			return nil, false
+		}
+		source.Ref = ref
+		ret = append(ret, source)
+		seenMessageIDs[messageID] = struct{}{}
+		lastMessageID = message.ID
+	}
+	if len(ret) == 0 || task.OriginMessageID <= 0 || ret[len(ret)-1].MessageID != task.OriginMessageID {
+		return nil, false
+	}
+	return ret, strict
+}
+
+func manualResumeSourceRefIndex(ref string) int {
+	ref = strings.ToUpper(strings.TrimSpace(ref))
+	if !strings.HasPrefix(ref, "U") {
+		return -1
+	}
+	value, err := strconv.Atoi(strings.TrimPrefix(ref, "U"))
+	if err != nil || value <= 0 {
+		return -1
+	}
+	return value - 1
+}
+
+func manualResumeSourceRefByMessageID(sources []manualResumeSource, messageID int64) string {
+	if messageID <= 0 {
+		return ""
+	}
+	for _, source := range sources {
+		if source.MessageID == messageID {
+			return strings.ToUpper(strings.TrimSpace(source.Ref))
+		}
+	}
+	return ""
+}
+
+func manualResumeSnapshotContract(tasks []manualResumeDeferredTask, sources []manualResumeSource, strictSources bool) (string, bool) {
+	if len(tasks) == 0 || !manualResumeTaskPlansHaveValidSources(tasks, sources) {
+		return "", false
+	}
+	if strictSources {
+		if manualResumeTaskPlansAreV2(tasks) {
+			return replyruntime.ManualResumeContractV2, true
+		}
+		return "", false
+	}
+	if manualResumeTaskPlansAreLegacySafe(tasks) {
+		return replyruntime.ManualResumeContractLegacy, false
+	}
+	return "", false
+}
+
+func manualResumeTaskPlansHaveValidSources(tasks []manualResumeDeferredTask, sources []manualResumeSource) bool {
+	validRefs := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		ref := strings.ToUpper(strings.TrimSpace(source.Ref))
+		if ref == "" || source.MessageID <= 0 {
+			return false
+		}
+		validRefs[ref] = struct{}{}
+	}
+	for _, task := range tasks {
+		if len(task.SourceRefs) == 0 {
+			return false
+		}
+		for _, ref := range task.SourceRefs {
+			if _, ok := validRefs[strings.ToUpper(strings.TrimSpace(ref))]; !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func manualResumeTaskPlansAreV2(tasks []manualResumeDeferredTask) bool {
+	seenTaskIDs := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			return false
+		}
+		if _, exists := seenTaskIDs[taskID]; exists {
+			return false
+		}
+		seenTaskIDs[taskID] = struct{}{}
+		if !manualResumeValidIntent(task.Intent) ||
+			!manualResumeValidObjective(task.Objective) ||
+			!manualResumeValidRelation(task.RelationToPrevious) ||
+			!manualResumeValidResolution(task.ResolutionState) ||
+			strings.TrimSpace(manualResumeFirstNonEmptyText(task.OriginalText, task.Text)) == "" ||
+			strings.TrimSpace(task.ResolvedText) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func manualResumeFirstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func manualResumeTaskPlansAreLegacySafe(tasks []manualResumeDeferredTask) bool {
+	seenTaskIDs := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" || !manualResumeValidIntent(task.Intent) || strings.TrimSpace(manualResumeDeferredTaskText(task)) == "" {
+			return false
+		}
+		if _, exists := seenTaskIDs[taskID]; exists {
+			return false
+		}
+		seenTaskIDs[taskID] = struct{}{}
+	}
+	return true
+}
+
+func manualResumeValidIntent(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "hotel_info", "service_request", "human_complaint_risk", "interaction", "hotel_variable":
+		return true
+	default:
+		return false
+	}
+}
+
+func manualResumeValidObjective(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "availability", "quantity", "location", "price", "time", "policy", "method", "explanation", "recommendation", "identity", "general_guidance", "compound_information", "action_request", "status", "modify", "cancel", "confirm", "complaint", "social", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func manualResumeValidRelation(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "independent", "follow_up", "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
+		return true
+	default:
+		return false
+	}
+}
+
+func manualResumeValidResolution(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "clear", "resolved_from_context", "ambiguous", "unresolved":
+		return true
+	default:
+		return false
+	}
+}
+
+func manualResumeSourcesFromSnapshot(snapshot replyruntime.ManualResumeSnapshot) []manualResumeSource {
+	ret := make([]manualResumeSource, 0, len(snapshot.Sources))
+	for _, source := range snapshot.Sources {
+		if converted, ok := manualResumeSourceFromTrace(source); ok {
+			ret = append(ret, converted)
+		}
+	}
+	return ret
+}
+
+func manualResumeSourceFromTrace(source replyruntime.ManualResumeSource) (manualResumeSource, bool) {
+	text := strings.TrimSpace(source.Text)
+	if text == "" {
+		return manualResumeSource{}, false
+	}
+	return manualResumeSource{
+		Ref:         strings.ToUpper(strings.TrimSpace(source.Ref)),
+		MessageID:   source.MessageID,
+		MessageType: enums.IMMessageType(strings.TrimSpace(source.MessageType)),
+		Text:        text,
+	}, true
+}
+
+func manualResumeTraceSource(source manualResumeSource) replyruntime.ManualResumeSource {
+	return replyruntime.ManualResumeSource{
+		Ref:         source.Ref,
+		MessageID:   source.MessageID,
+		MessageType: string(source.MessageType),
+		Text:        source.Text,
+	}
+}
+
+func manualResumeSourcesContainMessageID(sources []manualResumeSource, messageID int64) bool {
+	if messageID <= 0 {
+		return false
+	}
+	for _, source := range sources {
+		if source.MessageID == messageID {
+			return true
+		}
+	}
+	return false
 }
 
 func appendManualResumeSourceText(current string, next string) string {
@@ -753,38 +1077,73 @@ func appendManualResumeSourceText(current string, next string) string {
 	return current + "\n" + next
 }
 
-func (s *aiManualResumeTaskService) manualResumeDeferredTasks(task *models.AIManualResumeTask) ([]manualResumeDeferredTask, bool) {
+func (s *aiManualResumeTaskService) manualResumeDeferredSnapshot(task *models.AIManualResumeTask) (int64, []manualResumeDeferredTask, []replyruntime.ManualResumeSource, bool) {
 	if task == nil || task.OriginMessageID <= 0 {
-		return nil, false
+		return 0, nil, nil, false
 	}
-	runLog := AgentRunLogService.FindOne(sqls.NewCnd().
+	runLogs := AgentRunLogService.Find(sqls.NewCnd().
 		Eq("conversation_id", task.ConversationID).
 		Eq("message_id", task.OriginMessageID).
-		Desc("id"))
-	if runLog == nil || strings.TrimSpace(runLog.TraceData) == "" {
-		return nil, false
-	}
-	var projection manualResumeTraceProjection
-	if err := json.Unmarshal([]byte(runLog.TraceData), &projection); err != nil {
-		return nil, false
-	}
-	deferredIDs := projection.Runtime.Pipeline.EvidenceJudge.DeferredTaskIDs
-	if len(deferredIDs) == 0 {
-		return nil, false
-	}
-	deferredSet := make(map[string]struct{}, len(deferredIDs))
-	for _, taskID := range deferredIDs {
-		if taskID = strings.TrimSpace(taskID); taskID != "" {
-			deferredSet[taskID] = struct{}{}
+		Desc("id").
+		Limit(50))
+	for _, runLog := range runLogs {
+		if strings.TrimSpace(runLog.TraceData) == "" {
+			continue
 		}
-	}
-	ret := make([]manualResumeDeferredTask, 0, len(deferredSet))
-	for _, taskPlan := range projection.Runtime.Pipeline.ReplyPlan.TaskPlans {
-		if _, ok := deferredSet[strings.TrimSpace(taskPlan.TaskID)]; ok {
-			ret = append(ret, taskPlan)
+		var projection manualResumeTraceProjection
+		if err := json.Unmarshal([]byte(runLog.TraceData), &projection); err != nil {
+			continue
 		}
+		if !manualResumeTraceIsAuthoritative(projection) {
+			continue
+		}
+		deferredIDs := projection.Runtime.Pipeline.EvidenceJudge.DeferredTaskIDs
+		if len(deferredIDs) == 0 {
+			return 0, nil, nil, false
+		}
+		deferredSet := make(map[string]struct{}, len(deferredIDs))
+		for _, taskID := range deferredIDs {
+			if taskID = strings.TrimSpace(taskID); taskID != "" {
+				if _, exists := deferredSet[taskID]; exists {
+					return 0, nil, nil, false
+				}
+				deferredSet[taskID] = struct{}{}
+			}
+		}
+		if len(deferredSet) == 0 {
+			return 0, nil, nil, false
+		}
+		ret := make([]manualResumeDeferredTask, 0, len(deferredSet))
+		matched := make(map[string]struct{}, len(deferredSet))
+		for _, taskPlan := range projection.Runtime.Pipeline.ReplyPlan.TaskPlans {
+			taskID := strings.TrimSpace(taskPlan.TaskID)
+			if _, ok := deferredSet[taskID]; ok {
+				ret = append(ret, taskPlan)
+				matched[taskID] = struct{}{}
+			}
+		}
+		if len(matched) != len(deferredSet) || len(ret) != len(deferredSet) {
+			return 0, nil, nil, false
+		}
+		return runLog.ID, ret, append([]replyruntime.ManualResumeSource(nil), projection.Runtime.Input.CurrentTurnSources...), true
 	}
-	return ret, len(ret) > 0
+	return 0, nil, nil, false
+}
+
+func manualResumeTraceIsAuthoritative(projection manualResumeTraceProjection) bool {
+	if len(projection.Runtime.Pipeline.EvidenceJudge.DeferredTaskIDs) > 0 &&
+		len(projection.Runtime.Pipeline.ReplyPlan.TaskPlans) > 0 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(projection.Runtime.Status)) {
+	case "completed", "interrupted", "fallback":
+		return true
+	case "error", "started":
+		return false
+	default:
+		return strings.TrimSpace(projection.Runtime.Output.FinishReason) != "" &&
+			strings.TrimSpace(projection.Runtime.Error.Stage) == ""
+	}
 }
 
 func (s *aiManualResumeTaskService) manualResumeOriginalTurn(origin *models.Message) []models.Message {
@@ -858,7 +1217,8 @@ func manualResumeDeferredTaskText(task manualResumeDeferredTask) string {
 }
 
 func manualResumeSourceFromMessage(message models.Message) (manualResumeSource, bool) {
-	if isConsumedHandoffConfirmationMessage(message) ||
+	if message.RecalledAt != nil || message.SendStatus == enums.IMMessageStatusRecalled ||
+		isConsumedHandoffConfirmationMessage(message) ||
 		(message.SenderType == enums.IMSenderTypeCustomer && utils.IsStandaloneOneTextControl(message.MessageType, message.Content)) {
 		return manualResumeSource{}, false
 	}
