@@ -500,13 +500,23 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	var b strings.Builder
 	currentText := currentRuntimeIntentSemanticText(req)
 	currentDisplayText := currentText
-	sourceTexts := currentTurnIntentSourceTexts(currentDisplayText)
-	if len(sourceTexts) > 0 {
+	currentSources := adapter.BuildCurrentTurnSources(req.UserMessage)
+	if len(currentSources) > 0 {
 		b.WriteString("必须分类的当前消息（按来源顺序）:\n[CURRENT_TURN_SOURCE_REFS]\n")
-		for index, text := range sourceTexts {
-			b.WriteString(fmt.Sprintf("U%d: %s\n", index+1, text))
+		for index, source := range currentSources {
+			ref := strings.TrimSpace(source.Ref)
+			if ref == "" {
+				ref = fmt.Sprintf("U%d", index+1)
+			}
+			b.WriteString(ref)
+			if source.MessageID > 0 {
+				b.WriteString(fmt.Sprintf(" [messageId=%d]", source.MessageID))
+			}
+			b.WriteString(": ")
+			b.WriteString(strings.TrimSpace(source.Text))
+			b.WriteString("\n")
 		}
-		b.WriteString("每个 intentTasks 项都要输出 sourceRefs；sourceRefs[0] 是该任务的主要问题来源，其余是被该任务共同消化的相邻上下文。只能引用上面列出的 URef。")
+		b.WriteString("每个 intentTasks 项都要输出 sourceRefs；sourceRefs[0] 是该任务的主要问题来源，其余是被该任务共同消化的相邻上下文。只能引用上面列出的 URef；messageId 只用于系统追踪，sourceRefs 中只写 U1、U2 这类 URef。")
 	} else {
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
@@ -835,15 +845,25 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 			intent.Reason = appendIntentReason(intent.Reason, fmt.Sprintf("current-turn grounding dropped %d unbound intent task(s)", droppedUngroundedTasks))
 		}
 	}
-	semanticGate := applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
-		HasResolvableAdjacentContext: hasResolvableAdjacentIntentContext(history),
-		HasAdjacentAIReply:           hasImmediatelyPreviousAIReply(history),
-		RequireSemanticContract:      intent.SemanticContractExpected,
-		CurrentTurnRefsValid:         intent.SourceRefsValidated && len(currentSourceTexts) > 0,
-	})
-	intent = semanticGate.Intent
-	for _, violation := range semanticGate.Violations {
-		intent.Reason = appendIntentReason(intent.Reason, "semantic gate: "+violation.Code)
+	semanticGate := runtimeIntentSemanticGateResult{
+		Intent:                           intent,
+		ContractMode:                     runtimeIntentSemanticContractActive,
+		SuppressLegacyConfidenceFallback: intent.SemanticContractExpected && len(intent.IntentTasks) > 0,
+	}
+	if intent.SemanticContractExpected {
+		intent = normalizeModelOwnedIntentTaskActions(intent)
+		semanticGate.Intent = intent
+	} else {
+		semanticGate = applyRuntimeIntentSemanticConsistencyGateFromTrace(intent, runtimeIntentSemanticGateContext{
+			HasResolvableAdjacentContext: hasResolvableAdjacentIntentContext(history),
+			HasAdjacentAIReply:           hasImmediatelyPreviousAIReply(history),
+			RequireSemanticContract:      false,
+			CurrentTurnRefsValid:         false,
+		})
+		intent = semanticGate.Intent
+		for _, violation := range semanticGate.Violations {
+			intent.Reason = appendIntentReason(intent.Reason, "semantic gate: "+violation.Code)
+		}
 	}
 	if intent.IntentConfidence < 0.45 && intent.PrimaryIntent != "human_complaint_risk" && !semanticGate.SuppressLegacyConfidenceFallback {
 		if semanticGate.ContractMode == runtimeIntentSemanticContractLegacy {
@@ -963,6 +983,13 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 		intent.MatchedConfigID = config.ID
 		intent.MatchedConfig = strings.TrimSpace(config.Name)
 		intent.MatchMode = "model"
+	}
+	return intent
+}
+
+func normalizeModelOwnedIntentTaskActions(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	for index := range intent.IntentTasks {
+		intent.IntentTasks[index] = semanticGateRestrictTaskActions(intent.IntentTasks[index])
 	}
 	return intent
 }

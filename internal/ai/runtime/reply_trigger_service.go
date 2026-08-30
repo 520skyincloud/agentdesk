@@ -471,6 +471,9 @@ func timePrefixForBurst(item models.Message, index int) string {
 	case enums.IMMessageTypeGIF:
 		label = "表情"
 	}
+	if item.ID > 0 {
+		return fmt.Sprintf("%d. [%s%d] ", index, label, item.ID)
+	}
 	return fmt.Sprintf("%d. [%s] ", index, label)
 }
 
