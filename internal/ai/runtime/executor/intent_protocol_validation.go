@@ -14,17 +14,14 @@ type runtimeIntentProtocolRepairContext struct {
 }
 
 func repairRuntimeIntentDetectProtocol(parsed *runtimeIntentDetectJSON, currentText string, context runtimeIntentProtocolRepairContext, enforce bool) {
-	if parsed == nil || !enforce || len(parsed.IntentTasks) == 0 {
-		return
-	}
-	candidates := currentTurnTaskCandidates(currentText)
-	if len(candidates) == 0 {
-		return
-	}
-	tasks := []runtimeIntentTaskJSON(parsed.IntentTasks)
-	repairRuntimeIntentProtocolCurrentTurnReferences(tasks, currentTurnIntentSourceTexts(currentText))
-	repairRuntimeIntentProtocolCurrentReference(tasks, candidates, context)
-	repairRuntimeIntentProtocolRepeatReference(tasks, candidates, context)
+	// IntentDetect owns semantic task boundaries and context resolution. Local
+	// code deliberately does not rewrite text/resolvedText or infer a competing
+	// task count from punctuation and keywords. The parameters remain in the
+	// signature for compatibility with legacy profiles and focused tests.
+	_ = parsed
+	_ = currentText
+	_ = context
+	_ = enforce
 }
 
 func repairRuntimeIntentProtocolCurrentTurnReferences(tasks []runtimeIntentTaskJSON, sourceTexts []string) int {
@@ -193,22 +190,34 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 	if !enforce {
 		return nil
 	}
-	if err := validateRuntimeIntentCurrentTurnReferenceContexts(parsed, currentText); err != nil {
-		return err
+	sourceTexts := currentTurnIntentSourceTexts(currentText)
+	for taskIndex, task := range parsed.IntentTasks {
+		if semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext {
+			continue
+		}
+		contextParts := make([]string, 0, len(task.SourceRefs)+2)
+		for refIndex, ref := range task.SourceRefs {
+			sourceIndex := runtimeIntentSourceRefIndex(ref)
+			if sourceIndex < 0 || sourceIndex >= len(sourceTexts) || refIndex == 0 {
+				continue
+			}
+			contextParts = append(contextParts, sourceTexts[sourceIndex])
+		}
+		if semanticGateRelationUsesPrevious(task.RelationToPrevious) {
+			contextParts = append(contextParts, context.PreviousCustomerText, context.AdjacentAIReply)
+		}
+		candidate := strings.TrimSpace(task.Text)
+		if candidate == "" && len(task.SourceRefs) > 0 {
+			primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+			if primaryIndex >= 0 && primaryIndex < len(sourceTexts) {
+				candidate = sourceTexts[primaryIndex]
+			}
+		}
+		if err := validateRuntimeIntentProtocolResolvedEntities(task, candidate, strings.Join(contextParts, " ")); err != nil {
+			return fmt.Errorf("intentTasks[%d] %w", taskIndex, err)
+		}
 	}
-	if len(parsed.IntentTasks) != 1 {
-		return nil
-	}
-	candidates := currentTurnTaskCandidates(currentText)
-	if len(candidates) != 1 || !runtimeIntentAtomicCandidateRequiresContext(candidates[0]) {
-		return nil
-	}
-	task := parsed.IntentTasks[0]
-	if !semanticGateRelationUsesPrevious(task.RelationToPrevious) ||
-		semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext {
-		return nil
-	}
-	return validateRuntimeIntentResolvedReferenceTaskContext(task, candidates[0], context)
+	return nil
 }
 
 func validateRuntimeIntentCurrentTurnReferenceContexts(parsed runtimeIntentDetectJSON, currentText string) error {
@@ -895,59 +904,10 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if !semanticGateValidResolution(resolution) {
 			return fmt.Errorf("intentTasks[%d].resolutionState is missing or invalid", index)
 		}
-		if canonicalIntentCode(task.Intent) == "interaction" && runtimeIntentTaskHasExplicitBusinessInformationTarget(task) {
-			return fmt.Errorf("intentTasks[%d] has an explicit business information target and cannot use interaction/clarify", index)
-		}
-	}
-
-	var candidates []string
-	if !requireSourceRefs || len(sourceTexts) == 0 {
-		candidates = currentTurnTaskCandidates(currentText)
-	}
-	taskCandidates := make([]int, len(tasks))
-	for index := range taskCandidates {
-		taskCandidates[index] = -1
 	}
 	if requireSourceRefs && len(sourceTexts) > 0 {
 		if err := validateRuntimeIntentProtocolModelOwnedSources(tasks, sourceTexts); err != nil {
 			return err
-		}
-		if requireSemantics {
-			if err := validateRuntimeIntentProtocolAtomicCoverageBySource(tasks, sourceTexts); err != nil {
-				return err
-			}
-		}
-	} else if len(candidates) > 0 && (requireSemantics || len(candidates) > 1) {
-		var err error
-		taskCandidates, err = assignRuntimeIntentProtocolCandidates(tasks, candidates, sourceTexts)
-		if err != nil {
-			return err
-		}
-	}
-	if !requireSemantics {
-		return nil
-	}
-	for taskIndex, task := range tasks {
-		candidateText := strings.TrimSpace(task.Text)
-		if candidateIndex := taskCandidates[taskIndex]; candidateIndex >= 0 && candidateIndex < len(candidates) {
-			candidateText = candidates[candidateIndex]
-		}
-		resolution := semanticGateNormalizeResolution(task.ResolutionState)
-		candidateRequiresContext := runtimeIntentAtomicCandidateRequiresContext(candidateText) ||
-			runtimeIntentProtocolRelationAuthorizesContextResolution(task, candidateText, sourceTexts) ||
-			(resolution == runtimeIntentResolutionResolvedFromContext &&
-				runtimeIntentProtocolCurrentTurnContextAuthorizesResolution(task, candidateText, sourceTexts))
-		if resolution == runtimeIntentResolutionResolvedFromContext && !candidateRequiresContext {
-			return fmt.Errorf("intentTasks[%d].resolutionState resolved_from_context requires context-dependent original text", taskIndex)
-		}
-		if candidateRequiresContext && runtimeIntentProtocolTaskHasExecutableBusiness(task) {
-			if resolution != runtimeIntentResolutionResolvedFromContext {
-				return fmt.Errorf("intentTasks[%d].resolutionState must be resolved_from_context for context-dependent original text", taskIndex)
-			}
-			if (canonicalIntentCode(task.Intent) == "hotel_info" || task.NeedsKnowledge) &&
-				runtimeIntentAtomicCandidateRequiresContext(task.ResolvedText) {
-				return fmt.Errorf("intentTasks[%d].resolvedText must be a self-contained question after context resolution", taskIndex)
-			}
 		}
 	}
 	return nil
@@ -957,46 +917,33 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 // order. IntentDetect alone decides how many tasks exist and where their
 // semantic boundaries are; local code must not infer a competing task count.
 func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
-	referencedSources := make([]bool, len(sourceTexts))
 	lastPrimarySource := -1
-	nextSourcePosition := make([]int, len(sourceTexts))
+	seenTasks := make(map[string]int, len(tasks))
 
 	for taskIndex, task := range tasks {
-		for _, ref := range task.SourceRefs {
-			refIndex := runtimeIntentSourceRefIndex(ref)
-			if refIndex >= 0 && refIndex < len(referencedSources) {
-				referencedSources[refIndex] = true
-			}
-		}
 		primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
 		if primarySource < lastPrimarySource {
 			return fmt.Errorf("intentTasks[%d] is out of current-turn source order", taskIndex)
 		}
 		lastPrimarySource = primarySource
-
-		sourceText := normalizeRuntimeIntentProtocolAtomicText(sourceTexts[primarySource])
-		taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
-		if sourceText == "" || taskText == "" {
-			return fmt.Errorf("intentTasks[%d].text cannot be grounded in its primary source", taskIndex)
+		key := runtimeIntentProtocolExactTaskKey(task)
+		if previousIndex, exists := seenTasks[key]; exists {
+			return fmt.Errorf("intentTasks[%d] exactly duplicates intentTasks[%d]", taskIndex, previousIndex)
 		}
-		searchFrom := nextSourcePosition[primarySource]
-		relativeIndex := strings.Index(sourceText[searchFrom:], taskText)
-		if relativeIndex < 0 {
-			if strings.Contains(sourceText, taskText) {
-				return fmt.Errorf("intentTasks[%d].text repeats or overlaps an earlier task in the same source", taskIndex)
-			}
-			return fmt.Errorf("intentTasks[%d].text is not a literal span of its primary source", taskIndex)
-		}
-		start := searchFrom + relativeIndex
-		nextSourcePosition[primarySource] = start + len(taskText)
-	}
-
-	for sourceIndex, referenced := range referencedSources {
-		if !referenced {
-			return fmt.Errorf("current-turn source U%d is not covered by any intentTask sourceRefs", sourceIndex+1)
-		}
+		seenTasks[key] = taskIndex
 	}
 	return nil
+}
+
+func runtimeIntentProtocolExactTaskKey(task runtimeIntentTaskJSON) string {
+	parts := []string{
+		canonicalIntentCode(task.Intent),
+		strings.ToLower(strings.TrimSpace(task.SubIntent)),
+		semanticGateNormalizeObjective(task.Objective),
+		normalizeRuntimeIntentProtocolAtomicText(task.Text),
+		strings.Join([]string(task.SourceRefs), ","),
+	}
+	return strings.Join(parts, "|")
 }
 
 // validateRuntimeIntentProtocolAtomicCoverageBySource is a conservative

@@ -16,6 +16,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/securex"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
@@ -1448,8 +1449,15 @@ func TestRuntimePipelineDoesNotBypassIntentModelWithKeywordGuard(t *testing.T) {
 }
 
 func TestIsMultiQuestionCurrentTurnDetectsContinuousHotelQuestions(t *testing.T) {
-	if !isMultiQuestionCurrentTurn("早餐有吗\n停车免费吗\n剃须刀在哪") {
-		t.Fatal("expected continuous hotel questions to be treated as multi-question current turn")
+	if isMultiQuestionCurrentTurn("早餐有吗\n停车免费吗\n剃须刀在哪") {
+		t.Fatal("plain text from one physical message must leave task count to IntentDetect")
+	}
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 早餐有吗",
+		"2. [消息102] 停车免费吗",
+	})
+	if !isMultiQuestionCurrentTurn(burst) {
+		t.Fatal("multiple physical customer messages must remain a current-turn burst")
 	}
 }
 
