@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"agent-desk/internal/ai/rag"
@@ -16,6 +17,7 @@ import (
 )
 
 type fakeKnowledgeContextRetriever struct {
+	mu               sync.Mutex
 	knowledgeBaseIDs []int64
 	result           *retrievers.KnowledgeRetrieveResult
 	resultsByQuery   map[string]*retrievers.KnowledgeRetrieveResult
@@ -29,8 +31,10 @@ func (r *fakeKnowledgeContextRetriever) KnowledgeBaseIDs() []int64 {
 }
 
 func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Context, opts retrievers.KnowledgeRetrieveOptions, query string) (*retrievers.KnowledgeRetrieveResult, error) {
+	r.mu.Lock()
 	r.called = true
 	r.queries = append(r.queries, query)
+	r.mu.Unlock()
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -468,6 +472,10 @@ func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
 	}
 	if state.RetrieveResult == nil || strings.Contains(state.RetrieveResult.ContextText, "转接") {
 		t.Fatalf("expected internal directive to stay out of Generate context, got %#v", state.RetrieveResult)
+	}
+	if collector.Data.Retriever.ContextCount != 0 || len(collector.Data.Retriever.Items) != 1 ||
+		collector.Data.Retriever.Items[0].UsedInContext || collector.Data.Retriever.Items[0].ContextRankNo != 0 {
+		t.Fatalf("handoff evidence must not remain marked as Generate context: %#v", collector.Data.Retriever)
 	}
 	if !actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
 		t.Fatalf("expected handoff request in action ledger, got %#v", collector.Data.ActionLedger)
@@ -1087,6 +1095,14 @@ func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
 	}
 	if summary.RetrieverCount != 3 || collector.Data.Retriever.Count != 3 || len(collector.Data.Retriever.Items) != 3 {
 		t.Fatalf("raw retrieval trace must survive all-pending early return, summary=%d retriever=%#v", summary.RetrieverCount, collector.Data.Retriever)
+	}
+	if collector.Data.Retriever.ContextCount != 0 {
+		t.Fatalf("final retriever summary must reflect the cleared effective context: %#v", collector.Data.Retriever)
+	}
+	for _, item := range collector.Data.Retriever.Items {
+		if item.UsedInContext || item.ContextRankNo != 0 {
+			t.Fatalf("final retriever trace must reflect the empty Judge selection: %#v", collector.Data.Retriever.Items)
+		}
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
 	if trace.Status != "completed" || trace.TaskCount != 1 || trace.CandidateCount != 3 || len(trace.Tasks) != 1 {

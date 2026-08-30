@@ -115,6 +115,12 @@ func (c *RuntimeTraceCollector) AddRetrieverItems(items []RetrieverTraceItem) {
 	c.Data.Retriever.Items = append(c.Data.Retriever.Items, items...)
 }
 
+func (c *RuntimeTraceCollector) SetRetrieverItems(items []RetrieverTraceItem) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Data.Retriever.Items = append([]RetrieverTraceItem(nil), items...)
+}
+
 func (c *RuntimeTraceCollector) SetAnswerability(data AnswerabilityTraceData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -224,10 +224,10 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetTenTasksKeepsLowerRankCompleteStor
 	if len(target.Candidates) != 2 {
 		t.Fatalf("expected constrained ordinary task quota 2, got %#v", target.Candidates)
 	}
-	want := []string{"T10C1", "T10C3"}
+	want := []string{"T10C3", "T10C4"}
 	for index, candidateID := range want {
 		if target.Candidates[index].CandidateID != candidateID {
-			t.Fatalf("lower-ranked complete store FAQ was displaced by general knowledge: %#v", target.Candidates)
+			t.Fatalf("quota two must preserve the complete store FAQ and a general fallback: %#v", target.Candidates)
 		}
 	}
 }
@@ -291,20 +291,15 @@ func TestKnowledgeEvidenceJudgeCompoundBudgetKeepsLowerRankCompleteStoreFAQ(t *t
 			{CandidateID: "T1C4", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：发票能备注入住人姓名吗\n答案：通用规则允许备注入住人姓名。"}},
 		},
 	}
-
 	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "compound_information"}, 2)
 	if len(limited) != 1 || len(limited[0].Candidates) != 2 {
 		t.Fatalf("expected compound quota 2, got %#v", limited)
 	}
-	seen := map[string]bool{}
-	for _, candidate := range limited[0].Candidates {
-		seen[candidate.CandidateID] = true
-		if candidate.Layer == knowledgeEvidenceLayerGeneral {
-			t.Fatalf("general fallback must not displace a complete store FAQ: %#v", limited[0].Candidates)
+	want := []string{"T1C3", "T1C4"}
+	for index, candidateID := range want {
+		if limited[0].Candidates[index].CandidateID != candidateID {
+			t.Fatalf("compound quota two must preserve the complete store FAQ and a general fallback: %#v", limited[0].Candidates)
 		}
-	}
-	if !seen["T1C3"] {
-		t.Fatalf("compound selection lost the lower-ranked complete store FAQ: %#v", limited[0].Candidates)
 	}
 }
 
@@ -327,6 +322,37 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetUsesGeneralFallbackOnlyWithoutComp
 	for index, candidateID := range want {
 		if limited[0].Candidates[index].CandidateID != candidateID {
 			t.Fatalf("general fallback priority changed: %#v", limited[0].Candidates)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsRequiredStorePairBeforeGeneralFallback(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "停车收费吗，并且停车场有没有充电桩",
+		Objective: "compound_information",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "停车", Type: "service"},
+			{Text: "充电桩", Type: "facility"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.93, Content: "问题：停车收费吗\n答案：酒店提供免费停车服务。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.91, Content: "问题：停车场有没有充电桩\n答案：停车场有充电桩。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：停车相关问题怎么办\n答案：请联系门店确认。"}},
+		},
+	}
+	if first, second, ok := bestCompleteKnowledgeEvidenceJudgeCandidatePairIndexes(task, knowledgeEvidenceLayerStore); !ok || first != 0 || second != 1 {
+		t.Fatalf("expected the two complementary store candidates to form a complete pair, got %d/%d complete=%v", first, second, ok)
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "compound_information"}, 2)
+	if len(limited) != 1 || len(limited[0].Candidates) != 2 {
+		t.Fatalf("expected the required two-candidate store pair, got %#v", limited)
+	}
+	want := []string{"T1C1", "T1C2"}
+	for index, candidateID := range want {
+		if limited[0].Candidates[index].CandidateID != candidateID {
+			t.Fatalf("general fallback displaced required store evidence: %#v", limited[0].Candidates)
 		}
 	}
 }
