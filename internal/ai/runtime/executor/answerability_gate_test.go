@@ -1229,6 +1229,31 @@ func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibli
 	}
 }
 
+func TestKnowledgePolicyUnavailableRetrieverKeepsPureKnowledgeHandoff(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}})
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(nil).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusUnanswerable {
+		t.Fatalf("unexpected answerability status: %q", state.AnswerabilityStatus)
+	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
+		t.Fatalf("pure knowledge request must keep a real handoff when the retriever is unavailable: %#v", summary)
+	}
+}
+
 func TestAppendRetrievedContextKeepsSkippedRuntimeActionInstruction(t *testing.T) {
 	messages := []*schema.Message{schema.SystemMessage("base instruction")}
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}})

@@ -2218,7 +2218,9 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
-		deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用")
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索器不可用")
+		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
