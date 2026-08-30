@@ -971,6 +971,9 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
 		return protocolInvalid
 	}
+	if !selectedHandoff && decision != knowledgeEvidenceDecisionPartial && !selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(expectedTask, layer, selectedIDs) {
+		return protocolInvalid
+	}
 	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
 	factsMalformed := err != nil
 	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
@@ -999,7 +1002,7 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	needsFactRepair := factsMalformed
 	mechanicallyMissingAspects := []string(nil)
 	if !factsMalformed && !selectedHandoff {
-		mechanicallyMissingAspects = missingRequiredKnowledgeEvidenceAspects(expectedTask, supportedFacts)
+		mechanicallyMissingAspects = strictMechanicalMissingKnowledgeEvidenceAspects(expectedTask, supportedFacts)
 	}
 	switch decision {
 	case knowledgeEvidenceDecisionInsufficient:
@@ -1070,6 +1073,9 @@ func repairModelSelectedKnowledgeEvidenceLayer(
 			SelectedCandidateIDs: append([]string(nil), selectedCandidateIDs...),
 		}, true
 	}
+	if decision != knowledgeEvidenceDecisionPartial && !selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, layer, selectedCandidateIDs) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
 
 	selected := make(map[string]struct{}, len(selectedCandidateIDs))
 	for _, candidateID := range selectedCandidateIDs {
@@ -1113,7 +1119,7 @@ func repairModelSelectedKnowledgeEvidenceLayer(
 	if len(facts) == 0 {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
-	mechanicallyMissingAspects := missingRequiredKnowledgeEvidenceAspects(task, facts)
+	mechanicallyMissingAspects := strictMechanicalMissingKnowledgeEvidenceAspects(task, facts)
 	switch decision {
 	case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined:
 		if len(mechanicallyMissingAspects) != 0 {
@@ -1350,6 +1356,7 @@ func affirmativeKnowledgeEvidenceQuestionStatement(question string) string {
 	statement = strings.TrimSuffix(statement, "吗")
 	statement = strings.TrimSuffix(statement, "嘛")
 	statement = strings.TrimSuffix(statement, "么")
+	statement = strings.ReplaceAll(statement, "有没有", "有")
 	statement = strings.ReplaceAll(statement, "是不是", "是")
 	statement = strings.ReplaceAll(statement, "是否", "")
 	statement = strings.TrimSpace(statement)
@@ -1409,9 +1416,21 @@ func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts 
 			continue
 		}
 		if len(required) == 0 {
-			if fact.Aspect != "other" || knowledgeEvidenceConfigurationFactAnswersTask(task, fact) {
-				ret = append(ret, fact)
+			// A grounded identity or descriptive fact may legitimately normalize to
+			// "other" when the task has no fixed fact dimension. Required method,
+			// location, existence and other dimensions are still checked below.
+			if fact.Aspect == "other" {
+				if len(knowledgeEvidenceConfigurationFields(task.Query)) > 0 {
+					if knowledgeEvidenceConfigurationFactAnswersTask(task, fact) {
+						ret = append(ret, fact)
+					}
+					continue
+				}
+				if _, guidance := knowledgeEvidenceGuidanceRequirement(fact.Statement); guidance != "" {
+					continue
+				}
 			}
+			ret = append(ret, fact)
 			continue
 		}
 		keep := false
@@ -1458,8 +1477,9 @@ func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts 
 }
 
 func finalizeKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
-	facts = filterKnowledgeEvidenceFactsForTask(task, facts)
-	return canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(facts))
+	groundedFacts := canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(append([]knowledgeEvidenceFact(nil), facts...)))
+	filteredFacts := filterKnowledgeEvidenceFactsForTask(task, groundedFacts)
+	return canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(filteredFacts))
 }
 
 func sanitizeKnowledgeEvidenceFacts(facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
@@ -1951,6 +1971,91 @@ func missingRequiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask, fa
 		}
 	}
 	return ret
+}
+
+func strictMechanicalMissingKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []string {
+	return missingRequiredKnowledgeEvidenceAspects(task, facts)
+}
+
+func selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) bool {
+	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "existence") {
+		return true
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) != 1 {
+		return true
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	for _, candidate := range allKnowledgeEvidenceJudgeTaskCandidates(task) {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if knowledgeEvidenceFAQAnswerSupportsSingleSubject(question, answer, requiredSubjects[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQAnswerSupportsSingleSubject(question string, answer string, subject string) bool {
+	question = strings.TrimSpace(question)
+	answer = strings.TrimSpace(answer)
+	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
+	if question == "" || answer == "" || subject == "" || isKnowledgeHandoffDirectiveContent(answer) {
+		return false
+	}
+	if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+		return false
+	}
+	if strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(answer), subject) {
+		return true
+	}
+	if knowledgeEvidenceFAQAnswerResolvesQuestionPolarity(answer) {
+		return true
+	}
+	return knowledgeEvidenceFAQQuestionAsksForList(question) && knowledgeEvidenceFAQAnswerProvidesConcreteList(answer)
+}
+
+func knowledgeEvidenceFAQAnswerResolvesQuestionPolarity(answer string) bool {
+	answer = strings.TrimSpace(answer)
+	if answer == "" || knowledgeEvidenceTextHasUncertaintyBoundary(answer) {
+		return false
+	}
+	for _, prefix := range []string{
+		"是的", "对的", "没错", "有的", "可以", "支持",
+		"没有", "没有的", "不可以", "不支持", "不需要", "无需", "不用", "不能", "不是",
+	} {
+		if !strings.HasPrefix(answer, prefix) {
+			continue
+		}
+		remainder := strings.TrimSpace(strings.TrimPrefix(answer, prefix))
+		if remainder == "" || strings.ContainsRune("，,。.!！；;：:", []rune(remainder)[0]) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQQuestionAsksForList(question string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(question)
+	return containsAny(compact, []string{"哪些", "哪几", "有什么", "有些什么", "包括什么", "包含什么", "分别是什么", "分别有哪些"})
+}
+
+func knowledgeEvidenceFAQAnswerProvidesConcreteList(answer string) bool {
+	if !knowledgeEvidenceAnswerClauseIsGroundedFact(answer) || knowledgeEvidenceTextHasUncertaintyBoundary(answer) {
+		return false
+	}
+	if _, guidance := knowledgeEvidenceGuidanceRequirement(answer); guidance != "" {
+		return false
+	}
+	return true
 }
 
 type knowledgeEvidenceSubjectAspectRequirement struct {
@@ -2569,7 +2674,7 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 	facts = enrichKnowledgeEvidenceFactsFromFAQUnit(task, best.question, best.answer, facts)
 	facts = groundedKnowledgeEvidenceFacts(task, layer, []string{best.candidate.CandidateID}, facts)
 	facts = finalizeKnowledgeEvidenceFactsForTask(task, facts)
-	if len(facts) == 0 || len(missingRequiredKnowledgeEvidenceAspects(task, facts)) > 0 {
+	if len(facts) == 0 || len(strictMechanicalMissingKnowledgeEvidenceAspects(task, facts)) > 0 {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	return knowledgeEvidenceLayerSelection{
@@ -2585,7 +2690,7 @@ func knowledgeEvidenceJudgeCandidateCompletesTask(task knowledgeEvidenceJudgeTas
 	if !ok {
 		return questionMatch, false
 	}
-	if len(missingRequiredKnowledgeEvidenceAspects(task, facts)) > 0 {
+	if len(strictMechanicalMissingKnowledgeEvidenceAspects(task, facts)) > 0 {
 		return questionMatch, false
 	}
 	if len(facts) > 0 {
@@ -2622,6 +2727,9 @@ func knowledgeEvidenceDirectFAQCandidateEligibility(
 		return question, answer, questionMatch, nil, false
 	}
 	if !knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) {
+		return question, answer, questionMatch, nil, false
+	}
+	if !selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, candidate.Layer, []string{candidate.CandidateID}) {
 		return question, answer, questionMatch, nil, false
 	}
 	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, answer)

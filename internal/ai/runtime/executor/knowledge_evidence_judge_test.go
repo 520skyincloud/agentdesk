@@ -3025,6 +3025,117 @@ func TestReconcileSelectedFAQAnswerClausesIgnoresEmptyAndCourtesyClauses(t *test
 	}
 }
 
+func TestFinalizeKnowledgeEvidenceFactsDoesNotRestoreCourtesyOnlyFact(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "老板是谁"}
+	facts := finalizeKnowledgeEvidenceFactsForTask(task, []knowledgeEvidenceFact{{
+		FactID:    "T1F1",
+		Aspect:    "other",
+		Statement: "祝您入住愉快。",
+	}})
+	if len(facts) != 0 {
+		t.Fatalf("courtesy-only text must not be restored by the single-fact fallback: %#v", facts)
+	}
+}
+
+func TestFinalizeKnowledgeEvidenceFactsKeepsGroundedOtherWithoutBypassingRequiredAspect(t *testing.T) {
+	identityFacts := finalizeKnowledgeEvidenceFactsForTask(knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "老板是谁",
+	}, []knowledgeEvidenceFact{{
+		FactID:    "T1F1",
+		Aspect:    "other",
+		Statement: "酒店董事长是汤东强。",
+	}})
+	if len(identityFacts) != 1 || identityFacts[0].Aspect != "other" {
+		t.Fatalf("a grounded descriptive fact must survive an unclassified aspect: %#v", identityFacts)
+	}
+
+	methodTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T2",
+		Intent:    "service_request",
+		Query:     "拖鞋没了",
+		Objective: "action_request",
+	}
+	methodFacts := finalizeKnowledgeEvidenceFactsForTask(methodTask, []knowledgeEvidenceFact{{
+		FactID:    "T2F1",
+		Aspect:    "existence",
+		Statement: "房间内配有拖鞋。",
+	}})
+	if len(methodFacts) != 0 {
+		t.Fatalf("an existence fact must not be restored as a missing service method: %#v", methodFacts)
+	}
+	if missing := strictMechanicalMissingKnowledgeEvidenceAspects(methodTask, methodFacts); !containsString(missing, knowledgeEvidenceAspectLabel("method")) {
+		t.Fatalf("the required service method must remain missing: %#v", missing)
+	}
+}
+
+func TestSelectedExistenceFAQUsesQuestionAnswerUnitForShortAndListAnswers(t *testing.T) {
+	tests := []struct {
+		name    string
+		query   string
+		subject string
+		answer  string
+		want    bool
+	}{
+		{name: "short capability", query: "可以开发票吗", subject: "发票", answer: "可以。", want: true},
+		{name: "short negative", query: "有静音空调房吗", subject: "静音空调房", answer: "没有。", want: true},
+		{name: "concrete list", query: "早餐有哪些", subject: "早餐", answer: "牛奶、面包。", want: true},
+		{name: "guidance is not an answer", query: "可以开发票吗", subject: "发票", answer: "可以联系门店确认。", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     tt.query,
+				Objective: "availability",
+				Entities:  []knowledgeEvidenceJudgeEntity{{Text: tt.subject, Type: "facility"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, tt.query, "问题："+tt.query+"\n答案："+tt.answer, 0.95),
+				}},
+			}
+			got := selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, knowledgeEvidenceLayerStore, []string{"T1C1"})
+			if got != tt.want {
+				t.Fatalf("unexpected FAQ unit support result: got %v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectedExistenceFAQAllowsSameSubjectCompanionFacts(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "有没有早餐，几点",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "有没有早餐", "问题：有没有早餐\n答案：有早餐。", 0.95)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "早餐几点", "问题：早餐几点\n答案：早餐时间是7:00-9:30。", 0.93)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"有早餐。","criticalValues":["早餐"]},{"factId":"T1F2","aspect":"time","statement":"早餐时间是7:00-9:30。","criticalValues":["7:00-9:30"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectCombined || len(selection.SupportedFacts) != 2 {
+		t.Fatalf("a time FAQ for the same subject must be allowed to complement the existence FAQ: %#v", selection)
+	}
+
+	partialRaw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐时间是7:00-9:30。","criticalValues":["7:00-9:30"]}],"missingAspects":["是否提供早餐"]}]}]}`
+	parsed, err = parseKnowledgeEvidenceJudgeResponse(partialRaw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse partial response: %v", err)
+	}
+	selection = parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || len(selection.SupportedFacts) != 1 || len(selection.MissingAspects) == 0 {
+		t.Fatalf("partial same-subject evidence must keep its confirmed fact and missing existence aspect: %#v", selection)
+	}
+}
+
 func TestBuildKnowledgeEvidenceJudgePromptSeparatesFastGPTFAQQuestionAnswerAndRaw(t *testing.T) {
 	raw := "问题：问下房间的两瓶矿泉水是免费的吗？\n答案：是的，房间内的矿泉水都是免费的"
 	prompt := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{{
@@ -4286,6 +4397,32 @@ func TestSelectedHandoffCandidateRequiresStrictExactSingleDecision(t *testing.T)
 			t.Fatalf("a strict exact single transfer directive must remain valid: %#v", selection)
 		}
 	})
+
+	t.Run("strict exact availability handoff", func(t *testing.T) {
+		candidate := knowledgeEvidenceJudgeCandidate{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "静音空调房转接", "问题：你们有静音空调房吗\n答案：转接", 0.99),
+		}
+		task := knowledgeEvidenceJudgeTask{
+			TaskID:    "T1",
+			Intent:    "hotel_info",
+			Query:     "你们有静音空调房吗",
+			Objective: "availability",
+			Entities:  []knowledgeEvidenceJudgeEntity{{Text: "静音空调房", Type: "facility"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{
+				candidate,
+			},
+		}
+		selection := normalizeParsedKnowledgeEvidenceLayerSelection("T1", knowledgeEvidenceLayerStore, knowledgeEvidenceJudgeResponseLayer{
+			Layer:                knowledgeEvidenceLayerStore,
+			Decision:             knowledgeEvidenceDecisionDirectSingle,
+			SelectedCandidateIDs: []string{"T1C1"},
+		}, map[string]struct{}{"T1C1": {}}, task)
+		if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || len(selection.SupportedFacts) != 0 {
+			t.Fatalf("an exact availability handoff must remain executable: %#v", selection)
+		}
+	})
 }
 
 func TestJudgeProtocolFailureKeepsRawHitsAndDoesNotRequestHandoff(t *testing.T) {
@@ -4320,7 +4457,7 @@ func TestJudgeProtocolFailureKeepsRawHitsAndDoesNotRequestHandoff(t *testing.T) 
 	}
 }
 
-func TestKnowledgeEvidenceLayerPriorityDoesNotBypassStoreProtocolFailure(t *testing.T) {
+func TestKnowledgeEvidenceLayerPriorityUsesValidLayerDespiteOtherProtocolFailure(t *testing.T) {
 	candidates := map[string]knowledgeEvidenceJudgeCandidate{
 		"S1": {CandidateID: "S1", Layer: knowledgeEvidenceLayerStore},
 		"G1": {CandidateID: "G1", Layer: knowledgeEvidenceLayerGeneral},
@@ -4334,8 +4471,8 @@ func TestKnowledgeEvidenceLayerPriorityDoesNotBypassStoreProtocolFailure(t *test
 		knowledgeEvidenceLayerStore:   {Decision: knowledgeEvidenceDecisionProtocolInvalid},
 		knowledgeEvidenceLayerGeneral: direct,
 	}
-	if got := selectKnowledgeEvidenceLayer(selections, candidates, "问题"); got != "" {
-		t.Fatalf("general evidence bypassed a failed store layer: %q", got)
+	if got := selectKnowledgeEvidenceLayer(selections, candidates, "问题"); got != knowledgeEvidenceLayerGeneral {
+		t.Fatalf("valid general evidence must survive a failed store layer: %q", got)
 	}
 
 	storeDirect := direct
@@ -4352,8 +4489,8 @@ func TestKnowledgeEvidenceLayerPriorityDoesNotBypassStoreProtocolFailure(t *test
 		SupportedFacts:       []knowledgeEvidenceFact{{FactID: "F2", Aspect: "existence", Statement: "门店有外卖机器人。"}},
 		MissingAspects:       []string{"适用范围"},
 	}
-	if got := selectKnowledgeEvidenceLayer(selections, candidates, "外卖机器人能送到房间吗"); got != "" {
-		t.Fatalf("store partial evidence must wait when a failed general layer may hide a complete answer: %q", got)
+	if got := selectKnowledgeEvidenceLayer(selections, candidates, "外卖机器人能送到房间吗"); got != knowledgeEvidenceLayerStore {
+		t.Fatalf("valid store partial evidence must survive a failed general layer: %q", got)
 	}
 }
 
@@ -4392,14 +4529,14 @@ func TestStorePartialWithGeneralProtocolFailureIsIsolatedWithoutHandoff(t *testi
 	}
 
 	trace := applyKnowledgeEvidenceJudgeOutcome(batch, tasks, outcome)
-	if len(result.EffectiveHits) != 0 || len(result.Hits) != 0 || strings.TrimSpace(result.ContextText) != "" {
-		t.Fatalf("a failed general layer must prevent a store partial from becoming customer-visible evidence: %#v", result)
+	if len(result.EffectiveHits) != 1 || len(result.Hits) != 1 || !strings.Contains(result.ContextText, "有外卖机器人") {
+		t.Fatalf("a valid store partial must remain customer-visible despite a failed general layer: %#v", result)
 	}
-	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry || trace.Tasks[0].SelectedLayer != "" {
-		t.Fatalf("the task must be isolated for Judge protocol recovery: %#v", trace)
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswerThenHandoff || trace.Tasks[0].SelectedLayer != knowledgeEvidenceLayerStore {
+		t.Fatalf("the valid partial answer must win without a Judge protocol retry: %#v", trace)
 	}
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
-	if len(dispositions) != 1 || !dispositions[0].NeedsRetry || dispositions[0].NeedsHandoff || dispositions[0].HasAnswer {
-		t.Fatalf("protocol isolation must not invent an answer or handoff: %#v", dispositions)
+	if len(dispositions) != 1 || dispositions[0].NeedsRetry || !dispositions[0].NeedsHandoff || !dispositions[0].HasAnswer {
+		t.Fatalf("valid partial evidence must answer confirmed facts and defer only the missing part: %#v", dispositions)
 	}
 }

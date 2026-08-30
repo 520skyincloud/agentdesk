@@ -57,8 +57,9 @@ uncontested exact store handoff directive
 ```
 
 Scores are never compared across layers. A higher-scoring general answer cannot
-override a valid store answer, and an invalid store protocol result is not
-treated as a clean store miss. Generate and handoff decisions read only
+override a valid store answer. A protocol failure in one layer is isolated from
+the other layer: it is not treated as a semantic miss, but it also cannot hide
+an independently valid answer from the other layer. Generate and handoff decisions read only
 `EffectiveHits` rebuilt from the winning selected Candidate IDs. `RawHits` and
 the `pipeline.evidenceJudge` trace retain diagnostic candidates and decisions,
 but are never exposed to Generate.
@@ -72,15 +73,16 @@ Judge, Intent, or retrieval. It does not preserve or expose a pre-Judge selectio
 ```text
 valid selected store answer -> expose only that selected evidence
 otherwise valid selected general answer -> expose only that selected evidence
-protocol failure -> clear effective context and use a safe local reply
+otherwise valid selected partial answer -> expose confirmed facts and defer missing aspects
+no valid layer + protocol failure -> clear effective context and use a safe local reply
 ```
 
 Every reply run calls Judge at most once. A protocol failure never becomes a
 human handoff and never reaches free Generate; `RawHits` remains diagnostic
-only. If the store-layer decision fails, runtime still must not treat that
-failure as a clean miss and fall back to general knowledge. Already valid
-task-layer selections and facts remain frozen while only the failed task-layer
-is isolated.
+only. Already valid task-layer selections and facts remain frozen while only
+the failed task-layer is isolated. A valid general answer may therefore win
+when the store layer has only a protocol failure, and a valid store partial may
+still answer confirmed facts when the general layer fails.
 
 The Judge keeps one immutable usage event per reply run. Pricing and token field
 semantics are unchanged, and protocol failure does not manufacture an extra

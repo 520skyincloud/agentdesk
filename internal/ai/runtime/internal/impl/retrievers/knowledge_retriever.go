@@ -342,7 +342,6 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 		rawHits = result.Hits
 	}
 	hits := buildKnowledgeSearchResults(rawHits)
-	usedHits := buildKnowledgeSearchResults(result.ContextResults)
 	answerStatus := int(enums.KnowledgeAnswerStatusNormal)
 	if len(hits) == 0 {
 		answerStatus = int(enums.KnowledgeAnswerStatusNoAnswer)
@@ -353,21 +352,23 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 		requestID = strings.TrimSpace(scope.RequestID)
 	}
 	if _, err := rag.RetrieveLog.CreateRetrieveLog(&rag.CreateRetrieveLogRequest{
-		KnowledgeBaseID:    result.KnowledgeBaseIDs[0],
-		SourceType:         inferRuntimeRetrieveSourceType(hits),
-		Channel:            string(enums.KnowledgeRetrieveChannelIM),
-		Scene:              string(enums.KnowledgeRetrieveSceneFirstResponse),
-		ConversationID:     scope.ConversationID,
-		MessageID:          scope.MessageID,
-		RequestID:          requestID,
-		Question:           query,
-		AnswerStatus:       answerStatus,
-		ChunkProvider:      runtimeRetrieveChunkProvider(result),
-		RerankEnabled:      false,
-		Hits:               hits,
-		UsedHits:           usedHits,
+		KnowledgeBaseID: result.KnowledgeBaseIDs[0],
+		SourceType:      inferRuntimeRetrieveSourceType(hits),
+		Channel:         string(enums.KnowledgeRetrieveChannelIM),
+		Scene:           string(enums.KnowledgeRetrieveSceneFirstResponse),
+		ConversationID:  scope.ConversationID,
+		MessageID:       scope.MessageID,
+		RequestID:       requestID,
+		Question:        query,
+		AnswerStatus:    answerStatus,
+		ChunkProvider:   runtimeRetrieveChunkProvider(result),
+		RerankEnabled:   false,
+		Hits:            hits,
+		// The runtime Judge runs after this retrieval log is written. Do not mark
+		// Retriever-preselected chunks as the final evidence used in the reply.
+		UsedHits:           nil,
 		HitSourceRecordIDs: retrieveSourceRecordIDs(rawHits),
-		UsedHitRankNos:     resolveUsedHitRankNos(rawHits, result.ContextResults),
+		UsedHitRankNos:     nil,
 		RetrieveMs:         retrieveMs,
 		LatencyMs:          retrieveMs,
 		ModelName:          "runtime-retriever",
