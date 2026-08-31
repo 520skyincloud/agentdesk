@@ -832,21 +832,23 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 				}
 			}
 		}
-		for _, hit := range rawHits {
-			layer := ""
-			if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
-				layer = knowledgeEvidenceLayerStore
-			} else if _, ok := generalSet[hit.KnowledgeBaseID]; ok {
-				layer = knowledgeEvidenceLayerGeneral
+		for _, rawHit := range rawHits {
+			for _, hit := range expandKnowledgeEvidenceJudgeHit(rawHit) {
+				layer := ""
+				if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
+					layer = knowledgeEvidenceLayerStore
+				} else if _, ok := generalSet[hit.KnowledgeBaseID]; ok {
+					layer = knowledgeEvidenceLayerGeneral
+				}
+				if layer == "" {
+					continue
+				}
+				item.Candidates = append(item.Candidates, knowledgeEvidenceJudgeCandidate{
+					CandidateID: fmt.Sprintf("%sC%d", question.TaskID, len(item.Candidates)+1),
+					Layer:       layer,
+					Hit:         hit,
+				})
 			}
-			if layer == "" {
-				continue
-			}
-			item.Candidates = append(item.Candidates, knowledgeEvidenceJudgeCandidate{
-				CandidateID: fmt.Sprintf("%sC%d", question.TaskID, len(item.Candidates)+1),
-				Layer:       layer,
-				Hit:         hit,
-			})
 		}
 		if len(item.Candidates) > 0 {
 			item.RawCandidates = append([]knowledgeEvidenceJudgeCandidate(nil), item.Candidates...)
@@ -855,6 +857,35 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		}
 	}
 	return limitKnowledgeEvidenceJudgeTaskCandidates(tasks, taskObjectives, knowledgeEvidenceJudgeBatchCandidateBudget)
+}
+
+func expandKnowledgeEvidenceJudgeHit(hit rag.RetrieveResult) []rag.RetrieveResult {
+	if strings.TrimSpace(hit.FaqQuestion) != "" {
+		return []rag.RetrieveResult{hit}
+	}
+	units := exactKnowledgeEvidenceFAQUnits(hit)
+	if len(units) <= 1 {
+		return []rag.RetrieveResult{hit}
+	}
+	expanded := make([]rag.RetrieveResult, 0, len(units))
+	for _, unit := range units {
+		question := strings.TrimSpace(unit.Question)
+		answer := strings.TrimSpace(unit.Answer)
+		if question == "" || answer == "" {
+			continue
+		}
+		item := hit
+		item.FaqQuestion = question
+		item.Content = "问题：" + question + "\n答案：" + answer
+		if len(unit.Aliases) > 0 {
+			item.Content += "\n相似问法：" + strings.Join(unit.Aliases, "、")
+		}
+		expanded = append(expanded, item)
+	}
+	if len(expanded) == 0 {
+		return []rag.RetrieveResult{hit}
+	}
+	return expanded
 }
 
 func runtimeKnowledgeObjectiveForQuery(intent callbacks.IntentTraceData, query string) string {
@@ -1073,18 +1104,37 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 
 	storeIndex := firstLayerIndex(knowledgeEvidenceLayerStore)
 	generalIndex := firstLayerIndex(knowledgeEvidenceLayerGeneral)
+	storeExactIndex := bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerStore)
+	generalExactIndex := bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerGeneral)
 	storeHandoffIndex := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerStore)
+	generalHandoffIndex := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerGeneral)
+	storeReviewBodyIndex := bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task, knowledgeEvidenceLayerStore, storeHandoffIndex)
+	generalReviewBodyIndex := bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task, knowledgeEvidenceLayerGeneral, generalHandoffIndex)
 	storeCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerStore)
 	generalCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerGeneral)
 	storePairFirst, storePairSecond, storePairComplete := bestCompleteKnowledgeEvidenceJudgeCandidatePairIndexes(task, knowledgeEvidenceLayerStore)
-	storeBestIndex := storeCompleteIndex
+	storeHandoffConflict := storeHandoffIndex >= 0 && storeReviewBodyIndex >= 0 && storeHandoffIndex != storeReviewBodyIndex
+	generalHandoffConflict := generalHandoffIndex >= 0 && generalReviewBodyIndex >= 0 && generalHandoffIndex != generalReviewBodyIndex
+	storeBestIndex := storeExactIndex
+	if storeHandoffConflict {
+		storeBestIndex = storeReviewBodyIndex
+	}
+	if storeBestIndex < 0 {
+		storeBestIndex = storeCompleteIndex
+	}
 	if storeBestIndex < 0 {
 		storeBestIndex = storeHandoffIndex
 	}
 	if storeBestIndex < 0 {
 		storeBestIndex = storeIndex
 	}
-	generalBestIndex := generalCompleteIndex
+	generalBestIndex := generalExactIndex
+	if generalHandoffConflict {
+		generalBestIndex = generalReviewBodyIndex
+	}
+	if generalBestIndex < 0 {
+		generalBestIndex = generalCompleteIndex
+	}
 	if generalBestIndex < 0 {
 		generalBestIndex = generalIndex
 	}
@@ -1092,12 +1142,24 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	// A same-layer pair that is mechanically required to cover the task must
 	// reach the Judge together. General fallback visibility cannot consume one
 	// of those two slots because the Judge is forbidden from combining layers.
-	if quota >= 2 && storeCompleteIndex < 0 && storePairComplete {
+	if quota >= 2 && storeHandoffConflict {
+		// A credible same-layer body must reach the Judge with an exact transfer
+		// rule. Its score is only a visibility gate; the Judge still owns the
+		// answer decision.
+		selectIndex(storeReviewBodyIndex)
+		selectIndex(storeHandoffIndex)
+		if selectedCount < quota {
+			selectIndex(generalBestIndex)
+		}
+	} else if quota >= 2 && storeCompleteIndex < 0 && storePairComplete {
 		selectIndex(storePairFirst)
 		selectIndex(storePairSecond)
 		if selectedCount < quota {
 			selectIndex(generalBestIndex)
 		}
+	} else if quota >= 2 && storeBestIndex < 0 && generalHandoffConflict {
+		selectIndex(generalReviewBodyIndex)
+		selectIndex(generalHandoffIndex)
 	} else if quota >= 2 && storeBestIndex >= 0 && generalBestIndex >= 0 {
 		// Keep both knowledge layers visible whenever doing so does not remove
 		// evidence required for a complete store-layer answer.
@@ -1112,9 +1174,13 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	// If the store layer contains an exact transfer rule and a competing factual
 	// answer, preserve the second store candidate when another slot is available.
 	// RawCandidates remains the authority for deterministic conflict checks.
-	if selectedCount < quota && storeHandoffIndex >= 0 && storeCompleteIndex >= 0 && storeHandoffIndex != storeCompleteIndex {
+	if selectedCount < quota && storeHandoffConflict {
+		selectIndex(storeReviewBodyIndex)
 		selectIndex(storeHandoffIndex)
-		selectIndex(storeCompleteIndex)
+	}
+	if selectedCount < quota && storeBestIndex < 0 && generalHandoffConflict {
+		selectIndex(generalReviewBodyIndex)
+		selectIndex(generalHandoffIndex)
 	}
 
 	fillLayer := func(layer string, limit int) {
@@ -1146,6 +1212,20 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 		}
 	}
 	return ret
+}
+
+func bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
+	selection, ok := strictExactKnowledgeEvidenceFAQSelection(task, layer)
+	if !ok || len(selection.SelectedCandidateIDs) != 1 {
+		return -1
+	}
+	selectedCandidateID := strings.TrimSpace(selection.SelectedCandidateIDs[0])
+	for index, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.CandidateID) == selectedCandidateID {
+			return index
+		}
+	}
+	return -1
 }
 
 func bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
@@ -1232,8 +1312,8 @@ func bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task knowledgeEvidence
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
-		if !isKnowledgeHandoffDirectiveContent(answer) || !knowledgeEvidenceHandoffFAQMatchesQuery(question, task.Query) {
+		question, answer, exact := exactKnowledgeEvidenceFAQMatch(candidate.Hit, task.Query)
+		if !exact || !isKnowledgeHandoffDirectiveContent(answer) {
 			continue
 		}
 		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
@@ -1241,6 +1321,26 @@ func bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task knowledgeEvidence
 			(questionMatch >= bestQuestionMatch-0.02 && candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score) {
 			bestIndex = index
 			bestQuestionMatch = questionMatch
+		}
+	}
+	return bestIndex
+}
+
+func bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task knowledgeEvidenceJudgeTask, layer string, handoffIndex int) int {
+	if handoffIndex < 0 || handoffIndex >= len(task.Candidates) {
+		return -1
+	}
+	handoffQuestion, handoffAnswer := splitKnowledgeEvidenceFAQForQuery(task.Candidates[handoffIndex].Hit, task.Query)
+	bestIndex := -1
+	for index, candidate := range task.Candidates {
+		if index == handoffIndex || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if !knowledgeEvidenceJudgeReviewWorthyBodyPeer(task, candidate, handoffQuestion, handoffAnswer) {
+			continue
+		}
+		if bestIndex < 0 || candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score {
+			bestIndex = index
 		}
 	}
 	return bestIndex
@@ -1646,7 +1746,7 @@ func selectionHasHandoffDirective(selection knowledgeEvidenceLayerSelection, lay
 	if !selectionHasCompleteEvidence(selection) {
 		return false
 	}
-	return strictExactKnowledgeEvidenceHandoffSelectionMatches(query, layer, selection.SelectedCandidateIDs, candidates)
+	return selectedExactKnowledgeEvidenceHandoffCandidateMatches(query, layer, selection.SelectedCandidateIDs, candidates)
 }
 
 func selectionHasCompleteEvidence(selection knowledgeEvidenceLayerSelection) bool {
@@ -1726,33 +1826,8 @@ func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) 
 			items = append(items, item)
 			continue
 		}
-		if result == nil || len(result.Hits) == 0 {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		if hit, ok := topKnowledgeHandoffDirective(result); ok {
-			item.NeedsHandoff = true
-			item.HandoffHit = hit
-			items = append(items, item)
-			continue
-		}
-		if strings.TrimSpace(result.ContextText) == "" {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		removeKnowledgeHandoffDirectiveSelection(result)
-		if len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		item.HasAnswer = true
-		if question.Decision == knowledgeEvidenceDecisionPartial && len(question.MissingAspects) > 0 {
-			item.NeedsHandoff = true
-			item.MissingAspects = append([]string(nil), question.MissingAspects...)
-		}
+		item.Disposition = runtimeKnowledgeDispositionJudgeProtocolRetry
+		item.NeedsRetry = true
 		items = append(items, item)
 	}
 	return items
@@ -2295,6 +2370,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		judgeTrace = applyKnowledgeEvidenceJudgeOutcome(batch, judgeTasks, judgeOutcome)
 		result = batch.Merged
 	}
+	judgeTrace = appendRuntimeKnowledgeUnjudgedTaskTrace(judgeTrace, batch)
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 	result = batch.Merged
@@ -2409,6 +2485,84 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func appendRuntimeKnowledgeUnjudgedTaskTrace(
+	trace callbacks.KnowledgeEvidenceJudgeTraceData,
+	batch *runtimeKnowledgeRetrieveBatch,
+) callbacks.KnowledgeEvidenceJudgeTraceData {
+	if batch == nil || len(batch.Questions) == 0 {
+		return trace
+	}
+	existing := make(map[string]callbacks.KnowledgeEvidenceJudgeTaskTraceData, len(trace.Tasks))
+	for _, task := range trace.Tasks {
+		existing[strings.TrimSpace(task.TaskID)] = task
+	}
+	ordered := make([]callbacks.KnowledgeEvidenceJudgeTaskTraceData, 0, len(trace.Tasks)+len(batch.Questions))
+	used := make(map[string]struct{}, len(trace.Tasks))
+	hasUnjudgedTask := false
+	unjudgedCandidateTaskIDs := make([]string, 0)
+	for index := range batch.Questions {
+		question := &batch.Questions[index]
+		taskID := strings.TrimSpace(question.TaskID)
+		if task, ok := existing[taskID]; ok {
+			ordered = append(ordered, task)
+			used[taskID] = struct{}{}
+			continue
+		}
+
+		candidateCount := runtimeRetrieverRawCandidateCount(question.Result)
+		decision := knowledgeEvidenceDecisionProtocolInvalid
+		decisionSource := "unjudged_candidates"
+		disposition := runtimeKnowledgeDispositionJudgeProtocolRetry
+		if candidateCount == 0 {
+			decision = knowledgeEvidenceDecisionInsufficient
+			decisionSource = "retriever_no_evidence"
+			disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+		} else {
+			unjudgedCandidateTaskIDs = append(unjudgedCandidateTaskIDs, taskID)
+		}
+		question.Decision = decision
+		question.Disposition = disposition
+		hasUnjudgedTask = true
+		ordered = append(ordered, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         taskID,
+			QueryPreview:   preview(question.Query, 120),
+			CandidateCount: candidateCount,
+			Decision:       decision,
+			DecisionSource: decisionSource,
+			Disposition:    disposition,
+		})
+		used[taskID] = struct{}{}
+	}
+	if !hasUnjudgedTask {
+		return trace
+	}
+	for _, task := range trace.Tasks {
+		if _, ok := used[strings.TrimSpace(task.TaskID)]; ok {
+			continue
+		}
+		ordered = append(ordered, task)
+	}
+	trace.Tasks = ordered
+	trace.TaskCount = len(ordered)
+	if len(unjudgedCandidateTaskIDs) > 0 {
+		detail := fmt.Sprintf(
+			"candidate budget left %d task(s) unjudged: %s",
+			len(unjudgedCandidateTaskIDs),
+			strings.Join(unjudgedCandidateTaskIDs, ","),
+		)
+		switch strings.TrimSpace(trace.Status) {
+		case "", "completed", "skipped", "fallback":
+			trace.Status = knowledgeEvidenceDecisionProtocolInvalid
+		}
+		if strings.TrimSpace(trace.Reason) == "" {
+			trace.Reason = detail
+		} else {
+			trace.Reason = strings.TrimSpace(trace.Reason) + "; " + detail
+		}
+	}
+	return trace
 }
 
 func runtimeRetrieverRawCandidateCount(result *retrievers.KnowledgeRetrieveResult) int {

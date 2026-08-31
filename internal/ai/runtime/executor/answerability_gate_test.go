@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -111,6 +112,234 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 	if !strings.Contains(state.RetrieveResult.ContextText, "能开专票不") || !strings.Contains(state.RetrieveResult.ContextText, "WiFi是哪个") {
 		t.Fatalf("expected merged context to label each question, got %q", state.RetrieveResult.ContextText)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: make([]runtimeKnowledgeQuestionResult, 0, knowledgeEvidenceJudgeBatchCandidateBudget+1)}
+	for index := 0; index < knowledgeEvidenceJudgeBatchCandidateBudget+1; index++ {
+		taskID := fmt.Sprintf("task-%d", index+1)
+		query := fmt.Sprintf("问题%d", index+1)
+		hit := rag.RetrieveResult{
+			KnowledgeBaseID: 1,
+			ChunkID:         int64(index + 1),
+			Title:           query,
+			Content:         "问题：" + query + "\n答案：这是对应答案。",
+			Score:           0.9,
+		}
+		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
+			TaskID: taskID,
+			Intent: "hotel_info",
+			Query:  query,
+			Result: &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{1},
+				RawHits:          []rag.RetrieveResult{hit},
+				Hits:             []rag.RetrieveResult{hit},
+				ContextResults:   []rag.RetrieveResult{hit},
+				ContextText:      hit.Content,
+			},
+		})
+	}
+
+	judgeTasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "")
+	if len(judgeTasks) != knowledgeEvidenceJudgeBatchCandidateBudget {
+		t.Fatalf("candidate budget must leave one of 29 single-candidate Tasks unjudged, got %d", len(judgeTasks))
+	}
+	trace := callbacks.KnowledgeEvidenceJudgeTraceData{
+		SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+		Status:        "completed",
+		Tasks:         make([]callbacks.KnowledgeEvidenceJudgeTaskTraceData, 0, len(judgeTasks)),
+	}
+	for _, task := range judgeTasks {
+		trace.Tasks = append(trace.Tasks, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         task.TaskID,
+			CandidateCount: len(task.Candidates),
+			Decision:       knowledgeEvidenceDecisionDirectSingle,
+			DecisionSource: "model",
+			Disposition:    runtimeKnowledgeDispositionAnswer,
+		})
+	}
+
+	trace = appendRuntimeKnowledgeUnjudgedTaskTrace(trace, batch)
+	if len(trace.Tasks) != knowledgeEvidenceJudgeBatchCandidateBudget+1 {
+		t.Fatalf("Trace must retain all Tasks including the budget-exhausted Task, got %d", len(trace.Tasks))
+	}
+	if trace.Status != knowledgeEvidenceDecisionProtocolInvalid || !strings.Contains(trace.Reason, "task-29") {
+		t.Fatalf("top-level Trace must expose the budget-exhausted protocol gap: %#v", trace)
+	}
+	unjudged := trace.Tasks[len(trace.Tasks)-1]
+	if unjudged.TaskID != "task-29" || unjudged.CandidateCount != 1 ||
+		unjudged.Decision != knowledgeEvidenceDecisionProtocolInvalid ||
+		unjudged.DecisionSource != "unjudged_candidates" ||
+		unjudged.Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry {
+		t.Fatalf("a Task with retrieved candidates but no Judge quota must retry the protocol, not hand off: %#v", unjudged)
+	}
+	question := batch.Questions[len(batch.Questions)-1]
+	if question.Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry || question.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("budget-exhausted Task execution state must remain retryable: %#v", question)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeNoEvidenceTaskDoesNotDegradeCompletedTrace(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
+		TaskID: "task-1",
+		Query:  "完全没有召回的问题",
+		Result: &retrievers.KnowledgeRetrieveResult{},
+	}}}
+	trace := appendRuntimeKnowledgeUnjudgedTaskTrace(callbacks.KnowledgeEvidenceJudgeTraceData{
+		Status: "completed",
+		Reason: "judged available candidates",
+	}, batch)
+	if trace.Status != "completed" || strings.Contains(trace.Reason, "candidate budget") {
+		t.Fatalf("a real no-evidence Task is not a Judge budget failure: %#v", trace)
+	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].DecisionSource != "retriever_no_evidence" ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("the no-evidence Task must retain its explicit disposition: %#v", trace.Tasks)
+	}
+}
+
+func TestRuntimeKnowledgeQuestionDispositionsDoNotInferHandoffFromEmptyHits(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
+		TaskID: "task-1",
+		Query:  "老板是谁",
+		Result: &retrievers.KnowledgeRetrieveResult{},
+	}}}
+
+	dispositions := runtimeKnowledgeQuestionDispositions(batch)
+	if len(dispositions) != 1 || !dispositions[0].NeedsRetry || dispositions[0].NeedsHandoff ||
+		dispositions[0].Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry {
+		t.Fatalf("an empty disposition is a protocol gap, not implicit proof of no knowledge: %#v", dispositions)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetDoesNotPromoteSimilarHandoffFAQ(t *testing.T) {
+	const query = "附近有什么好玩的"
+	similarHandoff := rag.RetrieveResult{
+		Score:   0.99,
+		Content: "问题：附近有什么好玩的嘛\n答案：转接",
+	}
+	if !knowledgeEvidenceHandoffFAQMatchesQuery("附近有什么好玩的嘛", query) {
+		t.Fatal("test setup must remain similar enough to exercise the former fuzzy handoff priority")
+	}
+	if _, _, exact := exactKnowledgeEvidenceFAQMatch(similarHandoff, query); exact {
+		t.Fatal("test setup must not be a strict FAQ match")
+	}
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "task-1",
+		Query:  query,
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "task-1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.88, Content: "问题：周边游玩推荐\n答案：附近可以去罍街和合柴1972。"}},
+			{CandidateID: "task-1C2", Layer: knowledgeEvidenceLayerStore, Hit: similarHandoff},
+			{CandidateID: "task-1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.86, Content: "问题：附近有什么好玩的\n答案：可以结合地图选择附近景点。"}},
+		},
+	}
+	if index := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerStore); index != -1 {
+		t.Fatalf("similar transfer FAQ must not receive exact-handoff priority, got candidate %d", index)
+	}
+
+	for _, quota := range []int{1, 2} {
+		selected := selectKnowledgeEvidenceJudgeTaskCandidates(task, quota, false)
+		if len(selected) != quota {
+			t.Fatalf("quota %d returned %d candidates: %#v", quota, len(selected), selected)
+		}
+		if selected[0].CandidateID != "task-1C1" {
+			t.Fatalf("quota %d must preserve the factual store candidate before a merely similar transfer FAQ: %#v", quota, selected)
+		}
+		for _, candidate := range selected {
+			if candidate.CandidateID == "task-1C2" {
+				t.Fatalf("quota %d must not spend scarce budget on a non-exact transfer FAQ: %#v", quota, selected)
+			}
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsExactHandoffAndExactFactualPeer(t *testing.T) {
+	tests := []struct {
+		name           string
+		query          string
+		factualContent string
+	}{
+		{
+			name:           "owner identity alias",
+			query:          "老板是谁",
+			factualContent: "问题：董事长是谁\n答案：董事长是汤东强。\n相似问法：老板是谁",
+		},
+		{
+			name:           "nearby attraction alias",
+			query:          "附近有什么好玩的",
+			factualContent: "问题：周边游玩推荐\n答案：附近可以去罍街和合柴1972。\n相似问法：附近有什么好玩的",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "task-1",
+				Intent: "hotel_info",
+				Query:  tt.query,
+				Candidates: []knowledgeEvidenceJudgeCandidate{
+					{CandidateID: "task-1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：" + tt.query + "\n答案：转接"}},
+					{CandidateID: "task-1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.71, Content: tt.factualContent}},
+					{CandidateID: "task-1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.98, Content: "问题：" + tt.query + "\n答案：请结合实际情况确认。"}},
+				},
+			}
+			if _, complete := knowledgeEvidenceJudgeCandidateCompletesTask(task, task.Candidates[1]); !complete {
+				t.Fatal("an exact factual alias must be recognized as a complete peer")
+			}
+			if selection, ok := strictExactKnowledgeEvidenceFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+				t.Fatalf("a same-layer exact factual peer must block deterministic handoff fallback: %#v", selection)
+			}
+			if !selectedKnowledgeEvidenceIsHandoffDirective(task, knowledgeEvidenceLayerStore, []string{"task-1C1"}) {
+				t.Fatal("once Judge has seen both peers, its explicit exact-handoff choice must remain valid")
+			}
+
+			selected := selectKnowledgeEvidenceJudgeTaskCandidates(task, 1, false)
+			if len(selected) != 1 || selected[0].CandidateID != "task-1C2" {
+				t.Fatalf("a one-slot budget must retain the complete factual FAQ instead of auto-transfer: %#v", selected)
+			}
+
+			selected = selectKnowledgeEvidenceJudgeTaskCandidates(task, 2, false)
+			selectedIDs := make(map[string]struct{}, len(selected))
+			for _, candidate := range selected {
+				selectedIDs[candidate.CandidateID] = struct{}{}
+			}
+			if len(selected) != 2 {
+				t.Fatalf("two-slot budget returned %d candidates: %#v", len(selected), selected)
+			}
+			for _, candidateID := range []string{"task-1C1", "task-1C2"} {
+				if _, ok := selectedIDs[candidateID]; !ok {
+					t.Fatalf("the Judge must receive both same-layer conflict peers, missing %s in %#v", candidateID, selected)
+				}
+			}
+			if _, ok := selectedIDs["task-1C3"]; ok {
+				t.Fatalf("general fallback must not displace a same-layer conflict peer: %#v", selected)
+			}
+		})
+	}
+}
+
+func TestSelectionHasHandoffDirectiveTrustsJudgeVisibleConflictChoice(t *testing.T) {
+	query := "老板是谁"
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         rag.RetrieveResult{Score: 0.99, Content: "问题：老板是谁\n答案：转接"},
+		},
+		"T1C2": {
+			CandidateID: "T1C2",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         rag.RetrieveResult{Score: 0.848863, Content: "问题：董事长是谁\n答案：董事长是汤东强。"},
+		},
+	}
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		DecisionSource:       "model",
+		SelectedCandidateIDs: []string{"T1C1"},
+	}
+	if !selectionHasHandoffDirective(selection, knowledgeEvidenceLayerStore, candidates, query) {
+		t.Fatal("final disposition must preserve an exact handoff explicitly selected after Judge saw the body peer")
 	}
 }
 

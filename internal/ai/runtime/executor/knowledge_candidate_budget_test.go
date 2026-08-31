@@ -249,6 +249,45 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsCompleteStoreFAQInSingleSlot(
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsLowScoreStrictExactStoreFAQAtTightQuotas(t *testing.T) {
+	base := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "房间有几瓶矿泉水",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.98, Content: "问题：房间矿泉水不够怎么办\n答案：可以联系门店同事。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.95, Content: "问题：矿泉水放在哪里\n答案：矿泉水放在房间桌面。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.31, Content: "问题：房间有几瓶矿泉水\n答案：房间内有两瓶矿泉水。"}},
+			{CandidateID: "T1C4", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：房间有几瓶矿泉水\n答案：通用标准为每间房两瓶矿泉水。"}},
+		},
+	}
+
+	tests := []struct {
+		name  string
+		quota int
+		want  []string
+	}{
+		{name: "single slot keeps exact store FAQ", quota: 1, want: []string{"T1C3"}},
+		{name: "two slots keep exact store and general fallback", quota: 2, want: []string{"T1C3", "T1C4"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limited := limitKnowledgeEvidenceJudgeTaskCandidates(
+				[]knowledgeEvidenceJudgeTask{base},
+				map[string]string{"T1": "quantity"},
+				test.quota,
+			)
+			if len(limited) != 1 || len(limited[0].Candidates) != test.quota {
+				t.Fatalf("quota %d returned unexpected candidates: %#v", test.quota, limited)
+			}
+			for index, candidateID := range test.want {
+				if limited[0].Candidates[index].CandidateID != candidateID {
+					t.Fatalf("quota %d must preserve strict exact knowledge before higher-score unrelated candidates: %#v", test.quota, limited[0].Candidates)
+				}
+			}
+		})
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsSemanticStoreServiceFAQAtTightQuotas(t *testing.T) {
 	base := knowledgeEvidenceJudgeTask{
 		TaskID: "T1", Intent: "service_request", Query: "拖鞋没了", SubIntent: "supplies_self_help", Objective: "action_request",
@@ -380,6 +419,95 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetPrioritizesCompleteStoreAnswerWhen
 		},
 	}, knowledgeEvidenceLayerStore); index >= 0 {
 		t.Fatalf("handoff directive must not count as a complete factual FAQ, got index %d", index)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetShowsSemanticBodyBeforeExactHandoff(t *testing.T) {
+	tests := []struct {
+		name         string
+		layer        string
+		query        string
+		bodyQuestion string
+		bodyAnswer   string
+		bodyScore    float32
+	}{
+		{
+			name:         "store owner identity",
+			layer:        knowledgeEvidenceLayerStore,
+			query:        "老板是谁",
+			bodyQuestion: "董事长是谁",
+			bodyAnswer:   "董事长是汤东强。",
+			bodyScore:    0.848863,
+		},
+		{
+			name:         "store nearby attractions",
+			layer:        knowledgeEvidenceLayerStore,
+			query:        "附近有什么好玩的",
+			bodyQuestion: "周边有哪些游玩地点",
+			bodyAnswer:   "可以去罍街和合柴1972游玩。",
+			bodyScore:    0.894273,
+		},
+		{
+			name:         "general owner identity",
+			layer:        knowledgeEvidenceLayerGeneral,
+			query:        "老板是谁",
+			bodyQuestion: "董事长是谁",
+			bodyAnswer:   "董事长是汤东强。",
+			bodyScore:    0.848863,
+		},
+		{
+			name:         "general nearby attractions",
+			layer:        knowledgeEvidenceLayerGeneral,
+			query:        "附近有什么好玩的",
+			bodyQuestion: "周边有哪些游玩地点",
+			bodyAnswer:   "可以去罍街和合柴1972游玩。",
+			bodyScore:    0.894273,
+		},
+		{
+			name:         "store restroom alias",
+			layer:        knowledgeEvidenceLayerStore,
+			query:        "房间有洗手间吗",
+			bodyQuestion: "客房内有卫生间吗",
+			bodyAnswer:   "客房内有卫生间。",
+			bodyScore:    0.86,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidates := []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T1C1", Layer: test.layer, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：" + test.query + "\n答案：转接"}},
+				{CandidateID: "T1C2", Layer: test.layer, Hit: rag.RetrieveResult{Score: test.bodyScore, Content: "问题：" + test.bodyQuestion + "\n答案：" + test.bodyAnswer}},
+				{CandidateID: "T1C3", Layer: test.layer, Hit: rag.RetrieveResult{Score: 0.98, Content: "问题：酒店还有哪些服务\n答案：酒店还提供其他基础服务。"}},
+			}
+			if test.layer == knowledgeEvidenceLayerStore {
+				candidates = append(candidates, knowledgeEvidenceJudgeCandidate{
+					CandidateID: "T1C4",
+					Layer:       knowledgeEvidenceLayerGeneral,
+					Hit:         rag.RetrieveResult{Score: 1, Content: "问题：" + test.query + "\n答案：请结合实际情况确认。"},
+				})
+			}
+			task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: test.query, Candidates: candidates}
+
+			selected := selectKnowledgeEvidenceJudgeTaskCandidates(task, 1, false)
+			if len(selected) != 1 || selected[0].CandidateID != "T1C2" {
+				t.Fatalf("one slot must expose the credible body to Judge, got %#v", selected)
+			}
+
+			selected = selectKnowledgeEvidenceJudgeTaskCandidates(task, 2, false)
+			selectedIDs := make(map[string]struct{}, len(selected))
+			for _, candidate := range selected {
+				selectedIDs[candidate.CandidateID] = struct{}{}
+			}
+			if len(selected) != 2 {
+				t.Fatalf("two slots must keep exactly the same-layer conflict pair, got %#v", selected)
+			}
+			for _, candidateID := range []string{"T1C1", "T1C2"} {
+				if _, ok := selectedIDs[candidateID]; !ok {
+					t.Fatalf("Judge did not receive conflict peer %s: %#v", candidateID, selected)
+				}
+			}
+		})
 	}
 }
 
