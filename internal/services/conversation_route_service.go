@@ -332,7 +332,7 @@ func (s *conversationRouteService) EnterHQAgentDeskPending(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
-	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered pending human service")
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAIForRoute(conversationID, 0, "cancelled because conversation entered pending human service")
 	return s.GetByConversationID(conversationID), nil
 }
 
@@ -356,7 +356,7 @@ func (s *conversationRouteService) EnterStoreWecomManual(conversationID int64, r
 	}); err != nil {
 		return nil, err
 	}
-	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered store human service")
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAIForRoute(conversationID, 0, "cancelled because conversation entered store human service")
 	return s.GetByConversationID(conversationID), nil
 }
 
@@ -445,7 +445,7 @@ func (s *conversationRouteService) EnterHQAgentDeskServing(conversationID int64,
 	}); err != nil {
 		return nil, err
 	}
-	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAI(conversationID, 0, "cancelled because conversation entered assigned human service")
+	_, _ = ChannelMessageOutboxService.CancelPendingOrdinaryAIForRoute(conversationID, 0, "cancelled because conversation entered assigned human service")
 	return s.GetByConversationID(conversationID), nil
 }
 

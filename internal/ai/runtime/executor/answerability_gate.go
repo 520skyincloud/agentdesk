@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/replyruntime"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
 	"agent-desk/internal/services"
@@ -42,6 +44,7 @@ const (
 	runtimeKnowledgeDispositionDirectHandoff      = "knowledge_direct_handoff"
 	runtimeKnowledgeDispositionNoEvidenceHandoff  = "no_evidence_handoff"
 	runtimeKnowledgeDispositionJudgeProtocolRetry = "judge_protocol_retry"
+	runtimeKnowledgeDeferredHandoffOutput         = replyruntime.ManualResumeDeferredKnowledgeOutput
 )
 
 type knowledgeContextRetriever interface {
@@ -57,26 +60,35 @@ type KnowledgeAnswerabilityGate struct {
 }
 
 type runtimeKnowledgeQuestionResult struct {
-	TaskID         string
-	Intent         string
-	Query          string
-	EvidenceQuery  string
-	SubIntent      string
-	Objective      string
-	Entities       []callbacks.IntentEntityTraceData
-	Result         *retrievers.KnowledgeRetrieveResult
-	Decision       string
-	Disposition    string
-	MissingAspects []string
+	TaskID             string
+	Intent             string
+	Query              string
+	OriginalText       string
+	EvidenceQuery      string
+	SubIntent          string
+	Objective          string
+	RelationToPrevious string
+	ResolutionState    string
+	SourceRefs         []string
+	Entities           []callbacks.IntentEntityTraceData
+	Result             *retrievers.KnowledgeRetrieveResult
+	RetrieveError      error
+	Decision           string
+	Disposition        string
+	MissingAspects     []string
 }
 
 type runtimeKnowledgeQuestionSpec struct {
-	TaskID    string
-	Intent    string
-	Query     string
-	SubIntent string
-	Objective string
-	Entities  []callbacks.IntentEntityTraceData
+	TaskID             string
+	Intent             string
+	Query              string
+	OriginalText       string
+	SubIntent          string
+	Objective          string
+	RelationToPrevious string
+	ResolutionState    string
+	SourceRefs         []string
+	Entities           []callbacks.IntentEntityTraceData
 }
 
 type runtimeKnowledgeRetrieveBatch struct {
@@ -227,8 +239,13 @@ func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledge
 			Query:  item,
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, item); intentTask != nil {
+			spec.Intent = canonicalIntentCode(intentTask.Intent)
+			spec.OriginalText = strings.TrimSpace(intentTask.Text)
 			spec.SubIntent = strings.TrimSpace(intentTask.SubIntent)
 			spec.Objective = semanticGateNormalizeObjective(intentTask.Objective)
+			spec.RelationToPrevious = semanticGateNormalizeRelation(intentTask.RelationToPrevious)
+			spec.ResolutionState = semanticGateNormalizeResolution(intentTask.ResolutionState)
+			spec.SourceRefs = append([]string(nil), intentTask.SourceRefs...)
 			spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
 		}
 		questions = append(questions, spec)
@@ -266,18 +283,34 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 		}
 		seenTaskIDs[taskID] = struct{}{}
 		spec := runtimeKnowledgeQuestionSpec{
-			TaskID:    taskID,
-			Intent:    canonicalIntentCode(task.Intent),
-			Query:     query,
-			SubIntent: strings.TrimSpace(task.SubIntent),
-			Objective: semanticGateNormalizeObjective(task.Objective),
+			TaskID:             taskID,
+			Intent:             canonicalIntentCode(task.Intent),
+			Query:              query,
+			OriginalText:       strings.TrimSpace(task.OriginalText),
+			SubIntent:          strings.TrimSpace(task.SubIntent),
+			Objective:          semanticGateNormalizeObjective(task.Objective),
+			RelationToPrevious: semanticGateNormalizeRelation(task.RelationToPrevious),
+			ResolutionState:    semanticGateNormalizeResolution(task.ResolutionState),
+			SourceRefs:         append([]string(nil), task.SourceRefs...),
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, query); intentTask != nil {
+			if spec.OriginalText == "" {
+				spec.OriginalText = strings.TrimSpace(intentTask.Text)
+			}
 			if spec.SubIntent == "" {
 				spec.SubIntent = strings.TrimSpace(intentTask.SubIntent)
 			}
 			if spec.Objective == "" {
 				spec.Objective = semanticGateNormalizeObjective(intentTask.Objective)
+			}
+			if spec.RelationToPrevious == "" {
+				spec.RelationToPrevious = semanticGateNormalizeRelation(intentTask.RelationToPrevious)
+			}
+			if spec.ResolutionState == "" {
+				spec.ResolutionState = semanticGateNormalizeResolution(intentTask.ResolutionState)
+			}
+			if len(spec.SourceRefs) == 0 {
+				spec.SourceRefs = append([]string(nil), intentTask.SourceRefs...)
 			}
 			spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
 		}
@@ -523,8 +556,8 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 		return batch, nil
 	}
 	results := make([]*retrievers.KnowledgeRetrieveResult, len(questions))
+	retrieveErrors := make([]error, len(questions))
 	evidenceQueries := make([]string, len(questions))
-	errs := make(chan error, len(questions))
 	var wg sync.WaitGroup
 	for i, question := range questions {
 		wg.Add(1)
@@ -547,34 +580,57 @@ func retrieveContextForRuntimeQuestionList(ctx context.Context, retriever knowle
 			}
 			result, err := retriever.RetrieveContextByOptions(ctx, questionOpts, searchQuery)
 			if err != nil {
-				errs <- err
+				retrieveErrors[index] = err
 				return
 			}
 			results[index] = result
 		}(i, question)
 	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			return nil, err
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	batch.Questions = make([]runtimeKnowledgeQuestionResult, 0, len(questions))
 	for index, question := range questions {
-		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
-			TaskID:        strings.TrimSpace(question.TaskID),
-			Intent:        canonicalIntentCode(question.Intent),
-			Query:         strings.TrimSpace(question.Query),
-			EvidenceQuery: strings.TrimSpace(evidenceQueries[index]),
-			SubIntent:     strings.TrimSpace(question.SubIntent),
-			Objective:     semanticGateNormalizeObjective(question.Objective),
-			Entities:      append([]callbacks.IntentEntityTraceData(nil), question.Entities...),
-			Result:        results[index],
-		})
+		item := runtimeKnowledgeQuestionResult{
+			TaskID:             strings.TrimSpace(question.TaskID),
+			Intent:             canonicalIntentCode(question.Intent),
+			Query:              strings.TrimSpace(question.Query),
+			OriginalText:       strings.TrimSpace(question.OriginalText),
+			EvidenceQuery:      strings.TrimSpace(evidenceQueries[index]),
+			SubIntent:          strings.TrimSpace(question.SubIntent),
+			Objective:          semanticGateNormalizeObjective(question.Objective),
+			RelationToPrevious: semanticGateNormalizeRelation(question.RelationToPrevious),
+			ResolutionState:    semanticGateNormalizeResolution(question.ResolutionState),
+			SourceRefs:         append([]string(nil), question.SourceRefs...),
+			Entities:           append([]callbacks.IntentEntityTraceData(nil), question.Entities...),
+			Result:             results[index],
+			RetrieveError:      retrieveErrors[index],
+		}
+		if item.RetrieveError != nil {
+			item.Decision = knowledgeEvidenceDecisionInsufficient
+			item.Disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+		}
+		batch.Questions = append(batch.Questions, item)
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(retriever.KnowledgeBaseIDs(), opts, originalQuery, batch.Questions)
 	return batch, nil
+}
+
+func runtimeKnowledgeRetrieveBatchCompleteFailure(batch *runtimeKnowledgeRetrieveBatch) (error, bool) {
+	if batch == nil || len(batch.Questions) == 0 {
+		return nil, false
+	}
+	var firstErr error
+	for _, question := range batch.Questions {
+		if question.RetrieveError == nil {
+			return nil, false
+		}
+		if firstErr == nil {
+			firstErr = question.RetrieveError
+		}
+	}
+	return firstErr, firstErr != nil
 }
 
 func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
@@ -809,7 +865,7 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 			Query:         evidenceQuery,
 			SubIntent:     strings.TrimSpace(question.SubIntent),
 			Objective:     semanticGateNormalizeObjective(question.Objective),
-			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question.Query),
+			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question),
 		}
 		item.Entities = make([]knowledgeEvidenceJudgeEntity, 0, len(question.Entities))
 		for _, entity := range question.Entities {
@@ -832,21 +888,23 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 				}
 			}
 		}
-		for _, hit := range rawHits {
-			layer := ""
-			if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
-				layer = knowledgeEvidenceLayerStore
-			} else if _, ok := generalSet[hit.KnowledgeBaseID]; ok {
-				layer = knowledgeEvidenceLayerGeneral
+		for _, rawHit := range rawHits {
+			for _, hit := range expandKnowledgeEvidenceJudgeHit(rawHit) {
+				layer := ""
+				if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
+					layer = knowledgeEvidenceLayerStore
+				} else if _, ok := generalSet[hit.KnowledgeBaseID]; ok {
+					layer = knowledgeEvidenceLayerGeneral
+				}
+				if layer == "" {
+					continue
+				}
+				item.Candidates = append(item.Candidates, knowledgeEvidenceJudgeCandidate{
+					CandidateID: fmt.Sprintf("%sC%d", question.TaskID, len(item.Candidates)+1),
+					Layer:       layer,
+					Hit:         hit,
+				})
 			}
-			if layer == "" {
-				continue
-			}
-			item.Candidates = append(item.Candidates, knowledgeEvidenceJudgeCandidate{
-				CandidateID: fmt.Sprintf("%sC%d", question.TaskID, len(item.Candidates)+1),
-				Layer:       layer,
-				Hit:         hit,
-			})
 		}
 		if len(item.Candidates) > 0 {
 			item.RawCandidates = append([]knowledgeEvidenceJudgeCandidate(nil), item.Candidates...)
@@ -855,6 +913,35 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		}
 	}
 	return limitKnowledgeEvidenceJudgeTaskCandidates(tasks, taskObjectives, knowledgeEvidenceJudgeBatchCandidateBudget)
+}
+
+func expandKnowledgeEvidenceJudgeHit(hit rag.RetrieveResult) []rag.RetrieveResult {
+	if strings.TrimSpace(hit.FaqQuestion) != "" {
+		return []rag.RetrieveResult{hit}
+	}
+	units := exactKnowledgeEvidenceFAQUnits(hit)
+	if len(units) <= 1 {
+		return []rag.RetrieveResult{hit}
+	}
+	expanded := make([]rag.RetrieveResult, 0, len(units))
+	for _, unit := range units {
+		question := strings.TrimSpace(unit.Question)
+		answer := strings.TrimSpace(unit.Answer)
+		if question == "" || answer == "" {
+			continue
+		}
+		item := hit
+		item.FaqQuestion = question
+		item.Content = "问题：" + question + "\n答案：" + answer
+		if len(unit.Aliases) > 0 {
+			item.Content += "\n相似问法：" + strings.Join(unit.Aliases, "、")
+		}
+		expanded = append(expanded, item)
+	}
+	if len(expanded) == 0 {
+		return []rag.RetrieveResult{hit}
+	}
+	return expanded
 }
 
 func runtimeKnowledgeObjectiveForQuery(intent callbacks.IntentTraceData, query string) string {
@@ -1073,18 +1160,37 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 
 	storeIndex := firstLayerIndex(knowledgeEvidenceLayerStore)
 	generalIndex := firstLayerIndex(knowledgeEvidenceLayerGeneral)
+	storeExactIndex := bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerStore)
+	generalExactIndex := bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerGeneral)
 	storeHandoffIndex := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerStore)
+	generalHandoffIndex := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerGeneral)
+	storeReviewBodyIndex := bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task, knowledgeEvidenceLayerStore, storeHandoffIndex)
+	generalReviewBodyIndex := bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task, knowledgeEvidenceLayerGeneral, generalHandoffIndex)
 	storeCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerStore)
 	generalCompleteIndex := bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task, knowledgeEvidenceLayerGeneral)
 	storePairFirst, storePairSecond, storePairComplete := bestCompleteKnowledgeEvidenceJudgeCandidatePairIndexes(task, knowledgeEvidenceLayerStore)
-	storeBestIndex := storeCompleteIndex
+	storeHandoffConflict := storeHandoffIndex >= 0 && storeReviewBodyIndex >= 0 && storeHandoffIndex != storeReviewBodyIndex
+	generalHandoffConflict := generalHandoffIndex >= 0 && generalReviewBodyIndex >= 0 && generalHandoffIndex != generalReviewBodyIndex
+	storeBestIndex := storeExactIndex
+	if storeHandoffConflict {
+		storeBestIndex = storeReviewBodyIndex
+	}
+	if storeBestIndex < 0 {
+		storeBestIndex = storeCompleteIndex
+	}
 	if storeBestIndex < 0 {
 		storeBestIndex = storeHandoffIndex
 	}
 	if storeBestIndex < 0 {
 		storeBestIndex = storeIndex
 	}
-	generalBestIndex := generalCompleteIndex
+	generalBestIndex := generalExactIndex
+	if generalHandoffConflict {
+		generalBestIndex = generalReviewBodyIndex
+	}
+	if generalBestIndex < 0 {
+		generalBestIndex = generalCompleteIndex
+	}
 	if generalBestIndex < 0 {
 		generalBestIndex = generalIndex
 	}
@@ -1092,12 +1198,24 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	// A same-layer pair that is mechanically required to cover the task must
 	// reach the Judge together. General fallback visibility cannot consume one
 	// of those two slots because the Judge is forbidden from combining layers.
-	if quota >= 2 && storeCompleteIndex < 0 && storePairComplete {
+	if quota >= 2 && storeHandoffConflict {
+		// A credible same-layer body must reach the Judge with an exact transfer
+		// rule. Its score is only a visibility gate; the Judge still owns the
+		// answer decision.
+		selectIndex(storeReviewBodyIndex)
+		selectIndex(storeHandoffIndex)
+		if selectedCount < quota {
+			selectIndex(generalBestIndex)
+		}
+	} else if quota >= 2 && storeCompleteIndex < 0 && storePairComplete {
 		selectIndex(storePairFirst)
 		selectIndex(storePairSecond)
 		if selectedCount < quota {
 			selectIndex(generalBestIndex)
 		}
+	} else if quota >= 2 && storeBestIndex < 0 && generalHandoffConflict {
+		selectIndex(generalReviewBodyIndex)
+		selectIndex(generalHandoffIndex)
 	} else if quota >= 2 && storeBestIndex >= 0 && generalBestIndex >= 0 {
 		// Keep both knowledge layers visible whenever doing so does not remove
 		// evidence required for a complete store-layer answer.
@@ -1112,9 +1230,13 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 	// If the store layer contains an exact transfer rule and a competing factual
 	// answer, preserve the second store candidate when another slot is available.
 	// RawCandidates remains the authority for deterministic conflict checks.
-	if selectedCount < quota && storeHandoffIndex >= 0 && storeCompleteIndex >= 0 && storeHandoffIndex != storeCompleteIndex {
+	if selectedCount < quota && storeHandoffConflict {
+		selectIndex(storeReviewBodyIndex)
 		selectIndex(storeHandoffIndex)
-		selectIndex(storeCompleteIndex)
+	}
+	if selectedCount < quota && storeBestIndex < 0 && generalHandoffConflict {
+		selectIndex(generalReviewBodyIndex)
+		selectIndex(generalHandoffIndex)
 	}
 
 	fillLayer := func(layer string, limit int) {
@@ -1146,6 +1268,20 @@ func selectKnowledgeEvidenceJudgeTaskCandidates(task knowledgeEvidenceJudgeTask,
 		}
 	}
 	return ret
+}
+
+func bestStrictExactKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
+	selection, ok := strictExactKnowledgeEvidenceFAQSelection(task, layer)
+	if !ok || len(selection.SelectedCandidateIDs) != 1 {
+		return -1
+	}
+	selectedCandidateID := strings.TrimSpace(selection.SelectedCandidateIDs[0])
+	for index, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.CandidateID) == selectedCandidateID {
+			return index
+		}
+	}
+	return -1
 }
 
 func bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudgeTask, layer string) int {
@@ -1232,8 +1368,8 @@ func bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task knowledgeEvidence
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
-		if !isKnowledgeHandoffDirectiveContent(answer) || !knowledgeEvidenceHandoffFAQMatchesQuery(question, task.Query) {
+		question, answer, exact := exactKnowledgeEvidenceFAQMatch(candidate.Hit, task.Query)
+		if !exact || !isKnowledgeHandoffDirectiveContent(answer) {
 			continue
 		}
 		questionMatch := knowledgeEvidenceFAQQuestionMatchScore(question, task.Query)
@@ -1241,6 +1377,26 @@ func bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task knowledgeEvidence
 			(questionMatch >= bestQuestionMatch-0.02 && candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score) {
 			bestIndex = index
 			bestQuestionMatch = questionMatch
+		}
+	}
+	return bestIndex
+}
+
+func bestKnowledgeEvidenceJudgeReviewBodyCandidateIndex(task knowledgeEvidenceJudgeTask, layer string, handoffIndex int) int {
+	if handoffIndex < 0 || handoffIndex >= len(task.Candidates) {
+		return -1
+	}
+	handoffQuestion, handoffAnswer := splitKnowledgeEvidenceFAQForQuery(task.Candidates[handoffIndex].Hit, task.Query)
+	bestIndex := -1
+	for index, candidate := range task.Candidates {
+		if index == handoffIndex || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if !knowledgeEvidenceJudgeReviewWorthyBodyPeer(task, candidate, handoffQuestion, handoffAnswer) {
+			continue
+		}
+		if bestIndex < 0 || candidate.Hit.Score > task.Candidates[bestIndex].Hit.Score {
+			bestIndex = index
 		}
 	}
 	return bestIndex
@@ -1354,46 +1510,20 @@ func knowledgeEvidenceTextNGrams(text string) map[string]struct{} {
 	return ret
 }
 
-func buildKnowledgeEvidenceJudgeSourceContext(messages []*schema.Message, currentText string, taskQuery string) []knowledgeEvidenceJudgeSourceMessage {
-	primary := strings.TrimSpace(taskQuery)
+func buildKnowledgeEvidenceJudgeSourceContext(messages []*schema.Message, currentText string, question runtimeKnowledgeQuestionResult) []knowledgeEvidenceJudgeSourceMessage {
+	primary := strings.TrimSpace(question.Query)
 	if primary == "" {
 		primary = strings.TrimSpace(currentText)
 	}
-	items := make([]knowledgeEvidenceJudgeSourceMessage, 0, 3)
-	if knowledgeEvidenceTaskNeedsAdjacentContext(primary) {
-		assistantIndex := -1
-		for index := len(messages) - 1; index >= 0; index-- {
-			message := messages[index]
-			if message == nil || strings.TrimSpace(message.Content) == "" {
-				continue
-			}
-			if message.Role != schema.User && message.Role != schema.Assistant {
-				continue
-			}
-			if message.Role == schema.Assistant {
-				assistantIndex = index
-			}
-			break
+	items := make([]knowledgeEvidenceJudgeSourceMessage, 0, runtimeAdjacentServiceReplyLimit+2)
+	previousCustomer, previousAssistants, hasAdjacentExchange := knowledgeEvidenceAdjacentSourceExchange(messages)
+	adjacentText := previousCustomer + "\n" + strings.Join(previousAssistants, "\n")
+	if hasAdjacentExchange && knowledgeEvidenceQuestionUsesAdjacentContext(question, adjacentText) {
+		if previousCustomer != "" {
+			items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "customer", Content: preview(previousCustomer, 400)})
 		}
-		if assistantIndex >= 0 {
-			customerIndex := -1
-			for index := assistantIndex - 1; index >= 0; index-- {
-				message := messages[index]
-				if message == nil || strings.TrimSpace(message.Content) == "" {
-					continue
-				}
-				if message.Role != schema.User && message.Role != schema.Assistant {
-					continue
-				}
-				if message.Role == schema.User {
-					customerIndex = index
-				}
-				break
-			}
-			if customerIndex >= 0 {
-				items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "customer", Content: preview(messages[customerIndex].Content, 400)})
-			}
-			items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "assistant", Content: preview(messages[assistantIndex].Content, 600)})
+		for _, previousAssistant := range previousAssistants {
+			items = append(items, knowledgeEvidenceJudgeSourceMessage{Role: "assistant", Content: preview(previousAssistant, 600)})
 		}
 	}
 	if primary != "" {
@@ -1402,17 +1532,50 @@ func buildKnowledgeEvidenceJudgeSourceContext(messages []*schema.Message, curren
 	return items
 }
 
-func knowledgeEvidenceTaskNeedsAdjacentContext(text string) bool {
-	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(strings.TrimSpace(text))
-	if compact == "" {
+func knowledgeEvidenceAdjacentSourceExchange(messages []*schema.Message) (string, []string, bool) {
+	entries := boundedGenerationHistoryEntries(adapter.HistoryBuildResult{Messages: messages})
+	adjacent := adjacentGenerationHistoryEntries(entries)
+	if len(adjacent) < 2 || adjacent[0].speaker != "客户" {
+		return "", nil, false
+	}
+	replies := make([]string, 0, len(adjacent)-1)
+	for _, entry := range adjacent[1:] {
+		if entry.speaker != "AI客服" && entry.speaker != "人工客服" {
+			return "", nil, false
+		}
+		replies = append(replies, entry.text)
+	}
+	return adjacent[0].text, replies, len(replies) > 0
+}
+
+func knowledgeEvidenceQuestionUsesAdjacentContext(question runtimeKnowledgeQuestionResult, adjacentContext string) bool {
+	relation := semanticGateNormalizeRelation(question.RelationToPrevious)
+	resolution := semanticGateNormalizeResolution(question.ResolutionState)
+	if relation == "" && resolution == "" {
+		original := normalizeRuntimeKnowledgeQuery(question.OriginalText)
+		resolved := normalizeRuntimeKnowledgeQuery(question.Query)
+		if original == "" || resolved == "" || original == resolved || strings.TrimSpace(adjacentContext) == "" ||
+			!runtimeIntentAtomicCandidateRequiresContext(question.OriginalText) {
+			return false
+		}
+		legacyTask := runtimeIntentTaskJSON{
+			Text:         question.OriginalText,
+			ResolvedText: question.Query,
+		}
+		for _, entity := range question.Entities {
+			legacyTask.Entities = append(legacyTask.Entities, runtimeIntentEntityJSON{Text: entity.Text, Type: entity.Type})
+		}
+		return runtimeIntentProtocolResolvedReferenceGroundedInText(legacyTask, question.OriginalText, adjacentContext)
+	}
+	if resolution == runtimeIntentResolutionResolvedFromContext {
+		return !(relation == "independent" && len(question.SourceRefs) > 1)
+	}
+	switch relation {
+	case "follow_up", "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
+		return true
+	default:
 		return false
 	}
-	for _, marker := range []string{"这个", "这些", "那个", "那些", "上述", "上面", "前面", "刚才", "刚刚", "其中", "它们", "两者", "几个房型", "这几个", "那几个"} {
-		if strings.Contains(compact, marker) {
-			return true
-		}
-	}
-	return strings.HasPrefix(compact, "这") || strings.HasPrefix(compact, "那")
 }
 
 func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, tasks []knowledgeEvidenceJudgeTask, outcome knowledgeEvidenceJudgeOutcome) callbacks.KnowledgeEvidenceJudgeTraceData {
@@ -1646,7 +1809,7 @@ func selectionHasHandoffDirective(selection knowledgeEvidenceLayerSelection, lay
 	if !selectionHasCompleteEvidence(selection) {
 		return false
 	}
-	return strictExactKnowledgeEvidenceHandoffSelectionMatches(query, layer, selection.SelectedCandidateIDs, candidates)
+	return selectedExactKnowledgeEvidenceHandoffCandidateMatches(query, layer, selection.SelectedCandidateIDs, candidates)
 }
 
 func selectionHasCompleteEvidence(selection knowledgeEvidenceLayerSelection) bool {
@@ -1726,33 +1889,8 @@ func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) 
 			items = append(items, item)
 			continue
 		}
-		if result == nil || len(result.Hits) == 0 {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		if hit, ok := topKnowledgeHandoffDirective(result); ok {
-			item.NeedsHandoff = true
-			item.HandoffHit = hit
-			items = append(items, item)
-			continue
-		}
-		if strings.TrimSpace(result.ContextText) == "" {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		removeKnowledgeHandoffDirectiveSelection(result)
-		if len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
-			item.NeedsHandoff = true
-			items = append(items, item)
-			continue
-		}
-		item.HasAnswer = true
-		if question.Decision == knowledgeEvidenceDecisionPartial && len(question.MissingAspects) > 0 {
-			item.NeedsHandoff = true
-			item.MissingAspects = append([]string(nil), question.MissingAspects...)
-		}
+		item.Disposition = runtimeKnowledgeDispositionJudgeProtocolRetry
+		item.NeedsRetry = true
 		items = append(items, item)
 	}
 	return items
@@ -1783,11 +1921,11 @@ func rebuildRuntimeKnowledgeReplyPlan(
 		return rebuildLegacyRuntimeKnowledgeReplyPlan(plan, questions, pending, excludePending)
 	}
 
-	pendingTaskIDs := make(map[string]bool, len(pending))
+	pendingTasks := make(map[string]runtimeKnowledgeQuestionDisposition, len(pending))
 	if excludePending {
 		for _, item := range pending {
 			if !item.HasAnswer {
-				pendingTaskIDs[strings.TrimSpace(item.TaskID)] = true
+				pendingTasks[strings.TrimSpace(item.TaskID)] = item
 			}
 		}
 	}
@@ -1806,20 +1944,49 @@ func rebuildRuntimeKnowledgeReplyPlan(
 			continue
 		}
 		taskID := strings.TrimSpace(task.TaskID)
-		question, ok := questionsByTaskID[taskID]
-		if !ok || pendingTaskIDs[taskID] {
+		pendingTask, deferred := pendingTasks[taskID]
+		question, hasQuestion := questionsByTaskID[taskID]
+		if !hasQuestion && !deferred {
 			continue
 		}
-		query := strings.TrimSpace(question.Query)
+		query := ""
+		if hasQuestion {
+			query = strings.TrimSpace(question.Query)
+		}
+		if query == "" && deferred {
+			query = strings.TrimSpace(pendingTask.Query)
+		}
 		if query == "" {
+			query = activeGenerationTaskText(task)
+		}
+		if query == "" && !deferred {
 			continue
 		}
-		task.Text = query
-		if strings.TrimSpace(task.ResolvedText) == "" {
+		if query != "" {
+			if strings.TrimSpace(task.Text) == "" {
+				task.Text = strings.TrimSpace(task.OriginalText)
+				if task.Text == "" {
+					task.Text = strings.TrimSpace(question.OriginalText)
+				}
+				if task.Text == "" {
+					task.Text = query
+				}
+			}
 			task.ResolvedText = query
+			if strings.TrimSpace(task.OriginalText) == "" {
+				task.OriginalText = task.Text
+			}
 		}
-		if strings.TrimSpace(task.OriginalText) == "" {
-			task.OriginalText = query
+		if deferred {
+			task.Output = runtimeKnowledgeDeferredHandoffOutput
+			task.OutputKind = "handoff"
+			task.ReplyRequired = false
+			task.SelectedLayer = ""
+			task.SelectedCandidateIDs = nil
+			task.SupportedFacts = nil
+			task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
+			rebuilt = append(rebuilt, task)
+			continue
 		}
 		task.Output = "knowledge_text_reply"
 		if strings.TrimSpace(task.Intent) == "" {
@@ -1859,33 +2026,53 @@ func rebuildLegacyRuntimeKnowledgeReplyPlan(
 	pending []runtimeKnowledgeQuestionDisposition,
 	excludePending bool,
 ) callbacks.ReplyPlanTraceData {
-	pendingTaskIDs := make(map[string]bool, len(pending))
+	pendingTasks := make(map[string]runtimeKnowledgeQuestionDisposition, len(pending))
 	if excludePending {
 		for _, item := range pending {
 			if !item.HasAnswer {
-				pendingTaskIDs[strings.TrimSpace(item.TaskID)] = true
+				pendingTasks[strings.TrimSpace(item.TaskID)] = item
 			}
 		}
 	}
 
 	usedPlanTasks := make([]bool, len(plan.TaskPlans))
-	activeKnowledgeTasks := make([]callbacks.ReplyTaskPlanTraceData, 0, len(questions))
+	activeKnowledgeTasks := make([]callbacks.ReplyTaskPlanTraceData, 0, len(questions)+len(pendingTasks))
+	addedTaskIDs := make(map[string]struct{}, len(questions)+len(pendingTasks))
 	for _, question := range questions {
-		if pendingTaskIDs[strings.TrimSpace(question.TaskID)] {
+		taskID := strings.TrimSpace(question.TaskID)
+		pendingTask, deferred := pendingTasks[taskID]
+		query := strings.TrimSpace(question.Query)
+		if query == "" && !deferred {
 			continue
 		}
-		query := strings.TrimSpace(question.Query)
-		if query == "" {
-			continue
+		originalText := strings.TrimSpace(question.OriginalText)
+		customerText := originalText
+		if customerText == "" {
+			customerText = query
 		}
 		task := callbacks.ReplyTaskPlanTraceData{
-			Intent: "hotel_info",
-			Text:   query,
-			Output: "knowledge_text_reply",
+			TaskID:             taskID,
+			Intent:             canonicalIntentCode(question.Intent),
+			SubIntent:          strings.TrimSpace(question.SubIntent),
+			Objective:          semanticGateNormalizeObjective(question.Objective),
+			RelationToPrevious: semanticGateNormalizeRelation(question.RelationToPrevious),
+			ResolutionState:    semanticGateNormalizeResolution(question.ResolutionState),
+			Entities:           append([]callbacks.IntentEntityTraceData(nil), question.Entities...),
+			Text:               customerText,
+			OriginalText:       customerText,
+			ResolvedText:       query,
+			SourceRefs:         append([]string(nil), question.SourceRefs...),
+			NeedsKnowledge:     true,
+			OutputKind:         "text",
+			ReplyRequired:      true,
+			Output:             "knowledge_text_reply",
+		}
+		if task.Intent == "" {
+			task.Intent = "hotel_info"
 		}
 		matchedPlanIndex := -1
 		for index, candidate := range plan.TaskPlans {
-			if usedPlanTasks[index] || !runtimeReplyTaskUsesKnowledge(candidate) || !runtimeKnowledgeQueryCovers(candidate.Text, query) {
+			if usedPlanTasks[index] || !runtimeReplyTaskUsesKnowledge(candidate) || !runtimeKnowledgeQueryCovers(activeGenerationTaskText(candidate), query) {
 				continue
 			}
 			matchedPlanIndex = index
@@ -1903,13 +2090,101 @@ func rebuildLegacyRuntimeKnowledgeReplyPlan(
 		if matchedPlanIndex >= 0 {
 			usedPlanTasks[matchedPlanIndex] = true
 			task = plan.TaskPlans[matchedPlanIndex]
-			task.Text = query
-			task.Output = "knowledge_text_reply"
+			task.TaskID = taskID
+			if strings.TrimSpace(task.Text) == "" {
+				task.Text = customerText
+			}
+			task.ResolvedText = query
+			if strings.TrimSpace(task.OriginalText) == "" {
+				task.OriginalText = task.Text
+			}
 			if strings.TrimSpace(task.Intent) == "" {
-				task.Intent = "hotel_info"
+				task.Intent = canonicalIntentCode(question.Intent)
+				if strings.TrimSpace(task.Intent) == "" {
+					task.Intent = "hotel_info"
+				}
 			}
 		}
+		task.NeedsKnowledge = true
+		if deferred {
+			task.Output = runtimeKnowledgeDeferredHandoffOutput
+			task.OutputKind = "handoff"
+			task.ReplyRequired = false
+			task.SelectedLayer = ""
+			task.SelectedCandidateIDs = nil
+			task.SupportedFacts = nil
+			task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
+		} else {
+			task.Output = "knowledge_text_reply"
+			task.OutputKind = "text"
+			task.ReplyRequired = true
+		}
 		activeKnowledgeTasks = append(activeKnowledgeTasks, task)
+		if taskID != "" {
+			addedTaskIDs[taskID] = struct{}{}
+		}
+	}
+	for _, pendingTask := range pending {
+		taskID := strings.TrimSpace(pendingTask.TaskID)
+		if !excludePending || pendingTask.HasAnswer {
+			continue
+		}
+		if _, exists := addedTaskIDs[taskID]; exists {
+			continue
+		}
+		query := strings.TrimSpace(pendingTask.Query)
+		task := callbacks.ReplyTaskPlanTraceData{
+			TaskID:         taskID,
+			Intent:         "hotel_info",
+			Text:           query,
+			OriginalText:   query,
+			ResolvedText:   query,
+			NeedsKnowledge: true,
+		}
+		for index, candidate := range plan.TaskPlans {
+			if usedPlanTasks[index] || !runtimeReplyTaskUsesKnowledge(candidate) {
+				continue
+			}
+			candidateTaskID := strings.TrimSpace(candidate.TaskID)
+			candidateQuery := activeGenerationTaskText(candidate)
+			if candidateTaskID != "" && candidateTaskID != taskID {
+				continue
+			}
+			if query != "" && candidateQuery != "" && !runtimeKnowledgeQueryCovers(candidateQuery, query) && !runtimeKnowledgeQueryCovers(query, candidateQuery) {
+				continue
+			}
+			usedPlanTasks[index] = true
+			task = candidate
+			break
+		}
+		task.TaskID = taskID
+		if strings.TrimSpace(task.Intent) == "" {
+			task.Intent = "hotel_info"
+		}
+		if query != "" {
+			if strings.TrimSpace(task.Text) == "" {
+				task.Text = strings.TrimSpace(task.OriginalText)
+				if task.Text == "" {
+					task.Text = query
+				}
+			}
+			if strings.TrimSpace(task.OriginalText) == "" {
+				task.OriginalText = task.Text
+			}
+			task.ResolvedText = query
+		}
+		task.NeedsKnowledge = true
+		task.Output = runtimeKnowledgeDeferredHandoffOutput
+		task.OutputKind = "handoff"
+		task.ReplyRequired = false
+		task.SelectedLayer = ""
+		task.SelectedCandidateIDs = nil
+		task.SupportedFacts = nil
+		task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
+		activeKnowledgeTasks = append(activeKnowledgeTasks, task)
+		if taskID != "" {
+			addedTaskIDs[taskID] = struct{}{}
+		}
 	}
 
 	rebuilt := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plan.TaskPlans)+len(activeKnowledgeTasks))
@@ -1948,7 +2223,7 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 	used := make(map[string]bool, len(trace.Tasks))
 	for index := range plan.TaskPlans {
 		planTask := &plan.TaskPlans[index]
-		if !runtimeReplyTaskUsesKnowledge(*planTask) {
+		if !runtimeReplyTaskUsesKnowledge(*planTask) || strings.TrimSpace(planTask.Output) == runtimeKnowledgeDeferredHandoffOutput {
 			continue
 		}
 		planTaskID := strings.TrimSpace(planTask.TaskID)
@@ -2074,8 +2349,8 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 		parts := []string{"【部分问题处理边界】"}
 		if len(fullLabels) > 0 {
 			parts = append(parts,
-				"部分完整无答案的原子问题已从当前 active ReplyPlan 移除，并由系统单独执行转接；若缺少必要房号，系统会先追问房号。",
-				"不得猜测、复述、概括或提及任何已移除任务。",
+				"部分完整无答案的原子问题已作为非文本 Deferred Task 保留，并由系统单独执行转接；若缺少必要房号，系统会先追问房号。",
+				"这些 Deferred Task 仅供转接和后续恢复使用，不属于本次 Generate 的文本任务；不得猜测、复述、概括或提及。",
 			)
 		}
 		if len(partialLabels) > 0 {
@@ -2148,10 +2423,11 @@ func runtimeRetrieveResultKey(item rag.RetrieveResult) string {
 	return fmt.Sprintf("%d:%d:%d:%d:%s:%s", item.KnowledgeBaseID, item.DocumentID, item.ChunkID, item.FaqID, strings.TrimSpace(item.SourceRecordID), strings.TrimSpace(item.Content))
 }
 
-func resolveRuntimeKnowledgeResources(req RunInput, result *retrievers.KnowledgeRetrieveResult) []callbacks.KnowledgeResourceTraceData {
-	if result == nil || len(result.ContextResults) == 0 {
+func resolveRuntimeKnowledgeResources(req RunInput, batch *runtimeKnowledgeRetrieveBatch) []callbacks.KnowledgeResourceTraceData {
+	if batch == nil || batch.Merged == nil || len(batch.Merged.ContextResults) == 0 {
 		return nil
 	}
+	result := batch.Merged
 	scope := resolveRuntimeIntentScope(req)
 	if scope.WxWorkInstanceID <= 0 || scope.IntentProfileID <= 0 {
 		return nil
@@ -2178,7 +2454,37 @@ func resolveRuntimeKnowledgeResources(req RunInput, result *retrievers.Knowledge
 			Title:           item.Title,
 			Description:     item.Description,
 			SortNo:          item.SortNo,
+			TaskIDs:         runtimeKnowledgeResourceTaskIDs(batch, item.KnowledgeBaseID, item.SourceRecordID),
 		})
+	}
+	return ret
+}
+
+func runtimeKnowledgeResourceSourceKey(knowledgeBaseID int64, sourceRecordID string) string {
+	sourceRecordID = strings.TrimSpace(sourceRecordID)
+	if knowledgeBaseID <= 0 || sourceRecordID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", knowledgeBaseID, sourceRecordID)
+}
+
+func runtimeKnowledgeResourceTaskIDs(batch *runtimeKnowledgeRetrieveBatch, knowledgeBaseID int64, sourceRecordID string) []string {
+	key := runtimeKnowledgeResourceSourceKey(knowledgeBaseID, sourceRecordID)
+	if batch == nil || key == "" {
+		return nil
+	}
+	ret := make([]string, 0)
+	for _, question := range batch.Questions {
+		taskID := strings.TrimSpace(question.TaskID)
+		if taskID == "" || question.Result == nil {
+			continue
+		}
+		for _, item := range question.Result.ContextResults {
+			if runtimeKnowledgeResourceSourceKey(item.KnowledgeBaseID, item.SourceRecordID) == key {
+				ret = appendIfMissing(ret, taskID)
+				break
+			}
+		}
 	}
 	return ret
 }
@@ -2218,7 +2524,9 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
-		deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用")
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索器不可用")
+		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
@@ -2250,10 +2558,23 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	batch, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query, intent, replyPlans...)
 	if err != nil {
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索失败") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索失败")
+		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
 		state.ErrorMessage = err.Error()
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", err)
+		return state, nil
+	}
+	if retrieveErr, allFailed := runtimeKnowledgeRetrieveBatchCompleteFailure(batch); allFailed {
+		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索失败") {
+			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索失败")
+		}
+		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
+		state.prependDecisionInstruction(knowledgeActionInstruction)
+		state.ErrorMessage = retrieveErr.Error()
+		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", retrieveErr)
 		return state, nil
 	}
 	result := batch.Merged
@@ -2293,6 +2614,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		judgeTrace = applyKnowledgeEvidenceJudgeOutcome(batch, judgeTasks, judgeOutcome)
 		result = batch.Merged
 	}
+	judgeTrace = appendRuntimeKnowledgeUnjudgedTaskTrace(judgeTrace, batch)
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 	result = batch.Merged
@@ -2300,16 +2622,14 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	deferredInstruction := ""
 	independentNonKnowledgeWork := state.Input.Collector != nil &&
 		runtimeReplyPlanHasIndependentNonKnowledgeWork(state.Input.Collector.Data.Pipeline.ReplyPlan)
+	autoHandoffEnabled := len(pendingQuestions) > 0 &&
+		services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
 	if len(retryQuestions) > 0 {
 		clearDeferredRuntimeKnowledgeQuestions(batch, retryQuestions)
 		result = batch.Merged
 	}
 	if len(pendingQuestions) > 0 && answeredQuestionCount == 0 && len(retryQuestions) == 0 {
-		if state.Input.Collector != nil &&
-			independentNonKnowledgeWork &&
-			services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
-			clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
-			result = batch.Merged
+		if state.Input.Collector != nil && autoHandoffEnabled {
 			activePlan := rebuildRuntimeKnowledgeReplyPlan(
 				state.Input.Collector.Data.Pipeline.ReplyPlan,
 				batch.Questions,
@@ -2323,21 +2643,20 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			for _, item := range pendingQuestions {
 				judgeTrace.DeferredTaskIDs = appendIfMissing(judgeTrace.DeferredTaskIDs, item.TaskID)
 			}
+		}
+		clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
+		result = batch.Merged
+		if state.Input.Collector != nil {
 			state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
-			state.RetrieveResult = result
-			syncRetrieverTrace(result)
+		}
+		state.RetrieveResult = result
+		syncRetrieverTrace(result)
+		if independentNonKnowledgeWork && autoHandoffEnabled {
 			state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 			state.prependDecisionInstruction(knowledgeActionInstruction)
 			state.recordAnswerability(answerabilityStatusNoContext, "knowledge evidence unavailable; independent non-knowledge work was preserved before deferred handoff", nil)
 			return state, nil
 		}
-		if state.Input.Collector != nil {
-			state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
-		}
-		clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
-		result = batch.Merged
-		state.RetrieveResult = result
-		syncRetrieverTrace(result)
 		for _, pending := range pendingQuestions {
 			if pending.HandoffHit.Content != "" {
 				markKnowledgeHandoffDirective(state.Input, pending.HandoffHit)
@@ -2352,7 +2671,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		state.recordAnswerability(answerabilityStatusNoContext, "no retrieved context", nil)
 		return state, nil
 	}
-	willRequestHandoff := len(pendingQuestions) > 0 && services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
+	willRequestHandoff := autoHandoffEnabled
 	if state.Input.Collector != nil {
 		activePlan := rebuildRuntimeKnowledgeReplyPlan(
 			state.Input.Collector.Data.Pipeline.ReplyPlan,
@@ -2381,7 +2700,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	state.RetrieveResult = result
 	if state.Input.Collector != nil && result != nil {
-		state.Input.Collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(state.Input.Request, result))
+		state.Input.Collector.SetKnowledgeResources(resolveRuntimeKnowledgeResources(state.Input.Request, batch))
 	}
 	if result == nil || len(result.Hits) == 0 || strings.TrimSpace(result.ContextText) == "" {
 		if len(retryQuestions) > 0 {
@@ -2407,6 +2726,70 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func appendRuntimeKnowledgeUnjudgedTaskTrace(
+	trace callbacks.KnowledgeEvidenceJudgeTraceData,
+	batch *runtimeKnowledgeRetrieveBatch,
+) callbacks.KnowledgeEvidenceJudgeTraceData {
+	if batch == nil || len(batch.Questions) == 0 {
+		return trace
+	}
+	existing := make(map[string]callbacks.KnowledgeEvidenceJudgeTaskTraceData, len(trace.Tasks))
+	for _, task := range trace.Tasks {
+		existing[strings.TrimSpace(task.TaskID)] = task
+	}
+	ordered := make([]callbacks.KnowledgeEvidenceJudgeTaskTraceData, 0, len(trace.Tasks)+len(batch.Questions))
+	used := make(map[string]struct{}, len(trace.Tasks))
+	hasUnjudgedTask := false
+	for index := range batch.Questions {
+		question := &batch.Questions[index]
+		taskID := strings.TrimSpace(question.TaskID)
+		if task, ok := existing[taskID]; ok {
+			ordered = append(ordered, task)
+			used[taskID] = struct{}{}
+			continue
+		}
+
+		candidateCount := runtimeRetrieverRawCandidateCount(question.Result)
+		decision := knowledgeEvidenceDecisionProtocolInvalid
+		decisionSource := "unjudged_candidates"
+		disposition := runtimeKnowledgeDispositionJudgeProtocolRetry
+		switch {
+		case question.RetrieveError != nil:
+			decision = knowledgeEvidenceDecisionInsufficient
+			decisionSource = "source_unavailable"
+			disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+		case candidateCount == 0:
+			decision = knowledgeEvidenceDecisionInsufficient
+			decisionSource = "retriever_no_evidence"
+			disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+		}
+		question.Decision = decision
+		question.Disposition = disposition
+		hasUnjudgedTask = true
+		ordered = append(ordered, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         taskID,
+			QueryPreview:   preview(question.Query, 120),
+			CandidateCount: candidateCount,
+			Decision:       decision,
+			DecisionSource: decisionSource,
+			Disposition:    disposition,
+		})
+		used[taskID] = struct{}{}
+	}
+	if !hasUnjudgedTask {
+		return trace
+	}
+	for _, task := range trace.Tasks {
+		if _, ok := used[strings.TrimSpace(task.TaskID)]; ok {
+			continue
+		}
+		ordered = append(ordered, task)
+	}
+	trace.Tasks = ordered
+	trace.TaskCount = len(ordered)
+	return trace
 }
 
 func runtimeRetrieverRawCandidateCount(result *retrievers.KnowledgeRetrieveResult) int {
@@ -2439,9 +2822,13 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 		return false
 	}
 	plan := state.Input.Collector.Data.Pipeline.ReplyPlan
-	if !runtimeReplyPlanHasIndependentNonKnowledgeWork(plan) {
-		return false
+	if len(plan.TaskPlans) == 0 {
+		plan.TaskPlans = buildReplyTaskPlans(state.Input.Intent)
+		plan.ActiveTaskCount = len(plan.TaskPlans)
+		plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
+		state.Input.Collector.SetReplyPlan(plan)
 	}
+	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
 
 	pending := make([]runtimeKnowledgeQuestionDisposition, 0)
 	for index, task := range plan.TaskPlans {
@@ -2456,6 +2843,9 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 		if query == "" {
 			query = strings.TrimSpace(task.Text)
 		}
+		if query == "" {
+			query = strings.TrimSpace(currentRuntimeIntentSemanticText(state.Input.Request))
+		}
 		pending = append(pending, runtimeKnowledgeQuestionDisposition{
 			TaskID:       taskID,
 			Query:        query,
@@ -2466,12 +2856,11 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 		return false
 	}
 
-	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(state.Input.Request.Conversation.ID) {
-		return true
+	autoHandoffEnabled := services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(state.Input.Request.Conversation.ID)
+	if autoHandoffEnabled {
+		activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
+		state.Input.Collector.SetReplyPlan(activePlan)
 	}
-
-	activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
-	state.Input.Collector.SetReplyPlan(activePlan)
 	judgeTrace := state.Input.Collector.Data.Pipeline.EvidenceJudge
 	if strings.TrimSpace(judgeTrace.SchemaVersion) == "" {
 		judgeTrace.SchemaVersion = knowledgeEvidenceJudgeSchemaVersion
@@ -2482,16 +2871,28 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 	if strings.TrimSpace(judgeTrace.Reason) == "" {
 		judgeTrace.Reason = "knowledge source unavailable before evidence judging"
 	}
-	judgeTrace.DeferredHandoff = true
-	judgeTrace.DeferredHandoffReason = deferredRuntimeKnowledgeHandoffReason(pending)
-	if strings.TrimSpace(reason) != "" {
-		judgeTrace.DeferredHandoffReason = strings.TrimSpace(reason) + "；" + judgeTrace.DeferredHandoffReason
+	if autoHandoffEnabled {
+		judgeTrace.DeferredHandoff = true
+		judgeTrace.DeferredHandoffReason = deferredRuntimeKnowledgeHandoffReason(pending)
+		if strings.TrimSpace(reason) != "" {
+			judgeTrace.DeferredHandoffReason = strings.TrimSpace(reason) + "；" + judgeTrace.DeferredHandoffReason
+		}
 	}
 	for _, item := range pending {
-		judgeTrace.DeferredTaskIDs = appendIfMissing(judgeTrace.DeferredTaskIDs, item.TaskID)
+		if autoHandoffEnabled {
+			judgeTrace.DeferredTaskIDs = appendIfMissing(judgeTrace.DeferredTaskIDs, item.TaskID)
+		}
+		judgeTrace.Tasks = append(judgeTrace.Tasks, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         item.TaskID,
+			QueryPreview:   preview(item.Query, 120),
+			Decision:       knowledgeEvidenceDecisionInsufficient,
+			DecisionSource: "source_unavailable",
+			Disposition:    runtimeKnowledgeDispositionNoEvidenceHandoff,
+		})
 	}
+	judgeTrace.TaskCount = len(judgeTrace.Tasks)
 	state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
-	return true
+	return hasIndependentNonKnowledgeWork
 }
 
 func markKnowledgeNoContextHandoffDirective(input answerabilityGateInput, reason string) {

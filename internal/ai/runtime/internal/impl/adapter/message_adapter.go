@@ -165,6 +165,49 @@ func BuildHistoryMessages(conversationID int64, currentMessageID int64, limit in
 	return ret
 }
 
+// ExcludeCurrentTurnSources removes physical customer messages that were
+// already folded into the current burst envelope. Intent, Judge, and Generate
+// then share the same history boundary and can still see the real adjacent
+// service reply.
+func ExcludeCurrentTurnSources(history HistoryBuildResult, current models.Message) HistoryBuildResult {
+	sources := BuildCurrentTurnSources(current)
+	excludedIDs := make(map[int64]struct{}, len(sources))
+	for _, source := range sources {
+		if source.MessageID > 0 && source.MessageID != current.ID {
+			excludedIDs[source.MessageID] = struct{}{}
+		}
+	}
+	if len(excludedIDs) == 0 || len(history.RawItems) == 0 {
+		return history
+	}
+
+	filteredRaw := make([]models.Message, 0, len(history.RawItems))
+	filteredMessages := make([]*schema.Message, 0, len(history.Messages))
+	aligned := len(history.RawItems) == len(history.Messages)
+	for index, item := range history.RawItems {
+		if _, excluded := excludedIDs[item.ID]; excluded {
+			continue
+		}
+		filteredRaw = append(filteredRaw, item)
+		if aligned {
+			filteredMessages = append(filteredMessages, history.Messages[index])
+			continue
+		}
+		if message := BuildSchemaMessage(&item); message != nil {
+			filteredMessages = append(filteredMessages, message)
+		}
+	}
+
+	history.RawItems = filteredRaw
+	history.Messages = filteredMessages
+	history.LatestRawItem = nil
+	if len(filteredRaw) > 0 {
+		latest := filteredRaw[len(filteredRaw)-1]
+		history.LatestRawItem = &latest
+	}
+	return history
+}
+
 func configuredHistoryLimit(conversationID int64) int {
 	if conversationID <= 0 {
 		return defaultHistoryLimit

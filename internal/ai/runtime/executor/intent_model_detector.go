@@ -267,7 +267,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	if err != nil {
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
-		repairInstruction := "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(err.Error(), 240) + "。请严格按照当前系统消息声明的字段重新输出完整 JSON；intentTasks 必须从头到尾覆盖当前轮每个原子问题，且是唯一事实来源。每个任务都必须输出 text、resolvedText、sourceRefs、objective、relationToPrevious、resolutionState 和 entities；顶层字段只能汇总 intentTasks。不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+		repairInstruction := "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(err.Error(), 240) + "。请严格按照当前系统消息声明的字段重新输出完整 JSON；intentTasks 必须从头到尾覆盖当前轮每个原子问题，且是唯一事实来源。当前轮每个 URef 都必须至少出现在一个 intentTask 的 sourceRefs 中，可以作为主要来源或相邻上下文；纯礼貌、互动或背景也必须由 interaction Task 或相关业务 Task 的 context sourceRef 明确认领。每个任务都必须输出 text、resolvedText、sourceRefs、objective、relationToPrevious、resolutionState 和 entities；顶层字段只能汇总 intentTasks。不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
 		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage(repairInstruction)))
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
@@ -287,6 +287,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 			return callbacks.IntentTraceData{}, err
 		}
 	}
+	normalizeRuntimeIntentObjectiveMetadata(&parsed, profile)
 	sourceRefsValidated := runtimeIntentProfileExpectsSourceRefs(profile) &&
 		len(currentTurnIntentSourceTexts(currentText)) > 0
 	return callbacks.IntentTraceData{
@@ -411,6 +412,15 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 	return ret
 }
 
+func normalizeRuntimeIntentObjectiveMetadata(parsed *runtimeIntentDetectJSON, profile *models.ReplyIntentProfile) {
+	if parsed == nil || !runtimeIntentProfileExpectsTaskSemantics(profile) {
+		return
+	}
+	for index := range parsed.IntentTasks {
+		parsed.IntentTasks[index].Objective = semanticGateNormalizeObjectiveMetadata(parsed.IntentTasks[index].Objective)
+	}
+}
+
 func convertRuntimeIntentEntities(entities []runtimeIntentEntityJSON) []callbacks.IntentEntityTraceData {
 	ret := make([]callbacks.IntentEntityTraceData, 0, len(entities))
 	for _, entity := range entities {
@@ -516,12 +526,12 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 			b.WriteString(strings.TrimSpace(source.Text))
 			b.WriteString("\n")
 		}
-		b.WriteString("每个 intentTasks 项都要输出 sourceRefs；sourceRefs[0] 是该任务的主要问题来源，其余是被该任务共同消化的相邻上下文。只能引用上面列出的 URef；messageId 只用于系统追踪，sourceRefs 中只写 U1、U2 这类 URef。")
+		b.WriteString("每个 intentTasks 项都要输出 sourceRefs；sourceRefs[0] 是该任务的主要问题来源，其余是被该任务共同消化的相邻上下文。当前轮每个 URef 都必须至少出现在一个 intentTask 的 sourceRefs 中，作为主要来源或相邻上下文均可。纯礼貌、互动或背景如果不需要独立业务回答，也必须建立 interaction Task 明确认领，或作为相关业务 Task 的 context sourceRef；后续链路会按语义把不需要回复的 interaction Task 处理为 context_only。只能引用上面列出的 URef；messageId 只用于系统追踪，sourceRefs 中只写 U1、U2 这类 URef。")
 	} else {
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
 	}
-	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息都可能包含 0 个、1 个或多个任务，任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序。不同对象、不同知识主题或需要不同答案证据的问题必须拆开；即使 subIntent 相同也不能合并不同答案目标，例如“有啥吃的推荐没，以及附近哪里好玩”必须由你输出餐饮推荐和游玩推荐两个 Task，不能因为都属于 surrounding_facilities 合成一个。只有同一对象紧密相关且需要共同回答的多个方面才可合成 compound_information。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，不能只处理最后一句或最后一个问题。")
+	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息可能包含 0 个、1 个或多个独立业务任务，但即使没有独立业务任务，该 URef 也必须被 interaction Task 或相关 Task 的 context sourceRef 明确认领。任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序。不同对象、不同知识主题或需要不同答案证据的问题必须拆开；即使 subIntent 相同也不能合并不同答案目标，例如“有啥吃的推荐没，以及附近哪里好玩”必须由你输出餐饮推荐和游玩推荐两个 Task，不能因为都属于 surrounding_facilities 合成一个。只有同一对象紧密相关且需要共同回答的多个方面才可合成 compound_information。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，确保每个 URef 至少被 sourceRefs 引用一次，不能只处理最后一句或最后一个问题。")
 	b.WriteString("同一当前轮中，若后一个 URef 需要前一个 URef 才能补全，就把前一个 URef 加入 sourceRefs，并保持 relationToPrevious=independent；follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，充电 Task 的 text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context。")
 	b.WriteString("\n\n当前消息类型: ")
 	b.WriteString(string(req.UserMessage.MessageType))
@@ -618,20 +628,25 @@ func currentTurnIntentSourceTexts(currentDisplayText string) []string {
 }
 
 func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult) string {
-	aiReply, ok := immediatelyPreviousAIReply(history)
-	if !ok {
+	previousCustomer, replies, senderType, ok := immediatelyPreviousServiceReplyGroup(history)
+	if !ok || strings.TrimSpace(previousCustomer) == "" || senderType != enums.IMSenderTypeAI || len(replies) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("【上一答复关系判断（仅本轮启用）】\n")
-	b.WriteString("紧邻上一条历史消息确为 AI 客服答复。必须结合此前客户原问题、这条紧邻 AI 答复和当前客户消息，判断客户是在继续业务，还是明确拒绝了上一答复；不能按‘不是、为什么、真的吗’等单个词机械匹配。\n")
-	if customerQuestion := customerMessageBeforeAdjacentAIReply(history); customerQuestion != "" {
+	b.WriteString("紧邻上一组历史消息确为 AI 客服答复。必须结合此前客户原问题、这组紧邻 AI 答复和当前客户消息，判断客户是在继续业务，还是明确拒绝了上一答复；不能按‘不是、为什么、真的吗’等单个词机械匹配。\n")
+	if customerQuestion := strings.TrimSpace(previousCustomer); customerQuestion != "" {
 		b.WriteString("此前客户原问题：")
 		b.WriteString(preview(customerQuestion, 240))
 		b.WriteString("\n")
 	}
-	b.WriteString("紧邻 AI 客服答复：")
-	b.WriteString(preview(aiReply, 240))
+	b.WriteString("紧邻 AI 客服答复组：")
+	for index, reply := range replies {
+		if index > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(preview(reply, 240))
+	}
 	b.WriteString("\n")
 	b.WriteString("每个相关 intentTasks 项都要在 relationToPrevious 中表达与紧邻上一轮的关系：新主题用 independent，正常承接用 follow_up，回答 AI 追问用 clarification_answer，明确回指用 reference_previous，纠正用 correction；上一答复被明确否定、被指出矛盾或仍未解决同一问题时统一用 answer_rejected。\n")
 	b.WriteString("凡当前短句必须借助紧邻上下文才能理解，都必须同时正确输出 relationToPrevious、resolutionState 和 resolvedText，不能降级成新的 interaction/social 或泛化 clarify。AI 对明确业务问题作是/否追问后，客户回答‘是的、对、可以’等确认语时，继承该业务 intent/subIntent，使用 relationToPrevious=clarification_answer、resolutionState=resolved_from_context，并在 resolvedText 中写出完整业务问题和确认含义。客户只说‘不是’且没有同时给出正确目标时，relationToPrevious 使用 correction 或 clarification_answer，但 resolutionState 必须是 ambiguous 或 unresolved，resolvedText 只能写已知的否定含义，禁止虚构客户真正想问的对象。\n")
@@ -666,43 +681,29 @@ func hasResolvableAdjacentIntentContext(history adapter.HistoryBuildResult) bool
 }
 
 func immediatelyPreviousAIReply(history adapter.HistoryBuildResult) (string, bool) {
-	if history.LatestRawItem != nil {
-		item := *history.LatestRawItem
-		if !utils.IsAIServiceNoticeMessage(&item) {
-			if item.SenderType != enums.IMSenderTypeAI {
-				return "", false
-			}
-			content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
-			if content == "" {
-				return "", false
-			}
-			return content, true
-		}
+	_, replies, senderType, ok := immediatelyPreviousServiceReplyGroup(history)
+	if !ok || senderType != enums.IMSenderTypeAI || len(replies) == 0 {
+		return "", false
 	}
-	for index := len(history.RawItems) - 1; index >= 0; index-- {
-		item := history.RawItems[index]
-		if utils.IsAIServiceNoticeMessage(&item) {
-			continue
-		}
-		if item.SenderType != enums.IMSenderTypeAI {
-			return "", false
-		}
-		content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
-		if content == "" {
-			return "", false
-		}
-		return content, true
-	}
-	return "", false
+	return strings.Join(replies, "\n"), true
 }
 
 func immediatelyPreviousServiceReplyPair(history adapter.HistoryBuildResult) (string, string, enums.IMSenderType, bool) {
+	previousCustomer, replies, senderType, ok := immediatelyPreviousServiceReplyGroup(history)
+	if !ok || previousCustomer == "" || len(replies) == 0 {
+		return "", "", "", false
+	}
+	return previousCustomer, strings.Join(replies, "\n"), senderType, true
+}
+
+const runtimeAdjacentServiceReplyLimit = 3
+
+func immediatelyPreviousServiceReplyGroup(history adapter.HistoryBuildResult) (string, []string, enums.IMSenderType, bool) {
 	items := history.RawItems
 	if history.LatestRawItem != nil && (len(items) == 0 || items[len(items)-1].ID != history.LatestRawItem.ID) {
 		items = append(append([]models.Message(nil), items...), *history.LatestRawItem)
 	}
 	serviceIndex := -1
-	serviceReply := ""
 	serviceSender := enums.IMSenderType("")
 	for index := len(items) - 1; index >= 0; index-- {
 		item := items[index]
@@ -714,17 +715,18 @@ func immediatelyPreviousServiceReplyPair(history adapter.HistoryBuildResult) (st
 			continue
 		}
 		if item.SenderType != enums.IMSenderTypeAI && item.SenderType != enums.IMSenderTypeAgent {
-			return "", "", "", false
+			return "", nil, "", false
 		}
 		serviceIndex = index
-		serviceReply = content
 		serviceSender = item.SenderType
 		break
 	}
 	if serviceIndex < 0 {
-		return "", "", "", false
+		return "", nil, "", false
 	}
-	for index := serviceIndex - 1; index >= 0; index-- {
+	repliesReversed := make([]string, 0, runtimeAdjacentServiceReplyLimit)
+	previousCustomer := ""
+	for index := serviceIndex; index >= 0; index-- {
 		item := items[index]
 		if utils.IsAIServiceNoticeMessage(&item) {
 			continue
@@ -733,28 +735,34 @@ func immediatelyPreviousServiceReplyPair(history adapter.HistoryBuildResult) (st
 		if content == "" {
 			continue
 		}
-		if item.SenderType != enums.IMSenderTypeCustomer {
-			return "", "", "", false
+		if item.SenderType == serviceSender {
+			if len(repliesReversed) < runtimeAdjacentServiceReplyLimit {
+				repliesReversed = append(repliesReversed, content)
+			}
+			continue
 		}
-		return content, serviceReply, serviceSender, true
+		if item.SenderType != enums.IMSenderTypeCustomer {
+			return "", nil, "", false
+		}
+		previousCustomer = content
+		break
 	}
-	return "", "", "", false
+	if previousCustomer == "" || len(repliesReversed) == 0 {
+		return "", nil, "", false
+	}
+	replies := make([]string, len(repliesReversed))
+	for index := range repliesReversed {
+		replies[len(repliesReversed)-1-index] = repliesReversed[index]
+	}
+	return previousCustomer, replies, serviceSender, true
 }
 
 func customerMessageBeforeAdjacentAIReply(history adapter.HistoryBuildResult) string {
-	if !hasImmediatelyPreviousAIReply(history) {
+	previousCustomer, _, senderType, ok := immediatelyPreviousServiceReplyGroup(history)
+	if !ok || senderType != enums.IMSenderTypeAI {
 		return ""
 	}
-	for i := len(history.RawItems) - 2; i >= 0; i-- {
-		item := history.RawItems[i]
-		if item.SenderType != enums.IMSenderTypeCustomer {
-			continue
-		}
-		if content := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item)); content != "" {
-			return content
-		}
-	}
-	return ""
+	return previousCustomer
 }
 
 func parseRuntimeIntentDetectJSON(content string) (runtimeIntentDetectJSON, error) {

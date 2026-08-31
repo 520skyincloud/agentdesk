@@ -109,17 +109,53 @@ func TestRepairRuntimeIntentDetectProtocolCollapsesExactDuplicatesAndMergesSourc
 	}
 }
 
-func TestValidateRuntimeIntentDetectProtocolRequiresEveryCurrentSourceReference(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRejectsUnclaimedCurrentSource(t *testing.T) {
 	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [消息101] 有早餐吗？",
-		"2. [消息102] 几点开始？",
-		"3. [消息103] 在哪里吃？",
+		"2. [消息102] 停车免费吗？",
 	})
-	task := validRuntimeIntentProtocolTask("在哪里吃", "location")
-	task.SourceRefs = runtimeIntentSourceRefList{"U3"}
-	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, current)
-	if err == nil || !strings.Contains(err.Error(), "U1") {
-		t.Fatalf("an unreferenced current-turn source must fail without inferring task count, got %v", err)
+	parking := validRuntimeIntentProtocolTask("停车免费吗", "price")
+	parking.SubIntent = "parking"
+	parking.SourceRefs = runtimeIntentSourceRefList{"U2"}
+
+	err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{parking}}, nil, current)
+	if err == nil || !strings.Contains(err.Error(), "current-turn source U1 is not referenced") {
+		t.Fatalf("an omitted physical source must fail without locally inferring task boundaries, got %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAcceptsExplicitInteractionOwnership(t *testing.T) {
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 谢谢",
+		"2. [消息102] 早餐几点？",
+	})
+	thanks := validRuntimeIntentProtocolTask("谢谢", "general_guidance")
+	thanks.Intent = "interaction"
+	thanks.SubIntent = "acknowledgement"
+	thanks.NeedsKnowledge = false
+	thanks.SourceRefs = runtimeIntentSourceRefList{"U1"}
+	breakfast := validRuntimeIntentProtocolTask("早餐几点", "time")
+	breakfast.SubIntent = "breakfast"
+	breakfast.SourceRefs = runtimeIntentSourceRefList{"U2"}
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{thanks, breakfast}}, nil, current); err != nil {
+		t.Fatalf("politeness may be explicitly owned by an interaction Task without becoming a business Task: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolAcceptsContextSourceOwnership(t *testing.T) {
+	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 有没有停车场？",
+		"2. [消息102] 我开电车来的你懂我意思吗？",
+	})
+	charging := validRuntimeIntentProtocolTask("我开电车来的你懂我意思吗", "availability")
+	charging.SubIntent = "parking_charging"
+	charging.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	charging.ResolvedText = "酒店停车场有没有电车充电桩"
+	charging.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{charging}}, nil, current); err != nil {
+		t.Fatalf("a URef referenced as context must count as explicitly owned: %v", err)
 	}
 }
 
@@ -265,6 +301,58 @@ func TestValidateRuntimeIntentResolvedReferenceContextAcceptsModelRelationWithou
 	}
 	if err := validateRuntimeIntentResolvedReferenceContext(parsed, "早餐几点？", context, true); err != nil {
 		t.Fatalf("local heuristics must not reject the model's bounded relation when no entity is fabricated: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextAcceptsSelfContainedNewQuestionWithoutAdjacentPair(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("早餐几点", "time")
+	task.RelationToPrevious = "reference_previous"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "酒店早餐几点开始"
+
+	if err := validateRuntimeIntentResolvedReferenceContext(
+		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}},
+		"早餐几点？",
+		runtimeIntentProtocolRepairContext{},
+		true,
+	); err != nil {
+		t.Fatalf("a self-contained new question must not fail only because relation metadata asks for unavailable adjacent context: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextRejectsSelfContainedQuestionTopicReplacement(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("早餐几点", "time")
+	task.RelationToPrevious = "reference_previous"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "酒店停车怎么收费"
+
+	err := validateRuntimeIntentResolvedReferenceContext(
+		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}},
+		"早餐几点？",
+		runtimeIntentProtocolRepairContext{},
+		true,
+	)
+	if err == nil || !strings.Contains(err.Error(), "current self-contained question") {
+		t.Fatalf("self-contained context tolerance must not authorize a different resolved topic: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentResolvedReferenceContextAcceptsConversationRecapOperation(t *testing.T) {
+	task := validRuntimeIntentProtocolTask("刚才聊了什么", "general_guidance")
+	task.Intent = "interaction"
+	task.SubIntent = "conversation_recap"
+	task.RelationToPrevious = "reference_previous"
+	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.ResolvedText = "回顾最近当前会话"
+
+	err := validateRuntimeIntentResolvedReferenceContext(
+		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}},
+		"刚才聊了什么？",
+		runtimeIntentProtocolRepairContext{},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("conversation recap is an operation over bounded history and must not require adjacent lexical grounding: %v", err)
 	}
 }
 

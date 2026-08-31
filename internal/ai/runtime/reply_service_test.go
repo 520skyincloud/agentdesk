@@ -111,7 +111,7 @@ func TestReplyEligibilityAllowsAssignedManualResume(t *testing.T) {
 	message := models.Message{
 		ID:             10,
 		ConversationID: conversation.ID,
-		RequestID:      "manual_resume_" + token,
+		RequestID:      fmt.Sprintf("manual_resume_%s_%d", token, 10),
 		SenderType:     enums.IMSenderTypeCustomer,
 		Content:        "刚才的问题还没处理",
 	}
@@ -176,7 +176,7 @@ func TestReplyCommitRejectsStaleManualResumeSource(t *testing.T) {
 	}
 	service := newReplyCommitService()
 	aiAgent := models.AIAgent{ID: 77, Name: "runtime-test-ai"}
-	origin.RequestID = "manual_resume_" + token
+	origin.RequestID = fmt.Sprintf("manual_resume_%s_%d", token, latest.ID)
 	if _, err := service.SendAIReply(replyCommitInput{
 		Conversation: conversation,
 		Message:      origin,
@@ -195,6 +195,39 @@ func TestReplyCommitRejectsStaleManualResumeSource(t *testing.T) {
 		ClientPrefix: "runtime_manual_resume_latest",
 	}); err != nil {
 		t.Fatalf("expected latest manual resume source to commit: %v", err)
+	}
+}
+
+func TestReplyCommitManualResumeClientPrefixIsRequestBoundAndBounded(t *testing.T) {
+	requestID := "manual_resume_0457044a3ddc33389baad6b09cf45f1c_9223372036854775807"
+	input := replyCommitInput{
+		Message:      models.Message{ID: 9223372036854775807, RequestID: requestID},
+		ClientPrefix: "ai_reply",
+	}
+	prefix := replyCommitClientPrefix(input)
+	if !strings.HasPrefix(prefix, "ai_manual_resume_") {
+		t.Fatalf("manual resume prefix=%q", prefix)
+	}
+	input.ClientPrefix = "some_other_runtime_prefix"
+	if got := replyCommitClientPrefix(input); got != prefix {
+		t.Fatalf("manual resume prefix must depend on request ID, got %q want %q", got, prefix)
+	}
+	input.Message.RequestID += "_new_source"
+	if got := replyCommitClientPrefix(input); got == prefix {
+		t.Fatalf("different manual resume requests must not share prefix %q", prefix)
+	}
+	maxIndex := int(^uint(0) >> 1)
+	for _, clientMsgID := range []string{
+		fmt.Sprintf("%s_text_%d_%d", prefix, maxIndex, input.Message.ID),
+		fmt.Sprintf("%s_%s_%d_%d", prefix, "knowledge_image", maxIndex, input.Message.ID),
+	} {
+		if len(clientMsgID) > 128 {
+			t.Fatalf("manual resume clientMsgID length=%d exceeds database limit: %q", len(clientMsgID), clientMsgID)
+		}
+	}
+	ordinary := replyCommitInput{Message: models.Message{RequestID: "req-normal"}, ClientPrefix: "ai_reply"}
+	if got := replyCommitClientPrefix(ordinary); got != "ai_reply" {
+		t.Fatalf("ordinary reply prefix changed to %q", got)
 	}
 }
 

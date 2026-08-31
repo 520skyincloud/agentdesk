@@ -11,7 +11,7 @@ import (
 	"agent-desk/internal/pkg/utils"
 )
 
-func TestValidateRuntimeIntentDetectProtocolRequiresCompleteV2Semantics(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolTreatsObjectiveAsOptionalMetadata(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent:       "hotel_info",
 		Text:         "早餐几点",
@@ -19,21 +19,28 @@ func TestValidateRuntimeIntentDetectProtocolRequiresCompleteV2Semantics(t *testi
 		SourceRefs:   runtimeIntentSourceRefList{"U1"},
 	}}}
 	err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点")
-	if err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("active V2 output must require objective: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "relationToPrevious") {
+		t.Fatalf("relation metadata is still required to select bounded context: %v", err)
 	}
 	parsed.IntentTasks[0].RelationToPrevious = "independent"
 	parsed.IntentTasks[0].ResolutionState = "clear"
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("relation and resolution cannot make a missing objective valid: %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err != nil {
+		t.Fatalf("missing objective metadata must not invalidate a grounded task: %v", err)
 	}
 	parsed.IntentTasks[0].Objective = "time"
 	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err != nil {
 		t.Fatalf("complete valid V2 semantics must pass: %v", err)
 	}
 	parsed.IntentTasks[0].Objective = "not_a_real_objective"
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("unknown objective must remain invalid, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "早餐几点"); err != nil {
+		t.Fatalf("an unknown objective enum must degrade locally instead of retrying Intent: %v", err)
+	}
+	active := parsed
+	active.IntentTasks = append(runtimeIntentTaskList(nil), parsed.IntentTasks...)
+	normalizeRuntimeIntentObjectiveMetadata(&active, nil)
+	converted := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(active.IntentTasks))
+	if len(converted) != 1 || converted[0].Objective != "unknown" {
+		t.Fatalf("unknown objective metadata must normalize conservatively, got %#v", converted)
 	}
 }
 
@@ -865,6 +872,11 @@ func legacyTestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessI
 }
 
 func TestImmediatelyPreviousAIReplySkipsServiceNotice(t *testing.T) {
+	customer := models.Message{
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "合柴和艺林有办公桌吗？",
+	}
 	reply := models.Message{
 		SenderType:  enums.IMSenderTypeAI,
 		MessageType: enums.IMMessageTypeText,
@@ -878,12 +890,55 @@ func TestImmediatelyPreviousAIReplySkipsServiceNotice(t *testing.T) {
 		ClientMsgID: "ai_handoff_success_direct_10_100",
 	}
 	history := adapter.HistoryBuildResult{
-		RawItems:      []models.Message{reply},
+		RawItems:      []models.Message{customer, reply},
 		LatestRawItem: &notice,
 	}
 	content, ok := immediatelyPreviousAIReply(history)
 	if !ok || !strings.Contains(content, reply.Content) {
 		t.Fatalf("expected substantive AI reply behind service notice, got %q ok=%v", content, ok)
+	}
+}
+
+func TestImmediatelyPreviousAIReplyRequiresPrecedingCustomer(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "合柴和艺林有办公桌。"},
+	}}
+	if content, ok := immediatelyPreviousAIReply(history); ok || content != "" {
+		t.Fatalf("an orphan AI reply must not enable adjacent context, got %q ok=%v", content, ok)
+	}
+	if instruction := buildAdjacentAIReplyRelationInstruction(history); instruction != "" {
+		t.Fatalf("an orphan AI reply must not enable the answer-relation prompt: %q", instruction)
+	}
+}
+
+func TestImmediatelyPreviousServiceReplyGroupDoesNotMixAIAndHuman(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		replies []models.Message
+	}{
+		{
+			name: "AI followed by human",
+			replies: []models.Message{
+				{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "AI 的答复。"},
+				{SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "人工补充。"},
+			},
+		},
+		{
+			name: "human followed by AI",
+			replies: []models.Message{
+				{SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "人工答复。"},
+				{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "AI 补充。"},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			history := adapter.HistoryBuildResult{RawItems: append([]models.Message{{
+				SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "房型有什么配置？",
+			}}, tt.replies...)}
+			if customer, replies, senderType, ok := immediatelyPreviousServiceReplyGroup(history); ok || customer != "" || len(replies) != 0 || senderType != "" {
+				t.Fatalf("mixed AI/human replies must not form one adjacent group: customer=%q replies=%#v sender=%q ok=%v", customer, replies, senderType, ok)
+			}
+		})
 	}
 }
 
@@ -930,7 +985,7 @@ func TestBuildRuntimeIntentProtocolRepairContextRejectsServiceNoticeOnly(t *test
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONRejectsMissingV2ResourceTaskObjective(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONAcceptsMissingV2ResourceTaskObjective(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"intentTasks":[{
 			"intent":"hotel_variable",
@@ -952,8 +1007,15 @@ func TestParseRuntimeIntentDetectJSONRejectsMissingV2ResourceTaskObjective(t *te
 	if got := parsed.IntentTasks[0].Objective; got != "" {
 		t.Fatalf("V2 parse must preserve the missing objective for strict validation, got %q", got)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "入住小程序发我"); err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("missing V2 objective must be rejected instead of locally synthesized, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "入住小程序发我"); err != nil {
+		t.Fatalf("missing objective metadata must not reject a structurally valid resource task: %v", err)
+	}
+	active := parsed
+	active.IntentTasks = append(runtimeIntentTaskList(nil), parsed.IntentTasks...)
+	normalizeRuntimeIntentObjectiveMetadata(&active, nil)
+	converted := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(active.IntentTasks))
+	if len(converted) != 1 || converted[0].Objective != "unknown" || !converted[0].NeedsResource {
+		t.Fatalf("resource action must survive conservative objective normalization, got %#v", converted)
 	}
 	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"","text":""}]}`}
 	applyLegacyRuntimeIntentProtocolDefaults(&parsed, legacy)
@@ -996,8 +1058,8 @@ func TestParseRuntimeIntentDetectJSONLeavesV2ResourceSemanticsModelOwned(t *test
 	if err != nil {
 		t.Fatalf("parse multi-task intent: %v", err)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "怎么办理入住？小程序也发我一下。"); err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("invalid V2 resource task must fail before local defaults, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "怎么办理入住？小程序也发我一下。"); err != nil {
+		t.Fatalf("objective metadata must not veto the model-owned task set: %v", err)
 	}
 	if len(parsed.IntentTasks) != 2 {
 		t.Fatalf("expected two intent tasks, got %#v", parsed.IntentTasks)
@@ -1019,7 +1081,7 @@ func TestParseRuntimeIntentDetectJSONLeavesV2ResourceSemanticsModelOwned(t *test
 	}
 }
 
-func TestParseRuntimeIntentDetectJSONDoesNotRepairV2ResourceObjectiveAlias(t *testing.T) {
+func TestParseRuntimeIntentDetectJSONDegradesV2ResourceObjectiveAlias(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"intentTasks":[{
 			"intent":"hotel_variable",
@@ -1040,8 +1102,14 @@ func TestParseRuntimeIntentDetectJSONDoesNotRepairV2ResourceObjectiveAlias(t *te
 	if resourceTask.Objective != "resource" || resourceTask.ResourceAction != "" || resourceTask.NeedsResource {
 		t.Fatalf("V2 parse must leave resource aliases untouched for validation, got %#v", resourceTask)
 	}
-	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "小程序也发我一下"); err == nil || !strings.Contains(err.Error(), "objective") {
-		t.Fatalf("V2 resource objective alias must be rejected, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, "小程序也发我一下"); err != nil {
+		t.Fatalf("V2 resource objective metadata must not reject the task: %v", err)
+	}
+	active := parsed
+	active.IntentTasks = append(runtimeIntentTaskList(nil), parsed.IntentTasks...)
+	normalizeRuntimeIntentObjectiveMetadata(&active, nil)
+	if got := active.IntentTasks[0].Objective; got != "unknown" {
+		t.Fatalf("unknown active objective metadata must degrade conservatively, got %q", got)
 	}
 	legacy := &models.ReplyIntentProfile{IntentJSONSchema: `{"intentTasks":[{"intent":"","text":""}]}`}
 	applyLegacyRuntimeIntentProtocolDefaults(&parsed, legacy)

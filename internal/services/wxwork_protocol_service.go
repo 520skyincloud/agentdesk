@@ -1384,18 +1384,24 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if !claimed {
 		return nil
 	}
+	allowed, err := ChannelMessageOutboxService.RevalidateClaimedForDispatch(outbox, message)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
 	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
 	if err != nil {
-		return s.markOutboxFailed(outbox, err.Error())
+		return s.handleClaimedOutboxDispatchError(outbox, err)
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
-		"send_status": string(enums.ChannelMessageOutboxStatusSent),
-		"sent_at":     now,
-		"last_error":  "",
-		"updated_at":  now,
-	}); err != nil {
+	completed, err := ChannelMessageOutboxService.completeClaimedDispatchWithDB(sqls.DB(), outbox, now)
+	if err != nil {
 		return err
+	}
+	if !completed {
+		return nil
 	}
 	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
 	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
@@ -1461,7 +1467,7 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 	if content == "" {
 		return s.markOutboxFailed(outbox, "门店群提醒内容为空")
 	}
-	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox.ID)
+	claimed, err := ChannelMessageOutboxService.TryMarkSending(outbox)
 	if err != nil {
 		return err
 	}
@@ -1482,16 +1488,15 @@ func (s *wxWorkProtocolService) dispatchStoreRoomNoticeOutbox(outbox models.Chan
 	}
 	resp, err := s.postJSON(cfg, path, body)
 	if err != nil {
-		return s.markOutboxFailed(outbox, err.Error())
+		return s.handleClaimedOutboxDispatchError(outbox, err)
 	}
 	now := time.Now()
-	if err := ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
-		"send_status": string(enums.ChannelMessageOutboxStatusSent),
-		"sent_at":     now,
-		"last_error":  "",
-		"updated_at":  now,
-	}); err != nil {
+	completed, err := ChannelMessageOutboxService.completeClaimedDispatchWithDB(sqls.DB(), outbox, now)
+	if err != nil {
 		return err
+	}
+	if !completed {
+		return nil
 	}
 	_ = MessageSyncLogService.Create(payload.ConversationID, 0, enums.MessageSyncDirectionAgentDeskToWecom, "agentdesk", "wxwork_protocol_store_room", fmt.Sprintf("store_room_outbox_%d", outbox.ID), enums.MessageSyncStatusSuccess, resp, "")
 	return nil
@@ -2199,15 +2204,35 @@ func (s *wxWorkProtocolService) createMessageRef(conversationID, messageID int64
 }
 
 func (s *wxWorkProtocolService) markOutboxFailed(outbox models.ChannelMessageOutbox, reason string) error {
-	retryCount := outbox.RetryCount + 1
+	nextRetryAt := time.Now().Add(time.Minute)
+	_, err := ChannelMessageOutboxService.failUnclaimedDispatchWithDB(sqls.DB(), outbox, &nextRetryAt, reason)
+	return err
+}
+
+func (s *wxWorkProtocolService) markClaimedOutboxFailed(outbox models.ChannelMessageOutbox, reason string) error {
 	now := time.Now()
-	return ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
-		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
-		"retry_count":   retryCount,
-		"next_retry_at": now.Add(time.Minute),
-		"last_error":    strings.TrimSpace(reason),
-		"updated_at":    now,
-	})
+	retryCount := outbox.RetryCount + 1
+	nextRetryAt := now.Add(time.Minute)
+	return sqls.DB().Model(&models.ChannelMessageOutbox{}).
+		Where("id = ? AND send_status = ?", outbox.ID, string(enums.ChannelMessageOutboxStatusSending)).
+		Updates(map[string]any{
+			"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
+			"retry_count":   retryCount,
+			"next_retry_at": nextRetryAt,
+			"last_error":    reason,
+			"updated_at":    now,
+		}).Error
+}
+
+func (s *wxWorkProtocolService) handleClaimedOutboxDispatchError(outbox models.ChannelMessageOutbox, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isExternalDispatchResultUncertain(err) {
+		_, markErr := ChannelMessageOutboxService.cancelClaimedDispatchUncertainWithDB(sqls.DB(), outbox, err.Error())
+		return markErr
+	}
+	return s.markClaimedOutboxFailed(outbox, err.Error())
 }
 
 func (s *wxWorkProtocolService) postJSON(cfg *dto.WxWorkProtocolChannelConfig, path string, body any) (string, error) {
@@ -2228,12 +2253,19 @@ func (s *wxWorkProtocolService) postJSON(cfg *dto.WxWorkProtocolChannelConfig, p
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", markExternalDispatchResultUncertain(err)
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return string(respBody), markExternalDispatchResultUncertain(readErr)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return string(respBody), fmt.Errorf("企微协议接口返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		responseErr := fmt.Errorf("企微协议接口返回HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return string(respBody), markExternalDispatchResultUncertain(responseErr)
+		}
+		return string(respBody), responseErr
 	}
 	if err := s.checkProtocolResponse(respBody); err != nil {
 		return string(respBody), fmt.Errorf("%w; raw=%s", err, strings.TrimSpace(string(respBody)))

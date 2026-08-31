@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +53,7 @@ func TestDispatchDeferredKnowledgeHandoffKeepsCommittedAnswerBeforeDirectHandoff
 	if err := db.AutoMigrate(
 		&models.Conversation{},
 		&models.ConversationRouteState{},
+		&models.ChannelMessageOutbox{},
 		&models.AIAgent{},
 		&models.AgentTeam{},
 		&models.AgentTeamSchedule{},
@@ -128,11 +130,23 @@ func TestDispatchDeferredKnowledgeHandoffKeepsCommittedAnswerBeforeDirectHandoff
 		SenderID:       aiAgent.ID,
 		MessageType:    enums.IMMessageTypeText,
 		Content:        "早餐时间是7:00-9:30。",
+		RequestID:      origin.RequestID,
 		SendStatus:     enums.IMMessageStatusSent,
 		SentAt:         &answerTime,
 	}
 	if err := db.Create(&answer).Error; err != nil {
 		t.Fatalf("create committed answer: %v", err)
+	}
+	answerOutbox := &models.ChannelMessageOutbox{
+		ChannelType:    enums.ChannelTypeWxWorkProtocol,
+		ConversationID: conversation.ID,
+		MessageID:      answer.ID,
+		Payload:        `{}`,
+		SendStatus:     string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields:    models.AuditFields{CreatedAt: answerTime, UpdatedAt: answerTime},
+	}
+	if err := db.Create(answerOutbox).Error; err != nil {
+		t.Fatalf("create committed answer Outbox: %v", err)
 	}
 
 	summary := &applicationruntime.Summary{TraceData: `{"pipeline":{"evidenceJudge":{"deferredHandoff":true,"deferredHandoffReason":"待处理问题：帮客户把浴巾送到1208房间"}}}`}
@@ -155,6 +169,16 @@ func TestDispatchDeferredKnowledgeHandoffKeepsCommittedAnswerBeforeDirectHandoff
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
 		t.Fatalf("expected direct manual route without a pending action, got %+v", state)
+	}
+	if err := db.First(answerOutbox, answerOutbox.ID).Error; err != nil {
+		t.Fatalf("reload committed answer Outbox: %v", err)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(answerOutbox.Payload), &payload); err != nil {
+		t.Fatalf("parse committed answer Outbox payload: %v", err)
+	}
+	if answerOutbox.SendStatus != string(enums.ChannelMessageOutboxStatusPending) || payload["replyBeforeDeferredHandoff"] != true {
+		t.Fatalf("deferred route must preserve the already-committed sibling answer: %+v payload=%#v", answerOutbox, payload)
 	}
 	combined := strings.ToLower(aiReplies[0].Content + "\n" + aiReplies[1].Content)
 	for _, forbidden := range []string{"confirmation", "确认或取消", "回复“确认”"} {

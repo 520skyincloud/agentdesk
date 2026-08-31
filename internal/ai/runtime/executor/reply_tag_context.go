@@ -177,10 +177,7 @@ func selectReplyTagScenes(currentText string, intent callbacks.IntentTraceData, 
 }
 
 func replyTagTaskUsesGenerate(task callbacks.ReplyTaskPlanTraceData) bool {
-	if task.Output == "structured_resource_commit" || task.Output == "human_route_confirmation_or_dispatch" {
-		return false
-	}
-	return task.Intent != "hotel_variable" && task.Intent != "human_complaint_risk"
+	return replyTaskRequiresText(task)
 }
 
 func replyTagScenesForTask(subIntent, text string) []string {

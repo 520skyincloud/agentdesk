@@ -535,11 +535,12 @@ func restoreManualResumeFrozenTaskMetadata(plan *callbacks.ReplyTaskPlanTraceDat
 		plan.NeedsTool = frozen.NeedsTool
 		plan.NeedsHumanRoute = frozen.NeedsHumanRoute
 	}
-	if value := strings.TrimSpace(frozen.OutputKind); value != "" {
+	deferredKnowledgeHandoff := strings.TrimSpace(frozen.Output) == runtimeKnowledgeDeferredHandoffOutput
+	if value := strings.TrimSpace(frozen.OutputKind); value != "" && !deferredKnowledgeHandoff {
 		plan.OutputKind = value
 		plan.ReplyRequired = frozen.ReplyRequired
 	}
-	if value := strings.TrimSpace(frozen.Output); value != "" {
+	if value := strings.TrimSpace(frozen.Output); value != "" && !deferredKnowledgeHandoff {
 		plan.Output = value
 	}
 	if value := strings.TrimSpace(frozen.ResourceAction); value != "" {

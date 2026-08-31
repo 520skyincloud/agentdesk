@@ -181,6 +181,9 @@ func (c *RuntimeTraceCollector) SetKnowledgeResources(items []KnowledgeResourceT
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Data.KnowledgeResources = append([]KnowledgeResourceTraceData(nil), items...)
+	for index := range c.Data.KnowledgeResources {
+		c.Data.KnowledgeResources[index].TaskIDs = append([]string(nil), c.Data.KnowledgeResources[index].TaskIDs...)
+	}
 }
 
 func (c *RuntimeTraceCollector) SetPipeline(normalize NormalizeTraceData, intent IntentTraceData, prompt IntentPromptTraceData, contextBuild ContextBuildTraceData, toolKnowledge ToolKnowledgeTraceData, replyPlan ReplyPlanTraceData, generate GenerateTraceData, validate ValidateTraceData) {

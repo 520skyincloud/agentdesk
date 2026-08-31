@@ -408,6 +408,49 @@ func TestRuntimeIntentPromptDoesNotRepeatBurstSourcesFromMediaHistory(t *testing
 	}
 }
 
+func TestRuntimeIntentPromptKeepsOlderSameTextWithDifferentMessageID(t *testing.T) {
+	current := models.Message{
+		ID:          202,
+		MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息202] 早餐几点",
+		}),
+	}
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{{
+		ID:          101,
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "早餐几点",
+	}}}
+
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: current}, history, nil)
+	if count := strings.Count(prompt, "早餐几点"); count != 2 {
+		t.Fatalf("same-text messages with different physical IDs must remain distinct, got %d occurrences in %q", count, prompt)
+	}
+}
+
+func TestRuntimeIntentLegacyBurstTextFallbackOnlyCoversCustomerMessages(t *testing.T) {
+	current := models.Message{
+		ID:          302,
+		MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息] 早餐几点",
+			"2. [消息302] 停车免费吗",
+		}),
+	}
+	covered := runtimeIntentCurrentTurnSourceSet(RunInput{UserMessage: current})
+	if !runtimeIntentMessageCoveredByCurrentTurn(models.Message{
+		ID: 301, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "早餐几点",
+	}, covered) {
+		t.Fatal("legacy burst source without a physical ID should keep the customer-text compatibility fallback")
+	}
+	if runtimeIntentMessageCoveredByCurrentTurn(models.Message{
+		ID: 300, SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "早餐几点",
+	}, covered) {
+		t.Fatal("legacy text fallback must never hide an AI or human reply with the same text")
+	}
+}
+
 func TestPlainMultilineSingleQuestionDoesNotForceMultiTaskCoverage(t *testing.T) {
 	text := "房间里有没有空调\n只是想确认一下设施"
 	if isMultiQuestionCurrentTurn(text) {

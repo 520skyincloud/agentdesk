@@ -3,9 +3,11 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -21,6 +23,7 @@ type fakeKnowledgeContextRetriever struct {
 	knowledgeBaseIDs []int64
 	result           *retrievers.KnowledgeRetrieveResult
 	resultsByQuery   map[string]*retrievers.KnowledgeRetrieveResult
+	errorsByQuery    map[string]error
 	err              error
 	called           bool
 	queries          []string
@@ -37,6 +40,9 @@ func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Con
 	r.mu.Unlock()
 	if r.err != nil {
 		return nil, r.err
+	}
+	if err := r.errorsByQuery[query]; err != nil {
+		return nil, err
 	}
 	if r.resultsByQuery != nil {
 		if result, ok := r.resultsByQuery[query]; ok {
@@ -111,6 +117,365 @@ func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	}
 	if !strings.Contains(state.RetrieveResult.ContextText, "能开专票不") || !strings.Contains(state.RetrieveResult.ContextText, "WiFi是哪个") {
 		t.Fatalf("expected merged context to label each question, got %q", state.RetrieveResult.ContextText)
+	}
+}
+
+func TestKnowledgePolicyIsolatesPerTaskRetrievalFailure(t *testing.T) {
+	breakfastHit := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		ChunkID:         101,
+		Title:           "早餐",
+		Content:         "问题：早餐几点\n答案：早餐时间是 7:00-9:30。",
+		Score:           0.95,
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			"早餐几点": {
+				KnowledgeBaseIDs: []int64{1},
+				RawHits:          []rag.RetrieveResult{breakfastHit},
+				Hits:             []rag.RetrieveResult{breakfastHit},
+				ContextResults:   []rag.RetrieveResult{breakfastHit},
+				ContextText:      breakfastHit.Content,
+			},
+		},
+		errorsByQuery: map[string]error{
+			"老板是谁": errors.New("owner knowledge shard unavailable"),
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_info", Text: "老板是谁", ResolvedText: "老板是谁", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+	}})
+	intent := hotelInfoIntent()
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{
+		{Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", NeedsKnowledge: true},
+		{Intent: "hotel_info", Text: "老板是谁", ResolvedText: "老板是谁", NeedsKnowledge: true},
+	}
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点，老板是谁", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusHasContext || state.RetrieveResult == nil ||
+		!strings.Contains(state.RetrieveResult.ContextText, "7:00-9:30") {
+		t.Fatalf("successful sibling evidence must continue through Generate, state=%#v result=%#v", state, state.RetrieveResult)
+	}
+	if strings.Contains(state.RetrieveResult.ContextText, "老板") {
+		t.Fatalf("failed Task must not expose invented or sibling evidence: %q", state.RetrieveResult.ContextText)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("one failed Task must not turn the entire turn into a global handoff: %#v", summary)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if len(trace.Tasks) != 2 || trace.Tasks[0].TaskID != "task-1" || trace.Tasks[1].TaskID != "task-2" {
+		t.Fatalf("Judge trace must retain both Task outcomes in source order: %#v", trace.Tasks)
+	}
+	failed := trace.Tasks[1]
+	if failed.Decision != knowledgeEvidenceDecisionInsufficient || failed.DecisionSource != "source_unavailable" ||
+		failed.Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("failed retrieval must be isolated as source_unavailable: %#v", failed)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[0].OutputKind != "text" ||
+		plan.TaskPlans[1].TaskID != "task-2" || plan.TaskPlans[1].OutputKind != "handoff" || plan.TaskPlans[1].ReplyRequired {
+		t.Fatalf("successful and failed Tasks must keep independent execution paths: %#v", plan.TaskPlans)
+	}
+}
+
+func TestKnowledgePolicyPersistsExplicitNoEvidenceForZeroCandidateSibling(t *testing.T) {
+	breakfastHit := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		ChunkID:         101,
+		Title:           "早餐",
+		Content:         "问题：早餐几点\n答案：早餐时间是 7:00-9:30。",
+		Score:           0.95,
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			"早餐几点": {
+				KnowledgeBaseIDs: []int64{1},
+				RawHits:          []rag.RetrieveResult{breakfastHit},
+				Hits:             []rag.RetrieveResult{breakfastHit},
+				ContextResults:   []rag.RetrieveResult{breakfastHit},
+				ContextText:      breakfastHit.Content,
+			},
+			"老板是谁": {
+				KnowledgeBaseIDs: []int64{1},
+				Query:            "老板是谁",
+			},
+		},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_info", Text: "老板是谁", ResolvedText: "老板是谁", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+	}})
+	intent := hotelInfoIntent()
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{
+		{Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", NeedsKnowledge: true},
+		{Intent: "hotel_info", Text: "老板是谁", ResolvedText: "老板是谁", NeedsKnowledge: true},
+	}
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点，老板是谁", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusHasContext || state.RetrieveResult == nil ||
+		!strings.Contains(state.RetrieveResult.ContextText, "7:00-9:30") {
+		t.Fatalf("answerable sibling must continue through Generate, state=%#v result=%#v", state, state.RetrieveResult)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("one zero-candidate Task must not turn the whole turn into a global handoff: %#v", summary)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if len(trace.Tasks) != 2 || trace.Tasks[0].TaskID != "task-1" || trace.Tasks[1].TaskID != "task-2" {
+		t.Fatalf("Judge trace must retain answered and zero-candidate Tasks in source order: %#v", trace.Tasks)
+	}
+	missing := trace.Tasks[1]
+	if missing.CandidateCount != 0 || missing.Decision != knowledgeEvidenceDecisionInsufficient ||
+		missing.DecisionSource != "retriever_no_evidence" || missing.Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("zero-candidate retrieval must persist an explicit no-evidence disposition: %#v", missing)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].OutputKind != "text" ||
+		plan.TaskPlans[1].OutputKind != "handoff" || plan.TaskPlans[1].ReplyRequired {
+		t.Fatalf("answered and zero-candidate Tasks must keep independent execution paths: %#v", plan.TaskPlans)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: make([]runtimeKnowledgeQuestionResult, 0, knowledgeEvidenceJudgeBatchCandidateBudget+1)}
+	for index := 0; index < knowledgeEvidenceJudgeBatchCandidateBudget+1; index++ {
+		taskID := fmt.Sprintf("task-%d", index+1)
+		query := fmt.Sprintf("问题%d", index+1)
+		hit := rag.RetrieveResult{
+			KnowledgeBaseID: 1,
+			ChunkID:         int64(index + 1),
+			Title:           query,
+			Content:         "问题：" + query + "\n答案：这是对应答案。",
+			Score:           0.9,
+		}
+		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
+			TaskID: taskID,
+			Intent: "hotel_info",
+			Query:  query,
+			Result: &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{1},
+				RawHits:          []rag.RetrieveResult{hit},
+				Hits:             []rag.RetrieveResult{hit},
+				ContextResults:   []rag.RetrieveResult{hit},
+				ContextText:      hit.Content,
+			},
+		})
+	}
+
+	judgeTasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "")
+	if len(judgeTasks) != knowledgeEvidenceJudgeBatchCandidateBudget {
+		t.Fatalf("candidate budget must leave one of 29 single-candidate Tasks unjudged, got %d", len(judgeTasks))
+	}
+	trace := callbacks.KnowledgeEvidenceJudgeTraceData{
+		SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+		Status:        "completed",
+		Tasks:         make([]callbacks.KnowledgeEvidenceJudgeTaskTraceData, 0, len(judgeTasks)),
+	}
+	for _, task := range judgeTasks {
+		trace.Tasks = append(trace.Tasks, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         task.TaskID,
+			CandidateCount: len(task.Candidates),
+			Decision:       knowledgeEvidenceDecisionDirectSingle,
+			DecisionSource: "model",
+			Disposition:    runtimeKnowledgeDispositionAnswer,
+		})
+	}
+
+	trace = appendRuntimeKnowledgeUnjudgedTaskTrace(trace, batch)
+	if len(trace.Tasks) != knowledgeEvidenceJudgeBatchCandidateBudget+1 {
+		t.Fatalf("Trace must retain all Tasks including the budget-exhausted Task, got %d", len(trace.Tasks))
+	}
+	unjudged := trace.Tasks[len(trace.Tasks)-1]
+	if unjudged.TaskID != "task-29" || unjudged.CandidateCount != 1 ||
+		unjudged.Decision != knowledgeEvidenceDecisionProtocolInvalid ||
+		unjudged.DecisionSource != "unjudged_candidates" ||
+		unjudged.Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry {
+		t.Fatalf("a Task with retrieved candidates but no Judge quota must retry the protocol, not hand off: %#v", unjudged)
+	}
+	question := batch.Questions[len(batch.Questions)-1]
+	if question.Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry || question.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("budget-exhausted Task execution state must remain retryable: %#v", question)
+	}
+}
+
+func TestRuntimeKnowledgeQuestionDispositionsDoNotInferHandoffFromEmptyHits(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
+		TaskID: "task-1",
+		Query:  "老板是谁",
+		Result: &retrievers.KnowledgeRetrieveResult{},
+	}}}
+
+	dispositions := runtimeKnowledgeQuestionDispositions(batch)
+	if len(dispositions) != 1 || !dispositions[0].NeedsRetry || dispositions[0].NeedsHandoff ||
+		dispositions[0].Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry {
+		t.Fatalf("an empty disposition is a protocol gap, not implicit proof of no knowledge: %#v", dispositions)
+	}
+}
+
+func TestRuntimeKnowledgeRetrievalReturnsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := retrieveContextForRuntimeQuestionList(
+		ctx,
+		&fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}},
+		retrievers.KnowledgeRetrieveOptions{},
+		"早餐几点",
+		[]runtimeKnowledgeQuestionSpec{{TaskID: "task-1", Query: "早餐几点"}},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled parent context must remain a batch-level error, got %v", err)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetDoesNotPromoteSimilarHandoffFAQ(t *testing.T) {
+	const query = "附近有什么好玩的"
+	similarHandoff := rag.RetrieveResult{
+		Score:   0.99,
+		Content: "问题：附近有什么好玩的嘛\n答案：转接",
+	}
+	if !knowledgeEvidenceHandoffFAQMatchesQuery("附近有什么好玩的嘛", query) {
+		t.Fatal("test setup must remain similar enough to exercise the former fuzzy handoff priority")
+	}
+	if _, _, exact := exactKnowledgeEvidenceFAQMatch(similarHandoff, query); exact {
+		t.Fatal("test setup must not be a strict FAQ match")
+	}
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "task-1",
+		Query:  query,
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "task-1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.88, Content: "问题：周边游玩推荐\n答案：附近可以去罍街和合柴1972。"}},
+			{CandidateID: "task-1C2", Layer: knowledgeEvidenceLayerStore, Hit: similarHandoff},
+			{CandidateID: "task-1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.86, Content: "问题：附近有什么好玩的\n答案：可以结合地图选择附近景点。"}},
+		},
+	}
+	if index := bestExactKnowledgeEvidenceJudgeHandoffCandidateIndex(task, knowledgeEvidenceLayerStore); index != -1 {
+		t.Fatalf("similar transfer FAQ must not receive exact-handoff priority, got candidate %d", index)
+	}
+
+	for _, quota := range []int{1, 2} {
+		selected := selectKnowledgeEvidenceJudgeTaskCandidates(task, quota, false)
+		if len(selected) != quota {
+			t.Fatalf("quota %d returned %d candidates: %#v", quota, len(selected), selected)
+		}
+		if selected[0].CandidateID != "task-1C1" {
+			t.Fatalf("quota %d must preserve the factual store candidate before a merely similar transfer FAQ: %#v", quota, selected)
+		}
+		for _, candidate := range selected {
+			if candidate.CandidateID == "task-1C2" {
+				t.Fatalf("quota %d must not spend scarce budget on a non-exact transfer FAQ: %#v", quota, selected)
+			}
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsExactHandoffAndExactFactualPeer(t *testing.T) {
+	tests := []struct {
+		name           string
+		query          string
+		factualContent string
+	}{
+		{
+			name:           "owner identity alias",
+			query:          "老板是谁",
+			factualContent: "问题：董事长是谁\n答案：董事长是汤东强。\n相似问法：老板是谁",
+		},
+		{
+			name:           "nearby attraction alias",
+			query:          "附近有什么好玩的",
+			factualContent: "问题：周边游玩推荐\n答案：附近可以去罍街和合柴1972。\n相似问法：附近有什么好玩的",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "task-1",
+				Intent: "hotel_info",
+				Query:  tt.query,
+				Candidates: []knowledgeEvidenceJudgeCandidate{
+					{CandidateID: "task-1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：" + tt.query + "\n答案：转接"}},
+					{CandidateID: "task-1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.71, Content: tt.factualContent}},
+					{CandidateID: "task-1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.98, Content: "问题：" + tt.query + "\n答案：请结合实际情况确认。"}},
+				},
+			}
+			if _, complete := knowledgeEvidenceJudgeCandidateCompletesTask(task, task.Candidates[1]); !complete {
+				t.Fatal("an exact factual alias must be recognized as a complete peer")
+			}
+			if selection, ok := strictExactKnowledgeEvidenceFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+				t.Fatalf("a same-layer exact factual peer must block deterministic handoff fallback: %#v", selection)
+			}
+			if !selectedKnowledgeEvidenceIsHandoffDirective(task, knowledgeEvidenceLayerStore, []string{"task-1C1"}) {
+				t.Fatal("once Judge has seen both peers, its explicit exact-handoff choice must remain valid")
+			}
+
+			selected := selectKnowledgeEvidenceJudgeTaskCandidates(task, 1, false)
+			if len(selected) != 1 || selected[0].CandidateID != "task-1C2" {
+				t.Fatalf("a one-slot budget must retain the complete factual FAQ instead of auto-transfer: %#v", selected)
+			}
+
+			selected = selectKnowledgeEvidenceJudgeTaskCandidates(task, 2, false)
+			selectedIDs := make(map[string]struct{}, len(selected))
+			for _, candidate := range selected {
+				selectedIDs[candidate.CandidateID] = struct{}{}
+			}
+			if len(selected) != 2 {
+				t.Fatalf("two-slot budget returned %d candidates: %#v", len(selected), selected)
+			}
+			for _, candidateID := range []string{"task-1C1", "task-1C2"} {
+				if _, ok := selectedIDs[candidateID]; !ok {
+					t.Fatalf("the Judge must receive both same-layer conflict peers, missing %s in %#v", candidateID, selected)
+				}
+			}
+			if _, ok := selectedIDs["task-1C3"]; ok {
+				t.Fatalf("general fallback must not displace a same-layer conflict peer: %#v", selected)
+			}
+		})
+	}
+}
+
+func TestSelectionHasHandoffDirectiveTrustsJudgeVisibleConflictChoice(t *testing.T) {
+	query := "老板是谁"
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{
+		"T1C1": {
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         rag.RetrieveResult{Score: 0.99, Content: "问题：老板是谁\n答案：转接"},
+		},
+		"T1C2": {
+			CandidateID: "T1C2",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         rag.RetrieveResult{Score: 0.848863, Content: "问题：董事长是谁\n答案：董事长是汤东强。"},
+		},
+	}
+	selection := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		DecisionSource:       "model",
+		SelectedCandidateIDs: []string{"T1C1"},
+	}
+	if !selectionHasHandoffDirective(selection, knowledgeEvidenceLayerStore, candidates, query) {
+		t.Fatal("final disposition must preserve an exact handoff explicitly selected after Judge saw the body peer")
 	}
 }
 
@@ -323,11 +688,12 @@ func TestMergeRuntimeKnowledgeQueriesDoesNotLocallySplitNonKnowledgeTask(t *test
 
 func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
 	tests := []struct {
-		name      string
-		plan      callbacks.ReplyPlanTraceData
-		questions []runtimeKnowledgeQuestionResult
-		pending   []runtimeKnowledgeQuestionDisposition
-		want      []string
+		name           string
+		plan           callbacks.ReplyPlanTraceData
+		questions      []runtimeKnowledgeQuestionResult
+		pending        []runtimeKnowledgeQuestionDisposition
+		wantAll        []string
+		wantGeneration []string
 	}{
 		{
 			name: "restored deferred question appears before planned answer",
@@ -338,8 +704,9 @@ func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
 				{TaskID: "T1", Query: "空调坏了，我住1302"},
 				{TaskID: "T2", Query: "顺便问早餐几点"},
 			},
-			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
-			want:    []string{"顺便问早餐几点"},
+			pending:        []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			wantAll:        []string{"空调坏了，我住1302", "顺便问早餐几点"},
+			wantGeneration: []string{"顺便问早餐几点"},
 		},
 		{
 			name: "restored answer appears before planned deferred question",
@@ -350,8 +717,9 @@ func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
 				{TaskID: "T1", Query: "顺便问早餐几点"},
 				{TaskID: "T2", Query: "空调坏了，我住1302"},
 			},
-			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T2", Query: "空调坏了，我住1302", NeedsHandoff: true}},
-			want:    []string{"顺便问早餐几点"},
+			pending:        []runtimeKnowledgeQuestionDisposition{{TaskID: "T2", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			wantAll:        []string{"顺便问早餐几点", "空调坏了，我住1302"},
+			wantGeneration: []string{"顺便问早餐几点"},
 		},
 		{
 			name: "intent task order differs from customer question order",
@@ -363,8 +731,9 @@ func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
 				{TaskID: "T1", Query: "空调坏了，我住1302"},
 				{TaskID: "T2", Query: "顺便问早餐几点"},
 			},
-			pending: []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
-			want:    []string{"顺便问早餐几点"},
+			pending:        []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302", NeedsHandoff: true}},
+			wantAll:        []string{"空调坏了，我住1302", "顺便问早餐几点"},
+			wantGeneration: []string{"顺便问早餐几点"},
 		},
 	}
 
@@ -373,14 +742,68 @@ func TestRebuildRuntimeKnowledgeReplyPlanUsesActualQuestionOrder(t *testing.T) {
 			got := rebuildRuntimeKnowledgeReplyPlan(tt.plan, tt.questions, tt.pending, true)
 			texts := make([]string, 0, len(got.TaskPlans))
 			for _, task := range got.TaskPlans {
-				if runtimeReplyTaskUsesKnowledge(task) {
-					texts = append(texts, task.Text)
-				}
+				texts = append(texts, task.Text)
 			}
-			if strings.Join(texts, "\x00") != strings.Join(tt.want, "\x00") {
-				t.Fatalf("expected active knowledge tasks %#v, got %#v", tt.want, texts)
+			if strings.Join(texts, "\x00") != strings.Join(tt.wantAll, "\x00") {
+				t.Fatalf("expected all knowledge tasks %#v, got %#v", tt.wantAll, texts)
+			}
+			active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, got)
+			activeTexts := make([]string, 0, len(active))
+			for _, task := range active {
+				activeTexts = append(activeTexts, task.Text)
+			}
+			if strings.Join(activeTexts, "\x00") != strings.Join(tt.wantGeneration, "\x00") {
+				t.Fatalf("expected Generate tasks %#v, got %#v", tt.wantGeneration, activeTexts)
+			}
+			if got.ActiveTaskCount != len(tt.wantAll) || got.ReplyRequiredTaskCount != len(tt.wantGeneration) {
+				t.Fatalf("unexpected ReplyPlan counts: %#v", got)
 			}
 		})
+	}
+}
+
+func TestRebuildLegacyRuntimeKnowledgeReplyPlanPreservesResolvedReferenceIdentity(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		Intent: "hotel_info", SubIntent: "room_type_facility", Text: "那麦田呢", OriginalText: "那麦田呢",
+		ResolvedText: "麦田房型有没有办公桌", SourceRefs: []string{"U2", "U1"}, NeedsKnowledge: true,
+		OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}}
+	questions := []runtimeKnowledgeQuestionResult{{
+		TaskID: "T1", Intent: "hotel_info", Query: "麦田房型有没有办公桌", OriginalText: "那麦田呢",
+		SubIntent: "room_type_facility", SourceRefs: []string{"U2", "U1"},
+	}}
+	pending := []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "麦田房型有没有办公桌", NeedsHandoff: true}}
+
+	got := rebuildRuntimeKnowledgeReplyPlan(plan, questions, pending, true)
+	if len(got.TaskPlans) != 1 {
+		t.Fatalf("expected one preserved deferred Task, got %#v", got.TaskPlans)
+	}
+	task := got.TaskPlans[0]
+	if task.TaskID != "T1" || task.Intent != "hotel_info" || task.Text != "那麦田呢" || task.OriginalText != "那麦田呢" ||
+		task.ResolvedText != "麦田房型有没有办公桌" || len(task.SourceRefs) != 2 ||
+		task.SourceRefs[0] != "U2" || task.SourceRefs[1] != "U1" || task.OutputKind != "handoff" || task.ReplyRequired {
+		t.Fatalf("legacy rebuild lost resolved-reference identity: %#v", task)
+	}
+}
+
+func TestRebuildRuntimeKnowledgeReplyPlanPreservesStableResolvedReferenceIdentity(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "room_type_facility", Text: "那麦田呢", OriginalText: "那麦田呢",
+		ResolvedText: "麦田房型有没有办公桌", SourceRefs: []string{"U2", "U1"}, NeedsKnowledge: true,
+		OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}}
+	questions := []runtimeKnowledgeQuestionResult{{
+		TaskID: "T1", Intent: "hotel_info", Query: "麦田房型有没有办公桌", OriginalText: "那麦田呢",
+		SubIntent: "room_type_facility", SourceRefs: []string{"U2", "U1"},
+	}}
+
+	got := rebuildRuntimeKnowledgeReplyPlan(plan, questions, nil, false)
+	if len(got.TaskPlans) != 1 {
+		t.Fatalf("expected one stable Task, got %#v", got.TaskPlans)
+	}
+	task := got.TaskPlans[0]
+	if task.Text != "那麦田呢" || task.OriginalText != "那麦田呢" || task.ResolvedText != "麦田房型有没有办公桌" {
+		t.Fatalf("stable rebuild must keep customer wording separate from the resolved query: %#v", task)
 	}
 }
 
@@ -421,14 +844,62 @@ func TestRebuildRuntimeKnowledgeReplyPlanPreservesBlankServiceRequestTask(t *tes
 	}
 }
 
-func TestDeferredRuntimeKnowledgeInstructionHidesRemovedTaskTextFromGenerate(t *testing.T) {
+func TestRebuildRuntimeKnowledgeReplyPlanRetainsStableDeferredTaskForResume(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", Objective: "time",
+			RelationToPrevious: "independent", ResolutionState: "clear", Text: "早餐几点",
+			OriginalText: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U1"},
+			NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+			SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"T1C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T1F1", Statement: "早餐时间为7:00-9:30。"}},
+		},
+		{
+			TaskID: "task-2", Intent: "service_request", SubIntent: "lost_item", Objective: "action_request",
+			RelationToPrevious: "independent", ResolutionState: "clear", Text: "东西落房间了",
+			OriginalText: "东西落房间了", ResolvedText: "东西落房间了", SourceRefs: []string{"U1"},
+			NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+			SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"T2C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T2F1", Statement: "旧事实"}},
+		},
+	}}
+	questions := []runtimeKnowledgeQuestionResult{
+		{TaskID: "task-1", Query: "早餐几点"},
+		{TaskID: "task-2", Query: "东西落房间了"},
+	}
+	pending := []runtimeKnowledgeQuestionDisposition{{
+		TaskID: "task-2", Query: "东西落房间了", NeedsHandoff: true,
+		Disposition: runtimeKnowledgeDispositionNoEvidenceHandoff, MissingAspects: []string{"room_number"},
+	}}
+
+	got := rebuildRuntimeKnowledgeReplyPlan(plan, questions, pending, true)
+	if len(got.TaskPlans) != 2 || got.TaskPlans[0].TaskID != "task-1" || got.TaskPlans[1].TaskID != "task-2" {
+		t.Fatalf("stable deferred Task must remain in its original order: %#v", got.TaskPlans)
+	}
+	deferred := got.TaskPlans[1]
+	if deferred.OutputKind != "handoff" || deferred.ReplyRequired || deferred.Output != runtimeKnowledgeDeferredHandoffOutput ||
+		deferred.NeedsHumanRoute || !deferred.NeedsKnowledge || len(deferred.SourceRefs) != 1 || deferred.SourceRefs[0] != "U1" ||
+		deferred.SelectedLayer != "" || len(deferred.SelectedCandidateIDs) != 0 || len(deferred.SupportedFacts) != 0 ||
+		strings.Join(deferred.MissingAspects, ",") != "room_number" {
+		t.Fatalf("deferred Task must preserve identity and source metadata while leaving Generate: %#v", deferred)
+	}
+	active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, got)
+	if len(active) != 1 || active[0].TaskID != "task-1" {
+		t.Fatalf("Generate must see only the answerable sibling: %#v", active)
+	}
+	if blocked := ungroundedKnowledgeReplyTaskIDs(got); len(blocked) != 0 {
+		t.Fatalf("non-text deferred Task must not become a knowledge-safe fallback: %#v", blocked)
+	}
+}
+
+func TestDeferredRuntimeKnowledgeInstructionHidesDeferredTaskTextFromGenerate(t *testing.T) {
 	pending := []runtimeKnowledgeQuestionDisposition{{TaskID: "T1", Query: "空调坏了，我住1302，需要维修", NeedsHandoff: true}}
 	handoffInstruction := buildDeferredRuntimeKnowledgeInstruction(pending, true)
 	if strings.Contains(handoffInstruction, "空调") || strings.Contains(handoffInstruction, "1302") || strings.Contains(handoffInstruction, "维修") {
 		t.Fatalf("handoff-enabled Generate instruction must not expose removed task text, got %q", handoffInstruction)
 	}
-	if !strings.Contains(handoffInstruction, "不得猜测、复述、概括或提及任何已移除任务") {
-		t.Fatalf("expected an explicit removed-task output boundary, got %q", handoffInstruction)
+	if !strings.Contains(handoffInstruction, "不属于本次 Generate 的文本任务") {
+		t.Fatalf("expected an explicit deferred-task output boundary, got %q", handoffInstruction)
 	}
 
 	disabledInstruction := buildDeferredRuntimeKnowledgeInstruction(pending, false)
@@ -961,17 +1432,18 @@ func TestBuildRunMessagesMarksHandoffWhenNoContext(t *testing.T) {
 	}
 }
 
-func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingInteractionSibling(t *testing.T) {
+func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingIndependentSiblings(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
 		{TaskID: "task-2", Intent: "interaction", Text: "谢谢", OutputKind: "text", ReplyRequired: true, Output: "text_reply"},
+		{TaskID: "task-3", Intent: "hotel_variable", Text: "定位发我", OutputKind: "resource", Output: "structured_resource_commit", ResourceAction: "provide_location"},
 	}})
 	summary := &RunResult{}
 
 	state, err := newTestKnowledgePolicyGate(nil).Evaluate(context.Background(), answerabilityGateInput{
-		Request:   newKnowledgePolicyRunInput("早餐几点，谢谢", ""),
+		Request:   newKnowledgePolicyRunInput("早餐几点，谢谢，定位发我", ""),
 		Summary:   summary,
 		Collector: collector,
 		Intent:    hotelInfoIntent(),
@@ -989,9 +1461,80 @@ func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingInteractionSiblin
 	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
 		t.Fatalf("knowledge task must be deferred independently, got %#v", trace)
 	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+		trace.Tasks[0].Decision != knowledgeEvidenceDecisionInsufficient || trace.Tasks[0].DecisionSource != "source_unavailable" {
+		t.Fatalf("pre-judge knowledge deferral must persist an explicit Task disposition, got %#v", trace.Tasks)
+	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != "task-2" {
-		t.Fatalf("interaction sibling must remain active after deferring knowledge, got %#v", plan.TaskPlans)
+	if len(plan.TaskPlans) != 3 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[1].TaskID != "task-2" || plan.TaskPlans[2].TaskID != "task-3" {
+		t.Fatalf("deferred knowledge and independent siblings must keep stable order, got %#v", plan.TaskPlans)
+	}
+	deferred := plan.TaskPlans[0]
+	if deferred.Output != runtimeKnowledgeDeferredHandoffOutput || deferred.OutputKind != "handoff" || deferred.ReplyRequired {
+		t.Fatalf("missing knowledge must remain as a non-text Deferred Task, got %#v", deferred)
+	}
+	active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, plan)
+	if len(active) != 1 || active[0].TaskID != "task-2" {
+		t.Fatalf("Generate must see only the interaction sibling, got %#v", active)
+	}
+}
+
+func TestDeferUnavailableKnowledgePersistsTraceWhenAutoHandoffDisabled(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	conversation := models.Conversation{ID: 8101, CustomerID: 9101, Status: enums.IMConversationStatusAIServing}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{
+		ConversationID:   conversation.ID,
+		WxWorkInstanceID: 771,
+		RouteStatus:      enums.ConversationRouteStatusAIServing,
+		RouteTarget:      "ai",
+		SessionNo:        1,
+	}).Error; err != nil {
+		t.Fatalf("create conversation route: %v", err)
+	}
+	now := time.Now()
+	if err := db.Model(&models.WxWorkCustomerHandoffSetting{}).Create(map[string]any{
+		"customer_id":          conversation.CustomerID,
+		"wx_work_instance_id":  int64(771),
+		"auto_handoff_enabled": false,
+		"created_at":           now,
+		"updated_at":           now,
+	}).Error; err != nil {
+		t.Fatalf("create disabled handoff setting: %v", err)
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	originalPlan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "interaction", Text: "谢谢", OutputKind: "text", ReplyRequired: true, Output: "text_reply"},
+	}}
+	collector.SetReplyPlan(originalPlan)
+	state := &answerabilityGateState{Input: answerabilityGateInput{
+		Request:   RunInput{Conversation: conversation},
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	}}
+
+	if preserved := deferUnavailableKnowledgeForIndependentWork(state, "知识检索暂时不可用"); !preserved {
+		t.Fatal("independent interaction sibling must remain runnable")
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("disabled auto handoff must not create a real deferred route: %#v", trace)
+	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
+		trace.Tasks[0].Decision != knowledgeEvidenceDecisionInsufficient ||
+		trace.Tasks[0].DecisionSource != "source_unavailable" ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("source failure must remain visible per Task even when handoff is disabled: %#v", trace.Tasks)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].Output != "knowledge_text_reply" ||
+		plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired ||
+		plan.TaskPlans[1].TaskID != "task-2" {
+		t.Fatalf("disabled handoff customer behavior and ReplyPlan must remain unchanged: %#v", plan.TaskPlans)
 	}
 }
 
@@ -1015,11 +1558,19 @@ func TestKnowledgePolicyKeepsPureMissingKnowledgeHandoff(t *testing.T) {
 	if state.AnswerabilityStatus != answerabilityStatusNoContext || !summary.handoffDirective {
 		t.Fatalf("pure knowledge request must keep the existing direct handoff behavior, state=%#v summary=%#v", state, summary)
 	}
-	if collector.Data.Pipeline.EvidenceJudge.DeferredHandoff {
-		t.Fatalf("pure knowledge request must not be converted into a deferred mixed-task handoff: %#v", collector.Data.Pipeline.EvidenceJudge)
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
+		t.Fatalf("pure knowledge handoff must retain its Task for precise resume: %#v", trace)
 	}
-	if len(collector.Data.Pipeline.ReplyPlan.TaskPlans) != 1 {
-		t.Fatalf("pure knowledge task must remain intact for the existing handoff flow: %#v", collector.Data.Pipeline.ReplyPlan.TaskPlans)
+	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+		trace.Tasks[0].DecisionSource != "source_unavailable" {
+		t.Fatalf("pure pre-judge handoff must retain an explicit Task disposition: %#v", trace.Tasks)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput ||
+		plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("pure knowledge task must remain as a non-text Deferred Task for resume: %#v", plan.TaskPlans)
 	}
 }
 
@@ -1077,6 +1628,10 @@ func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
 		}
 	}}
 	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", Text: "拖鞋没了", ResolvedText: "拖鞋没了",
+		OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}})
 	summary := &RunResult{}
 	state, err := (&KnowledgeAnswerabilityGate{
 		newRetriever: func(models.AIAgent) knowledgeContextRetriever { return retriever },
@@ -1107,6 +1662,14 @@ func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
 	trace := collector.Data.Pipeline.EvidenceJudge
 	if trace.Status != "completed" || trace.TaskCount != 1 || trace.CandidateCount != 3 || len(trace.Tasks) != 1 {
 		t.Fatalf("judge batch trace must survive all-pending early return: %#v", trace)
+	}
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 {
+		t.Fatalf("all-pending handoff must retain the exact deferred Task: %#v", trace)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != trace.DeferredTaskIDs[0] ||
+		plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput || plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("all-pending handoff must persist a recoverable non-text TaskPlan: plan=%#v trace=%#v", plan, trace)
 	}
 	taskTrace := trace.Tasks[0]
 	if taskTrace.CandidateCount != 3 || taskTrace.Decision != knowledgeEvidenceDecisionInsufficient || taskTrace.DecisionSource != "model" || len(taskTrace.Layers) != 2 {
@@ -1223,9 +1786,19 @@ func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibli
 	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
 		t.Fatalf("knowledge task must be deferred when the retriever is unavailable, got %#v", trace)
 	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+		trace.Tasks[0].DecisionSource != "source_unavailable" {
+		t.Fatalf("unavailable retriever must persist an explicit Task disposition: %#v", trace.Tasks)
+	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != "task-2" || plan.TaskPlans[0].OutputKind != "resource" {
-		t.Fatalf("resource sibling must remain executable, got %#v", plan.TaskPlans)
+	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput ||
+		plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired || plan.TaskPlans[1].TaskID != "task-2" ||
+		plan.TaskPlans[1].OutputKind != "resource" {
+		t.Fatalf("resource sibling and recoverable deferred knowledge Task must both remain, got %#v", plan.TaskPlans)
+	}
+	if active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, plan); len(active) != 0 {
+		t.Fatalf("resource-only sibling must not create a Generate text task: %#v", active)
 	}
 }
 
@@ -1556,15 +2129,17 @@ func TestKnowledgePolicyEvaluateUsesRuntimeActionFallback(t *testing.T) {
 	}
 }
 
-func TestKnowledgePolicyEvaluateInjectsRetrievalErrorInstructionWithoutFallback(t *testing.T) {
+func TestKnowledgePolicyEvaluatePersistsSourceUnavailableDispositionOnRetrievalError(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	gate := newTestKnowledgePolicyGate(&fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},
 		err:              errors.New("vector store unavailable"),
 	})
+	summary := &RunResult{}
 
 	state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
 		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
+		Summary:   summary,
 		Collector: collector,
 		Intent:    hotelInfoIntent(),
 	})
@@ -1584,9 +2159,18 @@ func TestKnowledgePolicyEvaluateInjectsRetrievalErrorInstructionWithoutFallback(
 	if collector.Data.Answerability.Reason != "knowledge retrieval failed" {
 		t.Fatalf("unexpected reason: %q", collector.Data.Answerability.Reason)
 	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
+		t.Fatalf("a pure knowledge source failure must enter the real handoff path: %#v", summary)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || len(trace.Tasks) != 1 ||
+		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+		trace.Tasks[0].DecisionSource != "source_unavailable" {
+		t.Fatalf("retrieval failure must persist an explicit per-task source disposition: %#v", trace)
+	}
 }
 
-func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
+func TestAppendRetrievedContextRequestsHandoffWhenRetrievalFails(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 200, MatchMode: "keyword", Keywords: "早餐", NeedsKnowledge: true, Status: enums.StatusOk})
 	summary := &RunResult{}
@@ -1606,10 +2190,41 @@ func TestBuildRunMessagesContinuesAgentFlowWhenRetrievalFails(t *testing.T) {
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
 	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
+		t.Fatalf("retrieval failure must not continue as an ungrounded hotel answer: %#v", summary)
+	}
 	if !messagesContainContent(messages, "知识库检索暂时不可用") {
 		t.Fatalf("expected retrieval-error instruction in messages: %#v", messages)
 	}
 	if !messagesContainContent(messages, "早餐几点") {
 		t.Fatalf("expected current user message to remain in messages: %#v", messages)
+	}
+}
+
+func TestRuntimeKnowledgeResourceTaskIDsFollowSelectedQuestionEvidence(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{
+		{
+			TaskID: "T1",
+			Result: &retrievers.KnowledgeRetrieveResult{ContextResults: []rag.RetrieveResult{
+				{KnowledgeBaseID: 11, SourceRecordID: "source-a"},
+				{KnowledgeBaseID: 11, SourceRecordID: "source-b"},
+			}},
+		},
+		{
+			TaskID: "T2",
+			Result: &retrievers.KnowledgeRetrieveResult{ContextResults: []rag.RetrieveResult{
+				{KnowledgeBaseID: 11, SourceRecordID: "source-a"},
+			}},
+		},
+	}}
+
+	if got := runtimeKnowledgeResourceTaskIDs(batch, 11, "source-a"); strings.Join(got, ",") != "T1,T2" {
+		t.Fatalf("shared knowledge resource Task ownership=%#v, want T1,T2", got)
+	}
+	if got := runtimeKnowledgeResourceTaskIDs(batch, 11, "source-b"); len(got) != 1 || got[0] != "T1" {
+		t.Fatalf("single-task knowledge resource ownership=%#v, want T1", got)
+	}
+	if got := runtimeKnowledgeResourceTaskIDs(batch, 12, "source-a"); len(got) != 0 {
+		t.Fatalf("knowledge resource ownership crossed knowledge-base scope: %#v", got)
 	}
 }

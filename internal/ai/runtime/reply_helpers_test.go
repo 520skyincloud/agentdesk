@@ -170,8 +170,8 @@ func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 
 	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
 		"knowledgeResources":[
-			{"assetId":"knowledge-image-1","title":"入口图","sortNo":1},
-			{"assetId":"knowledge-image-2","title":"路线图","sortNo":2}
+			{"assetId":"knowledge-image-1","title":"入口图","sortNo":1,"taskIds":["task-1"]},
+			{"assetId":"knowledge-image-2","title":"路线图","sortNo":2,"taskIds":["task-2"]}
 		]
 	}`)}
 	service := newReplyCommitService()
@@ -191,6 +191,10 @@ func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 		}
 		if !strings.Contains(reply.Payload, `"assetId":"knowledge-image-`) {
 			t.Fatalf("expected canonical asset payload, got %q", reply.Payload)
+		}
+		wantTaskID := fmt.Sprintf("task-%d", index+1)
+		if len(reply.TaskIDs) != 1 || reply.TaskIDs[0] != wantTaskID {
+			t.Fatalf("knowledge image must retain Task ownership: got %#v want %q", reply.TaskIDs, wantTaskID)
 		}
 		if index == 0 && reply.Content != "入口图" {
 			t.Fatalf("expected first image title to retain order, got %q", reply.Content)
@@ -282,19 +286,223 @@ func TestSplitReplyTextForCommitKeepsSingleTaskReplyTogether(t *testing.T) {
 	}
 }
 
-func TestTextCommitTaskIDsFromTraceCapsAtThree(t *testing.T) {
+func TestTextCommitTaskIDsFromTracePreservesAllTextTasks(t *testing.T) {
 	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
 		"pipeline":{"replyPlan":{"taskPlans":[
-			{"intent":"hotel_info","output":"knowledge_text_reply"},
+			{"taskId":"task-1","intent":"hotel_info","output":"knowledge_text_reply"},
 			{"intent":"hotel_variable","output":"structured_resource_commit"},
-			{"intent":"hotel_info","output":"knowledge_text_reply"},
-			{"intent":"interaction","output":"text_reply"},
-			{"intent":"hotel_info","output":"knowledge_text_reply"}
+			{"taskId":"task-2","intent":"hotel_info","output":"knowledge_text_reply"},
+			{"taskId":"task-3","intent":"interaction","output":"text_reply"},
+			{"taskId":"task-4","intent":"hotel_info","output":"knowledge_text_reply"}
 		]}}
 	}`)}
 	ids := textCommitTaskIDsFromTrace(trace)
-	if len(ids) != 3 || ids[0] != "task-1" || ids[2] != "task-3" {
-		t.Fatalf("expected three ordered text task ids, got %#v", ids)
+	if strings.Join(ids, ",") != "task-1,task-2,task-3,task-4" {
+		t.Fatalf("all ordered text Task IDs must survive message-count capping, got %#v", ids)
+	}
+}
+
+func TestBuildTextCommitPartsBalancesAllTasksAcrossThreeMessages(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{"replyPlan":{"taskPlans":[
+			{"taskId":"task-1","intent":"hotel_info","outputKind":"text","replyRequired":true,"output":"knowledge_text_reply"},
+			{"taskId":"task-2","intent":"hotel_info","outputKind":"text","replyRequired":true,"output":"knowledge_text_reply"},
+			{"taskId":"task-3","intent":"hotel_info","outputKind":"text","replyRequired":true,"output":"knowledge_text_reply"},
+			{"taskId":"task-4","intent":"interaction","outputKind":"text","replyRequired":true,"output":"text_reply"}
+		]}}
+	}`)}
+	parts := buildTextCommitParts(trace, "一\n<<NEXT_MESSAGE>>\n二\n<<NEXT_MESSAGE>>\n三\n<<NEXT_MESSAGE>>\n四")
+	if len(parts) != 3 {
+		t.Fatalf("customer messages must still be capped at three, got %#v", parts)
+	}
+	allTaskIDs := make([]string, 0, 4)
+	for _, part := range parts {
+		allTaskIDs = append(allTaskIDs, part.TaskIDs...)
+	}
+	if strings.Join(allTaskIDs, ",") != "task-1,task-2,task-3,task-4" {
+		t.Fatalf("message merging must not lose Task ownership: %#v", parts)
+	}
+}
+
+func TestBindFallbackResourceTextPartsPreservesResourceTaskOwnership(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{
+			"intent":{"primaryIntent":"hotel_variable","needsResource":true,"resourceActions":["provide_location","send_miniprogram"]},
+			"replyPlan":{"taskPlans":[
+				{"taskId":"task-location","intent":"hotel_variable","subIntent":"location","outputKind":"resource","needsResource":true,"resourceAction":"provide_location","output":"structured_resource_commit"},
+				{"taskId":"task-mini","intent":"hotel_variable","subIntent":"mini_program","outputKind":"resource","needsResource":true,"resourceAction":"send_miniprogram","output":"structured_resource_commit"}
+			]}
+		}
+	}`)}
+	parts := buildTextCommitParts(trace, "酒店地址：测试路1号。\n<<NEXT_MESSAGE>>\n入住小程序入口：智慧入住。")
+	parts = bindFallbackResourceTextParts(trace, nil, parts)
+	if len(parts) != 2 {
+		t.Fatalf("two resource fallbacks must stay independently attributable, got %#v", parts)
+	}
+	if parts[0].FallbackResourceType != "location" || strings.Join(parts[0].TaskIDs, ",") != "task-location" {
+		t.Fatalf("location fallback lost Task ownership: %#v", parts[0])
+	}
+	if parts[1].FallbackResourceType != "mini_program" || strings.Join(parts[1].TaskIDs, ",") != "task-mini" {
+		t.Fatalf("mini-program fallback lost Task ownership: %#v", parts[1])
+	}
+}
+
+func TestCapTextCommitPartsPreservesAllFallbackResourceTypes(t *testing.T) {
+	parts := []textCommitPart{
+		{Content: manualResumeCustomerNotice},
+		{Content: "酒店地址：测试路1号。", TaskIDs: []string{"task-location"}, FallbackResourceType: "location"},
+		{Content: "入住小程序入口：智慧入住。", TaskIDs: []string{"task-mini"}, FallbackResourceType: "mini_program"},
+		{Content: "门店电话：12345678。", TaskIDs: []string{"task-phone"}, FallbackResourceType: "phone"},
+		{Content: "房型图片如下。", TaskIDs: []string{"task-image"}, FallbackResourceType: "knowledge_image"},
+	}
+
+	capped := capTextCommitParts(parts, 3)
+	if len(capped) != 3 {
+		t.Fatalf("manual resume text parts must be capped at three, got %#v", capped)
+	}
+	allResourceTypes := make([]string, 0, 4)
+	allTaskIDs := make([]string, 0, 4)
+	for _, part := range capped {
+		allResourceTypes = append(allResourceTypes, textCommitPartFallbackResourceTypes(part)...)
+		allTaskIDs = append(allTaskIDs, part.TaskIDs...)
+	}
+	if strings.Join(allResourceTypes, ",") != "location,mini_program,phone,knowledge_image" {
+		t.Fatalf("message capping must preserve every fallback resource type: %#v", capped)
+	}
+	if strings.Join(allTaskIDs, ",") != "task-location,task-mini,task-phone,task-image" {
+		t.Fatalf("message capping must preserve every fallback resource Task: %#v", capped)
+	}
+	if capped[0].FallbackResourceType != "location" {
+		t.Fatalf("the legacy singular fallback resource type must remain populated: %#v", capped[0])
+	}
+	if strings.Join(capped[1].FallbackResourceTypes, ",") != "mini_program,phone" {
+		t.Fatalf("a merged fallback message must retain all resource types: %#v", capped[1])
+	}
+	traceItem := map[string]any{}
+	addFallbackResourceTypesToCommitTrace(traceItem, capped[1])
+	if traceItem["fallbackResourceType"] != "mini_program" {
+		t.Fatalf("Commit Trace must retain the legacy singular resource type: %#v", traceItem)
+	}
+	resourceTypes, ok := traceItem["fallbackResourceTypes"].([]string)
+	if !ok || strings.Join(resourceTypes, ",") != "mini_program,phone" {
+		t.Fatalf("Commit Trace must persist every merged fallback resource type: %#v", traceItem)
+	}
+}
+
+func TestValidateCommittedMessageMatchesRequestRejectsStaleIdempotentText(t *testing.T) {
+	message := &models.Message{
+		RequestID:   "manual_resume_token_101",
+		MessageType: enums.IMMessageTypeText,
+		Content:     "早餐时间是7:00-9:30。",
+		Payload:     `{"source":"knowledge","version":1}`,
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeText,
+		"早餐时间是7:00-9:30。",
+		`{"version":1,"source":"knowledge"}`,
+		"manual_resume_token_101",
+	); err != nil {
+		t.Fatalf("the persisted message for the same request must remain idempotent: %v", err)
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeText,
+		"停车从辅路入口进入。",
+		message.Payload,
+		message.RequestID,
+	); err == nil {
+		t.Fatal("an old message returned by a stable ClientMsgID must not be rebound to new Task content")
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeText,
+		message.Content,
+		message.Payload,
+		"manual_resume_token_102",
+	); err == nil {
+		t.Fatal("an old message from another source-bound request must not satisfy the current request")
+	}
+}
+
+func TestValidateCommittedMessageMatchesRequestAcceptsStableTaskBoundManualResumeMessage(t *testing.T) {
+	message := &models.Message{
+		RequestID:   "manual_resume_token_101",
+		ClientMsgID: "ai_manual_resume_0123456789abcdef_task_abcdef0123456789_101",
+		MessageType: enums.IMMessageTypeText,
+		Content:     "第一次已提交的早餐答复。",
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeText,
+		"重试时模型换了一种早餐说法。",
+		"",
+		message.RequestID,
+		message.ClientMsgID,
+	); err != nil {
+		t.Fatalf("stable Task-bound manual resume Commit must reuse the persisted message: %v", err)
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeText,
+		message.Content,
+		"",
+		"manual_resume_token_102",
+		message.ClientMsgID,
+	); err == nil {
+		t.Fatal("stable Task ownership must not cross request boundaries")
+	}
+}
+
+func TestManualResumeTextCommitIDsFollowTaskOwnership(t *testing.T) {
+	input := replyCommitInput{Message: models.Message{ID: 101, RequestID: "manual_resume_token_101"}}
+	prefix := replyCommitClientPrefix(input)
+	first := textCommitClientMessageID(input, prefix, textCommitPart{Content: "早餐答复", TaskIDs: []string{"task-1", "task-2"}}, 0, 2)
+	retry := textCommitClientMessageID(input, prefix, textCommitPart{Content: "换一种早餐答复", TaskIDs: []string{"task-1", "task-2"}}, 1, 3)
+	other := textCommitClientMessageID(input, prefix, textCommitPart{Content: "停车答复", TaskIDs: []string{"task-3"}}, 0, 1)
+	if first != retry {
+		t.Fatalf("same Task ownership must keep one ClientMsgID across wording/index changes: %q != %q", first, retry)
+	}
+	if first == other {
+		t.Fatalf("different Task ownership must not share ClientMsgID %q", first)
+	}
+	if len(first) > 128 {
+		t.Fatalf("stable ClientMsgID exceeds database limit: %d %q", len(first), first)
+	}
+}
+
+func TestValidateCommittedMessageMatchesRequestUsesMediaAssetIdentity(t *testing.T) {
+	message := &models.Message{
+		RequestID:   "manual_resume_token_201",
+		MessageType: enums.IMMessageTypeImage,
+		Content:     "persisted-filename.png",
+		Payload:     `{"assetId":"asset-1","wxMedia":{"mediaId":"media-1"}}`,
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeImage,
+		"客户可见标题",
+		`{"assetId":"asset-1"}`,
+		message.RequestID,
+	); err != nil {
+		t.Fatalf("canonical media normalization may change content and payload details while retaining the same asset: %v", err)
+	}
+	if err := validateCommittedMessageMatchesRequest(
+		message,
+		enums.IMMessageTypeImage,
+		"客户可见标题",
+		`{"assetId":"asset-2"}`,
+		message.RequestID,
+	); err == nil {
+		t.Fatal("a different persisted media asset must not satisfy the current resource Task")
+	}
+}
+
+func TestBuildCommitMessageTraceRecordsPersistedContent(t *testing.T) {
+	message := &models.Message{ID: 77, MessageType: enums.IMMessageTypeText, Content: "数据库中的真实回复"}
+	trace := buildCommitMessageTrace(message, enums.IMMessageTypeText, "", "本次模型生成但未落库的文本", []string{"task-1"}, nil)
+	if got := strings.TrimSpace(fmt.Sprint(trace["content"])); got != message.Content {
+		t.Fatalf("Commit Trace must describe the persisted customer-visible message, got %q", got)
 	}
 }
 

@@ -447,7 +447,7 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 			}
 		}
 	}
-	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n"))
+	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n<<NEXT_MESSAGE>>\n"))
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
 }
 

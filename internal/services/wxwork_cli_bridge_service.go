@@ -102,12 +102,10 @@ func (s *wxWorkCLIBridgeService) PollOutbox(req request.WxWorkCLIOutboxPollReque
 		}
 		message := MessageService.Get(items[i].MessageID)
 		if message == nil {
-			_ = s.MarkOutboxFailed(request.WxWorkCLIOutboxFailedRequest{
-				ChannelID:   channel.ChannelID,
-				BridgeToken: req.BridgeToken,
-				OutboxID:    items[i].ID,
-				Error:       "平台消息不存在",
-			})
+			nextRetryAt := now.Add(time.Minute)
+			if _, failErr := ChannelMessageOutboxService.failUnclaimedDispatchWithDB(sqls.DB(), items[i], &nextRetryAt, "平台消息不存在"); failErr != nil {
+				return nil, failErr
+			}
 			continue
 		}
 		mapping := WxWorkKFConversationService.Take("conversation_id = ?", items[i].ConversationID)
@@ -122,11 +120,19 @@ func (s *wxWorkCLIBridgeService) PollOutbox(req request.WxWorkCLIOutboxPollReque
 		if chatID == "" {
 			continue
 		}
-		if err := ChannelMessageOutboxService.Updates(items[i].ID, map[string]any{
-			"send_status": string(enums.ChannelMessageOutboxStatusSending),
-			"updated_at":  now,
-		}); err != nil {
+		claimed, err := ChannelMessageOutboxService.ClaimForDispatch(items[i], message)
+		if err != nil {
 			return nil, err
+		}
+		if !claimed {
+			continue
+		}
+		allowed, err := ChannelMessageOutboxService.RevalidateClaimedForDispatch(items[i], message)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			continue
 		}
 		results = append(results, response.WxWorkCLIOutboxItemResponse{
 			OutboxID:       items[i].ID,
@@ -165,13 +171,19 @@ func (s *wxWorkCLIBridgeService) MarkOutboxSent(req request.WxWorkCLIOutboxSentR
 
 	now := time.Now()
 	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
-		if err := repositories.ChannelMessageOutboxRepository.Updates(ctx.Tx, outbox.ID, map[string]any{
-			"send_status": string(enums.ChannelMessageOutboxStatusSent),
-			"sent_at":     now,
-			"last_error":  "",
-			"updated_at":  now,
-		}); err != nil {
-			return err
+		result := ctx.Tx.Model(&models.ChannelMessageOutbox{}).
+			Where("id = ? AND send_status = ?", outbox.ID, string(enums.ChannelMessageOutboxStatusSending)).
+			Updates(map[string]any{
+				"send_status": string(enums.ChannelMessageOutboxStatusSent),
+				"sent_at":     now,
+				"last_error":  "",
+				"updated_at":  now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
 		}
 		wxMsgID := strings.TrimSpace(req.ExternalMsgID)
 		if wxMsgID == "" {
@@ -217,16 +229,8 @@ func (s *wxWorkCLIBridgeService) MarkOutboxFailed(req request.WxWorkCLIOutboxFai
 	if conversation == nil || conversation.ChannelID != channel.ID {
 		return errorsx.InvalidParam("投递任务不属于当前渠道")
 	}
-	now := time.Now()
-	retryCount := outbox.RetryCount + 1
-	nextRetryAt := now.Add(time.Minute)
-	return ChannelMessageOutboxService.Updates(outbox.ID, map[string]any{
-		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
-		"retry_count":   retryCount,
-		"next_retry_at": nextRetryAt,
-		"last_error":    strings.TrimSpace(req.Error),
-		"updated_at":    now,
-	})
+	_, err = ChannelMessageOutboxService.cancelClaimedDispatchUncertainWithDB(sqls.DB(), *outbox, req.Error)
+	return err
 }
 
 func (s *wxWorkCLIBridgeService) requireChannel(channelID, bridgeToken string) (*models.Channel, *dto.WxWorkCLIChannelConfig, error) {

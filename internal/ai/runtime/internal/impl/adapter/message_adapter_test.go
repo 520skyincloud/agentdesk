@@ -96,6 +96,47 @@ func TestBuildHistoryMessagesOnlyUsesMessagesBeforeCurrent(t *testing.T) {
 	}
 }
 
+func TestExcludeCurrentTurnSourcesKeepsRealAdjacentServiceReply(t *testing.T) {
+	setupAdapterHistoryTestDB(t)
+	now := time.Now()
+	conversationID := int64(7002)
+	items := []models.Message{
+		{ID: 11, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "previous-customer", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "麦田房型有办公桌吗", SeqNo: 1, SentAt: ptrAdapterTime(now)},
+		{ID: 12, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "previous-ai", SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "有的。", SeqNo: 2, SentAt: ptrAdapterTime(now.Add(time.Second))},
+		{ID: 13, ConversationID: conversationID, SessionNo: 1, ClientMsgID: "burst-first", SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "那沙发呢", SeqNo: 3, SentAt: ptrAdapterTime(now.Add(2 * time.Second))},
+	}
+	for _, item := range items {
+		if err := sqls.DB().Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", item.ID, err)
+		}
+	}
+	current := models.Message{
+		ID:             14,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息13] 那沙发呢",
+			"2. [消息14] 早餐几点",
+		}),
+	}
+
+	history := ExcludeCurrentTurnSources(BuildHistoryMessages(conversationID, current.ID, 10), current)
+	if len(history.RawItems) != 2 || len(history.Messages) != 2 {
+		t.Fatalf("current burst sources must be removed from history: %#v", history.RawItems)
+	}
+	if history.RawItems[0].ID != 11 || history.RawItems[1].ID != 12 {
+		t.Fatalf("unexpected filtered history: %#v", history.RawItems)
+	}
+	if history.LatestRawItem == nil || history.LatestRawItem.ID != 12 || history.LatestRawItem.SenderType != enums.IMSenderTypeAI {
+		t.Fatalf("real adjacent AI reply must become the latest history item: %#v", history.LatestRawItem)
+	}
+	if joined := historyText(history); strings.Contains(joined, "那沙发呢") || !strings.Contains(joined, "麦田房型有办公桌吗") || !strings.Contains(joined, "有的") {
+		t.Fatalf("unexpected filtered history text: %q", joined)
+	}
+}
+
 func TestRuntimeHistoryMessageContentExcludesStandaloneOneExchange(t *testing.T) {
 	items := []models.Message{
 		{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: " 1 ", ClientMsgID: "standalone-one"},

@@ -4,6 +4,10 @@
 之上的现行回复链路和本轮工作区实现。真实代码优先于历史交接材料；旧 FAQ、
 旧 Hook Bridge 和旧独立 Agent 设计不属于本文架构依据。
 
+截至 2026-08-31，当前工作区已通过定向测试、完整普通测试、Race、Vet 与 Linux amd64
+构建；最终复审、提交、推送、分阶段部署、真实模型与企微出站验收仍待本轮后续步骤，
+本文不把尚未执行的步骤写成已完成。
+
 ## 1. 运行边界
 
 正常文本回复链路保持为：
@@ -24,8 +28,15 @@
 Intent、检索和 Judge 不会因此重跑。
 
 Resource 与 Handoff 仍由现有 Action Ledger、结构化资源提交和接待服务执行，
-不伪装成 Generate 文本。数据库 Task、稳定发送 ID、Outbox、人工状态机和房号
-追问规则不在本轮变更范围内。
+不伪装成 Generate 文本。数据库 Task、人工状态机和房号追问规则不在本轮变更范围内。
+普通 `ai_reply` 与 AI 服务通知继续沿用既有 ClientMsgID、Commit、Outbox、发送重试和
+幂等行为；本轮只为 `manual_resume` 增加第 8 节所述的请求绑定投递修复，不扩展到
+普通回复或服务通知。
+
+“客户已经看到业务答案”不以 RunLog 或 Commit Trace 的 `sent` 字样单独判断。站内
+消息要求真实 Message 存在且未撤回；企微客服、企微 CLI 和企微员工号等外部渠道还
+要求对应 Outbox 已经是 `sent`。转接成功、人工恢复提示等 AI 服务通知不绑定业务
+`taskIds[]`，也不能结算文本或资源 Task。
 
 ## 2. Active Answer Task
 
@@ -69,7 +80,8 @@ Intent V2 的每个任务同时保留：
   的任务才进入澄清；同轮其他清晰任务继续执行。
 - `entities`：只保存当前任务明确出现或由紧邻上下文可靠补全的房型、设施、地点等
   轻量实体，不建立第二套持久化 Task Memory。
-- `text` / `OriginalText`：客户原表达，用于来源覆盖和审计。
+- `text` / `OriginalText`：Intent 模型给出的当前 Task 表达；客户原始物理文本以
+  `input.currentTurnSources` 为准，V2 不做字面 span 校验。
 - `resolvedText`：补全明确回指、比较或省略后的自包含问题，用于检索、Judge
   和 Generate。
 - `sourceRefs`：按 `U1`、`U2` 等引用当前短消息组；首项是主要问题来源，其余
@@ -80,19 +92,11 @@ Intent Prompt 每轮都要求从 `U1` 到 `Un` 逐条扫描，且不能依赖标
 或固定连接词；代码不再向模型披露本地猜测的候选，也不会在模型返回后重新拆分、
 合并或补造 Task。检索层严格使用模型给出的知识 Task，不再从客户原文二次拆题。
 
-本地协议验证来源真实性和明显问题覆盖：`sourceRefs[0]` 必须指向真实主要来源，
-`text` 必须是该来源中的连续客户原话，同一来源内的 Task 保持原文顺序且不能重叠，
-不同来源保持 `U1 -> Un` 顺序；每个当前来源至少被某个 Task 作为 primary 或 context
-引用。对标点已经明确分开的独立问句，本地只检查是否遗漏、重复或乱序，失败时要求
-现有 Intent 做一次协议修复，不会创建、改写或重新拆分 Task。Intent 返回被完整单层
-Markdown JSON fence 包裹时可以安全拆包，JSON 之外仍禁止带解释文字。“拖鞋没了，
-怎么办”这类“业务状态/前提 + 裸处理问句”按一个候选校验，不能误报为两题。
-
-真实模型路径允许两种不改变模型语义的有限修复：唯一上下文省略问句被模型写成补全
-文本时，只把 `text` 恢复为客户原话，`resolvedText` 继续保留自包含问题；模型把紧邻
-上一问题和当前回指问题同时塞入 `resolvedText` 时，只有上一问题是一个精确独立分句、
-且剩余唯一分句包含当前新实体时，才删除旧分句。无法唯一确认时仍进入现有一次 Intent
-协议修复，不会在本地猜测新 Task。
+V2 本地协议只验证来源真实性与顺序：`sourceRefs` 必须指向本轮真实 URef，主要来源
+按 `U1 -> Un` 单调排列，每个当前来源至少被一个 Task 作为 primary 或 context 引用。
+代码不要求 `text` 是来源中的字面片段，也不根据标点重新计算问题数量、检查本地
+原子题覆盖或重写模型 Task；只折叠字段和动作完全相同的重复 Task。Intent 返回被
+完整单层 Markdown JSON fence 包裹时可以安全拆包，JSON 之外仍禁止带解释文字。
 
 同一收敛窗口内的连续短句按各 Task 的 primary `sourceRefs` 独立恢复和校验，例如
 `U1=有早餐吗 / U2=几点 / U3=在哪吃` 中，后两题的 `text` 仍分别保留 U2、U3 原话，
@@ -111,12 +115,10 @@ Markdown JSON fence 包裹时可以安全拆包，JSON 之外仍禁止带解释�
 位置、时间、数量和价格声明即使与已有事实属于同一维度，也必须能回到已选事实，
 不能在正确答案旁追加新的对象、能力、规则或数值。
 
-Intent 返回后还会经过纯本地 Semantic Consistency Gate，不增加模型调用。Gate 会
-阻止“有没有空调”这类信息咨询被错误执行成现实服务请求，校验
-`answer_rejected` 与真实接待分类必须双向一致，并确保
-`resolved_from_context` 只在确有紧邻上下文时生效。旧 Profile 未声明全部轻量语义
-字段时继续走兼容模式；低置信结果会整体收敛为一个澄清任务，不能被旧业务 Task
-重新恢复，也不能残留定位、小程序、工具或人工动作。
+V2 Intent 返回后只执行动作权限收窄：歧义或未解析 Task 进入澄清，其他 Task 只保留
+其 intent 类别允许的知识、资源、工具和接待动作；`answer_rejected` 仍要求紧邻真实
+AI 答复。V2 不再让完整 Semantic Consistency Gate 重判模型的业务语义或 Task
+边界。旧 Profile 未声明轻量语义契约时继续走 legacy Gate 与低置信澄清兼容路径。
 
 ## 4. Judge V2 与知识层级
 
@@ -182,8 +184,12 @@ FAQ 的问题与答案按一个完整语义单元理解；“问题中写两瓶�
 同层所有相同问法答案不冲突，并且单条 FAQ 能机械重建完整事实时才允许恢复。
 答案仅为“转接/转人工”时只形成该层的确定性知识转接；不得把 FAQ 问题文字当作
 事实，也不得跨 FAQ、跨知识层拼接对象、范围或条件。同层 `RawCandidates` 中只要
-还存在一条能够完整回答当前 Task 的正文 FAQ，精确转接就视为有竞争答案，不能在
-Judge 异常时自动恢复为转接；紧预算优先保留完整正文，并在有余量时同时交给 Judge。
+还存在一条可信、值得交给 Judge 复核的竞争正文 FAQ，精确转接就不能在
+Judge 异常时自动恢复为转接；正文即使只存在于 `RawCandidates`、未进入本轮 Judge
+预算，也必须参与该否决。紧预算只有一个槽位时优先保留可信待复核正文；至少两个槽位
+时优先把同层正文和精确转接一起交给 Judge，再使用剩余槽位放通用兜底。Judge 已经
+真实看见两项并明确选择精确转接时，可以执行该模型裁决；本地只阻止模型未见正文时
+由异常 fallback 抢先转接。
 模型若在非精确问法下选择
 转接候选并把它包装成普通事实，或者让转接候选参与 `partial/direct_combined`，该
 知识层直接记为 `protocol_invalid`，候选正文不得进入 Generate。
@@ -214,15 +220,17 @@ Judge 异常时自动恢复为转接；紧预算优先保留完整正文，并�
 模型返回的 Candidate ID 和事实 JSON 采用非破坏式校验：本地代码不会改选另一个
 Candidate，也不会再次按分数或字符相似度做语义裁决。Fact JSON/aspect/
 criticalValues 无法使用时，只允许从模型已经选中的 FAQ 问题与答案机械重建事实；
-若所选 FAQ 与 Intent 给出的结构化实体、明确房型或适用范围不一致，则该知识层记为
-`protocol_invalid`。`partial` 只需覆盖同一主体下已经确认的部分事实，不要求把仍然
+只有所选 FAQ 与当前 Task 存在可机械证明的明确房型、区域或配置范围冲突时，该知识层
+才记为 `protocol_invalid`。普通实体同义关系由 Judge 负责，本地不维护有限同义词表
+二次否决。`partial` 只需覆盖同一主体下已经确认的部分事实，不要求把仍然
 缺失的实体伪装成已覆盖；`direct_combined` 则不能跨房型、对象或范围拼接。
 完整性同时按客户问题中的主体与事实维度配对检查。例如同时询问矿泉水和枕头的
 数量、费用时，不能用“矿泉水免费 + 枕头两个”冒充四个槽位都完整；多房型、多设施
 也只接受明确分句中的配对，不做笛卡尔积。“不确定、待确认、资料未写明”等边界
 可以作为条件说明，但不能充当存在性、数量、费用、位置或方法的确定证据。
 
-Judge 批次候选总预算固定为 28。配额只有一条时优先保留门店完整正文；配额至少
+Judge 批次候选总预算固定为 28。配额只有一条时优先保留门店中可信、值得 Judge
+复核的正文；配额至少
 两条且门店、通用均有候选时，通常各保留一条最佳候选，不能让本地“完整性”启发式
 在 Judge 前删除整个通用层。唯一例外是：门店没有单条完整答案，但两条同层候选能
 机械覆盖当前 Task 明确要求的多个事实维度、主体或配置字段，此时先保留这两条必要
@@ -310,11 +318,18 @@ Intent 仍可读取带角色的必要历史来做回指识别。进入 Generate 
 
 明确依赖上一轮的任务使用单独的有界会话上下文，不恢复无约束整段历史：
 
-- `clarification_answer`、`reference_previous`、纠正或
-  `resolved_from_context` 任务最多读取相邻两条角色消息。
+- `follow_up`、`clarification_answer`、`reference_previous`、纠正或
+  `resolved_from_context` 任务读取紧邻的一条客户问题，以及其后最多三条连续、同一
+  发送方类型的 AI 或人工客服答复。
 - `interaction/conversation_recap` 最多读取最近八条当前会话消息。
 - 有界历史只用于解释当前 Task，不会重新创建、激活或补答旧 Task。
 - 普通 `independent + clear` 任务仍完全看不到旧业务问题。
+
+相邻上下文必须是紧邻的真实“客户 -> 同类型客服答复组”：AI 与人工不能混成一组，
+空消息和已注册的 AI 服务通知不切断正文组；历史末尾不是客服答复时不建立相邻组。
+四条以上连续答复只保留最新三条，并分别截断，不能让较早长文本挤掉最后一条纠正。
+Intent、Judge 和 Generate 使用同一组、同一顺序。两条连续客户消息不能被拼成历史
+问答；当前 burst 内的省略关系由 `sourceRefs + resolvedText` 表达，不会错误挂接更早历史。
 
 原始知识上下文始终从 Generate 消息中移除。Generate 只读取 ReplyPlan 中 Judge
 选中的结构化事实，避免从未选中候选扩写能力或重新回答旧问题。
@@ -327,9 +342,70 @@ Intent 仍可读取带角色的必要历史来做回指识别。进入 Generate 
 
 本地不生成 `POSSIBLE_ATOMIC_TASKS`，也不按问号、顿号、连接词或物理消息数量猜测
 题目数。单条长文字、完整语音转写和连续短消息都由同一次 Intent 模型确定 Task 数量
-与边界；代码只校验模型给出的原文片段、来源覆盖和顺序，然后按这些 Task 检索。
+与边界；V2 代码只校验真实 URef、来源覆盖、来源顺序和完全重复 Task，然后按模型
+给出的 Task 检索。
 
-## 8. 输出与 Commit 防线
+## 8. 人工恢复边界
+
+人工超时恢复复用现有 RunLog，不新增跨运行“已答题目”状态。恢复器只在 Trace
+结构完整且来源可验证时读取 `ReplyPlan.TaskPlans` 与
+`EvidenceJudge.DeferredTaskIDs`，冻结真正延后的 Task；同轮已经正常回答的兄弟 Task
+不会重新进入 Intent、Retriever 或 Generate。人工期间新增的客户消息形成新的 URef，
+整次恢复最多为这些新来源调用一次 Intent，再与冻结 Task 按来源顺序合并。
+
+正常轮不会为了隐藏待转接问题而删除 Task。完整无答案或明确转接的 Task 以
+`output=deferred_knowledge_handoff`、`outputKind=handoff`、`replyRequired=false`
+保留在 ReplyPlan，因此 Generate 只看到可回答的文本 Task，人工恢复仍能通过稳定
+TaskID 找回真实未完成项。恢复执行时该临时 handoff 输出标记不会被带回新 ReplyPlan；
+Task 会重新成为 `knowledge_text_reply`，按原 `text/resolvedText/sourceRefs` 再走知识
+检索和裁决。这个标记不是新的持久状态机，只是现有 RunLog 内的执行边界。
+
+知识库未配置、Retriever 不可用等 Judge 前来源不可用路径同样使用显式逐题契约：
+`disposition=no_evidence_handoff`、`decision=insufficient`、
+`decisionSource=source_unavailable`。新版 V2 Trace 不允许依靠空 disposition 被恢复；
+空值只保留给有界 legacy 兼容。
+
+`no_evidence_handoff` 表示仍未完成、可以在原人工超时点恢复的知识 Task。
+`knowledge_direct_handoff`、明确转人工，以及答案已真实到达客户的
+`answer_then_handoff` 表示转接已完成，原超时点只静默恢复 AI，不重新回答原题。
+系统沿用现有超时矩阵：总部网页待接入 3 分钟、门店待跟进 5 分钟、员工真实接管后
+空闲 10 分钟；不会在任一超时之后再启动第二段十分钟等待。
+
+V2 Trace 与 legacy Trace 使用不同契约。V2 要求每个来源都能回到真实客户消息 ID；
+legacy 只做受限兼容，不能被误标为 V2。Trace 缺失、来源不可信或冻结 Task 无法验证
+时，恢复器回到现有重新识别路径，不伪造 Deferred Task，也不建立新数据库表、Task
+状态或恢复账本。恢复执行前后仍使用现有请求有效性和人工路由检查。
+
+`manual_resume` 使用请求绑定的投递复核：恢复请求 ID 绑定来源消息 ID，ClientMsgID 使用
+`ai_manual_resume_` 加请求 ID 的 SHA-256 前 24 字节十六进制。稳定的 Task/资源归属
+ClientMsgID 同时编码请求、来源消息和 Task 集；命中该稳定 ID 时，已落库 Message 是客户
+可见内容的权威版本，恢复器只校验 request ID、消息类型和稳定归属，不再拿重跑后的正文或
+资源 payload 覆盖它。旧格式或非稳定 ID 仍要求正文或资源身份匹配。通过上述校验后才允许
+补建缺失的 Outbox；符合恢复条件且尚未开始外部发送的 `cancelled` Outbox 可以原子恢复为
+`pending`。`pending`、仍在
+重试期的 `failed` 以及五分钟内的 `sending` 只标记为 `delivery_pending`，不重跑模型，
+也不增加人工恢复 Task 的 `RetryCount`；Outbox 变为 `sent` 后，下一次复核完成恢复 Task。
+
+`failed` 且 `next_retry_at=nil` 是终态 `delivery_failed`，与陈旧 `sending` 的
+`delivery_uncertain` 分开处理：两者都不重放、不重跑模型，但终态失败使用明确失败事件，
+恢复 Task 直接失败且不再排期，会话保持或恢复门店人工、清空自动过期并要求人工跟进。
+即使恢复 Message 和终态 Outbox 已落库、对应 RunLog 尚未来得及写入，请求绑定 Message
+也会作为崩溃恢复屏障；已经提交但缺少可验证 Trace 的其他投递只进入人工复核，不能再次
+运行模型。
+
+任何 `sending` 都不会由 `ListPending` 自动重放，因为企微协议、客服和 CLI 发送接口没有
+可供本服务复用的外部幂等键。`sending` 超过五分钟，或员工接管取消了已经 claim 的普通
+AI Outbox 时，投递结果记为 `delivery_uncertain`：不重放消息、不重跑模型，人工恢复 Task
+终止为失败，会话保持需要人工复核且不设置自动过期时间。员工接管会取消 `pending`、
+`failed` 和已 claim 的 `sending` 普通 AI Outbox；协议与客服发送器在外部调用前重新校验
+路由，CLI 在把 claimed 项返回给桥接端前重新校验，迟到回执只能更新仍为 `sending` 的行。
+AI 服务通知继续按原旁路规则发送。
+
+该校验不能把外部网络调用变成数据库原子操作。特别是 CLI Poll 已把消息返回给外部桥接
+端后、桥接端真正发送前的窗口，服务器无法撤回已返回的数据；要关闭这一窗口，需要在
+桥接 API 增加 attempt token 与发送前 CAS 契约，本轮不修改外部接口。
+
+## 9. 输出与 Commit 防线
 
 Generate 事件消费阶段先解析 `replyParts`，再执行客户可见文本清理。以下精确
 内部头部只允许出现在消息开头，并会安全移除：
@@ -346,9 +422,14 @@ Generate 事件消费阶段先解析 `replyParts`，再执行客户可见文本�
 
 Commit 会再次调用相同清理函数，并拒绝仍含 `replyParts`、`taskId` 或
 `coveredFactIds` 协议外形的文本。只有完成逐题校验的客户文本和已登记的真实
-结构化资源才允许提交。
+结构化资源才允许提交。内部 Commit Trace 会为每条真实消息记录 `taskIds[]`，并校验
+持久化 Message 的 request ID、消息类型和 Task/资源归属；非稳定 ID 继续校验正文或
+结构化资源身份。稳定 `manual_resume` ID 命中时保留第一次已落库内容，只修复它的外部
+投递，供人工恢复判断哪些 Task 已经真实提交。普通 `ai_reply` 与 AI 服务通知的发送和
+幂等行为保持不变；`manual_resume` 的请求绑定 ClientMsgID 与 Outbox 修复只按第 8 节的
+严格条件执行。
 
-## 9. Trace
+## 10. Trace
 
 运行 Trace 是内部排障数据，不进入客户消息。本轮重点字段包括：
 
@@ -366,6 +447,7 @@ Commit 会再次调用相同清理函数，并拒绝仍含 `replyParts`、`taskI
 - `pipeline.generate.fallbackMode`
 - `pipeline.generate.composedMessageCount`
 - `pipeline.generate.blockedInternalMarker`
+- `input.currentTurnSources[] { ref, messageId, messageType, text }`
 
 这些字段用于定位漏题、事实缺失、错误外推、协议恢复和内部标记拦截；应用日志
 仍应只打印必要预览和 ID，不另行输出客户敏感全文。Trace 结构不改变外部 API
@@ -380,7 +462,7 @@ Trace 仍保留真实召回数量、原始排名、知识库和全部候选，�
 上下文的条数。持久化 Retriever 日志只记录原始候选，不再把 Judge 前的预选上下文
 标记成最终 UsedHits；最终授权证据以 Runtime Trace 和 EvidenceJudge Trace 为准。
 
-## 10. 验证、发布与回滚
+## 11. 验证、发布与回滚
 
 聚焦自动测试范围：
 
@@ -392,30 +474,73 @@ go test -p=1 \
   ./internal/services \
   ./cmd/reply-runtime-eval \
   -count=1
+
+go test -race -p=1 \
+  ./internal/ai/application/runtime \
+  ./internal/ai/runtime/executor \
+  ./internal/ai/runtime \
+  ./internal/services \
+  ./cmd/reply-runtime-eval \
+  -count=1
 ```
+
+截至 2026-08-31，最新定向回归、上述普通测试、完整 Race、Vet 与 Linux amd64 构建
+已在当前差异上通过；这些结果不能替代后续最终复审、提交、部署、真实模型和企微
+最终投递验收。
 
 自动测试必须覆盖多题逐题输出、事实与关键值完整性、回指补全、知识层级、
 `partial`、Generate 单阶段恢复、事实兜底、内部标记拦截、媒体文本优先、失败
-语音门禁、真实 Burst 边界、无效 `sourceRefs` 拒绝，以及
-Resource/Handoff/Outbox 既有行为不变。
+语音门禁、真实 Burst 边界、无效 `sourceRefs` 拒绝，以及普通 Resource/Handoff/
+Outbox 稳定发送 ID。人工恢复还必须覆盖请求绑定 ClientMsgID、缺失 Outbox 补建、合法
+`cancelled -> pending`、`pending/可重试 failed/新鲜 sending -> delivery_pending` 不重跑
+模型且不增加 `RetryCount`、`sent` 后复核完成，终态 `failed + next_retry_at=nil` 进入
+`delivery_failed`，以及陈旧 `sending` 或 claim 后取消进入 `delivery_uncertain` 并保留人工
+复核。测试还覆盖 request-bound Message 已提交但 RunLog 缺失的崩溃窗口，保证不再次运行
+模型；任何 `sending` 不会被扫描重放，员工
+接管能取消普通 AI 的已 claim Outbox，迟到 CLI 成功/失败回执不能覆盖终态。
 
-代码测试不能替代真实模型和企微出站验收。固定场景重复运行、150 轮评测、
-隔离企微客户最终投递和生产观察必须单独记录真实结果；未执行时不得写成已通过。
+代码测试不能替代真实模型和企微出站验收。本轮只执行计划内 10 至 15 个代表场景，
+再观察首批自然生产回复；隔离企微客户最终投递和生产观察必须单独记录真实结果，
+未执行时不得写成已通过。未经用户明确同意不运行 50 轮或更大批量主动评测。
 
 本轮没有数据库表、Migration、外部 API、DTO、枚举、WebSocket、前端、权限、
 模型供应商、计价公式或 Token 统计字段变更。每轮只有一条 Judge usage/费用事件，
-沿用现有稳定事件键；协议异常不会额外产生第二次 Judge 用量。发布 A 可直接回滚到基线 `40cc24b`；
-无数据结构需要反向迁移。生产 Intent Profile 或运行配置若在部署阶段另行更新，
-必须独立备份和恢复。
+沿用现有稳定事件键；协议异常不会额外产生第二次 Judge 用量。Release B 异常时
+优先回滚到已验证的 Release A，Release A 异常再回滚到基线 `40cc24b`；无数据结构
+需要反向迁移。生产 Intent Profile 或运行配置若在部署阶段另行更新，必须独立备份
+和恢复。
 
-## 11. 并行分支
+当前普通异步回复没有独立持久化的全链路 Job 重试器；因此 Judge
+`protocol_invalid/timeout/malformed` 在严格 exact FAQ 无法恢复时，最终采用不含酒店
+事实的安全短答，并在 Trace 中保留协议失败状态，不伪装成 `insufficient`、不转人工，
+也不重复调用 Judge。这里是对原计划中 `judge_protocol_retry` 名称的实施收口：在没有
+安全重试基础设施和独立 usage 事件键之前，不以整链路重跑换取表面上的自动重试。
 
-本轮工作区与 `codex/customer-audit` 的代码文件交集目前只有
-`internal/ai/runtime/reply_trigger_service.go`：本分支删除外层整链路协议重跑并
-增加真实 Burst 边界，审计分支在同文件加强租户范围内的 Agent 读取。另有共同
-修改的交接文档 `docs/development-handoff.md`。合并时必须同时保留两边代码语义并
-合并文档记录，不能用整文件覆盖解决冲突。
+## 12. 并行分支
 
-当前工作区与 `codex/ai-billing` 没有同文件交集，也没有修改计价公式或 usage 字段
-语义；Judge 仍维持每轮一次真实调用和一条稳定 usage 记录。每次提交和 push 前
-仍需重新 `git fetch origin` 并核对交集，因为并行分支会继续变化。
+2026-08-31 的统计口径为：先执行 `git fetch origin`；本工作区取
+`git diff --name-only 40cc24b --` 的已跟踪路径，并行分支分别取从其与 `40cc24b`
+的 merge-base 到远端 tip 的路径；两组路径排序、去重后求交集。
+
+按上述口径，本轮工作区与 `codex/customer-audit` 的完整同路径交集共 12 个：
+
+- `docs/development-handoff.md`
+- `internal/ai/runtime/reply_trigger_service.go`
+- `internal/services/channel_message_outbox_service.go`
+- `internal/services/conversation_human_dispatch_service_test.go`
+- `internal/services/conversation_route_service.go`
+- `internal/services/message_service.go`
+- `internal/services/message_service_test.go`
+- `internal/services/wxwork_cli_bridge_service.go`
+- `internal/services/wxwork_kf_inbound_service.go`
+- `internal/services/wxwork_kf_outbound_service.go`
+- `internal/services/wxwork_protocol_service.go`
+- `internal/services/wxwork_protocol_service_test.go`
+
+审计分支在这些路径增加租户隔离与发送约束，本分支增加真实 Burst/URef、统一
+`ClaimForDispatch` 和人工恢复投递闭环。合并时必须同时保留两边语义，再合并测试和
+文档记录，不能用整文件覆盖解决冲突。
+
+按同一口径，当前工作区与 `codex/ai-billing` 的同路径交集为 0，也没有修改计价公式
+或 usage 字段语义；Judge 仍维持每轮一次真实调用和一条稳定 usage 记录。每次提交和
+push 前仍需重新 `git fetch origin` 并核对交集，因为并行分支会继续变化。
