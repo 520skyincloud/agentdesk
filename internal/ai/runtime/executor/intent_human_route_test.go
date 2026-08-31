@@ -357,6 +357,34 @@ func TestDeferMixedExplicitIntentHumanRouteKeepsAnswerableTasks(t *testing.T) {
 	}
 }
 
+func TestDeferMixedExplicitIntentHumanRouteIgnoresDeferredKnowledgeTask(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:   "human_complaint_risk",
+		SubIntent:       "explicit_handoff",
+		NeedsHumanRoute: true,
+	}
+	collector.Data.Pipeline.EvidenceJudge = callbacks.KnowledgeEvidenceJudgeTraceData{
+		DeferredHandoff:       true,
+		DeferredHandoffReason: "部分知识问题需要同事处理",
+		DeferredTaskIDs:       []string{"task-2"},
+	}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_info", Text: "汤东强是谁", OutputKind: "handoff", ReplyRequired: false, Output: runtimeKnowledgeDeferredHandoffOutput},
+		{TaskID: "task-3", Intent: "human_complaint_risk", SubIntent: "explicit_handoff", Text: "转人工", OutputKind: "handoff", Output: "human_route_confirmation_or_dispatch"},
+	}}
+
+	deferred := deferMixedExplicitIntentHumanRoute(RunInput{UserMessage: models.Message{Content: "早餐几点，汤东强是谁，转人工"}}, collector)
+	if !deferred {
+		t.Fatal("explicit handoff must wait for the answerable sibling even when another knowledge Task is already deferred")
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if !trace.DeferredHandoff || strings.Join(trace.DeferredTaskIDs, ",") != "task-2,task-3" {
+		t.Fatalf("both deferred knowledge and explicit handoff identities must survive: %#v", trace)
+	}
+}
+
 func TestDeferMixedExplicitIntentHumanRouteKeepsPureAndRejectedRoutesImmediate(t *testing.T) {
 	tests := []struct {
 		name   string

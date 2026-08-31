@@ -362,12 +362,20 @@ func TestNormalizeAnswerRejectedRequiresAdjacentAIReply(t *testing.T) {
 		NeedsHumanRoute:  true,
 		Reason:           "客户指出上一答复矛盾",
 	}
-	withAI := normalizeModelIntentTrace(base, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{{
-		ID:          1,
-		SenderType:  enums.IMSenderTypeAI,
-		MessageType: enums.IMMessageTypeText,
-		Content:     "可以走路过去。",
-	}}}, nil)
+	withAI := normalizeModelIntentTrace(base, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{
+		{
+			ID:          1,
+			SenderType:  enums.IMSenderTypeCustomer,
+			MessageType: enums.IMMessageTypeText,
+			Content:     "附近的店能走路过去吗？",
+		},
+		{
+			ID:          2,
+			SenderType:  enums.IMSenderTypeAI,
+			MessageType: enums.IMMessageTypeText,
+			Content:     "可以走路过去。",
+		},
+	}}, nil)
 	if withAI.PrimaryIntent != "human_complaint_risk" || withAI.SubIntent != "answer_rejected" || !withAI.NeedsHumanRoute || withAI.HumanRoutePolicy != "managed_mode" {
 		t.Fatalf("expected adjacent AI answer rejection to use existing human route, got %#v", withAI)
 	}
@@ -1501,7 +1509,9 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
 	}}
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	if !strings.Contains(prompt, "每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask") || !strings.Contains(prompt, "不能只处理最后一句或最后一个问题") {
+	if !strings.Contains(prompt, "每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask") ||
+		!strings.Contains(prompt, "每个 URef 至少被 sourceRefs 引用一次") ||
+		!strings.Contains(prompt, "不能只处理最后一句或最后一个问题") {
 		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
 	}
 	for _, expected := range []string{"[CURRENT_TURN_SOURCE_REFS]", "U1: 早餐有吗", "U2: 停车免费吗", "resolvedText", "sourceRefs[0]"} {
@@ -1775,7 +1785,7 @@ func TestRuntimePipelineHotelVariableMixedHotelInfoRequiresKnowledge(t *testing.
 		}
 	}
 	scope := buildGenerationScopeInstruction(plan.Intent, plan.ReplyPlan)
-	if !strings.Contains(scope, "本阶段只输出酒店信息任务的文本答案") || !strings.Contains(scope, "停车") || !strings.Contains(scope, "Commit 阶段") {
+	if !strings.Contains(scope, "本阶段只输出这些文本回复任务") || !strings.Contains(scope, "停车") || !strings.Contains(scope, "Commit 阶段") {
 		t.Fatalf("expected generation scope to isolate knowledge text from variable commits, got %q", scope)
 	}
 	for _, forbidden := range []string{"provide_location", "provide_mini_program", "定位和入住小程序", "小程序发你", "定位发你"} {

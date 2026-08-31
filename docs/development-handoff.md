@@ -274,6 +274,10 @@ Generate 仍为一次。
 
 ## 2026-08-26 Active Answer Task 逐题闭环收口
 
+> 历史快照：本节记录 2026-08-26 当时的实现和验收口径。当前行为、测试规模与
+> 回滚边界以 `docs/design/reply-runtime-engine.md` 及本文 2026-08-31 两节为准；
+> “三遍 50 轮”、完整 V2 Semantic Gate 和字面 span 校验不再是当前要求。
+
 ### 当前状态
 
 - 工作分支：`codex/reply-runtime-active-answer-tasks`。
@@ -372,9 +376,9 @@ go test -p=1 \
 完整性、只重试 Generate、事实兜底、员工接管后停止恢复、内部协议和历史标签
 不外泄，以及 Resource/Handoff/Outbox 既有幂等行为。
 
-完成代码测试后仍需按主计划执行固定场景重复运行、三遍 50 轮评测和隔离企微
-出站冒烟，并如实记录空回复、原子问题覆盖、事实槽位、协议泄漏、外推和延迟。
-当前文档更新不声明这些外部验收已经通过，也不声明已经部署。
+当前替代验收口径为计划内 10 至 15 个代表场景和隔离企微出站冒烟，并如实记录
+空回复、问题覆盖、事实槽位、协议泄漏、外推和延迟。未经用户明确同意不主动运行
+50 轮；当前文档更新不声明这些外部验收已经通过，也不声明已经部署。
 
 代码回滚边界为 `18b1999` release。本轮没有 Migration，无需反向数据库迁移；
 若上线时另行修改生产 Intent Profile 或运行配置，应使用部署前备份独立恢复。
@@ -503,8 +507,10 @@ Judge 请求沿用原稳定 usage 事件键。计价公式、Token 字段和 pro
 
 严格 FAQ 恢复只接受 FAQ 问法或显式 alias 的机械相等，不读取向量分数或字符
 相似度；知识转接还要求答案严格为“转接/转人工”，同层同问法存在正文冲突时禁止
-直接转接。同层 `RawCandidates` 只要还有完整正文答案，精确转接也不能吞掉 Judge
-异常；紧预算先保留完整正文。多主体、多维度完整性按客户问题里的主体与维度配对
+直接转接。同层 `RawCandidates` 只要还有可信、值得 Judge 复核的竞争正文，即使正文未进入本轮 Judge
+预算，精确转接也不能吞掉 Judge 异常；一个槽位时先保留正文，至少两个槽位时正文与
+精确转接共同进入 Judge，再考虑通用兜底。Judge 已经实际看见两项并明确选择精确转接
+时可以执行；模型没看见正文时禁止由异常 fallback 自动转接。多主体、多维度完整性按客户问题里的主体与维度配对
 核验，不把多个分句做全组合，“不确定/待确认”不能算确定事实。没有固定事实维度的
 身份或描述题允许保留已落地的 `other` 事实，但礼貌话、联系门店等泛化引导仍会被
 过滤；Task 明确要求方法、位置、存在性、数量、价格、时间、范围或配置字段时，
@@ -533,3 +539,188 @@ handoff 最终清理后覆盖为最终授权状态，持久化 Retriever 日志�
 调用和一条 usage 事件。与
 `codex/customer-audit`、`codex/ai-billing` 的当前远端差异不要求本提交改变共享
 契约；合并时需保留本轮 `trace_callback.go` 的向后兼容新增字段。
+
+## 2026-08-31 Intent、上下文与人工恢复边界收口
+
+本轮在 Judge 非破坏式裁决之上完成 Release B，不新增跨运行“已答题目”状态，
+也不恢复本地关键词拆题器。当前 burst 中有几个业务问题、短句之间是合并还是拆分，
+仍由一次 Intent 模型决定；本地只验证 JSON、真实 URef、来源顺序、完全重复 Task
+和无法由当前来源或紧邻上下文证明的实体。`text` 是模型给出的当前 Task 表达，
+客户原始物理文本保存在 `input.currentTurnSources`；`resolvedText` 只负责把明确回指
+补成自包含检索问题，不能凭空切换房型、地点或业务对象。
+
+普通消息收敛和人工恢复统一保留真实物理消息边界。每条客户消息继续映射到独立
+URef，不再通过普通换行把多条消息扁平化为一个假来源。Intent 可以读取有界近期
+历史；Judge 和 Generate 都只在 `follow_up/reference_previous/clarification_answer`、
+纠正、`answer_rejected`、`resolved_from_context` 或会话回顾等确有承接关系时读取
+有限 BoundContext，不再按“这个、那个、刚才”等词表猜关系。完整独立新题仍不携带
+旧业务问答。历史只用于理解当前 Task，不会重新激活已经 Commit 的旧题。
+
+相邻 BoundContext 固定为紧邻的一条客户问题，加其后最多三条连续、同一发送方类型的
+AI 或人工客服答复。AI 与人工不能混成一组，历史末尾不是客服回复时不建立相邻组；
+空消息和已注册服务通知跳过。四条以上只取最新三条，并对每条分别截断，保证最后的
+纠正或补充不会被前面长文本挤掉。Intent、Judge、Generate 使用相同边界和时间顺序。
+
+人工超时恢复优先复用现有 Runtime Trace 中的 `DeferredTaskIDs` 和 ReplyPlan。
+已正常回答的兄弟 Task 不会再次进入 Intent、Retriever 或 Generate；只恢复真正
+延后的 Task。人工期间新增的客户消息使用新的 URef，并且整次恢复最多执行一次
+Intent。找不到兼容 Trace 时才走现有重新识别路径，不新增数据库表、Task 状态、
+消息状态机或持久恢复账本。
+
+混合问题中的 Deferred Task 不再从 ReplyPlan 删除。正常轮将其记录为
+`deferred_knowledge_handoff/handoff/replyRequired=false`，所以 Generate 不会复述或
+猜测该题，但 RunLog 仍保存稳定 TaskID、来源和必要字段。人工恢复时只去掉这一临时
+执行标记，把该 Task 重新激活为知识文本任务；已回答兄弟题不会跟着恢复。该闭环同时
+避免了“Trace 只有 DeferredTaskID、却找不到 TaskPlan”导致的整轮重新识别和重复回答。
+
+知识库未配置或 Retriever 不可用等 Judge 前来源不可用路径也写入逐题显式契约：
+`no_evidence_handoff + insufficient + DecisionSource=source_unavailable`。新版 V2 Trace
+不得依赖空 disposition 恢复；空值只保留给有界 legacy 兼容。恢复语义按处置区分：
+`no_evidence_handoff` 仍可恢复，`knowledge_direct_handoff`、明确转人工，以及答案已
+真实提交的 `answer_then_handoff` 均视为已完成转接，在原超时点静默恢复 AI，不再
+重新回答原题。
+
+人工路由继续使用既有超时矩阵，不追加第二段等待窗口：总部网页待接入 3 分钟、门店
+待跟进 5 分钟、员工真实接管后的空闲期 10 分钟。到期后要么准备一次未完成 Task 的
+真实续答，要么静默恢复 AI；不会再重新计一段十分钟。
+
+V2 Trace 与 legacy Trace 严格区分：只有结构完整且来源可验证的 V2 数据才能走
+Deferred Task 精确恢复，旧 Trace 不会被误当成新协议。RunLog/Trace 增加的恢复
+上下文仍是内部向后兼容字段，不改变外部 API、DTO、WebSocket、数据库结构、
+Migration、计费或 Token 语义。
+
+### 文件与真实边界
+
+Release B 的主要文件为：
+
+```text
+internal/ai/runtime/executor/context_builders.go
+internal/ai/runtime/executor/intent_model_detector.go
+internal/ai/runtime/executor/intent_pipeline.go
+internal/ai/runtime/executor/intent_config_matcher.go
+internal/ai/runtime/executor/intent_protocol_validation.go
+internal/ai/runtime/executor/manual_resume_plan.go
+internal/ai/runtime/executor/answerability_gate.go
+internal/ai/runtime/executor/reply_tag_context.go
+internal/ai/runtime/internal/impl/adapter/message_adapter.go
+internal/ai/runtime/internal/impl/callbacks/runlog_callback.go
+internal/ai/runtime/internal/impl/callbacks/trace_callback.go
+internal/ai/runtime/reply_commit_service.go
+internal/ai/runtime/reply_trigger_service.go
+internal/pkg/replyruntime/manual_resume_context.go
+internal/services/ai_manual_resume_task_service.go
+internal/services/message_service.go
+internal/services/channel_message_outbox_service.go
+```
+
+`input.currentTurnSources` 的实际内部契约为
+`ref/messageId/messageType/text`。`seqNo/sentAt` 不重复写入 Trace；需要校验顺序和
+时间时按 `messageId` 回查现有 Message。Judge 协议失败若无法由严格 exact FAQ
+机械恢复，会保留 `protocol_invalid/timeout/malformed` Trace 并发送不含酒店事实的
+安全短答，不伪装成 `insufficient`、不转人工，也不增加第二次 Judge。当前普通异步
+回复没有独立持久化 Job 重试器，贸然整链路重跑会重复模型费用和真实动作，因此这是
+对计划中 `judge_protocol_retry` 名称的最终实施收口。
+
+`reply_commit_service.go` 为每条真实消息记录 `taskIds[]`。非稳定 ID 核对持久化
+Message 的 request ID、消息类型、正文及资源身份；稳定的 `manual_resume` Task/资源
+归属 ID 命中时保留第一次已落库内容，只修复对应 Outbox。对于企微外部渠道，只有真实 Message
+存在且对应 Outbox 为 `sent` 才算客户可见；RunLog 或 Message 自身的 `sent` 不足以
+结算业务 Task。转接成功、人工恢复提示等 notice-only 消息不能冒充业务答案。
+
+普通 `ai_reply` 与 AI 服务通知继续使用既有 ClientMsgID 和 Commit。发送端统一通过
+Outbox claim，再在外部调用前重新校验人工路由；员工接管会取消 `pending`、`failed`
+和已 claim 的 `sending` 普通 AI Outbox，AI 服务通知继续旁路。所有 `sending` 都不会被
+`ListPending` 自动重放，因为当前企微外部接口没有可复用的幂等键。
+
+企微客服入站同步由 `internal/services/wxwork_kf_inbound_service.go` 保证页面级重放纪律：
+当前页任一消息消费失败时立即返回且不保存 `NextCursor`，此前已成功项依靠 `wx_msg_id`
+和稳定 ClientMsgID 在重放时幂等跳过。`enter_session`、`session_status_change`、
+`msg_send_fail` 与未知事件的 `WxWorkKFMessageRef`、`ConversationEventLog` 在同一数据库
+事务内写入，事件日志使用微信 `msg_id` 作为稳定 request ID；任一写入失败时两者共同
+回滚，重放后最终只保留一份 Ref 和一份事件日志。该边界由
+`internal/services/wxwork_kf_inbound_service_test.go` 的真实数据库故障、游标不前移和
+原子重放测试覆盖。本轮未新增表、字段或 Migration；回滚代码即可恢复旧行为，无数据
+结构回滚。
+
+`manual_resume` 的恢复 request ID 绑定来源消息 ID，ClientMsgID 使用 `ai_manual_resume_`
+加 request ID 的 SHA-256 前 24 字节十六进制。严格匹配恢复 Message 时可以补建缺失
+Outbox，符合条件且尚未开始外部发送的 `cancelled` Outbox 可以原子恢复为 `pending`。
+`pending`、仍可重试的 `failed` 和五分钟内的 `sending` 只表示 `delivery_pending`；
+`sent` 后复核完成。陈旧 `sending` 或 claim 后被人工取消的投递进入
+`delivery_uncertain`：不重放、不重跑模型，恢复 Task 终止为失败，会话保持人工复核且
+没有自动过期时间。迟到 CLI 回执只能更新仍为 `sending` 的行，不能复活已取消或已完成
+Outbox。
+
+`failed` 且 `next_retry_at=nil` 单独记为终态 `delivery_failed`，不重放、不补发、不重跑
+模型、不增加恢复 Task 的 `RetryCount`；恢复 Task 直接失败并停止排期，会话保持或恢复
+门店人工，清空自动过期时间并要求人工跟进。即使 Message 与终态 Outbox 已落库、RunLog
+尚未来得及写入，请求绑定 Message 也会阻止再次运行模型；已有提交但缺少权威 Trace 的
+其他情况进入 `delivery_uncertain` 人工复核。
+
+残余边界：CLI Poll 已把 claimed 消息返回给外部桥接端之后，服务器无法阻止桥接端在
+人工接管后继续发送已取走的数据。彻底关闭该窗口需要修改桥接 API，增加 attempt token
+和发送前 CAS；本轮没有外部接口变更，因此不能宣称外部发送绝对原子。
+
+### 风险与并行分支
+
+- 主要残余风险是生产 Intent Profile 的 V2 字段稳定性、Judge 模型偶发协议失败，
+  以及旧 RunLog 缺少可验证来源时只能走 legacy 兼容恢复；三者都必须通过有限真实
+  场景和上线观察验证。
+- 2026-08-31 的统计口径为：先执行 `git fetch origin`；本工作区取
+  `git diff --name-only 40cc24b --` 的已跟踪路径，并行分支分别取从其与 `40cc24b`
+  的 merge-base 到远端 tip 的路径；两组路径排序、去重后求交集。
+- 按上述口径，与 `codex/customer-audit` 的完整同路径交集共 12 个：
+  - `docs/development-handoff.md`
+  - `internal/ai/runtime/reply_trigger_service.go`
+  - `internal/services/channel_message_outbox_service.go`
+  - `internal/services/conversation_human_dispatch_service_test.go`
+  - `internal/services/conversation_route_service.go`
+  - `internal/services/message_service.go`
+  - `internal/services/message_service_test.go`
+  - `internal/services/wxwork_cli_bridge_service.go`
+  - `internal/services/wxwork_kf_inbound_service.go`
+  - `internal/services/wxwork_kf_outbound_service.go`
+  - `internal/services/wxwork_protocol_service.go`
+  - `internal/services/wxwork_protocol_service_test.go`
+- 合并时先保留审计分支的租户范围读取和发送约束，再合入本分支的真实 Burst/URef、
+  统一 `ClaimForDispatch` 与人工恢复语义，并合并两边测试，禁止整文件覆盖。
+- 按同一口径，当前与 `codex/ai-billing` 的同路径交集为 0；本轮不修改 usage 字段、
+  计价公式或事件键。建议先合入本分支，再让审计分支基于最新提交 rebase/cherry-pick
+  并重跑 Runtime、services 和路由相关测试。
+
+截至 2026-08-31，最新定向测试、以下普通测试、完整 Race、Vet 与 Linux amd64 构建
+已在当前差异上通过；这些结果仍不能替代最终复审、提交、推送、部署和真实出站验收：
+
+```bash
+go test -p=1 \
+  ./internal/ai/application/runtime \
+  ./internal/ai/runtime/executor \
+  ./internal/ai/runtime \
+  ./internal/services \
+  ./cmd/reply-runtime-eval \
+  -count=1
+
+go test -race -p=1 \
+  ./internal/ai/application/runtime \
+  ./internal/ai/runtime/executor \
+  ./internal/ai/runtime \
+  ./internal/services \
+  ./cmd/reply-runtime-eval \
+  -count=1
+```
+
+目标覆盖真实 URef、连续短句、模型拥有拆题权、回指后切换新主题、有界历史、
+Deferred Task 精确恢复、恢复期新增消息、旧 Trace 兼容和竞态条件。真实模型、企微
+最终投递及生产观察仍必须在 A、A+B 两阶段部署后单独记录，不能用自动测试替代。
+
+当前状态是普通测试、Race、Vet 与 Linux amd64 构建通过，仍待最终复审、提交、推送、
+A/A+B 分阶段部署和有限真实验收；本节不声明任何提交、推送、部署或真实模型验证
+已经完成。
+
+Release B 异常时优先回滚到已验证的 Release A；Release A 异常再回滚到生产基线
+`40cc24b`。本轮没有数据库或知识库变更，回滚只切换程序 release，不回滚消息、
+会话、当前运行配置或客户数据。
+
+最终发布拓扑必须是：Release A = `40cc24b` 加最终 A-only 修复；Release A+B = 最终
+Release A 再叠加 B 修复。不能从已经混合 A+B 的单一线性 tip 反向声明出 A。提交和
+构建完成后分别记录两个最终 commit、release 目录和 Linux 二进制 SHA-256。

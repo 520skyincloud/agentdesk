@@ -322,7 +322,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 			b.WriteString("\n")
 		}
 		if len(generateTasks) == 0 {
-			b.WriteString("- 本阶段没有需要生成文本的知识任务。\n")
+			b.WriteString("- 本阶段没有需要生成文本的任务。\n")
 		}
 		if len(generateTasks) > 1 {
 			b.WriteString("多个文本任务必须逐题完整回答；具体输出格式以后续任务输出契约为准，不得自行合并、遗漏或增加任务。\n")
@@ -330,7 +330,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 		if hiddenCommitTaskCount > 0 {
 			b.WriteString("另有结构化变量任务已登记给 Commit 阶段，本阶段不要写变量名称、发送状态或后续动作。\n")
 		}
-		b.WriteString("必须按上面列出的知识/信息任务生成文本回答；结构化变量任务只由 Commit 阶段发送，文本里不要承诺“发你/已经发/后续发”。\n")
+		b.WriteString("必须按上面列出的当前文本回复任务生成回答；结构化变量任务只由 Commit 阶段发送，文本里不要承诺“发你/已经发/后续发”。\n")
 	}
 	if plan.Intent == "interaction" && strings.Contains(plan.AnswerGoal, "图片/文件") {
 		b.WriteString("图片/文件上下文追问：如果当前问题是‘这是啥/这是干嘛的/什么意思/怎么样/你看’这类短指代，默认衔接最近一条已解析的图片或文件文本；直接结合上下文回答用户问法，不要把它当成无上下文问题。语音仍按既有语转文文本链路处理。\n")
@@ -339,7 +339,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 		b.WriteString("纠错输出范围：完整上下文继续保留，但本次生成只用当前纠正和紧邻的上一条客服消息识别误会；只输出一句完整回应，不续答、更换或追问任何旧业务主题。\n")
 	}
 	if plan.Intent == "hotel_variable" {
-		b.WriteString("酒店变量发送：结构化变量只由 Commit 阶段发送。若本轮还有停车、早餐、发票等知识问题，文本回复只回答这些知识问题，不要写变量名称、发送状态或后续动作。\n")
+		b.WriteString("酒店变量发送：结构化变量只由 Commit 阶段发送。若本轮还有当前列出的文本回复任务，文本回复只回答这些任务，不要写变量名称、发送状态或后续动作。\n")
 	}
 	b.WriteString("房号时效：房号只能来自当前连续会话的近期原文；压缩记忆或旧消息里的房号不能直接当作当前房间，必须重新确认。\n")
 	if len(plan.DoNot) > 0 {

@@ -93,6 +93,21 @@ func TestSelectReplyTagScenesIgnoresStructuredResourceTasks(t *testing.T) {
 	}
 }
 
+func TestSelectReplyTagScenesIgnoresDeferredKnowledgeTasks(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", ShouldReply: true, NeedsKnowledge: true,
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_info", SubIntent: "parking", Text: "停车免费吗", OutputKind: "handoff", ReplyRequired: false, Output: runtimeKnowledgeDeferredHandoffOutput},
+	}}
+
+	scenes, reason := selectReplyTagScenes("早餐几点，停车免费吗", intent, plan)
+	if len(scenes) != 0 || reason != "no_matching_scene" {
+		t.Fatalf("Deferred parking Task must not contribute reply-tag scenes: scenes=%#v reason=%q", scenes, reason)
+	}
+}
+
 func TestReplyTagContextRejectsLimits(t *testing.T) {
 	value := replyTagContextV1{
 		SchemaVersion: replyTagContextSchemaVersion,

@@ -2,11 +2,15 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/dto/request"
 	"agent-desk/internal/pkg/enums"
 )
@@ -540,5 +544,224 @@ func TestNormalizeStoreRoomAtList(t *testing.T) {
 	got := normalizeStoreRoomAtList([]string{" staff-1 ", "", "staff-2", "staff-1", "0"})
 	if len(got) != 2 || got[0] != "staff-1" || got[1] != "staff-2" {
 		t.Fatalf("unexpected normalized at list: %#v", got)
+	}
+}
+
+func TestWxWorkProtocolPreClaimFailureCannotOverwriteNewerAttempt(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	now := time.Now()
+	outbox := &models.ChannelMessageOutbox{
+		ChannelType: enums.ChannelTypeWxWorkProtocol,
+		MessageID:   401,
+		SendStatus:  string(enums.ChannelMessageOutboxStatusPending),
+		AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(outbox).Error; err != nil {
+		t.Fatalf("create outbox: %v", err)
+	}
+	stale := *outbox
+	newerRetryAt := now.Add(3 * time.Minute)
+	if err := db.Model(&models.ChannelMessageOutbox{}).Where("id = ?", outbox.ID).Updates(map[string]any{
+		"send_status":   string(enums.ChannelMessageOutboxStatusFailed),
+		"retry_count":   1,
+		"next_retry_at": newerRetryAt,
+		"last_error":    "newer protocol failure",
+	}).Error; err != nil {
+		t.Fatalf("advance protocol attempt: %v", err)
+	}
+
+	if err := WxWorkProtocolService.markOutboxFailed(stale, "stale protocol failure"); err != nil {
+		t.Fatalf("markOutboxFailed() error = %v", err)
+	}
+	reloaded := ChannelMessageOutboxService.Get(outbox.ID)
+	if reloaded == nil || reloaded.SendStatus != string(enums.ChannelMessageOutboxStatusFailed) || reloaded.RetryCount != 1 || reloaded.LastError != "newer protocol failure" {
+		t.Fatalf("stale protocol failure overwrote newer state: %+v", reloaded)
+	}
+}
+
+func TestWxWorkProtocolPostJSONMarksPostCallFailureUncertain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream failed after accepting request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	service := newWxWorkProtocolService()
+	service.httpClient = server.Client()
+	_, err := service.postJSON(&dto.WxWorkProtocolChannelConfig{BaseURL: server.URL}, "/msg/send_text", map[string]any{"content": "测试"})
+	if err == nil || !isExternalDispatchResultUncertain(err) {
+		t.Fatalf("post-call protocol failure must be classified as delivery-uncertain: %v", err)
+	}
+}
+
+func TestWxWorkProtocolPostJSONSeparatesKnownFailuresFromUncertainDelivery(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		uncertain  bool
+	}{
+		{name: "bad request", statusCode: http.StatusBadRequest, body: `{"success":false,"message":"invalid conversation_id"}`},
+		{name: "rate limited", statusCode: http.StatusTooManyRequests, body: `{"success":false,"message":"rate limited"}`},
+		{name: "business error", statusCode: http.StatusOK, body: `{"error_code":40058,"error_message":"invalid content"}`},
+		{name: "server failure", statusCode: http.StatusBadGateway, body: `{"success":false,"message":"upstream failed"}`, uncertain: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.statusCode)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+
+			service := newWxWorkProtocolService()
+			service.httpClient = server.Client()
+			_, err := service.postJSON(&dto.WxWorkProtocolChannelConfig{BaseURL: server.URL}, "/msg/send_text", map[string]any{"content": "测试"})
+			if err == nil {
+				t.Fatal("expected protocol failure")
+			}
+			if got := isExternalDispatchResultUncertain(err); got != test.uncertain {
+				t.Fatalf("uncertain=%v want %v: %v", got, test.uncertain, err)
+			}
+		})
+	}
+}
+
+func TestWxWorkProtocolClaimedDispatchErrorSeparatesSafeRetryAndUncertainDelivery(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus enums.ChannelMessageOutboxStatus
+		uncertain  bool
+	}{
+		{name: "pre-call failure", err: errors.New("payload validation failed"), wantStatus: enums.ChannelMessageOutboxStatusFailed},
+		{name: "post-call failure", err: markExternalDispatchResultUncertain(errors.New("request timeout")), wantStatus: enums.ChannelMessageOutboxStatusCancelled, uncertain: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupMessageWelcomeTestDB(t)
+			now := time.Now()
+			outbox := &models.ChannelMessageOutbox{
+				ChannelType: enums.ChannelTypeWxWorkProtocol,
+				MessageID:   402,
+				SendStatus:  string(enums.ChannelMessageOutboxStatusSending),
+				AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+			}
+			if err := db.Create(outbox).Error; err != nil {
+				t.Fatalf("create claimed outbox: %v", err)
+			}
+			if err := WxWorkProtocolService.handleClaimedOutboxDispatchError(*outbox, tt.err); err != nil {
+				t.Fatalf("handleClaimedOutboxDispatchError() error = %v", err)
+			}
+			reloaded := ChannelMessageOutboxService.Get(outbox.ID)
+			if reloaded == nil || reloaded.SendStatus != string(tt.wantStatus) {
+				t.Fatalf("claimed error status=%+v want %s", reloaded, tt.wantStatus)
+			}
+			if tt.uncertain {
+				if reloaded.NextRetryAt != nil || !strings.HasPrefix(reloaded.LastError, channelMessageOutboxDispatchUncertainReasonPrefix) {
+					t.Fatalf("uncertain delivery must be terminal and non-replayable: %+v", reloaded)
+				}
+			} else if reloaded.NextRetryAt == nil {
+				t.Fatalf("safe pre-call failure must remain retryable: %+v", reloaded)
+			}
+		})
+	}
+}
+
+func TestWxWorkProtocolStoreRoomLateResultCannotOverwriteCancellation(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "late success", statusCode: http.StatusOK, body: `{"success":true}`},
+		{name: "late failure", statusCode: http.StatusInternalServerError, body: `{"success":false,"message":"send failed"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupMessageWelcomeTestDB(t)
+			var outboxID int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if err := db.Model(&models.ChannelMessageOutbox{}).Where("id = ?", outboxID).Updates(map[string]any{
+					"send_status":   string(enums.ChannelMessageOutboxStatusCancelled),
+					"next_retry_at": nil,
+					"last_error":    "cancelled while external send was in flight",
+				}).Error; err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			now := time.Now()
+			configJSON, err := json.Marshal(map[string]any{
+				"baseUrl":   server.URL,
+				"appKey":    "test-key",
+				"appSecret": "test-secret",
+			})
+			if err != nil {
+				t.Fatalf("marshal channel config: %v", err)
+			}
+			channel := &models.Channel{
+				Name:        "门店群投递竞态",
+				ChannelType: enums.ChannelTypeWxWorkProtocol,
+				ChannelID:   "wxwork-store-room-race-" + strings.ReplaceAll(tt.name, " ", "-"),
+				ConfigJSON:  string(configJSON),
+				Status:      enums.StatusOk,
+				AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+			}
+			if err := db.Create(channel).Error; err != nil {
+				t.Fatalf("create channel: %v", err)
+			}
+			instance := &models.WxWorkProtocolInstance{
+				Guid:        "store-room-race-guid-" + strings.ReplaceAll(tt.name, " ", "-"),
+				ChannelID:   channel.ID,
+				Status:      enums.StatusOk,
+				AuditFields: models.AuditFields{CreatedAt: now, UpdatedAt: now},
+			}
+			if err := db.Create(instance).Error; err != nil {
+				t.Fatalf("create instance: %v", err)
+			}
+			payload, err := json.Marshal(map[string]any{
+				"kind":               "store_room_handoff_notice",
+				"conversationId":     int64(501),
+				"wxWorkInstanceId":   instance.ID,
+				"roomConversationId": "R:test-room",
+				"content":            "测试门店群提醒",
+			})
+			if err != nil {
+				t.Fatalf("marshal outbox payload: %v", err)
+			}
+			outbox := &models.ChannelMessageOutbox{
+				ChannelType:    enums.ChannelTypeWxWorkProtocol,
+				ConversationID: 501,
+				MessageID:      -501,
+				Payload:        string(payload),
+				SendStatus:     string(enums.ChannelMessageOutboxStatusPending),
+				AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+			}
+			if err := db.Create(outbox).Error; err != nil {
+				t.Fatalf("create store-room outbox: %v", err)
+			}
+			outboxID = outbox.ID
+
+			svc := newWxWorkProtocolService()
+			if err := svc.dispatchStoreRoomNoticeOutbox(*outbox); err != nil {
+				t.Fatalf("dispatchStoreRoomNoticeOutbox() error = %v", err)
+			}
+			reloaded := ChannelMessageOutboxService.Get(outbox.ID)
+			if reloaded == nil || reloaded.SendStatus != string(enums.ChannelMessageOutboxStatusCancelled) || reloaded.SentAt != nil || reloaded.RetryCount != 0 || reloaded.LastError != "cancelled while external send was in flight" {
+				t.Fatalf("late store-room result overwrote cancellation: %+v", reloaded)
+			}
+			var syncLogCount int64
+			if err := db.Model(&models.MessageSyncLog{}).Count(&syncLogCount).Error; err != nil {
+				t.Fatalf("count sync logs: %v", err)
+			}
+			if syncLogCount != 0 {
+				t.Fatalf("late result created %d success sync logs", syncLogCount)
+			}
+		})
 	}
 }

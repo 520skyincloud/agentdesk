@@ -104,6 +104,9 @@ func deferMixedExplicitIntentHumanRoute(req RunInput, collector *callbacks.Runti
 		case "text", "resource":
 			hasNonHandoffTask = true
 		case "handoff":
+			if strings.TrimSpace(task.Output) == runtimeKnowledgeDeferredHandoffOutput {
+				continue
+			}
 			if strings.TrimSpace(task.SubIntent) != "explicit_handoff" {
 				return false
 			}

@@ -10,9 +10,11 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/repositories"
 	"agent-desk/internal/wxwork"
 
 	"github.com/mlogclub/simple/common/strs"
+	"github.com/mlogclub/simple/sqls"
 	"github.com/silenceper/wechat/v2/work/kf"
 	"github.com/silenceper/wechat/v2/work/kf/syncmsg"
 )
@@ -53,20 +55,9 @@ func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage
 			return syncErr
 		}
 
-		for _, item := range result.MsgList {
-			if err := s.consumeSyncMessage(item); err != nil {
-				slog.Error("consume wxwork kf sync message failed",
-					"open_kfid", item.OpenKFID,
-					"external_userid", item.ExternalUserID,
-					"msg_id", item.MsgID,
-					"msg_type", item.MsgType,
-					"event", item.EventType,
-					"error", err,
-				)
-			}
-		}
-
-		if err := s.saveNextCursor(message.OpenKfID, result.NextCursor); err != nil {
+		if err := consumeWxWorkKFSyncPage(result.MsgList, s.consumeSyncMessage, func() error {
+			return s.saveNextCursor(message.OpenKfID, result.NextCursor)
+		}); err != nil {
 			return err
 		}
 
@@ -75,6 +66,23 @@ func (s *wxWorkKFInboundService) SyncCallbackMessages(message kf.CallbackMessage
 		}
 		cursor = result.NextCursor
 	}
+}
+
+func consumeWxWorkKFSyncPage(items []syncmsg.Message, consume func(syncmsg.Message) error, saveCursor func() error) error {
+	for _, item := range items {
+		if err := consume(item); err != nil {
+			slog.Error("consume wxwork kf sync message failed",
+				"open_kfid", item.OpenKFID,
+				"external_userid", item.ExternalUserID,
+				"msg_id", item.MsgID,
+				"msg_type", item.MsgType,
+				"event", item.EventType,
+				"error", err,
+			)
+			return err
+		}
+	}
+	return saveCursor()
 }
 
 func (s *wxWorkKFInboundService) consumeSyncMessage(item syncmsg.Message) error {
@@ -238,10 +246,7 @@ func (s *wxWorkKFInboundService) handleEnterSessionEvent(item syncmsg.Message) e
 	if err != nil {
 		return err
 	}
-	if err := s.createMessageRef(conversation.ID, 0, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived); err != nil {
-		return err
-	}
-	return s.appendConversationEvent(conversation.ID, "微信客户进入会话", string(item.OriginData))
+	return s.recordConversationEvent(conversation.ID, item, "微信客户进入会话")
 }
 
 func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Message) error {
@@ -272,10 +277,7 @@ func (s *wxWorkKFInboundService) handleSessionStatusChangeEvent(item syncmsg.Mes
 	if err := s.upsertConversationMapping(conversation.ID, channel.ID, payload.Event.OpenKFID, payload.Event.ExternalUserID, payload.Event.NewReceptionistUserID, sessionStatus, payload.SendTime, payload.MsgID, string(item.OriginData)); err != nil {
 		return err
 	}
-	if err := s.createMessageRef(conversation.ID, 0, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived); err != nil {
-		return err
-	}
-	return s.appendConversationEvent(conversation.ID, "微信会话状态变更", string(item.OriginData))
+	return s.recordConversationEvent(conversation.ID, item, "微信会话状态变更")
 }
 
 func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) error {
@@ -294,7 +296,25 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 	if err != nil {
 		return err
 	}
-	if ref := WxWorkKFMessageRefService.GetByWxMsgID(payload.Event.FailMsgID); ref != nil {
+	ref, refErr := WxWorkKFOutboundService.recordSendFailureCallback(
+		conversation.ID,
+		payload.Event.FailMsgID,
+		payload.Event.OpenKFID,
+		payload.Event.ExternalUserID,
+		string(item.OriginData),
+	)
+	if refErr != nil {
+		slog.Warn("persist wxwork msg_send_fail callback target failed",
+			"conversation_id", conversation.ID,
+			"fail_msg_id", payload.Event.FailMsgID,
+			"fail_type", payload.Event.FailType,
+			"open_kfid", payload.Event.OpenKFID,
+			"external_userid", payload.Event.ExternalUserID,
+			"error", refErr,
+		)
+		return refErr
+	}
+	if ref != nil {
 		targetMessageID := ref.MessageID
 		slog.Warn("mark wxwork message ref failed",
 			"conversation_id", ref.ConversationID,
@@ -304,14 +324,15 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 			"open_kfid", payload.Event.OpenKFID,
 			"external_userid", payload.Event.ExternalUserID,
 		)
-		_ = WxWorkKFMessageRefService.Updates(ref.ID, map[string]any{
-			"send_status": enums.WxWorkKFMessageSendStatusFailed,
-			"fail_reason": string(item.OriginData),
-			"updated_at":  time.Now(),
-		})
-
-		if outbox := ChannelMessageOutboxService.GetByMessageID(enums.ChannelTypeWxWorkKF, targetMessageID); outbox != nil {
-			if err := WxWorkKFOutboundService.markOutboxFailed(outbox, string(item.OriginData)); err != nil {
+		if targetMessageID <= 0 {
+			slog.Info("wxwork msg_send_fail callback is waiting for outbound message mapping",
+				"conversation_id", ref.ConversationID,
+				"wx_msg_id", ref.WxMsgID,
+				"fail_type", payload.Event.FailType,
+			)
+		} else if outbox := ChannelMessageOutboxService.GetByMessageID(enums.ChannelTypeWxWorkKF, targetMessageID); outbox != nil {
+			applied, err := WxWorkKFOutboundService.markOutboxFailedFromCallback(outbox, ref, string(item.OriginData))
+			if err != nil {
 				slog.Warn("mark wxwork outbox failed from callback event failed",
 					"outbox_id", outbox.ID,
 					"conversation_id", outbox.ConversationID,
@@ -320,8 +341,17 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 					"fail_type", payload.Event.FailType,
 					"error", err,
 				)
-			} else {
+				return err
+			} else if applied {
 				slog.Warn("mark wxwork outbox failed from callback event",
+					"outbox_id", outbox.ID,
+					"conversation_id", outbox.ConversationID,
+					"message_id", outbox.MessageID,
+					"fail_msg_id", payload.Event.FailMsgID,
+					"fail_type", payload.Event.FailType,
+				)
+			} else {
+				slog.Info("ignore stale or terminal wxwork msg_send_fail callback for outbox",
 					"outbox_id", outbox.ID,
 					"conversation_id", outbox.ConversationID,
 					"message_id", outbox.MessageID,
@@ -336,7 +366,7 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 				"fail_type", payload.Event.FailType,
 			)
 		}
-	} else {
+	} else if refErr == nil {
 		slog.Warn("wxwork msg_send_fail event missing message ref",
 			"fail_msg_id", payload.Event.FailMsgID,
 			"fail_type", payload.Event.FailType,
@@ -345,10 +375,7 @@ func (s *wxWorkKFInboundService) handleMsgSendFailEvent(item syncmsg.Message) er
 		)
 	}
 
-	if err := s.createMessageRef(conversation.ID, 0, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived); err != nil {
-		return err
-	}
-	return s.appendConversationEvent(conversation.ID, "微信消息发送失败事件", string(item.OriginData))
+	return s.recordConversationEvent(conversation.ID, item, "微信消息发送失败事件")
 }
 
 func (s *wxWorkKFInboundService) recordOrphanEvent(item syncmsg.Message, content string) error {
@@ -360,10 +387,7 @@ func (s *wxWorkKFInboundService) recordOrphanEvent(item syncmsg.Message, content
 	if convErr != nil {
 		return convErr
 	}
-	if err := s.createMessageRef(conversation.ID, 0, item, enums.WxWorkKFMessageDirectionIn, enums.WxWorkKFMessageSendStatusReceived); err != nil {
-		return err
-	}
-	return s.appendConversationEvent(conversation.ID, content, string(item.OriginData))
+	return s.recordConversationEvent(conversation.ID, item, content)
 }
 
 func (s *wxWorkKFInboundService) ensureConversation(base syncmsg.BaseMessage, profile map[string]any) (*models.Conversation, error) {
@@ -448,8 +472,12 @@ func (s *wxWorkKFInboundService) createMessageRef(conversationID, messageID int6
 	if WxWorkKFMessageRefService.Take("wx_msg_id = ?", item.MsgID) != nil {
 		return nil
 	}
+	return WxWorkKFMessageRefService.Create(s.buildMessageRef(conversationID, messageID, item, direction, sendStatus))
+}
+
+func (s *wxWorkKFInboundService) buildMessageRef(conversationID, messageID int64, item syncmsg.Message, direction enums.WxWorkKFMessageDirection, sendStatus enums.WxWorkKFMessageSendStatus) *models.WxWorkKFMessageRef {
 	now := time.Now()
-	return WxWorkKFMessageRefService.Create(&models.WxWorkKFMessageRef{
+	return &models.WxWorkKFMessageRef{
 		ConversationID: conversationID,
 		MessageID:      messageID,
 		WxMsgID:        strings.TrimSpace(item.MsgID),
@@ -468,7 +496,7 @@ func (s *wxWorkKFInboundService) createMessageRef(conversationID, messageID int6
 			UpdateUserID:   0,
 			UpdateUserName: wxWorkKFSystemOperatorName,
 		},
-	})
+	}
 }
 
 func (s *wxWorkKFInboundService) saveNextCursor(openKfID, nextCursor string) error {
@@ -502,15 +530,34 @@ func (s *wxWorkKFInboundService) saveNextCursor(openKfID, nextCursor string) err
 	})
 }
 
-func (s *wxWorkKFInboundService) appendConversationEvent(conversationID int64, content, payload string) error {
-	return ConversationEventLogService.Create(&models.ConversationEventLog{
-		ConversationID: conversationID,
-		EventType:      enums.IMEventTypeWxWorkKFEvent,
-		OperatorType:   enums.IMSenderTypeSystem,
-		OperatorID:     0,
-		Content:        strings.TrimSpace(content),
-		Payload:        strings.TrimSpace(payload),
-		CreatedAt:      time.Now(),
+func (s *wxWorkKFInboundService) recordConversationEvent(conversationID int64, item syncmsg.Message, content string) error {
+	msgID := strings.TrimSpace(item.MsgID)
+	if conversationID <= 0 || msgID == "" {
+		return errorsx.InvalidParam("企业微信事件缺少会话或消息ID")
+	}
+	return sqls.WithTransaction(func(ctx *sqls.TxContext) error {
+		if repositories.WxWorkKFMessageRefRepository.Take(ctx.Tx, "wx_msg_id = ?", msgID) != nil {
+			return nil
+		}
+		if err := repositories.WxWorkKFMessageRefRepository.Create(ctx.Tx, s.buildMessageRef(
+			conversationID,
+			0,
+			item,
+			enums.WxWorkKFMessageDirectionIn,
+			enums.WxWorkKFMessageSendStatusReceived,
+		)); err != nil {
+			return err
+		}
+		return ConversationEventLogService.CreateEventWithRequestID(
+			ctx,
+			conversationID,
+			msgID,
+			enums.IMEventTypeWxWorkKFEvent,
+			enums.IMSenderTypeSystem,
+			0,
+			strings.TrimSpace(content),
+			strings.TrimSpace(string(item.OriginData)),
+		)
 	})
 }
 

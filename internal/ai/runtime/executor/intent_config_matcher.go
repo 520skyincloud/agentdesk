@@ -263,21 +263,38 @@ func currentAndRecentMediaText(req RunInput, history adapter.HistoryBuildResult)
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-func runtimeIntentCurrentTurnSourceSet(req RunInput) map[string]struct{} {
+type runtimeIntentCurrentTurnCoverage struct {
+	messageIDs          map[int64]struct{}
+	legacyCustomerTexts map[string]struct{}
+}
+
+func runtimeIntentCurrentTurnSourceSet(req RunInput) runtimeIntentCurrentTurnCoverage {
 	if !utils.IsRuntimeCustomerBurstEnvelope(req.UserMessage.Content) {
-		return nil
+		return runtimeIntentCurrentTurnCoverage{}
 	}
-	ret := make(map[string]struct{})
-	for _, source := range currentTurnIntentSourceTexts(currentRuntimeIntentSemanticText(req)) {
-		if normalized := normalizeRuntimeIntentSourceMatchText(source); normalized != "" {
-			ret[normalized] = struct{}{}
+	ret := runtimeIntentCurrentTurnCoverage{
+		messageIDs:          make(map[int64]struct{}),
+		legacyCustomerTexts: make(map[string]struct{}),
+	}
+	for _, source := range adapter.BuildCurrentTurnSources(req.UserMessage) {
+		if source.MessageID > 0 {
+			ret.messageIDs[source.MessageID] = struct{}{}
+			continue
+		}
+		if normalized := normalizeRuntimeIntentSourceMatchText(source.Text); normalized != "" {
+			ret.legacyCustomerTexts[normalized] = struct{}{}
 		}
 	}
 	return ret
 }
 
-func runtimeIntentMessageCoveredByCurrentTurn(message models.Message, covered map[string]struct{}) bool {
-	if len(covered) == 0 {
+func runtimeIntentMessageCoveredByCurrentTurn(message models.Message, covered runtimeIntentCurrentTurnCoverage) bool {
+	if message.ID > 0 {
+		if _, exists := covered.messageIDs[message.ID]; exists {
+			return true
+		}
+	}
+	if message.SenderType != enums.IMSenderTypeCustomer || len(covered.legacyCustomerTexts) == 0 {
 		return false
 	}
 	text := ""
@@ -290,7 +307,7 @@ func runtimeIntentMessageCoveredByCurrentTurn(message models.Message, covered ma
 	} else {
 		text = utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload)
 	}
-	_, exists := covered[normalizeRuntimeIntentSourceMatchText(text)]
+	_, exists := covered.legacyCustomerTexts[normalizeRuntimeIntentSourceMatchText(text)]
 	return exists
 }
 

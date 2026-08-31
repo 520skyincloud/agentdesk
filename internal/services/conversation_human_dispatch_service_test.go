@@ -1457,6 +1457,12 @@ func TestManualSessionTimeoutRequeuesLatestCustomerMessageAfterManualRoute(t *te
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
 	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	if err := db.Create(&models.Channel{
+		ID: conversation.ChannelID, Name: "企微员工号", ChannelType: enums.ChannelTypeWxWorkProtocol,
+		ChannelID: "manual-resume-requeue", AIAgentID: aiAgent.ID, Status: enums.StatusOk,
+	}).Error; err != nil {
+		t.Fatalf("create protocol channel: %v", err)
+	}
 	origin := createHumanDispatchMessage(t, db, conversation.ID, 70, enums.IMSenderTypeCustomer, "水龙头怎么用")
 
 	if _, err := services.ConversationHumanDispatchService.HandoffByAI(conversation.ID, aiAgent, "客人需要人工接待"); err != nil {
@@ -1475,8 +1481,32 @@ func TestManualSessionTimeoutRequeuesLatestCustomerMessageAfterManualRoute(t *te
 	services.TriggerAIReplySyncHook = func(_ context.Context, conversation models.Conversation, message models.Message) error {
 		triggeredMessageID = message.ID
 		triggeredContent = message.Content
-		_, err := services.MessageService.SendAIMessageWithRequestID(conversation.ID, aiAgent.ID, "resume-test-reply", enums.IMMessageTypeText, "我继续帮你处理电视问题。", "", &dto.AuthPrincipal{Username: "AI"}, message.RequestID)
-		return err
+		now := time.Now()
+		reply := models.Message{
+			ConversationID: conversation.ID,
+			SessionNo:      1,
+			RequestID:      message.RequestID,
+			ClientMsgID:    "resume-test-reply",
+			SenderType:     enums.IMSenderTypeAI,
+			SenderID:       aiAgent.ID,
+			MessageType:    enums.IMMessageTypeText,
+			Content:        "我继续帮你处理电视问题。",
+			SeqNo:          waiting.SeqNo + 1,
+			SendStatus:     enums.IMMessageStatusSent,
+			SentAt:         &now,
+			AuditFields:    models.AuditFields{CreatedAt: now, UpdatedAt: now},
+		}
+		if err := db.Create(&reply).Error; err != nil {
+			return err
+		}
+		if err := db.Create(&models.ChannelMessageOutbox{
+			ChannelType: enums.ChannelTypeWxWorkProtocol, ConversationID: conversation.ID, MessageID: reply.ID,
+			Payload: `{}`, SendStatus: string(enums.ChannelMessageOutboxStatusSent), SentAt: &now,
+		}).Error; err != nil {
+			return err
+		}
+		createHumanDispatchCompletedResumeRunLog(t, db, reply, message.RequestID, waiting.ID)
+		return nil
 	}
 
 	setRouteManualExpireAt(t, db, conversation.ID, time.Now().Add(-time.Minute))
@@ -1494,7 +1524,17 @@ func TestManualSessionTimeoutRequeuesLatestCustomerMessageAfterManualRoute(t *te
 	}
 	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
 	if state == nil || state.RouteStatus != enums.ConversationRouteStatusAIServing {
-		t.Fatalf("expected route restored to AI after requeue, got %+v", state)
+		var resumeTasks []models.AIManualResumeTask
+		if err := db.Where("conversation_id = ?", conversation.ID).Order("id DESC").Find(&resumeTasks).Error; err != nil {
+			t.Fatalf("inspect failed resume task: %v", err)
+		}
+		var replies []models.Message
+		var runLogs []models.AgentRunLog
+		var outboxes []models.ChannelMessageOutbox
+		_ = db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Find(&replies).Error
+		_ = db.Where("conversation_id = ?", conversation.ID).Find(&runLogs).Error
+		_ = db.Where("conversation_id = ?", conversation.ID).Find(&outboxes).Error
+		t.Fatalf("expected route restored to AI after requeue, got state=%+v tasks=%+v replies=%+v runLogs=%+v outboxes=%+v", state, resumeTasks, replies, runLogs, outboxes)
 	}
 }
 
@@ -1717,6 +1757,7 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 		&models.ConversationAssignment{},
 		&models.ConversationEventLog{},
 		&models.ConversationReadState{},
+		&models.AgentRunLog{},
 		&models.Message{},
 		&models.ChannelMessageOutbox{},
 		&models.MessageSyncLog{},
@@ -1726,6 +1767,70 @@ func setupConversationHumanDispatchTestDB(t *testing.T) *gorm.DB {
 	}
 	sqls.SetDB(db)
 	return db
+}
+
+func createHumanDispatchCompletedResumeRunLog(t *testing.T, db *gorm.DB, reply models.Message, requestID string, sourceMessageID int64) {
+	t.Helper()
+	taskID := "task-1"
+	trace, err := json.Marshal(map[string]any{
+		"status":         "runtime_prepared",
+		"replySent":      true,
+		"replyMessageId": reply.ID,
+		"runtime": map[string]any{
+			"status": "completed",
+			"input": map[string]any{
+				"currentTurnSources": []map[string]any{{
+					"ref":         "U1",
+					"messageId":   sourceMessageID,
+					"messageType": string(enums.IMMessageTypeText),
+					"text":        "等待人工期间的客户问题",
+				}},
+			},
+			"pipeline": map[string]any{
+				"replyPlan": map[string]any{
+					"taskPlans": []map[string]any{{
+						"taskId":             taskID,
+						"intent":             "hotel_info",
+						"subIntent":          "manual_resume_test",
+						"objective":          "information",
+						"relationToPrevious": "independent",
+						"resolutionState":    "clear",
+						"originalText":       "等待人工期间的客户问题",
+						"resolvedText":       "等待人工期间的客户问题",
+						"sourceRefs":         []string{"U1"},
+						"outputKind":         "text",
+						"replyRequired":      true,
+						"output":             "knowledge_text_reply",
+					}},
+				},
+			},
+			"output": map[string]any{
+				"finishReason": "committed_reply",
+				"commitMessages": []map[string]any{{
+					"messageId":   reply.ID,
+					"messageType": string(reply.MessageType),
+					"content":     reply.Content,
+					"taskIds":     []string{taskID},
+					"status":      "sent",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal completed manual resume trace: %v", err)
+	}
+	if err := db.Create(&models.AgentRunLog{
+		ConversationID: reply.ConversationID,
+		MessageID:      sourceMessageID,
+		RequestID:      requestID,
+		FinalAction:    "reply",
+		FinalStatus:    "completed",
+		ReplyText:      reply.Content,
+		TraceData:      string(trace),
+		CreatedAt:      time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create completed manual resume run log: %v", err)
+	}
 }
 
 func createHumanDispatchAIAgent(t *testing.T, db *gorm.DB, mode enums.IMConversationServiceMode, teamIDs string) models.AIAgent {

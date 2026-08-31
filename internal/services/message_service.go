@@ -6,6 +6,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pkg/openidentity"
+	"agent-desk/internal/pkg/replyruntime"
 	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/repositories"
@@ -503,6 +504,11 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 	// 防抖，消息存在就不再发送了
 	if strs.IsNotBlank(clientMsgID) {
 		if existing := repositories.MessageRepository.GetByClientMsgID(sqls.DB(), conversation.ID, clientMsgID); existing != nil {
+			if !options.skipOutbound && !options.aiServiceNotice && manualResumeIdempotentMessageMatches(existing, senderType, reqSenderID, messageType, content, payload, requestID) {
+				if _, err := ChannelMessageOutboxService.ensureManualResumeMessage(conversation, existing, options.sourceMessageID); err != nil {
+					return nil, err
+				}
+			}
 			if senderType == enums.IMSenderTypeCustomer &&
 				utils.IsStandaloneOneTextControl(existing.MessageType, existing.Content) &&
 				TriggerStandaloneOneReplyAsyncHook != nil {
@@ -801,6 +807,23 @@ func (s *messageService) canSendAIReplyWithDB(db *gorm.DB, conversationID int64,
 		return false
 	}
 	return conversation.Status == enums.IMConversationStatusAIServing
+}
+
+func manualResumeIdempotentMessageMatches(existing *models.Message, senderType enums.IMSenderType, senderID int64, messageType enums.IMMessageType, content string, payload string, requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if existing == nil || senderType != enums.IMSenderTypeAI || existing.SenderType != enums.IMSenderTypeAI ||
+		!strings.HasPrefix(requestID, "manual_resume_") || strings.TrimSpace(existing.RequestID) != requestID ||
+		existing.MessageType != messageType || existing.RecalledAt != nil || existing.SendStatus == enums.IMMessageStatusRecalled {
+		return false
+	}
+	if senderID > 0 && existing.SenderID != senderID {
+		return false
+	}
+	if replyruntime.IsStableManualResumeClientMessageID(existing.ClientMsgID) {
+		return true
+	}
+	return strings.TrimSpace(existing.Content) == strings.TrimSpace(content) &&
+		strings.TrimSpace(existing.Payload) == strings.TrimSpace(payload)
 }
 
 func isMediaUnderstandingMessage(messageType enums.IMMessageType) bool {

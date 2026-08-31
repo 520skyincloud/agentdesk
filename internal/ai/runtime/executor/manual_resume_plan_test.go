@@ -142,6 +142,37 @@ func TestManualResumeFrozenTaskPreservesExecutionMetadata(t *testing.T) {
 	}
 }
 
+func TestManualResumeDeferredKnowledgeTaskReactivatesAsTextTask(t *testing.T) {
+	snapshot := replyruntime.ManualResumeSnapshot{
+		RunLogID:         49,
+		ContractMode:     replyruntime.ManualResumeContractV2,
+		SourcesValidated: true,
+		Sources:          []replyruntime.ManualResumeSource{{Ref: "U1", MessageID: 451, MessageType: "text", Text: "东西落房间了"}},
+		FrozenTasks: []replyruntime.ManualResumeTaskPlan{{
+			TaskID: "task-10", Intent: "service_request", SubIntent: "lost_item", Objective: "action_request",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+			OriginalText:   "东西落房间了",
+			ResolvedText:   "东西落房间了",
+			SourceRefs:     []string{"U1"},
+			NeedsKnowledge: true,
+			OutputKind:     "handoff",
+			ReplyRequired:  false,
+			Output:         runtimeKnowledgeDeferredHandoffOutput,
+			MissingAspects: []string{"room_number"},
+		}},
+	}
+	ctx := replyruntime.WithManualResumeSnapshot(context.Background(), snapshot)
+	plan := buildRuntimePipelinePlanWithModel(ctx, RunInput{UserMessage: models.Message{ID: 451, MessageType: enums.IMMessageTypeText, Content: "东西落房间了"}}, adapter.HistoryBuildResult{}, &recordingManualResumeIntentDetector{})
+	if len(plan.ReplyPlan.TaskPlans) != 1 {
+		t.Fatalf("expected one restored deferred task, got %#v", plan.ReplyPlan.TaskPlans)
+	}
+	task := plan.ReplyPlan.TaskPlans[0]
+	if task.TaskID != "task-10" || task.OutputKind != "text" || !task.ReplyRequired || task.Output != "knowledge_text_reply" ||
+		!task.NeedsKnowledge || task.NeedsHumanRoute || strings.Join(task.MissingAspects, ",") != "room_number" {
+		t.Fatalf("deferred execution marker must not keep the restored knowledge Task outside Generate: %#v", task)
+	}
+}
+
 func TestManualResumeExactRepeatKeepsFrozenTaskID(t *testing.T) {
 	snapshot := replyruntime.ManualResumeSnapshot{
 		RunLogID:         48,

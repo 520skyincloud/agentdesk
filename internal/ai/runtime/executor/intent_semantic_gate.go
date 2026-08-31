@@ -488,6 +488,17 @@ func semanticGateNormalizeObjective(value string) string {
 	}
 }
 
+// objective is descriptive metadata used by Judge and Trace. A missing or
+// newly introduced model value must not invalidate an otherwise grounded
+// Intent task; unknown keeps downstream fact filtering conservative.
+func semanticGateNormalizeObjectiveMetadata(value string) string {
+	objective := semanticGateNormalizeObjective(value)
+	if !semanticGateValidObjective(objective) {
+		return "unknown"
+	}
+	return objective
+}
+
 func semanticGateNormalizeRelation(value string) string {
 	switch semanticGateNormalizeValue(value) {
 	case "", "independent", "new_topic":

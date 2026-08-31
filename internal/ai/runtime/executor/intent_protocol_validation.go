@@ -238,6 +238,34 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 		if semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext {
 			continue
 		}
+		if runtimeIntentProtocolIsConversationRecapTask(task) {
+			// A recap task resolves to an operation over the bounded conversation
+			// history, not to an entity copied from the adjacent exchange. Source
+			// provenance is validated by the base protocol; lexical grounding here
+			// would reject the exact contract requested by the Intent prompt.
+			continue
+		}
+		candidate := strings.TrimSpace(task.Text)
+		if candidate == "" && len(task.SourceRefs) > 0 {
+			primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+			if primaryIndex >= 0 && primaryIndex < len(sourceTexts) {
+				candidate = sourceTexts[primaryIndex]
+			}
+		}
+		if len(task.SourceRefs) <= 1 && !runtimeIntentAtomicCandidateRequiresContext(candidate) {
+			// relationToPrevious and resolutionState select bounded context; they
+			// are not a local semantic veto. A self-contained current question can
+			// be answered without an adjacent pair even when the model conservatively
+			// marked it as context-resolved. The resolved form must still be grounded
+			// in the current question so this tolerance cannot introduce a new topic.
+			if !runtimeIntentProtocolResolvedReferenceGroundedInText(task, candidate, candidate) {
+				return fmt.Errorf("intentTasks[%d] resolvedText is not grounded in its current self-contained question", taskIndex)
+			}
+			if err := validateRuntimeIntentProtocolResolvedEntities(task, candidate, candidate); err != nil {
+				return fmt.Errorf("intentTasks[%d] %w", taskIndex, err)
+			}
+			continue
+		}
 		contextParts := make([]string, 0, len(task.SourceRefs)+2)
 		relation := semanticGateNormalizeRelation(task.RelationToPrevious)
 		earlierSources, hasEarlierSources := runtimeIntentProtocolEarlierCurrentTurnSources(task, sourceTexts)
@@ -254,13 +282,6 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 		default:
 			return fmt.Errorf("intentTasks[%d] resolved_from_context has no authorized context relation", taskIndex)
 		}
-		candidate := strings.TrimSpace(task.Text)
-		if candidate == "" && len(task.SourceRefs) > 0 {
-			primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
-			if primaryIndex >= 0 && primaryIndex < len(sourceTexts) {
-				candidate = sourceTexts[primaryIndex]
-			}
-		}
 		contextText := strings.Join(contextParts, " ")
 		grounded := runtimeIntentProtocolResolvedReferenceGroundedInText(task, candidate, contextText)
 		if !hasEarlierSources {
@@ -276,6 +297,18 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolIsConversationRecapTask(task runtimeIntentTaskJSON) bool {
+	if canonicalIntentCode(task.Intent) != "interaction" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "conversation_recap", "conversation_summary", "conversation_history", "recap":
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeIntentProtocolEarlierCurrentTurnSources(task runtimeIntentTaskJSON, sourceTexts []string) ([]string, bool) {
@@ -985,10 +1018,6 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if !requireSemantics {
 			continue
 		}
-		objective := semanticGateNormalizeObjective(task.Objective)
-		if !semanticGateValidObjective(objective) {
-			return fmt.Errorf("intentTasks[%d].objective is missing or invalid", index)
-		}
 		relation := semanticGateNormalizeRelation(task.RelationToPrevious)
 		if !semanticGateValidRelation(relation) {
 			return fmt.Errorf("intentTasks[%d].relationToPrevious is missing or invalid", index)
@@ -1006,9 +1035,10 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 	return nil
 }
 
-// validateRuntimeIntentProtocolModelOwnedSources verifies only provenance and
-// order. IntentDetect alone decides how many tasks exist and where their
-// semantic boundaries are; local code must not infer a competing task count.
+// validateRuntimeIntentProtocolModelOwnedSources verifies provenance, source
+// ownership and order. IntentDetect alone decides how many tasks exist and
+// where their semantic boundaries are; local code only requires every physical
+// current-turn source to be explicitly owned by at least one model task.
 func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
 	lastPrimarySource := -1
 	referencedSources := make([]bool, len(sourceTexts))
@@ -1020,9 +1050,9 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 		}
 		lastPrimarySource = primarySource
 		for _, ref := range task.SourceRefs {
-			index := runtimeIntentSourceRefIndex(ref)
-			if index >= 0 && index < len(referencedSources) {
-				referencedSources[index] = true
+			sourceIndex := runtimeIntentSourceRefIndex(ref)
+			if sourceIndex >= 0 && sourceIndex < len(referencedSources) {
+				referencedSources[sourceIndex] = true
 			}
 		}
 	}
@@ -1042,7 +1072,7 @@ func runtimeIntentProtocolExactTaskKey(task runtimeIntentTaskJSON) string {
 	parts := []string{
 		canonicalIntentCode(task.Intent),
 		strings.ToLower(strings.TrimSpace(task.SubIntent)),
-		semanticGateNormalizeObjective(task.Objective),
+		semanticGateNormalizeObjectiveMetadata(task.Objective),
 		semanticGateNormalizeRelation(task.RelationToPrevious),
 		semanticGateNormalizeResolution(task.ResolutionState),
 		normalizeRuntimeIntentProtocolAtomicText(task.Text),

@@ -18,6 +18,7 @@ import (
 
 func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector, gate *KnowledgeAnswerabilityGate) []*schema.Message {
 	history := adapter.BuildHistoryMessages(req.Conversation.ID, req.UserMessage.ID, 0)
+	history = adapter.ExcludeCurrentTurnSources(history, req.UserMessage)
 	if summary != nil {
 		summary.HistoryMessageCount = len(history.Messages)
 		summary.ContextMemorySource = history.MemorySource
@@ -205,7 +206,7 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 	if len(adjacentTaskIDs) > 0 {
 		b.WriteString("相邻上下文适用任务：")
 		b.WriteString(strings.Join(adjacentTaskIDs, "、"))
-		b.WriteString("。只用下面最多两条消息理解当前短答、指代、纠正或槽位答案，最终仍只回答当前活跃任务。\n")
+		b.WriteString("。只用下面一条客户问题和最多三条连续客服答复理解当前短答、指代、纠正或槽位答案，最终仍只回答当前活跃任务。\n")
 		appendBoundedGenerationHistoryEntries(&b, adjacentEntries)
 	}
 	if len(recapTaskIDs) > 0 {
@@ -281,19 +282,8 @@ func boundedGenerationHistoryEntries(history adapter.HistoryBuildResult) []bound
 		if text == "" {
 			continue
 		}
-		speaker := ""
-		switch {
-		case strings.Contains(text, "[人工客服]"):
-			speaker = "人工客服"
-		case strings.Contains(text, "[AI客服]"):
-			speaker = "AI客服"
-		case strings.Contains(text, "[客户]"):
-			speaker = "客户"
-		case message.Role == schema.User:
-			speaker = "客户"
-		case message.Role == schema.Assistant:
-			speaker = "AI客服"
-		default:
+		speaker := boundedGenerationHistorySpeaker(message, text)
+		if speaker == "" {
 			continue
 		}
 		if strings.HasPrefix(text, "[历史消息]") {
@@ -309,23 +299,66 @@ func boundedGenerationHistoryEntries(history adapter.HistoryBuildResult) []bound
 	return entries
 }
 
+func boundedGenerationHistorySpeaker(message *schema.Message, text string) string {
+	switch message.Role {
+	case schema.User:
+		return "客户"
+	case schema.Assistant:
+		if strings.HasPrefix(text, "[历史消息][人工客服]") {
+			return "人工客服"
+		}
+		return "AI客服"
+	}
+
+	for _, candidate := range []struct {
+		prefix  string
+		speaker string
+	}{
+		{prefix: "[历史消息][人工客服]", speaker: "人工客服"},
+		{prefix: "[历史消息][AI客服]", speaker: "AI客服"},
+		{prefix: "[历史消息][客户]", speaker: "客户"},
+	} {
+		if strings.HasPrefix(text, candidate.prefix) {
+			return candidate.speaker
+		}
+	}
+	return ""
+}
+
 func adjacentGenerationHistoryEntries(entries []boundedGenerationHistoryEntry) []boundedGenerationHistoryEntry {
 	if len(entries) == 0 {
 		return nil
 	}
-	assistantIndex := len(entries) - 1
-	if entries[assistantIndex].speaker != "AI客服" && entries[assistantIndex].speaker != "人工客服" {
+	serviceIndex := len(entries) - 1
+	serviceSpeaker := entries[serviceIndex].speaker
+	if serviceSpeaker != "AI客服" && serviceSpeaker != "人工客服" {
 		return nil
 	}
 
-	ret := make([]boundedGenerationHistoryEntry, 0, 2)
-	for index := assistantIndex - 1; index >= 0; index-- {
-		if entries[index].speaker == "客户" {
-			ret = append(ret, entries[index])
-			break
+	repliesReversed := make([]boundedGenerationHistoryEntry, 0, runtimeAdjacentServiceReplyLimit)
+	customerIndex := -1
+	for index := serviceIndex; index >= 0; index-- {
+		entry := entries[index]
+		if entry.speaker == serviceSpeaker {
+			if len(repliesReversed) < runtimeAdjacentServiceReplyLimit {
+				repliesReversed = append(repliesReversed, entry)
+			}
+			continue
 		}
+		if entry.speaker != "客户" {
+			return nil
+		}
+		customerIndex = index
+		break
 	}
-	ret = append(ret, entries[assistantIndex])
+	if customerIndex < 0 || len(repliesReversed) == 0 {
+		return nil
+	}
+	ret := make([]boundedGenerationHistoryEntry, 0, len(repliesReversed)+1)
+	ret = append(ret, entries[customerIndex])
+	for index := len(repliesReversed) - 1; index >= 0; index-- {
+		ret = append(ret, repliesReversed[index])
+	}
 	return ret
 }
 
@@ -526,43 +559,35 @@ func buildGenerationScopeInstruction(intent callbacks.IntentTraceData, replyPlan
 	if len(taskPlans) == 0 {
 		taskPlans = buildReplyTaskPlans(intent)
 	}
-	knowledgeTasks := make([]string, 0, len(taskPlans))
-	resourceTasks := make([]string, 0, len(taskPlans))
+	textTasks := make([]string, 0, len(taskPlans))
 	for _, task := range taskPlans {
-		if task.Output == "knowledge_text_reply" || task.Intent == "hotel_info" {
+		if replyTaskRequiresText(task) {
 			label := strings.TrimSpace(task.Text)
+			if label == "" {
+				label = strings.TrimSpace(task.ResolvedText)
+			}
 			if label == "" {
 				label = runtimeTaskDisplayLabel(task.SubIntent)
 			}
 			if label != "" {
-				knowledgeTasks = appendIfMissing(knowledgeTasks, label)
-			}
-		}
-		if task.Output == "structured_resource_commit" || task.Intent == "hotel_variable" || strings.TrimSpace(task.ResourceAction) != "" {
-			label := strings.TrimSpace(task.ResourceAction)
-			if label == "" {
-				label = strings.TrimSpace(task.SubIntent)
-			}
-			if label != "" {
-				resourceTasks = appendIfMissing(resourceTasks, label)
+				textTasks = appendIfMissing(textTasks, label)
 			}
 		}
 	}
-	if len(knowledgeTasks) == 0 {
-		knowledgeTasks = append(knowledgeTasks, "当前轮酒店信息问题")
+	if len(textTasks) == 0 {
+		return ""
 	}
 	parts := []string{
-		"【Generate 输出范围】当前轮同时包含酒店信息任务和酒店变量任务。",
-		"本阶段只输出酒店信息任务的文本答案：" + strings.Join(knowledgeTasks, "、") + "。",
+		"【Generate 输出范围】当前轮同时包含文本回复任务和酒店变量任务。",
+		"本阶段只输出这些文本回复任务：" + strings.Join(textTasks, "、") + "。",
 	}
-	_ = resourceTasks
 	textOutputSubject := "最终文本"
 	if replyPlanRequiresStructuredOutput(replyPlan, false) {
 		textOutputSubject = "replyParts 的各个 content"
 	}
 	parts = append(parts,
 		"变量任务由 Commit 阶段单独处理，本阶段完全不要写变量任务、变量名称、发送状态或后续动作。",
-		textOutputSubject+"只回答上面列出的酒店信息任务，不能包含“发你/发给你/给你发/已经发/后续发/点开就能/我这边发/我这边按入口发”。",
+		textOutputSubject+"只回答上面列出的当前文本回复任务，不能包含“发你/发给你/给你发/已经发/后续发/点开就能/我这边发/我这边按入口发”。",
 	)
 	result := strings.Join(parts, "\n")
 	if replyPlanRequiresStructuredOutput(replyPlan, false) {

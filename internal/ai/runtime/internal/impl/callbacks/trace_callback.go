@@ -295,25 +295,27 @@ type IntentEntityTraceData struct {
 }
 
 type CommitMessageTraceData struct {
-	MessageID    int64  `json:"messageId,omitempty"`
-	MessageType  string `json:"messageType,omitempty"`
-	ResourceType string `json:"resourceType,omitempty"`
-	Content      string `json:"content,omitempty"`
-	Status       string `json:"status,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
+	MessageID    int64    `json:"messageId,omitempty"`
+	MessageType  string   `json:"messageType,omitempty"`
+	ResourceType string   `json:"resourceType,omitempty"`
+	Content      string   `json:"content,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	ErrorMessage string   `json:"errorMessage,omitempty"`
+	TaskIDs      []string `json:"taskIds,omitempty"`
 }
 
 // KnowledgeResourceTraceData records a scoped asset selected from a retrieved knowledge record.
 // It stays outside IntentDetect output and outside the model message context.
 type KnowledgeResourceTraceData struct {
-	GroupID         int64  `json:"groupId,omitempty"`
-	ItemID          int64  `json:"itemId,omitempty"`
-	KnowledgeBaseID int64  `json:"knowledgeBaseId,omitempty"`
-	SourceRecordID  string `json:"sourceRecordId,omitempty"`
-	AssetID         string `json:"assetId,omitempty"`
-	Title           string `json:"title,omitempty"`
-	Description     string `json:"description,omitempty"`
-	SortNo          int    `json:"sortNo,omitempty"`
+	GroupID         int64    `json:"groupId,omitempty"`
+	ItemID          int64    `json:"itemId,omitempty"`
+	KnowledgeBaseID int64    `json:"knowledgeBaseId,omitempty"`
+	SourceRecordID  string   `json:"sourceRecordId,omitempty"`
+	AssetID         string   `json:"assetId,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	Description     string   `json:"description,omitempty"`
+	SortNo          int      `json:"sortNo,omitempty"`
+	TaskIDs         []string `json:"taskIds,omitempty"`
 }
 
 type ActionLedgerTraceData struct {

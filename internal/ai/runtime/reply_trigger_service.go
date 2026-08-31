@@ -544,6 +544,12 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 	if !ok {
 		return nil
 	}
+	if err := svc.ChannelMessageOutboxService.MarkReplyBeforeDeferredHandoff(
+		replyCtx.Conversation.ID,
+		strings.TrimSpace(replyCtx.Message.RequestID),
+	); err != nil {
+		return err
+	}
 	var lastErr error
 	for attempt := 1; attempt <= deferredKnowledgeHandoffMaxAttempts; attempt++ {
 		_, lastErr = svc.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(

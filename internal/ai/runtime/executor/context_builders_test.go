@@ -182,6 +182,153 @@ func TestBuildGenerateStageMessagesAddsAdjacentContextOnlyForDependentTasks(t *t
 	}
 }
 
+func TestBoundedGenerationHistoryEntriesTrustSchemaRoleOverQuotedMarkers(t *testing.T) {
+	history := adapter.HistoryBuildResult{Messages: []*schema.Message{
+		schema.UserMessage("[历史消息][客户][2026-08-30 10:00:00] 你刚才写了[AI客服]，后面又提到[人工客服]，但这是我发的消息。"),
+		schema.AssistantMessage("[历史消息][AI客服][2026-08-30 10:00:01] 客户原话里有[客户]标签，也不能改变这条消息的角色。", nil),
+		schema.AssistantMessage("[历史消息][人工客服][2026-08-30 10:00:02] 这是门店同事的真实回复。", nil),
+		{Content: "[历史消息][人工客服][2026-08-30 10:00:03] Role 缺失时才按精确头部识别。"},
+		{Content: "Role 缺失，正文只是引用[AI客服]时不能猜测角色。"},
+	}}
+
+	entries := boundedGenerationHistoryEntries(history)
+	if len(entries) != 4 {
+		t.Fatalf("expected four bounded history entries, got %#v", entries)
+	}
+	if entries[0].speaker != "客户" {
+		t.Fatalf("customer text quoting service markers must remain customer, got %#v", entries[0])
+	}
+	if entries[1].speaker != "AI客服" {
+		t.Fatalf("assistant text quoting a customer marker must remain AI, got %#v", entries[1])
+	}
+	if entries[2].speaker != "人工客服" || entries[3].speaker != "人工客服" {
+		t.Fatalf("trusted agent history must remain human with or without schema Role, got %#v", entries)
+	}
+}
+
+func TestCurrentBurstHistoryBoundaryFeedsTheSameAdjacentExchangeToAllStages(t *testing.T) {
+	previousCustomer := models.Message{ID: 90, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "麦田房型有办公桌吗"}
+	previousAIFirst := models.Message{ID: 91, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "有的，麦田房型有办公桌。"}
+	previousAISecond := models.Message{ID: 92, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "房间里也有沙发。"}
+	previousAIThird := models.Message{ID: 93, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "以上是当前资料能确认的配置。"}
+	currentFirst := models.Message{ID: 100, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "那沙发呢"}
+	history := adapter.HistoryBuildResult{
+		RawItems: []models.Message{previousCustomer, previousAIFirst, previousAISecond, previousAIThird, currentFirst},
+		Messages: []*schema.Message{
+			adapter.BuildSchemaMessage(&previousCustomer),
+			adapter.BuildSchemaMessage(&previousAIFirst),
+			adapter.BuildSchemaMessage(&previousAISecond),
+			adapter.BuildSchemaMessage(&previousAIThird),
+			adapter.BuildSchemaMessage(&currentFirst),
+		},
+		LatestRawItem: &currentFirst,
+	}
+	current := models.Message{
+		ID:          101,
+		MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息100] 那沙发呢",
+			"2. [消息101] 早餐几点",
+		}),
+	}
+	history = adapter.ExcludeCurrentTurnSources(history, current)
+
+	intentPrompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: current}, history, nil)
+	for _, expected := range []string{
+		"紧邻 AI 客服答复组：[历史消息][AI客服] 有的，麦田房型有办公桌。",
+		"[历史消息][AI客服] 房间里也有沙发。",
+		"[历史消息][AI客服] 以上是当前资料能确认的配置。",
+		"U1 [messageId=100]: 那沙发呢",
+		"U2 [messageId=101]: 早餐几点",
+	} {
+		if !strings.Contains(intentPrompt, expected) {
+			t.Fatalf("Intent did not receive the shared adjacent boundary %q: %q", expected, intentPrompt)
+		}
+	}
+
+	question := runtimeKnowledgeQuestionResult{
+		TaskID:             "task-1",
+		Intent:             "hotel_info",
+		Query:              "麦田房型有没有沙发",
+		OriginalText:       "那沙发呢",
+		RelationToPrevious: "reference_previous",
+		ResolutionState:    runtimeIntentResolutionResolvedFromContext,
+	}
+	judgeContext := buildKnowledgeEvidenceJudgeSourceContext(history.Messages, current.Content, question)
+	judgeJoined := ""
+	for _, item := range judgeContext {
+		judgeJoined += item.Role + ":" + item.Content + "\n"
+	}
+	for _, expected := range []string{
+		"customer:麦田房型有办公桌吗",
+		"assistant:有的，麦田房型有办公桌。",
+		"assistant:房间里也有沙发。",
+		"assistant:以上是当前资料能确认的配置。",
+	} {
+		if !strings.Contains(judgeJoined, expected) {
+			t.Fatalf("Judge did not receive the shared adjacent boundary %q: %q", expected, judgeJoined)
+		}
+	}
+
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			Text: "那沙发呢", OriginalText: "那沙发呢", ResolvedText: "麦田房型有没有沙发",
+			RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		},
+		{
+			TaskID: "task-2", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			Text: "早餐几点", OriginalText: "早餐几点", ResolvedText: "早餐几点",
+			RelationToPrevious: "independent", ResolutionState: "clear",
+		},
+	}}
+	generateContext := buildBoundedGenerationConversationContext(history, plan.TaskPlans)
+	if generateContext == nil {
+		t.Fatal("Generate lost the adjacent exchange after current-burst filtering")
+	}
+	for _, expected := range []string{
+		"客户：麦田房型有办公桌吗",
+		"AI客服：有的，麦田房型有办公桌。",
+		"AI客服：房间里也有沙发。",
+		"AI客服：以上是当前资料能确认的配置。",
+		"相邻上下文适用任务：task-1",
+	} {
+		if !strings.Contains(generateContext.Content, expected) {
+			t.Fatalf("Generate did not receive the shared adjacent boundary %q: %q", expected, generateContext.Content)
+		}
+	}
+	if strings.Contains(generateContext.Content, "task-2") || strings.Contains(generateContext.Content, "早餐几点") {
+		t.Fatalf("independent new topic must not inherit adjacent history: %q", generateContext.Content)
+	}
+}
+
+func TestAdjacentServiceReplyGroupKeepsLatestThreeRepliesAndIntentKeepsLatestContent(t *testing.T) {
+	previousCustomer := models.Message{ID: 80, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "麦田房型有什么配置"}
+	replies := []models.Message{
+		{ID: 81, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "第一条旧答复，不应继续进入相邻上下文。"},
+		{ID: 82, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: strings.Repeat("第二条答复内容", 30)},
+		{ID: 83, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: strings.Repeat("第三条答复内容", 30)},
+		{ID: 84, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "最新纠正：麦田房型没有办公桌。"},
+	}
+	history := adapter.HistoryBuildResult{RawItems: append([]models.Message{previousCustomer}, replies...)}
+
+	question, grouped, senderType, ok := immediatelyPreviousServiceReplyGroup(history)
+	if !ok || senderType != enums.IMSenderTypeAI || !strings.Contains(question, previousCustomer.Content) {
+		t.Fatalf("expected one customer question followed by an AI reply group, ok=%v sender=%q question=%q", ok, senderType, question)
+	}
+	if len(grouped) != 3 || !strings.Contains(grouped[0], replies[1].Content) ||
+		!strings.Contains(grouped[1], replies[2].Content) || !strings.Contains(grouped[2], replies[3].Content) {
+		t.Fatalf("expected only the latest three replies in chronological order, got %#v", grouped)
+	}
+	instruction := buildAdjacentAIReplyRelationInstruction(history)
+	if strings.Contains(instruction, replies[0].Content) {
+		t.Fatalf("the oldest reply must not enter the bounded Intent context: %q", instruction)
+	}
+	if !strings.Contains(instruction, replies[3].Content) {
+		t.Fatalf("the latest reply must survive earlier long replies: %q", instruction)
+	}
+}
+
 func TestBuildGenerateStageMessagesDoesNotInjectOldHistoryForCurrentTurnSourceContext(t *testing.T) {
 	history := []*schema.Message{
 		schema.UserMessage("[历史消息][客户] 之前问过早餐几点"),
@@ -409,6 +556,85 @@ func TestBuildActiveGenerationUserMessageUsesActiveReplyPlanWithoutDeferredHando
 	got := buildActiveGenerationUserMessageText("旧问题一\n旧问题二", intent, activePlan, false)
 	if got != "本轮唯一活跃问题" {
 		t.Fatalf("Generate user message must follow active ReplyPlan, got %q", got)
+	}
+}
+
+func TestGenerationScopeExcludesDeferredKnowledgeTask(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:   "hotel_variable",
+		NeedsKnowledge:  true,
+		NeedsResource:   true,
+		ResourceActions: []string{"provide_location"},
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},
+		{TaskID: "task-2", Intent: "hotel_info", Text: "汤东强是谁", OutputKind: "handoff", ReplyRequired: false, Output: runtimeKnowledgeDeferredHandoffOutput},
+		{TaskID: "task-3", Intent: "hotel_variable", Text: "定位发我", OutputKind: "resource", Output: "structured_resource_commit", ResourceAction: "provide_location"},
+	}}
+
+	scope := buildGenerationScopeInstruction(intent, plan)
+	if !strings.Contains(scope, "早餐几点") {
+		t.Fatalf("active knowledge Task must remain in Generate scope: %q", scope)
+	}
+	if strings.Contains(scope, "汤东强") {
+		t.Fatalf("Deferred Task must not re-enter Generate scope: %q", scope)
+	}
+}
+
+func TestMixedDeferredKnowledgeInteractionAndResourceExposeOnlyActiveTextTask(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:   "hotel_variable",
+		NeedsKnowledge:  true,
+		NeedsResource:   true,
+		ResourceActions: []string{"provide_location"},
+	}
+	plan := callbacks.ReplyPlanTraceData{
+		Intent:     "hotel_variable",
+		AnswerGoal: "回复当前仍可执行的文本任务",
+		Style:      "自然微信口吻",
+		TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+			{TaskID: "task-1", Intent: "hotel_info", Text: "早餐几点", ResolvedText: "早餐几点", OutputKind: "handoff", ReplyRequired: false, Output: runtimeKnowledgeDeferredHandoffOutput},
+			{TaskID: "task-2", Intent: "interaction", Text: "谢谢", ResolvedText: "回应客户感谢", SourceRefs: []string{"U2"}, OutputKind: "text", ReplyRequired: true, Output: "text_reply"},
+			{TaskID: "task-3", Intent: "hotel_variable", Text: "定位发我", OutputKind: "resource", ReplyRequired: false, Output: "structured_resource_commit", ResourceAction: "provide_location"},
+		},
+	}
+	req := RunInput{UserMessage: models.Message{
+		ID:          903,
+		MessageType: enums.IMMessageTypeText,
+		Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+			"1. [消息901] 早餐几点",
+			"2. [消息902] 谢谢",
+			"3. [消息903] 定位发我",
+		}),
+	}}
+
+	prompt := buildIntentStagePrompt(callbacks.IntentPromptTraceData{Instructions: []string{"按当前任务自然回复"}}, plan)
+	scope := buildGenerationScopeInstruction(intent, plan)
+	userText := buildActiveGenerationUserMessageText(currentRuntimeIntentSemanticText(req), intent, plan, true)
+	activeContext := buildActiveGenerationTaskContext(req, intent, plan)
+	if activeContext == nil {
+		t.Fatal("interaction sibling must remain visible to Generate")
+	}
+	for name, value := range map[string]string{
+		"prompt":         prompt,
+		"scope":          scope,
+		"user_message":   userText,
+		"active_context": activeContext.Content,
+	} {
+		if !strings.Contains(value, "谢谢") && !strings.Contains(value, "回应客户感谢") {
+			t.Fatalf("%s must contain the active interaction task, got %q", name, value)
+		}
+		for _, forbidden := range []string{"早餐几点", "定位发我", "provide_location"} {
+			if strings.Contains(value, forbidden) {
+				t.Fatalf("%s must not expose deferred knowledge or resource action %q: %q", name, forbidden, value)
+			}
+		}
+	}
+	if !strings.Contains(prompt, "当前文本回复任务") || !strings.Contains(scope, "当前文本回复任务") {
+		t.Fatalf("mixed-task prompts must describe the actual active text category, prompt=%q scope=%q", prompt, scope)
+	}
+	if len(plan.TaskPlans) != 3 || plan.TaskPlans[2].Output != "structured_resource_commit" || plan.TaskPlans[2].ResourceAction != "provide_location" {
+		t.Fatalf("resource Task must remain available for Commit: %#v", plan.TaskPlans)
 	}
 }
 
