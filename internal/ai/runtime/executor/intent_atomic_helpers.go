@@ -34,21 +34,32 @@ func runtimeIntentAtomicKnowledgeObjective(text string) string {
 	switch {
 	case hasPrice:
 		return "price"
+	case containsAny(compact, []string{"推荐", "好玩", "好吃"}):
+		return "recommendation"
+	case strings.Contains(compact, "怎么"), strings.Contains(compact, "如何"), strings.Contains(compact, "方式"), strings.Contains(compact, "流程"), strings.Contains(compact, "咋"), strings.Contains(compact, "填"):
+		return "method"
 	case strings.Contains(compact, "地址"), strings.Contains(compact, "位置"), strings.Contains(compact, "在哪里"), strings.Contains(compact, "在哪"), strings.Contains(compact, "哪里"):
 		return "location"
 	case hasQuantity:
 		return "quantity"
 	case strings.Contains(compact, "几点"), strings.Contains(compact, "多久"), strings.Contains(compact, "什么时候"), strings.Contains(compact, "时间"):
 		return "time"
-	case strings.Contains(compact, "有没有"), strings.Contains(compact, "是否有"):
+	case strings.Contains(compact, "有没有"), strings.Contains(compact, "是否有"), runtimeIntentAtomicLooksLikeAvailabilityQuestion(compact):
 		return "availability"
-	case strings.Contains(compact, "怎么"), strings.Contains(compact, "如何"), strings.Contains(compact, "方式"), strings.Contains(compact, "流程"):
-		return "method"
 	case strings.Contains(compact, "是不是"), strings.Contains(compact, "是否"), strings.Contains(compact, "规则"):
 		return "policy"
 	default:
 		return "general_guidance"
 	}
+}
+
+func runtimeIntentAtomicLooksLikeAvailabilityQuestion(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" {
+		return false
+	}
+	return (strings.HasPrefix(compact, "有") && strings.HasSuffix(normalizeRuntimeKnowledgeQuery(text), "吗")) ||
+		strings.Contains(compact, "有吗") || strings.Contains(compact, "提供吗") || strings.Contains(compact, "配备吗")
 }
 
 func runtimeIntentSourceRefIndex(ref string) int {

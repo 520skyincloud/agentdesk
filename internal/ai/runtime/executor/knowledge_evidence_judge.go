@@ -38,7 +38,9 @@ const (
 	knowledgeEvidenceDirectFAQMinimumScore   = float32(0.85)
 	knowledgeEvidenceJudgeReviewMinimumScore = float32(0.70)
 
-	knowledgeEvidenceJudgeMaxTimeout      = 15 * time.Second
+	knowledgeEvidenceJudgeMinTimeout      = 10 * time.Second
+	knowledgeEvidenceJudgeMaxTimeout      = 28 * time.Second
+	knowledgeEvidenceJudgeDeadlineReserve = 12 * time.Second
 	knowledgeEvidenceJudgeMaxOutputTokens = 4096
 )
 
@@ -141,6 +143,24 @@ type knowledgeEvidenceJudgeResponseLayer struct {
 	MissingAspects       []string                `json:"missingAspects"`
 }
 
+type knowledgeEvidenceJudgeRawResponse struct {
+	SchemaVersion string                                  `json:"schemaVersion"`
+	Tasks         []knowledgeEvidenceJudgeRawResponseTask `json:"tasks"`
+}
+
+type knowledgeEvidenceJudgeRawResponseTask struct {
+	TaskID string                                   `json:"taskId"`
+	Layers []knowledgeEvidenceJudgeRawResponseLayer `json:"layers"`
+}
+
+type knowledgeEvidenceJudgeRawResponseLayer struct {
+	Layer                string          `json:"layer"`
+	Decision             string          `json:"decision"`
+	SelectedCandidateIDs []string        `json:"selectedCandidateIds"`
+	SupportedFacts       json.RawMessage `json:"supportedFacts"`
+	MissingAspects       json.RawMessage `json:"missingAspects"`
+}
+
 type knowledgeEvidenceJudgeParseError struct {
 	decision string
 	err      error
@@ -199,7 +219,16 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(err)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, knowledgeEvidenceDecisionMalformed)
 	}
-	config := normalizeKnowledgeEvidenceJudgeConfig(resolved.Config, len(prompt.Tasks))
+	config := normalizeKnowledgeEvidenceJudgeConfig(resolved.Config, len(prompt.Tasks), trace.CandidateCount)
+	configuredJudgeTimeout := time.Duration(config.TimeoutMS) * time.Millisecond
+	effectiveJudgeTimeout, deadlineAvailable := knowledgeEvidenceJudgeTimeoutWithinParent(ctx, configuredJudgeTimeout)
+	if !deadlineAvailable {
+		trace.Status = knowledgeEvidenceDecisionTimeout
+		trace.Reason = "knowledge judge was skipped because the parent reply deadline has no remaining stage budget"
+		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, knowledgeEvidenceDecisionTimeout)
+	}
+	judgeDeadlineTrimmed := effectiveJudgeTimeout < configuredJudgeTimeout
+	config.TimeoutMS = int(effectiveJudgeTimeout / time.Millisecond)
 	trace.Model = config.ModelName
 	if strings.TrimSpace(config.ModelName) == "" || strings.TrimSpace(string(config.Provider)) == "" {
 		trace.Status = knowledgeEvidenceDecisionMalformed
@@ -246,6 +275,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	repaired := repairExactFAQFallbackSelections(tasks, selections)
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
+	if judgeDeadlineTrimmed {
+		trace.Reason += "; judge timeout was bounded by the parent reply deadline"
+	}
 	if repaired > 0 {
 		trace.Reason += fmt.Sprintf("; repaired %d strict exact-FAQ selection(s) without using retrieval scores or semantic similarity", repaired)
 	}
@@ -796,6 +828,10 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 
 FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。rawContent 只用于核对原文。
 
+条件不能从事实中消失。若答案是“是的，仅限退房前办理”“可以，但仅适用于指定房型”等带硬限制的肯定，statement 必须同时写出肯定结论和限制条件；不得输出无条件的“可以办理”“所有房型都可以”。
+
+费用事实必须区分绝对状态、相对关系和动态政策：“不免费/需要付费”是收费，不是免费；“不同平台免费政策不一样/权益不同”只说明政策或权益存在差异，不能证明任一平台免费；“不同平台”只是主体组别名，只有“价格不一样/相同、哪家更便宜”等明确谓词才是价格比较结论。
+
 用品补充和自取问题必须结合客户状态与 FAQ 答案中的动作判断完整性。例如客户说“纸巾不够了，怎么补充”，同一用品的门店 FAQ 即使问题写成“纸巾用完了怎么办”，只要答案明确给出“前往某处领取/自取”的地点和动作，就已经完整覆盖 method；不能仅因问题措辞不同判 insufficient，也不能改选通用层的“转接”。
 
 肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
@@ -823,7 +859,7 @@ func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJu
 	if err != nil {
 		return nil, knowledgeEvidenceJudgeResponseError(knowledgeEvidenceDecisionMalformed, err)
 	}
-	parsed := knowledgeEvidenceJudgeResponse{}
+	parsed := knowledgeEvidenceJudgeRawResponse{}
 	decoder := json.NewDecoder(strings.NewReader(normalized))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&parsed); err != nil {
@@ -903,17 +939,74 @@ func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJu
 			if invalidLayers[layer] {
 				continue
 			}
-			selections[layer] = normalizeParsedKnowledgeEvidenceLayerSelection(
+			decodedLayer, factsMalformed, missingAspectsMalformed := decodeKnowledgeEvidenceJudgeRawLayer(layerResult)
+			selections[layer] = normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
 				taskID,
 				layer,
-				layerResult,
+				decodedLayer,
 				expectedCandidates,
 				expectedTasks[taskID],
+				factsMalformed,
+				missingAspectsMalformed,
 			)
 		}
 		ret[taskID] = selections
 	}
 	return ret, nil
+}
+
+func decodeKnowledgeEvidenceJudgeRawLayer(raw knowledgeEvidenceJudgeRawResponseLayer) (knowledgeEvidenceJudgeResponseLayer, bool, bool) {
+	layer := knowledgeEvidenceJudgeResponseLayer{
+		Layer:                raw.Layer,
+		Decision:             raw.Decision,
+		SelectedCandidateIDs: append([]string(nil), raw.SelectedCandidateIDs...),
+	}
+	factsMalformed := decodeKnowledgeEvidenceJudgeFacts(raw.SupportedFacts, &layer.SupportedFacts) != nil
+	missingAspectsMalformed := decodeKnowledgeEvidenceJudgeMissingAspects(raw.MissingAspects, &layer.MissingAspects) != nil
+	if strings.TrimSpace(raw.Decision) == knowledgeEvidenceDecisionInsufficient && len(raw.SelectedCandidateIDs) == 0 {
+		if knowledgeEvidenceJudgeRawArrayIsMissingOrNull(raw.SupportedFacts) {
+			layer.SupportedFacts = nil
+			factsMalformed = false
+		}
+		if knowledgeEvidenceJudgeRawArrayIsMissingOrNull(raw.MissingAspects) {
+			layer.MissingAspects = nil
+			missingAspectsMalformed = false
+		}
+	}
+	return layer, factsMalformed, missingAspectsMalformed
+}
+
+func knowledgeEvidenceJudgeRawArrayIsMissingOrNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || strings.EqualFold(strings.TrimSpace(string(raw)), "null")
+}
+
+func decodeKnowledgeEvidenceJudgeFacts(raw json.RawMessage, target *[]knowledgeEvidenceFact) error {
+	if len(raw) == 0 || strings.EqualFold(strings.TrimSpace(string(raw)), "null") {
+		return fmt.Errorf("supportedFacts must be an array")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("supportedFacts contains trailing content")
+	}
+	return nil
+}
+
+func decodeKnowledgeEvidenceJudgeMissingAspects(raw json.RawMessage, target *[]string) error {
+	if len(raw) == 0 || strings.EqualFold(strings.TrimSpace(string(raw)), "null") {
+		return fmt.Errorf("missingAspects must be an array")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("missingAspects contains trailing content")
+	}
+	return nil
 }
 
 func defaultKnowledgeEvidenceLayerSelections(expectedLayers map[string]map[string]struct{}) map[string]knowledgeEvidenceLayerSelection {
@@ -943,6 +1036,26 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	expectedCandidates map[string]struct{},
 	expectedTask knowledgeEvidenceJudgeTask,
 ) knowledgeEvidenceLayerSelection {
+	return normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
+		taskID,
+		layer,
+		layerResult,
+		expectedCandidates,
+		expectedTask,
+		false,
+		false,
+	)
+}
+
+func normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
+	taskID string,
+	layer string,
+	layerResult knowledgeEvidenceJudgeResponseLayer,
+	expectedCandidates map[string]struct{},
+	expectedTask knowledgeEvidenceJudgeTask,
+	supportedFactsMalformed bool,
+	missingAspectsMalformed bool,
+) knowledgeEvidenceLayerSelection {
 	protocolInvalid := protocolInvalidKnowledgeEvidenceLayerSelection()
 	decision := strings.TrimSpace(layerResult.Decision)
 	switch decision {
@@ -964,8 +1077,13 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 		seenSelected[candidateID] = struct{}{}
 		selectedIDs = append(selectedIDs, candidateID)
 	}
+	directDecision := decision == knowledgeEvidenceDecisionDirectSingle || decision == knowledgeEvidenceDecisionDirectCombined
+	explicitSubjectGaps := knowledgeEvidenceSelectedCandidateExplicitSubjectGaps(expectedTask, layer, selectedIDs)
 	if len(selectedIDs) > 0 &&
-		knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(expectedTask, layer, selectedIDs) {
+		(knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(expectedTask, layer, selectedIDs) ||
+			(directDecision && knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(expectedTask, layer, selectedIDs)) ||
+			(directDecision && len(explicitSubjectGaps) > 0) ||
+			knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(expectedTask, layer, selectedIDs)) {
 		return protocolInvalid
 	}
 	selectedContainsHandoff := selectedKnowledgeEvidenceContainsHandoffDirective(expectedTask, layer, selectedIDs)
@@ -973,17 +1091,33 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
 		return protocolInvalid
 	}
-	modelFactsGroundSelectedCandidates := modelKnowledgeEvidenceFactsGroundEverySelectedCandidate(
-		expectedTask,
-		layer,
-		selectedIDs,
-		layerResult.SupportedFacts,
-	)
-	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
-	factsMalformed := err != nil
-	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
-	if err != nil {
-		return protocolInvalid
+	supportedFacts := []knowledgeEvidenceFact(nil)
+	factsMalformed := supportedFactsMalformed
+	if !factsMalformed {
+		var err error
+		supportedFacts, err = normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
+		factsMalformed = err != nil
+	}
+	modelFactsGroundSelectedCandidates := false
+	if !factsMalformed {
+		modelFactsGroundSelectedCandidates = modelKnowledgeEvidenceFactsGroundEverySelectedCandidate(
+			expectedTask,
+			layer,
+			selectedIDs,
+			supportedFacts,
+		)
+	}
+	missingAspects := []string(nil)
+	if !missingAspectsMalformed {
+		var err error
+		missingAspects, err = normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
+		missingAspectsMalformed = err != nil
+	}
+	if decision == knowledgeEvidenceDecisionPartial && len(explicitSubjectGaps) > 0 {
+		missingAspects = appendKnowledgeEvidenceMissingAspects(
+			missingAspects,
+			knowledgeEvidenceExplicitSubjectGapMissingAspects(expectedTask, explicitSubjectGaps),
+		)
 	}
 	intersectionDecision := decision == knowledgeEvidenceDecisionDirectCombined || decision == knowledgeEvidenceDecisionPartial
 	if intersectionDecision && len(selectedIDs) >= 2 && knowledgeEvidenceQueryAsksIntersection(expectedTask.Query) {
@@ -999,7 +1133,9 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 		modelFactCount := len(supportedFacts)
 		supportedFacts = groundedKnowledgeEvidenceFacts(expectedTask, layer, selectedIDs, supportedFacts)
 		modelFactsRequiredRepair = len(supportedFacts) != modelFactCount
+		groundedFactCount := len(supportedFacts)
 		supportedFacts = enrichKnowledgeEvidenceFactsFromSelectedFAQs(expectedTask, layer, selectedIDs, supportedFacts)
+		modelFactsRequiredRepair = modelFactsRequiredRepair || len(supportedFacts) != groundedFactCount
 	}
 	if !factsMalformed {
 		supportedFacts = finalizeKnowledgeEvidenceFactsForTask(expectedTask, supportedFacts)
@@ -1007,14 +1143,23 @@ func normalizeParsedKnowledgeEvidenceLayerSelection(
 	if decision == knowledgeEvidenceDecisionDirectCombined && len(selectedIDs) == 1 {
 		return protocolInvalid
 	}
-	needsFactRepair := factsMalformed || modelFactsRequiredRepair
+	partialMissingAspectsReconciled := false
+	if decision == knowledgeEvidenceDecisionPartial && !factsMalformed && !missingAspectsMalformed && len(selectedIDs) > 0 && !selectedHandoff {
+		reconciledMissingAspects := unresolvedModelKnowledgeEvidenceMissingAspects(expectedTask, supportedFacts, missingAspects)
+		partialMissingAspectsReconciled = len(reconciledMissingAspects) != len(missingAspects)
+	}
+	selectedTaskBoundCriticalValues := knowledgeEvidenceSelectedTaskBoundCriticalValues(expectedTask, layer, selectedIDs)
+	taskBoundCriticalValuesMissing := (decision == knowledgeEvidenceDecisionDirectSingle || decision == knowledgeEvidenceDecisionDirectCombined || decision == knowledgeEvidenceDecisionPartial) &&
+		len(selectedIDs) > 0 && !selectedHandoff &&
+		!knowledgeEvidenceFactsCoverCriticalValues(supportedFacts, selectedTaskBoundCriticalValues)
+	needsFactRepair := factsMalformed || missingAspectsMalformed || modelFactsRequiredRepair || taskBoundCriticalValuesMissing || partialMissingAspectsReconciled
 	mechanicallyMissingAspects := []string(nil)
 	if !factsMalformed && !selectedHandoff {
 		mechanicallyMissingAspects = strictMechanicalMissingKnowledgeEvidenceAspects(expectedTask, supportedFacts)
 	}
 	switch decision {
 	case knowledgeEvidenceDecisionInsufficient:
-		if factsMalformed || len(selectedIDs) != 0 || len(supportedFacts) != 0 {
+		if factsMalformed || missingAspectsMalformed || len(selectedIDs) != 0 || len(supportedFacts) != 0 {
 			return protocolInvalid
 		}
 		return knowledgeEvidenceLayerSelection{
@@ -1089,10 +1234,21 @@ func repairModelSelectedKnowledgeEvidenceLayer(
 			SelectedCandidateIDs: append([]string(nil), selectedCandidateIDs...),
 		}, true
 	}
+	directDecision := decision == knowledgeEvidenceDecisionDirectSingle || decision == knowledgeEvidenceDecisionDirectCombined
+	explicitSubjectGaps := knowledgeEvidenceSelectedCandidateExplicitSubjectGaps(task, layer, selectedCandidateIDs)
 	if knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(task, layer, selectedCandidateIDs) ||
+		(directDecision && knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, layer, selectedCandidateIDs)) ||
+		(directDecision && len(explicitSubjectGaps) > 0) ||
+		knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task, layer, selectedCandidateIDs) ||
 		(!modelFactsGroundSelectedCandidates &&
 			!knowledgeEvidenceSelectedCandidatesMatchTaskSubjects(task, layer, selectedCandidateIDs, decision)) {
 		return knowledgeEvidenceLayerSelection{}, false
+	}
+	if decision == knowledgeEvidenceDecisionPartial && len(explicitSubjectGaps) > 0 {
+		missingAspects = appendKnowledgeEvidenceMissingAspects(
+			missingAspects,
+			knowledgeEvidenceExplicitSubjectGapMissingAspects(task, explicitSubjectGaps),
+		)
 	}
 
 	selected := make(map[string]struct{}, len(selectedCandidateIDs))
@@ -1137,6 +1293,18 @@ func repairModelSelectedKnowledgeEvidenceLayer(
 	if len(facts) == 0 {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
+	taskBoundValuesComplete := true
+	if decision == knowledgeEvidenceDecisionDirectSingle || decision == knowledgeEvidenceDecisionDirectCombined {
+		facts, taskBoundValuesComplete = reconcileSelectedKnowledgeEvidenceTaskBoundCriticalValues(task, layer, selectedCandidateIDs, facts)
+		if !taskBoundValuesComplete {
+			return knowledgeEvidenceLayerSelection{}, false
+		}
+	} else {
+		// Partial evidence is allowed to leave an explicit quantity unresolved.
+		// Reconcile any quantity that is mechanically grounded, but let the
+		// missing-aspect pass below preserve what the selected FAQ did prove.
+		facts, taskBoundValuesComplete = reconcileSelectedKnowledgeEvidenceTaskBoundCriticalValues(task, layer, selectedCandidateIDs, facts)
+	}
 	mechanicallyMissingAspects := strictMechanicalMissingKnowledgeEvidenceAspects(task, facts)
 	switch decision {
 	case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined:
@@ -1144,9 +1312,18 @@ func repairModelSelectedKnowledgeEvidenceLayer(
 			return knowledgeEvidenceLayerSelection{}, false
 		}
 	case knowledgeEvidenceDecisionPartial:
+		missingAspects = unresolvedModelKnowledgeEvidenceMissingAspects(task, facts, missingAspects)
 		missingAspects = appendKnowledgeEvidenceMissingAspects(missingAspects, mechanicallyMissingAspects)
 		if len(missingAspects) == 0 {
-			return knowledgeEvidenceLayerSelection{}, false
+			if !taskBoundValuesComplete {
+				return knowledgeEvidenceLayerSelection{}, false
+			}
+			if len(selectedCandidateIDs) == 1 {
+				decision = knowledgeEvidenceDecisionDirectSingle
+			} else {
+				decision = knowledgeEvidenceDecisionDirectCombined
+			}
+			break
 		}
 		// Completeness must be checked against every grounded fact above, but the
 		// customer-facing partial answer may contain only facts relevant to the
@@ -1184,7 +1361,7 @@ func groundedKnowledgeEvidenceFacts(task knowledgeEvidenceJudgeTask, layer strin
 		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
 			continue
 		}
-		unit := knowledgeEvidenceCandidateGroundingParts(candidate, task.Query)
+		unit := knowledgeEvidenceCandidateGroundingParts(task, candidate)
 		if len(unit) > 0 {
 			evidenceUnits = append(evidenceUnits, unit)
 		}
@@ -1196,7 +1373,7 @@ func groundedKnowledgeEvidenceFacts(task knowledgeEvidenceJudgeTask, layer strin
 	grounded := make([]knowledgeEvidenceFact, 0, len(facts))
 	for _, fact := range facts {
 		for _, evidenceUnit := range evidenceUnits {
-			if knowledgeEvidenceFactGroundedByText(fact, evidenceUnit) {
+			if knowledgeEvidenceFactGroundedForTask(task, fact, evidenceUnit) {
 				grounded = append(grounded, fact)
 				break
 			}
@@ -1228,9 +1405,9 @@ func modelKnowledgeEvidenceFactsGroundEverySelectedCandidate(
 		if _, ok := selected[candidateID]; !ok {
 			continue
 		}
-		parts := knowledgeEvidenceCandidateGroundingParts(candidate, task.Query)
+		parts := knowledgeEvidenceCandidateGroundingParts(task, candidate)
 		for index, fact := range facts {
-			if knowledgeEvidenceFactGroundedByText(fact, parts) {
+			if knowledgeEvidenceFactGroundedForTask(task, fact, parts) {
 				factGrounded[index] = true
 				candidateGrounded[candidateID] = true
 			}
@@ -1249,10 +1426,19 @@ func modelKnowledgeEvidenceFactsGroundEverySelectedCandidate(
 	return true
 }
 
-func knowledgeEvidenceCandidateGroundingParts(candidate knowledgeEvidenceJudgeCandidate, query string) []string {
-	question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, query)
+func knowledgeEvidenceCandidateGroundingParts(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate) []string {
+	question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+	if !knowledgeEvidenceCandidateGroundingUnitMatchesSingleAspectSubject(task, question, answer) {
+		return nil
+	}
 	parts := []string{answer}
-	if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+	resolvedQuestion := false
+	if statement, ok := resolvedKnowledgeEvidenceFAQQuestionStatement(task, question, answer); ok {
+		parts = append(parts, statement)
+		resolvedQuestion = true
+	}
+	if !resolvedQuestion && (knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) ||
+		knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(task, answer)) {
 		parts = append(parts, strings.TrimSpace(question+" "+answer))
 	}
 	if strings.TrimSpace(question) == "" || strings.TrimSpace(answer) == "" {
@@ -1267,16 +1453,893 @@ func knowledgeEvidenceCandidateGroundingParts(candidate knowledgeEvidenceJudgeCa
 	return ret
 }
 
+func knowledgeEvidenceCandidateGroundingUnitMatchesSingleAspectSubject(task knowledgeEvidenceJudgeTask, question string, answer string) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if subject, guarded := knowledgeEvidenceImplicitSingleExistenceSubject(task); guarded {
+		requiredSubjects = []string{subject}
+	}
+	if len(requiredSubjects) != 1 {
+		return true
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	if !requiredKnowledgeEvidenceAspect(requiredAspects, "price") &&
+		!requiredKnowledgeEvidenceAspect(requiredAspects, "time") &&
+		!requiredKnowledgeEvidenceAspect(requiredAspects, "existence") {
+		return true
+	}
+	if requiredKnowledgeEvidenceAspect(requiredAspects, "price") &&
+		!knowledgeEvidenceCandidateMatchesImplicitSinglePriceSubject(task, knowledgeEvidenceJudgeCandidate{}, question, answer) {
+		return false
+	}
+	if requiredKnowledgeEvidenceAspect(requiredAspects, "existence") &&
+		!knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(task, knowledgeEvidenceJudgeCandidate{}, question, answer) {
+		return false
+	}
+	unitText := normalizeKnowledgeEvidenceSubjectForMatch(question + " " + answer)
+	return strings.Contains(unitText, requiredSubjects[0])
+}
+
+func knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(task knowledgeEvidenceJudgeTask, answer string) bool {
+	return knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjectsForAspect(task, answer, "")
+}
+
+func knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjectsForAspect(task knowledgeEvidenceJudgeTask, answer string, requiredAspect string) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) < 2 {
+		return false
+	}
+	if knowledgeEvidenceFAQAnswerUsesCompleteSubjectGroupAlias(task, answer, requiredAspect) {
+		return true
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	questionSubjectScopeAvailable := true
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(answer) {
+		compact := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		if !knowledgeEvidenceClauseHasCollectivePredicate(compact) {
+			if !knowledgeEvidenceCollectiveAnswerPreambleOnly(compact) {
+				questionSubjectScopeAvailable = false
+			}
+			continue
+		}
+		clauseSubjects := knowledgeEvidenceContainedSubjects(compact, requiredSubjects)
+		switch {
+		case len(clauseSubjects) == len(requiredSubjects):
+		case len(clauseSubjects) > 0:
+			questionSubjectScopeAvailable = false
+			continue
+		case !questionSubjectScopeAvailable || !knowledgeEvidenceCollectiveClauseCanInheritQuestionSubjects(compact):
+			questionSubjectScopeAvailable = false
+			continue
+		}
+		if len(requiredAspects) == 0 {
+			return true
+		}
+		if (requiredAspect == "existence" || (requiredAspect == "" && requiredKnowledgeEvidenceAspect(requiredAspects, "existence"))) &&
+			containsAny(compact, []string{"都有", "均有", "均配", "均提供"}) {
+			return true
+		}
+		for _, classified := range knowledgeEvidenceAnswerClauseAspects(clause) {
+			if (requiredAspect != "" && classified.Aspect == requiredAspect) ||
+				(requiredAspect == "" && requiredKnowledgeEvidenceAspect(requiredAspects, classified.Aspect)) {
+				return true
+			}
+		}
+		questionSubjectScopeAvailable = false
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQAnswerUsesCompleteSubjectGroupAlias(task knowledgeEvidenceJudgeTask, answer string, requiredAspect string) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) < 2 {
+		return false
+	}
+	entityType := ""
+	for _, entity := range task.Entities {
+		subject := normalizeKnowledgeEvidenceSubjectForMatch(normalizeKnowledgeEvidenceEntityText(entity))
+		if !knowledgeEvidenceContainsString(requiredSubjects, subject) {
+			continue
+		}
+		currentType := strings.ToLower(strings.TrimSpace(entity.Type))
+		if currentType == "" {
+			return false
+		}
+		if entityType == "" {
+			entityType = currentType
+			continue
+		}
+		if entityType != currentType {
+			return false
+		}
+	}
+	if entityType == "" {
+		return false
+	}
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(answer) {
+		if knowledgeEvidenceCompleteSubjectGroupAliasClauseCoversTask(task, entityType, clause, requiredAspect) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceCompleteSubjectGroupAliasClauseCoversTask(task knowledgeEvidenceJudgeTask, entityType string, clause string, requiredAspect string) bool {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+	aliases := knowledgeEvidenceCompleteSubjectGroupAliases(entityType)
+	if compact == "" || len(aliases) == 0 || !containsAny(compact, aliases) || containsAny(compact, []string{
+		"部分平台", "某个平台", "某些平台", "有的平台", "其他平台",
+		"部分房型", "某个房型", "某些房型", "有的房型", "其他房型",
+		"部分用品", "某个用品", "某些用品", "有的用品", "其他用品",
+		"部分设施", "某个设施", "某些设施", "有的设施", "其他设施",
+	}) {
+		return false
+	}
+
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	for _, classified := range knowledgeEvidenceAnswerClauseAspects(clause) {
+		if (requiredAspect != "" && classified.Aspect != requiredAspect) ||
+			(requiredAspect == "" && !requiredKnowledgeEvidenceAspect(requiredAspects, classified.Aspect)) {
+			continue
+		}
+		if classified.Aspect == "price" && !knowledgeEvidencePriceAliasClauseMatchesTaskPredicate(task.Query, clause) {
+			continue
+		}
+		withoutAlias := clause
+		for _, alias := range aliases {
+			withoutAlias = strings.ReplaceAll(withoutAlias, alias, "")
+		}
+		if !knowledgeEvidenceAspectClauseHasForeignSubject(classified.Aspect, withoutAlias, requiredSubjects) {
+			return true
+		}
+	}
+	if requiredAspect == "price" || (requiredAspect == "" && requiredKnowledgeEvidenceAspect(requiredAspects, "price")) {
+		claims := knowledgeEvidencePriceClaims(clause)
+		for _, classified := range knowledgeEvidenceAnswerClauseAspects(clause) {
+			if knowledgeEvidenceQueryAsksComparison(task.Query) {
+				if (classified.Aspect == "condition" || classified.Aspect == "scope") &&
+					knowledgeEvidencePriceClaimsContain(claims, "dynamic") {
+					return true
+				}
+				if classified.Aspect == "method" && containsAny(compact, []string{"对比", "比较", "选择"}) {
+					return true
+				}
+			}
+			if knowledgeEvidenceQueryAsksPriceBoundary(task.Query) {
+				if (classified.Aspect == "condition" || classified.Aspect == "scope") &&
+					containsAny(compact, []string{"平台", "权益", "调整", "情况", "为准", "而定", "取决于"}) {
+					return true
+				}
+				if classified.Aspect == "method" && containsAny(compact, []string{"对比", "比较", "选择", "联系"}) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidencePriceAliasClauseMatchesTaskPredicate(query string, clause string) bool {
+	claims := knowledgeEvidencePriceClaims(clause)
+	if knowledgeEvidenceQueryAsksDirectionalPriceComparison(query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "cheaper") ||
+			knowledgeEvidencePriceClaimsContain(claims, "dearer") ||
+			knowledgeEvidencePriceClaimCount(claims, "amount") >= 2
+	}
+	if knowledgeEvidenceQueryAsksComparison(query) {
+		if knowledgeEvidencePriceClaimsContain(claims, "equal") ||
+			knowledgeEvidencePriceClaimsContain(claims, "not_equal") ||
+			knowledgeEvidencePriceClaimCount(claims, "amount") >= 2 {
+			return true
+		}
+		return knowledgeEvidencePriceClaimsContain(claims, "free") &&
+			knowledgeEvidenceClauseHasCollectivePredicate(normalizeRuntimeKnowledgeQuery(clause))
+	}
+	if knowledgeEvidenceQueryAsksAbsolutePriceStatus(query) || knowledgeEvidenceQueryAsksPriceAmount(query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "free") ||
+			knowledgeEvidencePriceClaimsContain(claims, "charged") ||
+			knowledgeEvidencePriceClaimsContain(claims, "amount")
+	}
+	if knowledgeEvidenceQueryAsksPriceBoundary(query) {
+		return len(claims) > 0
+	}
+	return len(claims) > 0
+}
+
+func knowledgeEvidenceCompleteSubjectGroupAliases(entityType string) []string {
+	switch entityType {
+	case "company", "platform":
+		return []string{"不同平台", "各个平台", "各平台", "这些平台", "上述平台", "平台之间", "每个平台"}
+	case "room_type":
+		return []string{"不同房型", "各个房型", "各房型", "这些房型", "上述房型", "房型之间", "每种房型"}
+	case "supply":
+		return []string{"各类用品", "各项用品", "这些用品", "上述用品", "所有用品"}
+	case "facility":
+		return []string{"各类设施", "各项设施", "这些设施", "上述设施", "所有设施"}
+	default:
+		return nil
+	}
+}
+
+func knowledgeEvidenceClauseHasCollectivePredicate(compact string) bool {
+	return containsAny(compact, []string{"都是", "都有", "均有", "均为", "均是", "均配", "均提供", "全部", "两者", "二者", "各自", "分别"})
+}
+
+func knowledgeEvidenceCollectiveAnswerPreambleOnly(compact string) bool {
+	switch strings.Trim(compact, "，,。.!！?？；;：:") {
+	case "", "是", "是的", "对", "对的", "没错", "确实", "可以", "有的", "答案是", "回复是":
+		return true
+	default:
+		return false
+	}
+}
+
+func knowledgeEvidenceCollectiveClauseCanInheritQuestionSubjects(compact string) bool {
+	earliest := -1
+	for _, marker := range []string{"都是", "都有", "均有", "均为", "均是", "均配", "均提供", "全部", "两者", "二者", "各自", "分别"} {
+		if index := strings.Index(compact, marker); index >= 0 && (earliest < 0 || index < earliest) {
+			earliest = index
+		}
+	}
+	if earliest < 0 {
+		return false
+	}
+	prefix := strings.Trim(compact[:earliest], "，,。.!！?？；;：:")
+	return knowledgeEvidenceCollectiveAnswerPreambleOnly(prefix)
+}
+
+func knowledgeEvidenceFactGroundedForTask(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact, evidenceParts []string) bool {
+	evidenceParts = knowledgeEvidenceGroundingPartsCompatibleWithFact(fact, evidenceParts)
+	if len(evidenceParts) == 0 {
+		return false
+	}
+	if !knowledgeEvidenceFactSubjectClaimsGroundedByParts(task, fact, evidenceParts) {
+		return false
+	}
+	if !knowledgeEvidenceFactQuantityBindingsGroundedByParts(task, fact, evidenceParts) {
+		return false
+	}
+	if !knowledgeEvidencePriceFactPredicateGroundedByParts(fact, evidenceParts) {
+		return false
+	}
+	if !knowledgeEvidenceFactAspectBindingsGroundedByParts(task, fact, evidenceParts) {
+		return false
+	}
+	return knowledgeEvidenceFactGroundedByText(fact, evidenceParts)
+}
+
+func knowledgeEvidenceGroundingPartsCompatibleWithFact(fact knowledgeEvidenceFact, evidenceParts []string) []string {
+	ret := make([]string, 0, len(evidenceParts)*2)
+	for _, part := range evidenceParts {
+		propositions := splitKnowledgeEvidenceGroundingPropositions(part)
+		if len(propositions) == 0 && strings.TrimSpace(part) != "" {
+			propositions = []string{part}
+		}
+		for _, proposition := range propositions {
+			units := []string{proposition}
+			clauses := splitKnowledgeEvidenceAnswerClauses(proposition)
+			qualifiedClauses := 0
+			for _, clause := range clauses {
+				if len(knowledgeEvidenceBindingQualifierSignatures(clause)) > 0 {
+					qualifiedClauses++
+				}
+			}
+			// Split only unqualified prose or genuinely parallel qualified clauses.
+			// A single trailing qualifier (for example "可以办理，仅限退房前")
+			// governs the preceding proposition and must not be stripped away.
+			if len(knowledgeEvidenceBindingQualifierSignatures(proposition)) == 0 || qualifiedClauses > 1 {
+				units = append(units, clauses...)
+			} else if strings.TrimSpace(fact.Aspect) == "time" {
+				// A clock period such as "晚上" qualifies only its own time slot in
+				// "早餐早上七点开始，晚上九点结束". Keep those concrete clock
+				// clauses independently groundable without weakening non-time trailing
+				// restrictions such as "仅限退房前".
+				for _, clause := range clauses {
+					if knowledgeEvidenceIndividualTimePattern.MatchString(clause) {
+						units = append(units, clause)
+					}
+				}
+			}
+			for _, unit := range units {
+				unit = strings.TrimSpace(unit)
+				if unit == "" || !knowledgeEvidenceFactPreservesBindingQualifiers(fact, unit) {
+					continue
+				}
+				ret = appendIfMissing(ret, unit)
+			}
+		}
+	}
+	return ret
+}
+
+func splitKnowledgeEvidenceGroundingPropositions(text string) []string {
+	parts := strings.FieldsFunc(strings.TrimSpace(text), func(r rune) bool {
+		switch r {
+		case '\n', '\r', '。', '.', '！', '!', '？', '?', '；', ';':
+			return true
+		default:
+			return false
+		}
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			ret = append(ret, part)
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceFactPreservesBindingQualifiers(fact knowledgeEvidenceFact, evidence string) bool {
+	required := knowledgeEvidenceBindingQualifierSignatures(evidence)
+	factText := strings.TrimSpace(fact.Statement + " " + strings.Join(fact.CriticalValues, " "))
+	actual := knowledgeEvidenceBindingQualifierSignatures(factText)
+	for _, signature := range required {
+		if !knowledgeEvidenceContainsString(actual, signature) {
+			return false
+		}
+	}
+	for _, signature := range actual {
+		if !knowledgeEvidenceContainsString(required, signature) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceBindingQualifierSignatures(text string) []string {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	if compact == "" {
+		return nil
+	}
+	ret := make([]string, 0, 3)
+	for _, item := range []struct {
+		signature string
+		markers   []string
+	}{
+		{signature: "before_checkout", markers: []string{"退房前", "离店前"}},
+		{signature: "after_checkout", markers: []string{"退房后", "离店后"}},
+		{signature: "before_checkin", markers: []string{"入住前", "到店前"}},
+		{signature: "after_checkin", markers: []string{"入住后", "登记后", "办理入住后"}},
+		{signature: "during_stay", markers: []string{"入住期间", "住店期间", "在住期间"}},
+		{signature: "checkin_day", markers: []string{"入住当天", "入住当日"}},
+		{signature: "checkout_day", markers: []string{"退房当天", "退房当日", "离店当天", "离店当日"}},
+	} {
+		if containsAny(compact, item.markers) {
+			ret = appendIfMissing(ret, item.signature)
+		}
+	}
+	if containsAny(compact, []string{"当天", "当日"}) &&
+		!knowledgeEvidenceContainsString(ret, "checkin_day") && !knowledgeEvidenceContainsString(ret, "checkout_day") {
+		ret = appendIfMissing(ret, "same_day")
+	}
+	for _, condition := range knowledgeEvidenceConflictConditions(compact) {
+		ret = appendIfMissing(ret, "condition:"+condition)
+	}
+	if target, ok := knowledgeEvidenceBindingRestrictionTarget(compact); ok {
+		ret = appendIfMissing(ret, "restricted:"+target)
+	}
+	return ret
+}
+
+func knowledgeEvidenceBindingRestrictionTarget(compact string) (string, bool) {
+	markerIndex := -1
+	markerLength := 0
+	for _, marker := range []string{"仅限", "只限", "限于", "只能", "仅可", "只可", "必须在", "须在", "需在", "仅对", "只对", "只有"} {
+		if index := strings.Index(compact, marker); index >= 0 && (markerIndex < 0 || index < markerIndex) {
+			markerIndex = index
+			markerLength = len(marker)
+		}
+	}
+	if markerIndex < 0 {
+		return "", false
+	}
+	target := strings.Trim(compact[markerIndex+markerLength:], "在于，,。.!！?？；;：:")
+	for _, boundary := range []string{"才可以", "才可", "可以", "可使用", "使用", "享受", "办理", "领取", "参加", "兑换", "预订", "提供", "开放", "适用"} {
+		if index := strings.Index(target, boundary); index > 0 {
+			target = target[:index]
+		}
+	}
+	target = strings.Trim(target, "在于，,。.!！?？；;：:")
+	switch {
+	case strings.Contains(target, "非会员"):
+		return "non_member", true
+	case strings.Contains(target, "会员"):
+		return "member", true
+	case strings.Contains(target, "住店客人") || strings.Contains(target, "住客") || strings.Contains(target, "入住客人"):
+		return "staying_guest", true
+	}
+	if target == "" {
+		return normalizeRuntimeKnowledgeQuery(compact), true
+	}
+	runes := []rune(target)
+	if len(runes) > 16 {
+		target = string(runes[:16])
+	}
+	return target, true
+}
+
+func knowledgeEvidenceFAQAnswerHasBindingQualifier(answer string) bool {
+	return len(knowledgeEvidenceBindingQualifierSignatures(answer)) > 0
+}
+
+func knowledgeEvidenceFactSubjectClaimsGroundedByParts(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact, evidenceParts []string) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) < 2 {
+		return true
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	factCoversRequiredAspect := false
+	for _, aspect := range requiredAspects {
+		if knowledgeEvidenceFactSupportsAspect(fact, aspect) {
+			factCoversRequiredAspect = true
+			break
+		}
+	}
+	if !factCoversRequiredAspect {
+		return true
+	}
+
+	factText := normalizeKnowledgeEvidenceSubjectForMatch(fact.Statement)
+	evidenceText := normalizeKnowledgeEvidenceSubjectForMatch(strings.Join(evidenceParts, " "))
+	mentionedSubjects := 0
+	for _, subject := range requiredSubjects {
+		if subject == "" || !strings.Contains(factText, subject) {
+			continue
+		}
+		mentionedSubjects++
+		if !strings.Contains(evidenceText, subject) {
+			return false
+		}
+	}
+	if mentionedSubjects < len(requiredSubjects) && containsAny(factText, []string{"都", "均", "全部", "两者", "二者", "各自", "分别"}) {
+		for _, subject := range requiredSubjects {
+			if subject != "" && !strings.Contains(evidenceText, subject) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceFactQuantityBindingsGroundedByParts(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact, evidenceParts []string) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) == 0 || len(knowledgeEvidenceStrictQuantityPattern.FindAllString(fact.Statement, -1)) == 0 {
+		return true
+	}
+	bindingsChecked := 0
+	for _, subject := range requiredSubjects {
+		for _, occurrence := range knowledgeEvidenceQuantityOccurrences(fact.Statement, subject) {
+			allowImplicit := len(requiredSubjects) == 1
+			if occurrence.SubjectRelation != "required" && !(allowImplicit && occurrence.SubjectRelation == "implicit") {
+				continue
+			}
+			bindingsChecked++
+			if !knowledgeEvidencePartsContainSubjectQuantityBinding(evidenceParts, subject, occurrence.Value, allowImplicit) {
+				return false
+			}
+		}
+	}
+	return bindingsChecked > 0
+}
+
+func knowledgeEvidencePartsContainSubjectQuantityBinding(parts []string, subject string, expected string, allowImplicit bool) bool {
+	for _, part := range parts {
+		units := append([]string{part}, splitKnowledgeEvidenceAnswerClauses(part)...)
+		for _, unit := range units {
+			for _, occurrence := range knowledgeEvidenceQuantityOccurrences(unit, subject) {
+				bindingMatches := occurrence.SubjectRelation == "required" || (allowImplicit && occurrence.SubjectRelation == "implicit")
+				if bindingMatches && knowledgeEvidenceCriticalValuesEquivalent(occurrence.Value, expected) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+type knowledgeEvidenceSubjectAspectBinding struct {
+	Subject string
+	Values  []string
+}
+
+type knowledgeEvidencePriceClaim struct {
+	Kind  string
+	Value string
+}
+
+func knowledgeEvidencePriceClaims(text string) []knowledgeEvidencePriceClaim {
+	clauses := splitKnowledgeEvidenceAnswerClauses(text)
+	if len(clauses) == 0 {
+		clauses = []string{strings.TrimSpace(text)}
+	}
+	ret := make([]knowledgeEvidencePriceClaim, 0, 4)
+	for _, clause := range clauses {
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		if compact == "" {
+			continue
+		}
+		dynamic := containsAny(compact, []string{
+			"免费政策", "收费政策", "价格政策", "费用政策", "收费标准", "平台权益", "平台的权益", "权益不一样", "权益不同", "价格实时调整",
+			"价格自动调整", "价格会调整", "价格会变动", "价格可能调整", "以平台为准", "以当天为准",
+		})
+		if dynamic {
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "dynamic"})
+		}
+
+		switch {
+		case containsAny(compact, []string{
+			"价格不一样", "费用不一样", "收费不一样", "金额不一样", "价位不一样",
+			"价格是不一样", "费用是不一样", "收费是不一样", "金额是不一样", "价位是不一样",
+			"价格不同", "费用不同", "收费不同", "金额不同", "价位不同",
+			"价格有区别", "费用有区别", "收费有区别", "存在价差",
+		}):
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "not_equal"})
+		case containsAny(compact, []string{
+			"价格一样", "费用一样", "收费一样", "金额一样", "价位一样",
+			"价格是一样", "费用是一样", "收费是一样", "金额是一样", "价位是一样",
+			"价格相同", "费用相同", "收费相同", "金额相同", "价位相同", "同价",
+		}):
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "equal"})
+		}
+		if containsAny(compact, []string{"更便宜", "价格更低", "费用更低", "收费更低", "更划算"}) {
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "cheaper"})
+		}
+		if containsAny(compact, []string{"更贵", "价格更高", "费用更高", "收费更高"}) {
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "dearer"})
+		}
+
+		for _, value := range knowledgeEvidencePriceValuePattern.FindAllString(clause, -1) {
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{
+				Kind:  "amount",
+				Value: normalizeRuntimeKnowledgeQuery(value),
+			})
+		}
+
+		partialBoundary := containsAny(compact, []string{
+			"不一定免费", "不一定收费", "不是都免费", "并非都免费", "并不是都免费", "不全免费",
+			"部分免费", "部分收费", "有的平台免费", "有的平台收费", "有的免费", "有的收费",
+		})
+		if partialBoundary || dynamic {
+			continue
+		}
+		switch {
+		case containsAny(compact, []string{
+			"不收费", "无需收费", "不需收费", "不用收费", "不需要收费",
+			"无需付费", "不需付费", "不用付费", "不需要付费", "不付费", "不要钱",
+		}):
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "free"})
+		case containsAny(compact, []string{
+			"不免费", "并非免费", "并不是免费", "不是免费", "需要付费", "需付费", "要付费", "必须付费", "要收费", "需要收费", "需收费", "要钱",
+		}):
+			ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "charged"})
+		default:
+			if strings.Contains(compact, "免费") {
+				ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "free"})
+			}
+			if strings.Contains(compact, "收费") || strings.Contains(compact, "付费") {
+				ret = appendKnowledgeEvidencePriceClaim(ret, knowledgeEvidencePriceClaim{Kind: "charged"})
+			}
+		}
+	}
+	return ret
+}
+
+func appendKnowledgeEvidencePriceClaim(values []knowledgeEvidencePriceClaim, claim knowledgeEvidencePriceClaim) []knowledgeEvidencePriceClaim {
+	claim.Kind = strings.TrimSpace(claim.Kind)
+	claim.Value = strings.TrimSpace(claim.Value)
+	if claim.Kind == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing.Kind == claim.Kind && existing.Value == claim.Value {
+			return values
+		}
+	}
+	return append(values, claim)
+}
+
+func knowledgeEvidencePriceClaimsContain(claims []knowledgeEvidencePriceClaim, kind string) bool {
+	for _, claim := range claims {
+		if claim.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidencePriceClaimsContainClaim(claims []knowledgeEvidencePriceClaim, wanted knowledgeEvidencePriceClaim) bool {
+	for _, claim := range claims {
+		if claim.Kind == wanted.Kind && (wanted.Value == "" || claim.Value == wanted.Value) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidencePriceCriticalValues(text string) []string {
+	ret := make([]string, 0, 3)
+	for _, claim := range knowledgeEvidencePriceClaims(text) {
+		switch claim.Kind {
+		case "free":
+			ret = appendIfMissing(ret, "免费")
+		case "charged":
+			ret = appendIfMissing(ret, "收费")
+		case "amount":
+			ret = appendIfMissing(ret, claim.Value)
+		case "equal":
+			ret = appendIfMissing(ret, "价格相同")
+		case "not_equal":
+			ret = appendIfMissing(ret, "价格不同")
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidencePriceFactPredicateGroundedByParts(fact knowledgeEvidenceFact, evidenceParts []string) bool {
+	if strings.TrimSpace(fact.Aspect) != "price" {
+		return true
+	}
+	expected := knowledgeEvidencePriceClaims(fact.Statement + " " + strings.Join(fact.CriticalValues, " "))
+	if len(expected) == 0 {
+		return true
+	}
+	actual := make([]knowledgeEvidencePriceClaim, 0, len(expected))
+	for _, part := range evidenceParts {
+		for _, claim := range knowledgeEvidencePriceClaims(part) {
+			actual = appendKnowledgeEvidencePriceClaim(actual, claim)
+		}
+	}
+	for _, claim := range expected {
+		if !knowledgeEvidencePriceClaimsContainClaim(actual, claim) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceFactAspectBindingsGroundedByParts(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact, evidenceParts []string) bool {
+	if fact.Aspect != "price" && fact.Aspect != "time" {
+		return true
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) == 0 {
+		return true
+	}
+	expected, ambiguous := knowledgeEvidenceSubjectAspectBindings(
+		fact.Statement,
+		requiredSubjects,
+		fact.Aspect,
+		fact.CriticalValues,
+	)
+	if ambiguous {
+		statement := normalizeRuntimeKnowledgeQuery(fact.Statement)
+		for _, part := range evidenceParts {
+			if statement != "" && strings.Contains(normalizeRuntimeKnowledgeQuery(part), statement) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(expected) == 0 {
+		return true
+	}
+	actual := make(map[string][]string, len(requiredSubjects))
+	for _, part := range evidenceParts {
+		bindings, partAmbiguous := knowledgeEvidenceSubjectAspectBindings(part, requiredSubjects, fact.Aspect, nil)
+		if partAmbiguous {
+			continue
+		}
+		for _, binding := range bindings {
+			actual[binding.Subject] = appendKnowledgeEvidenceBindingValues(actual[binding.Subject], binding.Values)
+		}
+	}
+	for _, binding := range expected {
+		for _, value := range binding.Values {
+			if !knowledgeEvidenceBindingValuesContain(actual[binding.Subject], value) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceSubjectAspectBindings(
+	text string,
+	requiredSubjects []string,
+	aspect string,
+	fallbackValues []string,
+) ([]knowledgeEvidenceSubjectAspectBinding, bool) {
+	if len(requiredSubjects) == 0 {
+		return nil, false
+	}
+	bindings := make(map[string][]string, len(requiredSubjects))
+	activeSubjects := []string(nil)
+	clauses := splitKnowledgeEvidenceAnswerClauses(text)
+	if len(clauses) == 0 {
+		clauses = []string{strings.TrimSpace(text)}
+	}
+	for _, clause := range clauses {
+		clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		clauseSubjects := knowledgeEvidenceContainedSubjects(clauseText, requiredSubjects)
+		values := knowledgeEvidenceAspectBindingValues(aspect, clause)
+		if len(clauseSubjects) > 0 {
+			activeSubjects = append([]string(nil), clauseSubjects...)
+		}
+		if len(values) == 0 {
+			continue
+		}
+		if len(clauseSubjects) == 0 {
+			switch {
+			case len(activeSubjects) > 0 && !knowledgeEvidenceAspectClauseHasForeignSubject(aspect, clause, requiredSubjects):
+				clauseSubjects = activeSubjects
+			case len(requiredSubjects) == 1 && !knowledgeEvidenceAspectClauseHasForeignSubject(aspect, clause, requiredSubjects):
+				clauseSubjects = requiredSubjects
+			case len(requiredSubjects) > 1 && knowledgeEvidenceClauseHasCollectivePredicate(clauseText):
+				clauseSubjects = requiredSubjects
+			default:
+				continue
+			}
+		}
+		switch {
+		case len(clauseSubjects) == 1:
+			bindings[clauseSubjects[0]] = appendKnowledgeEvidenceBindingValues(bindings[clauseSubjects[0]], values)
+		case len(values) == 1 && knowledgeEvidenceClauseHasCollectivePredicate(clauseText):
+			for _, subject := range clauseSubjects {
+				bindings[subject] = appendKnowledgeEvidenceBindingValues(bindings[subject], values)
+			}
+		case len(values) == len(clauseSubjects) && containsAny(clauseText, []string{"分别", "各自"}):
+			for index, subject := range knowledgeEvidenceSubjectsInTextOrder(clause, clauseSubjects) {
+				bindings[subject] = appendKnowledgeEvidenceBindingValues(bindings[subject], []string{values[index]})
+			}
+		default:
+			return nil, true
+		}
+	}
+	if len(bindings) == 0 && len(fallbackValues) > 0 {
+		values := knowledgeEvidenceAspectBindingValues(aspect, strings.Join(fallbackValues, " "))
+		switch {
+		case len(requiredSubjects) == 1:
+			bindings[requiredSubjects[0]] = appendKnowledgeEvidenceBindingValues(bindings[requiredSubjects[0]], values)
+		case len(values) == 1 && knowledgeEvidenceClauseHasCollectivePredicate(normalizeKnowledgeEvidenceSubjectForMatch(text)):
+			for _, subject := range requiredSubjects {
+				bindings[subject] = appendKnowledgeEvidenceBindingValues(bindings[subject], values)
+			}
+		}
+	}
+	ret := make([]knowledgeEvidenceSubjectAspectBinding, 0, len(bindings))
+	for _, subject := range requiredSubjects {
+		if len(bindings[subject]) == 0 {
+			continue
+		}
+		ret = append(ret, knowledgeEvidenceSubjectAspectBinding{Subject: subject, Values: bindings[subject]})
+	}
+	return ret, false
+}
+
+func knowledgeEvidenceSubjectsInTextOrder(text string, subjects []string) []string {
+	type positionedSubject struct {
+		subject string
+		index   int
+	}
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	positioned := make([]positionedSubject, 0, len(subjects))
+	for _, subject := range subjects {
+		if index := strings.Index(compact, subject); index >= 0 {
+			positioned = append(positioned, positionedSubject{subject: subject, index: index})
+		}
+	}
+	for left := 0; left < len(positioned); left++ {
+		for right := left + 1; right < len(positioned); right++ {
+			if positioned[right].index < positioned[left].index {
+				positioned[left], positioned[right] = positioned[right], positioned[left]
+			}
+		}
+	}
+	ret := make([]string, 0, len(positioned))
+	for _, item := range positioned {
+		ret = append(ret, item.subject)
+	}
+	return ret
+}
+
+func knowledgeEvidenceAspectBindingValues(aspect string, text string) []string {
+	ret := make([]string, 0, 4)
+	switch aspect {
+	case "price":
+		for _, claim := range knowledgeEvidencePriceClaims(text) {
+			switch claim.Kind {
+			case "amount":
+				ret = appendIfMissing(ret, claim.Value)
+			case "free", "charged", "equal", "not_equal", "cheaper", "dearer", "dynamic":
+				ret = appendIfMissing(ret, claim.Kind)
+			}
+		}
+	case "time":
+		for _, value := range knowledgeEvidenceIndividualTimePattern.FindAllString(text, -1) {
+			ret = appendIfMissing(ret, normalizeKnowledgeEvidenceClockTime(value))
+		}
+		for _, value := range knowledgeEvidenceDurationValuePattern.FindAllString(text, -1) {
+			ret = appendIfMissing(ret, normalizeRuntimeKnowledgeQuery(value))
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceAspectClauseHasForeignSubject(aspect string, clause string, requiredSubjects []string) bool {
+	clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+	if len(knowledgeEvidenceContainedSubjects(clauseText, requiredSubjects)) > 0 {
+		return false
+	}
+	switch aspect {
+	case "time":
+		return knowledgeEvidenceTimeFactHasExplicitSubject(clause)
+	case "price":
+		markerIndex := -1
+		for _, marker := range []string{"并不是免费", "并非免费", "不是免费", "不免费", "不收费", "免费", "收费", "价格", "费用", "金额", "元", "块", "折"} {
+			if index := strings.Index(clauseText, marker); index >= 0 && (markerIndex < 0 || index < markerIndex) {
+				markerIndex = index
+			}
+		}
+		if markerIndex <= 0 {
+			return false
+		}
+		prefix := strings.Trim(clauseText[:markerIndex], "的了都均为是，,。；;！!？?")
+		for _, discoursePrefix := range []string{"但是", "不过", "其实", "实际", "是的", "对的", "但"} {
+			prefix = strings.TrimPrefix(prefix, discoursePrefix)
+		}
+		for _, marker := range []string{"工作日", "周末", "节假日", "每天", "每日", "目前", "现在"} {
+			prefix = strings.ReplaceAll(prefix, marker, "")
+		}
+		prefix = knowledgeEvidenceStrictQuantityPattern.ReplaceAllString(prefix, "")
+		prefix = strings.NewReplacer(
+			"每个房间", "", "每间房", "", "房间内", "", "房内", "", "客房内", "",
+			"本房间", "", "酒店内", "", "门店内", "", "本店内", "", "店内", "",
+		).Replace(prefix)
+		prefix = strings.Trim(prefix, "的了都均为是，,。；;！!？?")
+		return len([]rune(strings.TrimSpace(prefix))) >= 2
+	default:
+		return false
+	}
+}
+
+func appendKnowledgeEvidenceBindingValues(existing []string, values []string) []string {
+	ret := append([]string(nil), existing...)
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" && !knowledgeEvidenceBindingValuesContain(ret, value) {
+			ret = append(ret, value)
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceBindingValuesContain(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == strings.TrimSpace(expected) {
+			return true
+		}
+	}
+	return false
+}
+
 func knowledgeEvidenceFactGroundedByText(fact knowledgeEvidenceFact, evidenceParts []string) bool {
 	statement := normalizeRuntimeKnowledgeQuery(fact.Statement)
 	if statement == "" {
 		return false
 	}
 	for _, value := range fact.CriticalValues {
-		normalizedValue := normalizeRuntimeKnowledgeQuery(value)
-		if normalizedValue == "" || !knowledgeEvidencePartsContainValue(evidenceParts, normalizedValue) {
+		if !knowledgeEvidenceCriticalValueGroundedByParts(fact, value, evidenceParts) {
 			return false
 		}
+	}
+	// Price wording has many polarity-preserving equivalents (for example
+	// "免费", "不收费" and "无需付费"). Once canonical price claims and
+	// critical values agree, generic lexical polarity and n-gram checks would
+	// only reject valid synonyms. Task-level subject and scope grounding has
+	// already run before this helper on the production path.
+	if strings.TrimSpace(fact.Aspect) == "price" &&
+		len(knowledgeEvidencePriceClaims(fact.Statement+" "+strings.Join(fact.CriticalValues, " "))) > 0 {
+		return knowledgeEvidencePriceFactPredicateGroundedByParts(fact, evidenceParts)
 	}
 
 	bestSimilarity := 0.0
@@ -1308,6 +2371,31 @@ func knowledgeEvidenceFactGroundedByText(fact knowledgeEvidenceFact, evidencePar
 	return polarityMatched && bestSimilarity >= minimumSimilarity
 }
 
+func knowledgeEvidenceCriticalValueGroundedByParts(fact knowledgeEvidenceFact, value string, evidenceParts []string) bool {
+	normalizedValue := normalizeRuntimeKnowledgeQuery(value)
+	if normalizedValue == "" {
+		return false
+	}
+	if strings.TrimSpace(fact.Aspect) == "price" {
+		expected := knowledgeEvidencePriceClaims(value)
+		if len(expected) > 0 {
+			actual := make([]knowledgeEvidencePriceClaim, 0, len(expected))
+			for _, part := range evidenceParts {
+				for _, claim := range knowledgeEvidencePriceClaims(part) {
+					actual = appendKnowledgeEvidencePriceClaim(actual, claim)
+				}
+			}
+			for _, claim := range expected {
+				if !knowledgeEvidencePriceClaimsContainClaim(actual, claim) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return knowledgeEvidencePartsContainValue(evidenceParts, normalizedValue)
+}
+
 func knowledgeEvidencePartsContainValue(parts []string, normalizedValue string) bool {
 	for _, part := range parts {
 		if strings.Contains(normalizeRuntimeKnowledgeQuery(part), normalizedValue) {
@@ -1331,8 +2419,221 @@ func knowledgeEvidenceFAQAnswerConfirmsQuestion(answer string) bool {
 	return false
 }
 
+func knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task knowledgeEvidenceJudgeTask, question string, answer string) bool {
+	if !knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+		return false
+	}
+	if _, guidance := knowledgeEvidenceGuidanceRequirement(answer); guidance != "" {
+		return false
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if knowledgeEvidenceFAQAnswerMentionsOnlyPartOfRequiredSubjects(answer, requiredSubjects) {
+		return false
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	queryQuantities := knowledgeEvidenceTaskBoundCriticalValues(question)
+	clauses := splitKnowledgeEvidenceAnswerClauses(answer)
+	for _, clause := range clauses {
+		if knowledgeEvidenceTextHasUncertaintyBoundary(clause) {
+			clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+			for _, subject := range requiredSubjects {
+				if subject != "" && strings.Contains(clauseText, subject) {
+					return false
+				}
+			}
+			if knowledgeEvidenceUncertaintyTouchesRequiredAspect(requiredAspects, clause) {
+				return false
+			}
+		}
+		if !knowledgeEvidenceTextHasNegativeBoundary(clause) {
+			continue
+		}
+		clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		for _, subject := range requiredSubjects {
+			if subject != "" && strings.Contains(clauseText, subject) {
+				return false
+			}
+		}
+		if knowledgeEvidenceNegativeClauseTouchesRequiredAspect(requiredAspects, clause) {
+			return false
+		}
+		anchor := normalizeKnowledgeEvidenceSubjectForMatch(knowledgeEvidenceNegativeBoundaryAnchor(clause))
+		questionText := normalizeKnowledgeEvidenceSubjectForMatch(question)
+		if anchor != "" && (strings.Contains(questionText, anchor) || strings.Contains(anchor, questionText)) {
+			return false
+		}
+		if containsAny(anchor, []string{"提供", "服务", "支持", "安排", "办理"}) &&
+			!containsAny(clauseText, []string{"预约", "押金", "付费", "收费", "费用", "房卡", "刷脸"}) {
+			return false
+		}
+		for _, expected := range queryQuantities {
+			expectedUnit := knowledgeEvidenceQuantityUnit(expected)
+			for _, actual := range knowledgeEvidenceTaskBoundCriticalValues(clause) {
+				if knowledgeEvidenceQuantityUnit(actual) != expectedUnit {
+					continue
+				}
+				if !knowledgeEvidenceCriticalValuesEquivalent(actual, expected) || strings.Contains(clauseText, normalizeRuntimeKnowledgeQuery(expected)) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceNegativeClauseTouchesRequiredAspect(requiredAspects []string, clause string) bool {
+	for _, classified := range knowledgeEvidenceAnswerClauseAspects(clause) {
+		if classified.Aspect == "existence" || classified.Aspect == "other" {
+			continue
+		}
+		if requiredKnowledgeEvidenceAspect(requiredAspects, classified.Aspect) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceFAQAnswerMentionsOnlyPartOfRequiredSubjects(answer string, requiredSubjects []string) bool {
+	if len(requiredSubjects) < 2 {
+		return false
+	}
+	answerText := normalizeKnowledgeEvidenceSubjectForMatch(answer)
+	mentioned := 0
+	for _, subject := range requiredSubjects {
+		if subject != "" && strings.Contains(answerText, subject) {
+			mentioned++
+		}
+	}
+	return mentioned > 0 && mentioned < len(requiredSubjects)
+}
+
+func knowledgeEvidenceSelectedCandidateExplicitSubjectGaps(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+) []string {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) < 2 || len(selectedCandidateIDs) == 0 {
+		return nil
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	covered := make(map[string]struct{}, len(requiredSubjects))
+	explicitlyMentioned := false
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		questionText := normalizeKnowledgeEvidenceSubjectForMatch(question)
+		answerText := normalizeKnowledgeEvidenceSubjectForMatch(answer)
+		answerSubjects := knowledgeEvidenceContainedSubjects(answerText, requiredSubjects)
+		questionSubjects := knowledgeEvidenceContainedSubjects(questionText, requiredSubjects)
+		for _, subject := range answerSubjects {
+			explicitlyMentioned = true
+			covered[subject] = struct{}{}
+		}
+		inheritQuestionSubjects := knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(task, answer) ||
+			(len(answerSubjects) == 0 && knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer))
+		if !inheritQuestionSubjects && len(questionSubjects) > 0 && len(questionSubjects) < len(requiredSubjects) {
+			inheritQuestionSubjects = knowledgeEvidenceSubjectSetContainedBy(answerSubjects, questionSubjects)
+		}
+		if inheritQuestionSubjects {
+			for _, subject := range questionSubjects {
+				explicitlyMentioned = true
+				covered[subject] = struct{}{}
+			}
+		} else if len(answerSubjects) == 0 {
+			for _, classified := range knowledgeEvidenceAnswerClauseAspects(answer) {
+				if requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), classified.Aspect) {
+					explicitlyMentioned = true
+					break
+				}
+			}
+		}
+	}
+	if !explicitlyMentioned || len(covered) == len(requiredSubjects) {
+		return nil
+	}
+	missingSubjects := make([]string, 0, len(requiredSubjects)-len(covered))
+	for _, subject := range requiredSubjects {
+		if _, ok := covered[subject]; !ok {
+			missingSubjects = append(missingSubjects, subject)
+		}
+	}
+	return missingSubjects
+}
+
+func knowledgeEvidenceSubjectSetContainedBy(subjects []string, allowed []string) bool {
+	if len(subjects) == 0 {
+		return false
+	}
+	for _, subject := range subjects {
+		if !knowledgeEvidenceContainsString(allowed, subject) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceExplicitSubjectGapMissingAspects(task knowledgeEvidenceJudgeTask, missingSubjects []string) []string {
+	if len(missingSubjects) == 0 {
+		return nil
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	if len(requiredAspects) == 0 {
+		requiredAspects = []string{"other"}
+	}
+	ret := make([]string, 0, len(missingSubjects)*len(requiredAspects))
+	for _, subject := range missingSubjects {
+		for _, aspect := range requiredAspects {
+			ret = appendIfMissing(ret, subject+knowledgeEvidenceAspectLabel(aspect))
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceUncertaintyTouchesRequiredAspect(requiredAspects []string, clause string) bool {
+	for _, clauseAspect := range knowledgeEvidenceAnswerClauseAspects(clause) {
+		if clauseAspect.Aspect != "other" && requiredKnowledgeEvidenceAspect(requiredAspects, clauseAspect.Aspect) {
+			return true
+		}
+	}
+	compact := normalizeRuntimeKnowledgeQuery(clause)
+	checks := []struct {
+		aspect  string
+		markers []string
+	}{
+		{aspect: "existence", markers: []string{"是否", "有无", "有没有", "提供", "配备", "存在", "供应"}},
+		{aspect: "quantity", markers: []string{"数量", "多少", "几瓶", "几份", "几个", "几间", "几台", "几条", "几套", "几双", "几把", "几包", "几盒", "几袋", "几件", "几支", "几只", "几辆", "几杯", "几桶", "几卷"}},
+		{aspect: "price", markers: []string{"费用", "收费", "免费", "价格", "金额", "多少钱"}},
+		{aspect: "time", markers: []string{"时间", "几点", "多久", "什么时候", "何时"}},
+		{aspect: "location", markers: []string{"位置", "地址", "哪里", "哪儿", "楼层"}},
+		{aspect: "method", markers: []string{"方式", "方法", "怎么", "如何", "办理", "操作"}},
+		{aspect: "scope", markers: []string{"范围", "全部", "哪些", "送到"}},
+		{aspect: "condition", markers: []string{"条件", "限制", "要求"}},
+	}
+	for _, check := range checks {
+		if requiredKnowledgeEvidenceAspect(requiredAspects, check.aspect) && containsAny(compact, check.markers) {
+			return true
+		}
+	}
+	return false
+}
+
 func knowledgeEvidenceFAQAnswerSupportsQuestion(task knowledgeEvidenceJudgeTask, question string, answer string) bool {
-	if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+	if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+		return true
+	}
+	if _, ok := resolvedKnowledgeEvidenceFAQQuestionStatement(task, question, answer); ok {
 		return true
 	}
 	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "existence") || knowledgeEvidenceTextHasNegativeBoundary(answer) {
@@ -1380,10 +2681,19 @@ func enrichKnowledgeEvidenceFactsFromSelectedFAQs(
 }
 
 func enrichKnowledgeEvidenceFactsFromFAQUnit(task knowledgeEvidenceJudgeTask, question string, answer string, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	facts = bindKnowledgeEvidenceFAQTimeSubject(task, question, answer, facts)
+	facts = filterKnowledgeEvidenceFAQTimeFacts(task, question, answer, facts)
 	if !knowledgeEvidenceFAQAnswerSupportsQuestion(task, question, answer) {
 		return facts
 	}
-	statement := affirmativeKnowledgeEvidenceQuestionStatement(question)
+	statement, resolved := resolvedKnowledgeEvidenceFAQQuestionStatement(task, question, answer)
+	if !resolved {
+		if prefix, _, polarity := knowledgeEvidenceFAQAnswerPolarity(answer); polarity &&
+			!knowledgeEvidenceFAQAnswerIsPurePolarity(answer, prefix) {
+			return facts
+		}
+		statement = affirmativeKnowledgeEvidenceQuestionStatement(question)
+	}
 	if statement == "" {
 		return facts
 	}
@@ -1393,7 +2703,19 @@ func enrichKnowledgeEvidenceFactsFromFAQUnit(task knowledgeEvidenceJudgeTask, qu
 	}
 	for _, aspect := range requiredKnowledgeEvidenceAspects(task) {
 		if knowledgeEvidenceFactsCoverRequiredAspect(task, facts, aspect) {
-			continue
+			resolvedSubjectsCovered := true
+			for _, subject := range requiredKnowledgeEvidenceSubjectEntities(task) {
+				if !knowledgeEvidenceFactsCoverSubjectAspect(task, facts, subject, aspect) {
+					resolvedSubjectsCovered = false
+					break
+				}
+			}
+			if resolvedSubjectsCovered {
+				if aspect == "existence" {
+					facts = enrichKnowledgeEvidenceExistenceFactSubjects(task, facts)
+				}
+				continue
+			}
 		}
 		criticalValues := confirmedKnowledgeEvidenceQuestionCriticalValues(task, aspect, question, answer)
 		if len(criticalValues) == 0 {
@@ -1414,6 +2736,27 @@ func enrichKnowledgeEvidenceFactsFromFAQUnit(task knowledgeEvidenceJudgeTask, qu
 	return facts
 }
 
+func enrichKnowledgeEvidenceExistenceFactSubjects(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) == 0 {
+		return facts
+	}
+	for factIndex := range facts {
+		if !knowledgeEvidenceFactSupportsAspect(facts[factIndex], "existence") {
+			continue
+		}
+		statement := normalizeKnowledgeEvidenceSubjectForMatch(facts[factIndex].Statement)
+		for _, entity := range task.Entities {
+			subject := normalizeKnowledgeEvidenceSubjectForMatch(normalizeKnowledgeEvidenceEntityText(entity))
+			if subject == "" || !knowledgeEvidenceContainsString(requiredSubjects, subject) || !strings.Contains(statement, subject) {
+				continue
+			}
+			facts[factIndex].CriticalValues = appendIfMissing(facts[factIndex].CriticalValues, strings.TrimSpace(entity.Text))
+		}
+	}
+	return facts
+}
+
 func affirmativeKnowledgeEvidenceQuestionStatement(question string) string {
 	statement := strings.TrimSpace(question)
 	statement = strings.Trim(statement, " 。！!？?")
@@ -1423,6 +2766,10 @@ func affirmativeKnowledgeEvidenceQuestionStatement(question string) string {
 	statement = strings.TrimSuffix(statement, "吗")
 	statement = strings.TrimSuffix(statement, "嘛")
 	statement = strings.TrimSuffix(statement, "么")
+	statement = strings.ReplaceAll(statement, "可不可以", "可以")
+	statement = strings.ReplaceAll(statement, "能不能", "能")
+	statement = strings.ReplaceAll(statement, "支不支持", "支持")
+	statement = strings.ReplaceAll(statement, "需不需要", "需要")
 	statement = strings.ReplaceAll(statement, "有没有", "有")
 	statement = strings.ReplaceAll(statement, "是不是", "是")
 	statement = strings.ReplaceAll(statement, "是否", "")
@@ -1431,6 +2778,117 @@ func affirmativeKnowledgeEvidenceQuestionStatement(question string) string {
 		return ""
 	}
 	return statement + "。"
+}
+
+func resolvedKnowledgeEvidenceFAQQuestionStatement(task knowledgeEvidenceJudgeTask, question string, answer string) (string, bool) {
+	if statement, ok := resolvedKnowledgeEvidenceFAQPriceStatement(task, question, answer); ok {
+		return statement, true
+	}
+	prefix, negative, ok := knowledgeEvidenceFAQAnswerPolarity(answer)
+	if !ok {
+		return "", false
+	}
+	if !knowledgeEvidenceFAQAnswerIsPurePolarity(answer, prefix) {
+		if negative || !knowledgeEvidenceFAQAnswerHasBindingQualifier(answer) ||
+			!knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+			return "", false
+		}
+		statement := strings.TrimSuffix(affirmativeKnowledgeEvidenceQuestionStatement(question), "。")
+		qualifier := knowledgeEvidenceFAQAnswerQualifierRemainder(answer, prefix)
+		if statement == "" || qualifier == "" {
+			return "", false
+		}
+		return statement + "，" + qualifier + "。", true
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) == 0 {
+		return "", false
+	}
+	if knowledgeEvidenceFAQAnswerMentionsOnlyPartOfRequiredSubjects(answer, requiredSubjects) {
+		return "", false
+	}
+	compactQuestion := normalizeKnowledgeEvidenceSubjectForMatch(question)
+	for _, subject := range requiredSubjects {
+		if !strings.Contains(compactQuestion, subject) {
+			return "", false
+		}
+	}
+	if !negative && !knowledgeEvidenceContainsString([]string{"有的", "可以", "支持"}, prefix) {
+		statement := affirmativeKnowledgeEvidenceQuestionStatement(question)
+		return statement, statement != ""
+	}
+
+	statement := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(strings.Trim(strings.TrimSpace(question), " 。！!？?"), "吗"), "嘛"), "么")
+	for _, politePrefix := range []string{"请问一下", "请问", "问一下", "问下", "想问一下", "想问"} {
+		statement = strings.TrimSpace(strings.TrimPrefix(statement, politePrefix))
+	}
+	replaceFirst := func(markers []string, replacement string) bool {
+		for _, marker := range markers {
+			if strings.Contains(statement, marker) {
+				statement = strings.Replace(statement, marker, replacement, 1)
+				return true
+			}
+		}
+		return false
+	}
+	matched := false
+	switch prefix {
+	case "有的":
+		matched = replaceFirst([]string{"有没有", "是否有", "有无", "没有", "有"}, "有")
+	case "可以":
+		matched = replaceFirst([]string{"可不可以", "是否可以", "能不能", "能否", "不可以", "不能", "可以", "能"}, "可以")
+	case "支持":
+		matched = replaceFirst([]string{"支不支持", "是否支持", "不支持", "支持"}, "支持")
+	case "没有", "没有的":
+		matched = replaceFirst([]string{"有没有", "是否有", "有无", "没有", "有"}, "没有")
+	case "不可以", "不能":
+		matched = replaceFirst([]string{"可不可以", "是否可以", "能不能", "能否", "不可以", "不能", "可以", "能"}, prefix)
+	case "不支持":
+		matched = replaceFirst([]string{"支不支持", "是否支持", "不支持", "支持"}, "不支持")
+	case "不需要", "无需", "不用":
+		matched = replaceFirst([]string{"需不需要", "是否需要", "不需要", "无需", "不用", "需要"}, "不需要")
+	case "不是":
+		matched = replaceFirst([]string{"是不是", "是否是", "不是", "是"}, "不是")
+	}
+	statement = strings.TrimSpace(statement)
+	if !matched || statement == "" {
+		return "", false
+	}
+	return statement + "。", true
+}
+
+func resolvedKnowledgeEvidenceFAQPriceStatement(task knowledgeEvidenceJudgeTask, question string, answer string) (string, bool) {
+	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "price") ||
+		!knowledgeEvidenceQueryAsksAbsolutePriceStatus(question) {
+		return "", false
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) != 1 ||
+		!strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), requiredSubjects[0]) {
+		return "", false
+	}
+	claims := knowledgeEvidencePriceClaims(answer)
+	free := knowledgeEvidencePriceClaimsContain(claims, "free")
+	charged := knowledgeEvidencePriceClaimsContain(claims, "charged")
+	if free == charged {
+		return "", false
+	}
+	if free {
+		return requiredSubjects[0] + "免费。", true
+	}
+	return requiredSubjects[0] + "不免费。", true
+}
+
+func knowledgeEvidenceFAQAnswerQualifierRemainder(answer string, prefix string) string {
+	answer = strings.TrimSpace(answer)
+	prefix = strings.TrimSpace(prefix)
+	if answer == "" || prefix == "" || !strings.HasPrefix(answer, prefix) {
+		return ""
+	}
+	remainder := strings.TrimSpace(strings.TrimPrefix(answer, prefix))
+	remainder = strings.TrimLeft(remainder, "，,。.!！；;：:")
+	remainder = strings.TrimSpace(strings.Trim(remainder, "。.!！；;"))
+	return remainder
 }
 
 func confirmedKnowledgeEvidenceQuestionCriticalValues(task knowledgeEvidenceJudgeTask, aspect string, question string, answer string) []string {
@@ -1445,7 +2903,8 @@ func confirmedKnowledgeEvidenceQuestionCriticalValues(task knowledgeEvidenceJudg
 			if len([]rune(value)) < 2 || !strings.Contains(compactQuestion, value) {
 				continue
 			}
-			if strings.Contains(compactAnswer, value) || knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
+			_, resolvesQuestion := resolvedKnowledgeEvidenceFAQQuestionStatement(task, question, answer)
+			if strings.Contains(compactAnswer, value) || knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) || resolvesQuestion {
 				values = appendIfMissing(values, strings.TrimSpace(entity.Text))
 			}
 		}
@@ -1454,21 +2913,1669 @@ func confirmedKnowledgeEvidenceQuestionCriticalValues(task knowledgeEvidenceJudg
 			values = appendIfMissing(values, strings.TrimSpace(match))
 		}
 	case "price":
-		compact := normalizeRuntimeKnowledgeQuery(combined)
-		for _, value := range []string{"免费", "收费"} {
-			if strings.Contains(compact, value) {
-				values = appendIfMissing(values, value)
-			}
+		priceSource := answer
+		if len(knowledgeEvidencePriceClaims(priceSource)) == 0 && knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+			priceSource = question
 		}
-		for _, match := range knowledgeEvidencePriceValuePattern.FindAllString(combined, -1) {
-			values = appendIfMissing(values, strings.TrimSpace(match))
+		for _, value := range knowledgeEvidencePriceCriticalValues(priceSource) {
+			values = appendIfMissing(values, value)
 		}
 	case "time":
-		for _, match := range knowledgeEvidenceAnswerTimePattern.FindAllString(combined, -1) {
+		rangeMatches := knowledgeEvidenceAnswerTimePattern.FindAllString(combined, -1)
+		for _, match := range rangeMatches {
+			values = appendIfMissing(values, strings.TrimSpace(match))
+		}
+		for _, match := range knowledgeEvidenceIndividualTimePattern.FindAllString(combined, -1) {
+			if knowledgeEvidenceNumberIsPartOfTime(match, rangeMatches) {
+				continue
+			}
 			values = appendIfMissing(values, strings.TrimSpace(match))
 		}
 	}
 	return values
+}
+
+func bindKnowledgeEvidenceFAQTimeSubject(task knowledgeEvidenceJudgeTask, question string, answer string, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	if len(facts) == 0 || len(requiredKnowledgeEvidenceTimeSlotsForTask(task)) == 0 ||
+		len(knowledgeEvidenceIndividualTimePattern.FindAllString(answer, -1)) == 0 {
+		return facts
+	}
+	subject := ""
+	if requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task); len(requiredSubjects) == 1 &&
+		strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), requiredSubjects[0]) {
+		subject = requiredSubjects[0]
+	}
+	condition := ""
+	if conditions := knowledgeEvidenceCalendarConditions(question); len(conditions) == 1 {
+		condition = conditions[0]
+	}
+	if subject == "" && condition == "" {
+		return facts
+	}
+	for index := range facts {
+		if !knowledgeEvidenceFactSupportsAspect(facts[index], "time") {
+			continue
+		}
+		if len(splitKnowledgeEvidenceTimeClauses(facts[index].Statement)) != 1 {
+			continue
+		}
+		factText := normalizeKnowledgeEvidenceSubjectForMatch(facts[index].Statement + " " + strings.Join(facts[index].CriticalValues, " "))
+		factSubject := subject
+		if knowledgeEvidenceTimeFactHasExplicitSubject(facts[index].Statement) {
+			factSubject = ""
+		}
+		statement := strings.Trim(strings.TrimSpace(facts[index].Statement), "。！!？?")
+		if statement == "" {
+			continue
+		}
+		prefix := ""
+		if condition != "" && len(knowledgeEvidenceCalendarConditions(factText)) == 0 {
+			prefix += knowledgeEvidenceTimeConditionLabel(condition)
+		}
+		if factSubject != "" && !strings.Contains(factText, factSubject) {
+			prefix += factSubject
+		}
+		if prefix == "" {
+			continue
+		}
+		compact := normalizeRuntimeKnowledgeQuery(statement)
+		if containsAny(compact, []string{"时间", "开始", "结束", "截止", "开门", "关门", "入住", "退房", "供应到", "营业到"}) {
+			facts[index].Statement = prefix + statement + "。"
+		} else {
+			facts[index].Statement = prefix + "时间为" + statement + "。"
+		}
+	}
+	return facts
+}
+
+func filterKnowledgeEvidenceFAQTimeFacts(task knowledgeEvidenceJudgeTask, question string, answer string, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
+	if len(facts) == 0 || len(knowledgeEvidenceIndividualTimePattern.FindAllString(answer, -1)) == 0 {
+		return facts
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) != 1 {
+		return facts
+	}
+	subject := requiredSubjects[0]
+	if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+		return facts
+	}
+	filtered := make([]knowledgeEvidenceFact, 0, len(facts))
+	for _, fact := range facts {
+		if !knowledgeEvidenceFactSupportsAspect(fact, "time") {
+			filtered = append(filtered, fact)
+			continue
+		}
+		clauses := knowledgeEvidenceTimeClausesForSubject(question, fact.Statement, subject)
+		if len(clauses) == 0 {
+			continue
+		}
+		fact.Statement = strings.Join(clauses, "，")
+		fact.CriticalValues = sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement)
+		filtered = append(filtered, fact)
+	}
+	return filtered
+}
+
+func knowledgeEvidenceTimeFactHasExplicitSubject(statement string) bool {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(statement)
+	if containsAny(compact, []string{"办理入住", "办理退房", "入住", "退房", "开门", "关门"}) {
+		return true
+	}
+	residual := knowledgeEvidenceIndividualTimePattern.ReplaceAllString(statement, "")
+	residual = knowledgeEvidenceDurationValuePattern.ReplaceAllString(residual, "")
+	residual = normalizeKnowledgeEvidenceSubjectForMatch(residual)
+	for _, marker := range []string{
+		"法定节假日", "节假日", "工作日", "周末", "每天", "每日",
+		"次日", "第二天", "翌日",
+		"营业时间为", "营业时间是", "供应时间为", "供应时间是", "开放时间为", "开放时间是",
+		"营业时间", "供应时间", "开放时间", "时间为", "时间是", "时间",
+		"开始", "结束", "截止", "供应到", "营业到", "开放到", "从", "至", "到", "为", "是",
+	} {
+		residual = strings.ReplaceAll(residual, marker, "")
+	}
+	residual = strings.Trim(residual, "-~至到，,。；;！!？?")
+	return len([]rune(residual)) >= 2
+}
+
+func knowledgeEvidenceFactsCoverCriticalValues(facts []knowledgeEvidenceFact, requiredValues []string) bool {
+	for _, requiredValue := range requiredValues {
+		if !knowledgeEvidenceFactsContainCriticalValue(facts, requiredValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func reconcileSelectedKnowledgeEvidenceTaskBoundCriticalValues(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+	facts []knowledgeEvidenceFact,
+) ([]knowledgeEvidenceFact, bool) {
+	requiredValues := knowledgeEvidenceSelectedTaskBoundCriticalValues(task, layer, selectedCandidateIDs)
+	if len(requiredValues) == 0 {
+		return facts, true
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	seenFactIDs := make(map[string]struct{}, len(facts)+len(requiredValues))
+	for _, fact := range facts {
+		seenFactIDs[strings.TrimSpace(fact.FactID)] = struct{}{}
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	_, combinedTotal := knowledgeEvidenceTaskQuantityTargetsBySubject(task.Query, requiredSubjects)
+
+	for _, requiredValue := range requiredValues {
+		if knowledgeEvidenceFactsContainCriticalValue(facts, requiredValue) {
+			continue
+		}
+		if combinedTotal && knowledgeEvidenceSelectedCandidatesSupportCombinedQuantityTotal(task, layer, selectedCandidateIDs, requiredSubjects, requiredValue) {
+			factID := nextKnowledgeEvidenceFactID(task.TaskID, seenFactIDs)
+			seenFactIDs[factID] = struct{}{}
+			facts = append(facts, knowledgeEvidenceFact{
+				FactID:         factID,
+				Aspect:         "quantity",
+				Statement:      strings.Join(requiredSubjects, "和") + "合计" + requiredValue + "。",
+				CriticalValues: []string{requiredValue},
+			})
+			continue
+		}
+		added := false
+		for _, candidate := range task.Candidates {
+			if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+				continue
+			}
+			if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+				continue
+			}
+			question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+				continue
+			}
+			statement := ""
+			groundedValue := ""
+			if value, ok := knowledgeEvidenceEquivalentTaskQuantityInText(task, question, answer, requiredValue); ok {
+				statement = strings.TrimSpace(answer)
+				groundedValue = value
+			} else if value, ok := knowledgeEvidenceEquivalentTaskQuantityInText(task, question, question, requiredValue); ok && knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+				statement = affirmativeKnowledgeEvidenceQuestionStatement(question)
+				groundedValue = value
+			}
+			fact := knowledgeEvidenceFact{
+				FactID:         nextKnowledgeEvidenceFactID(task.TaskID, seenFactIDs),
+				Aspect:         "quantity",
+				Statement:      statement,
+				CriticalValues: []string{groundedValue},
+			}
+			if statement == "" || !knowledgeEvidenceFactGroundedForTask(task, fact, knowledgeEvidenceCandidateGroundingParts(task, candidate)) {
+				continue
+			}
+			seenFactIDs[fact.FactID] = struct{}{}
+			facts = append(facts, fact)
+			added = true
+			break
+		}
+		if !added {
+			return facts, false
+		}
+	}
+	facts = canonicalizeKnowledgeEvidenceFacts(sanitizeKnowledgeEvidenceFacts(facts))
+	return facts, knowledgeEvidenceFactsCoverCriticalValues(facts, requiredValues)
+}
+
+func knowledgeEvidenceFactsContainCriticalValue(facts []knowledgeEvidenceFact, requiredValue string) bool {
+	for _, fact := range facts {
+		for _, value := range sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement) {
+			if knowledgeEvidenceCriticalValuesEquivalent(value, requiredValue) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceSelectedTaskBoundCriticalValues(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) []string {
+	queryValues := knowledgeEvidenceTaskBoundCriticalValues(task.Query)
+	if len(queryValues) == 0 || len(selectedCandidateIDs) == 0 {
+		return nil
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if _, combinedTotal := knowledgeEvidenceTaskQuantityTargetsBySubject(task.Query, requiredSubjects); combinedTotal &&
+		len(queryValues) == 1 && knowledgeEvidenceSelectedCandidatesSupportCombinedQuantityTotal(task, layer, selectedCandidateIDs, requiredSubjects, queryValues[0]) {
+		return append([]string(nil), queryValues...)
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	confirmed := make([]string, 0, len(queryValues))
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		for _, value := range queryValues {
+			if _, ok := knowledgeEvidenceEquivalentTaskQuantityInText(task, question, answer, value); ok {
+				confirmed = appendIfMissing(confirmed, value)
+				continue
+			}
+			if _, ok := knowledgeEvidenceEquivalentTaskQuantityInText(task, question, question, value); ok && knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+				confirmed = appendIfMissing(confirmed, value)
+			}
+		}
+	}
+	return confirmed
+}
+
+func knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) bool {
+	if len(selectedCandidateIDs) == 0 {
+		return false
+	}
+	queryValues := knowledgeEvidenceTaskBoundCriticalValues(task.Query)
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) > 1 {
+		return knowledgeEvidenceSelectedCandidatesHaveMultiSubjectTaskBoundQuantityConflict(task, layer, selectedCandidateIDs, requiredSubjects)
+	}
+	if len(requiredSubjects) == 0 {
+		inferredSubjects := knowledgeEvidenceInferredQuantitySubjects(task.Query)
+		if len(inferredSubjects) > 1 {
+			return knowledgeEvidenceSelectedCandidatesHaveMultiSubjectTaskBoundQuantityConflict(task, layer, selectedCandidateIDs, inferredSubjects)
+		}
+		if len(queryValues) > 1 && len(inferredSubjects) == 0 {
+			return true
+		}
+		requiredSubjects = inferredSubjects
+	}
+	if len(queryValues) == 0 {
+		return false
+	}
+	requiredSubject := ""
+	if len(requiredSubjects) == 1 {
+		requiredSubject = requiredSubjects[0]
+	}
+	if requirements := knowledgeEvidenceTaskBoundQuantityRequirements(task, requiredSubject); len(requirements) > 0 {
+		complete, conflict := knowledgeEvidenceSelectedCandidatesCoverQuantityRequirements(task, layer, selectedCandidateIDs, requirements)
+		return !complete || conflict
+	}
+	taskScope := knowledgeEvidenceConflictObjectScope(task.Query)
+	queryConditionsByValue := knowledgeEvidenceQuantityConditionsByValue(task.Query, requiredSubject)
+
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	type quantityObservation struct {
+		sameUnit              bool
+		equivalent            bool
+		conflicting           bool
+		otherSubjectUnit      bool
+		conditionalEquivalent bool
+	}
+	observations := make(map[string]quantityObservation, len(queryValues))
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		candidateText := normalizeKnowledgeEvidenceSubjectForMatch(strings.Join([]string{question, answer, candidate.Hit.Title}, " "))
+		if requiredSubject != "" && !strings.Contains(candidateText, requiredSubject) {
+			continue
+		}
+		quantityTexts := splitKnowledgeEvidenceAnswerClauses(answer)
+		if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+			quantityTexts = append(quantityTexts, splitKnowledgeEvidenceAnswerClauses(question)...)
+		}
+		for _, quantityText := range quantityTexts {
+			textScope := knowledgeEvidenceConflictObjectScope(quantityText)
+			if taskScope != "" && taskScope != "hotel" && textScope != "" && textScope != "hotel" && taskScope != textScope {
+				continue
+			}
+			candidateConditions := knowledgeEvidenceConflictConditions(quantityText)
+			candidateValues := knowledgeEvidenceQuantityOccurrences(quantityText, requiredSubject)
+			for _, queryValue := range queryValues {
+				queryUnit := knowledgeEvidenceQuantityUnit(queryValue)
+				if queryUnit == "" {
+					continue
+				}
+				queryConditions := queryConditionsByValue[normalizeKnowledgeEvidenceQuantityValue(queryValue)]
+				if !knowledgeEvidenceQuantityConditionsComparable(queryConditions, candidateConditions) {
+					if len(queryConditions) == 0 && len(candidateConditions) > 0 {
+						observation := observations[queryValue]
+						for _, candidateValue := range candidateValues {
+							if knowledgeEvidenceQuantityUnit(candidateValue.Value) == queryUnit &&
+								candidateValue.SubjectRelation != "other" &&
+								knowledgeEvidenceCriticalValuesEquivalent(candidateValue.Value, queryValue) {
+								observation.conditionalEquivalent = true
+							}
+						}
+						observations[queryValue] = observation
+					}
+					continue
+				}
+				observation := observations[queryValue]
+				for _, candidateValue := range candidateValues {
+					if knowledgeEvidenceQuantityUnit(candidateValue.Value) != queryUnit {
+						continue
+					}
+					if requiredSubject != "" && candidateValue.SubjectRelation == "other" {
+						observation.otherSubjectUnit = true
+						continue
+					}
+					observation.sameUnit = true
+					if knowledgeEvidenceCriticalValuesEquivalent(candidateValue.Value, queryValue) {
+						observation.equivalent = true
+					} else {
+						observation.conflicting = true
+					}
+				}
+				observations[queryValue] = observation
+			}
+		}
+	}
+	for _, queryValue := range queryValues {
+		observation := observations[queryValue]
+		if observation.sameUnit && (!observation.equivalent || observation.conflicting) {
+			return true
+		}
+		if !observation.sameUnit && observation.otherSubjectUnit {
+			return true
+		}
+		if !observation.sameUnit && observation.conditionalEquivalent {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceQuantityConditionsByValue(text string, subject string) map[string][]string {
+	ret := make(map[string][]string)
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+		conditions := knowledgeEvidenceConflictConditions(clause)
+		for _, occurrence := range knowledgeEvidenceQuantityOccurrences(clause, subject) {
+			value := normalizeKnowledgeEvidenceQuantityValue(occurrence.Value)
+			if value == "" {
+				continue
+			}
+			for _, condition := range conditions {
+				ret[value] = appendIfMissing(ret[value], condition)
+			}
+			if _, exists := ret[value]; !exists {
+				ret[value] = nil
+			}
+		}
+	}
+	return ret
+}
+
+type knowledgeEvidenceQuantityRequirement struct {
+	Subject    string
+	Conditions []string
+	Value      string
+}
+
+func knowledgeEvidenceTaskBoundQuantityRequirements(task knowledgeEvidenceJudgeTask, requiredSubject string) []knowledgeEvidenceQuantityRequirement {
+	if knowledgeEvidenceClauseHasCombinedQuantityTotal(task.Query) {
+		return nil
+	}
+	indexes := knowledgeEvidenceStrictQuantityPattern.FindAllStringIndex(task.Query, -1)
+	if len(indexes) == 0 {
+		return nil
+	}
+	ret := make([]knowledgeEvidenceQuantityRequirement, 0, len(indexes))
+	seen := make(map[string]struct{}, len(indexes))
+	activeSubject := normalizeKnowledgeEvidenceSubjectForMatch(requiredSubject)
+	hasExplicitCondition := false
+	for index, bounds := range indexes {
+		value := strings.TrimSpace(task.Query[bounds[0]:bounds[1]])
+		compactValue := normalizeRuntimeKnowledgeQuery(value)
+		if !containsAnySuffix(compactValue, []string{
+			"瓶", "间", "张", "份", "位", "人", "台", "条", "套", "双", "把", "包", "盒", "袋", "件", "支", "只", "辆", "杯", "桶", "卷", "个",
+		}) || knowledgeEvidenceQuantityCounterIsScope(compactValue, task.Query[bounds[1]:]) ||
+			knowledgeEvidenceQuantityCounterIsRequestParameter(task.Query, bounds[0], bounds[1]) {
+			continue
+		}
+		leftBoundary, rightBoundary := knowledgeEvidenceQuantityClauseBounds(task.Query, bounds[0], bounds[1])
+		if index > 0 && indexes[index-1][1] > leftBoundary {
+			leftBoundary = indexes[index-1][1]
+		}
+		if index+1 < len(indexes) && indexes[index+1][0] < rightBoundary {
+			rightBoundary = indexes[index+1][0]
+		}
+		clause := task.Query[leftBoundary:rightBoundary]
+		conditions := knowledgeEvidenceConflictConditions(clause)
+		hasExplicitCondition = hasExplicitCondition || len(conditions) > 0
+		subject := activeSubject
+		if subject == "" {
+			leading, trailing := knowledgeEvidenceQuantityBindingSegments(
+				task.Query[leftBoundary:bounds[0]],
+				task.Query[bounds[1]:rightBoundary],
+			)
+			subject = knowledgeEvidenceQuantityLeadingObject(leading)
+			if subject == "" {
+				subject = knowledgeEvidenceQuantityTrailingObject(trailing)
+			}
+			if subject != "" {
+				activeSubject = subject
+			}
+		}
+		conditionSets := knowledgeEvidenceQuantityConditionSets(conditions)
+		for _, conditionSet := range conditionSets {
+			key := normalizeKnowledgeEvidenceSubjectForMatch(subject) + "|" + strings.Join(conditionSet, ",") + "|" + normalizeKnowledgeEvidenceQuantityValue(value)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			ret = append(ret, knowledgeEvidenceQuantityRequirement{
+				Subject:    normalizeKnowledgeEvidenceSubjectForMatch(subject),
+				Conditions: append([]string(nil), conditionSet...),
+				Value:      value,
+			})
+		}
+	}
+	if len(ret) == 0 || !hasExplicitCondition {
+		return nil
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityConditionSets(conditions []string) [][]string {
+	if len(conditions) == 0 {
+		return [][]string{nil}
+	}
+	type conditionGroup struct {
+		dimension string
+		values    []string
+	}
+	groups := make([]conditionGroup, 0, len(conditions))
+	groupIndex := make(map[string]int, len(conditions))
+	for _, condition := range conditions {
+		dimension := knowledgeEvidenceQuantityConditionDimension(condition)
+		index, exists := groupIndex[dimension]
+		if !exists {
+			index = len(groups)
+			groupIndex[dimension] = index
+			groups = append(groups, conditionGroup{dimension: dimension})
+		}
+		groups[index].values = appendIfMissing(groups[index].values, condition)
+	}
+	ret := [][]string{{}}
+	for _, group := range groups {
+		next := make([][]string, 0, len(ret)*len(group.values))
+		for _, current := range ret {
+			for _, value := range group.values {
+				combined := append([]string(nil), current...)
+				combined = append(combined, value)
+				next = append(next, combined)
+			}
+		}
+		ret = next
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityConditionDimension(condition string) string {
+	switch condition {
+	case "workday", "weekend", "holiday":
+		return "calendar_day_type"
+	case "night", "daytime":
+		return "daypart"
+	case "checkin_day", "checkout_day":
+		return "stay_day"
+	default:
+		if strings.HasPrefix(condition, "weekday:") {
+			return "weekday"
+		}
+		return "condition:" + condition
+	}
+}
+
+func knowledgeEvidenceSelectedCandidatesCoverQuantityRequirements(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+	requirements []knowledgeEvidenceQuantityRequirement,
+) (bool, bool) {
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	taskScope := knowledgeEvidenceConflictObjectScope(task.Query)
+	for _, requirement := range requirements {
+		covered := false
+		conflicting := false
+		for _, candidate := range task.Candidates {
+			if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+				continue
+			}
+			if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+				continue
+			}
+			question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+				continue
+			}
+			questionBindsSubject := requirement.Subject == "" || strings.Contains(
+				normalizeKnowledgeEvidenceSubjectForMatch(question),
+				normalizeKnowledgeEvidenceSubjectForMatch(requirement.Subject),
+			)
+			type conditionedQuantityText struct {
+				text                string
+				conditionSets       [][]string
+				universalDimensions map[string]struct{}
+			}
+			quantityTexts := make([]conditionedQuantityText, 0, 4)
+			questionConditions := knowledgeEvidenceConflictConditions(question)
+			for _, answerClause := range splitKnowledgeEvidenceAnswerClauses(answer) {
+				universalDimensions := knowledgeEvidenceQuantityUniversalConditionDimensions(answerClause)
+				effectiveConditions := knowledgeEvidenceMergeFAQQuantityConditions(
+					questionConditions,
+					knowledgeEvidenceConflictConditions(answerClause),
+					answerClause,
+				)
+				quantityTexts = append(quantityTexts, conditionedQuantityText{
+					text:                answerClause,
+					conditionSets:       knowledgeEvidenceQuantityConditionSets(effectiveConditions),
+					universalDimensions: universalDimensions,
+				})
+			}
+			if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+				for _, questionClause := range splitKnowledgeEvidenceAnswerClauses(question) {
+					quantityTexts = append(quantityTexts, conditionedQuantityText{
+						text:          questionClause,
+						conditionSets: knowledgeEvidenceQuantityConditionSets(knowledgeEvidenceConflictConditions(questionClause)),
+					})
+				}
+			}
+			for _, quantityText := range quantityTexts {
+				textScope := knowledgeEvidenceConflictObjectScope(quantityText.text)
+				if taskScope != "" && taskScope != "hotel" && textScope != "" && textScope != "hotel" && taskScope != textScope {
+					continue
+				}
+				conditionsComparable := false
+				for _, candidateConditions := range quantityText.conditionSets {
+					if knowledgeEvidenceQuantityConditionsComparableWithUniversal(
+						requirement.Conditions,
+						candidateConditions,
+						quantityText.universalDimensions,
+					) {
+						conditionsComparable = true
+						break
+					}
+				}
+				if !conditionsComparable {
+					continue
+				}
+				for _, occurrence := range knowledgeEvidenceQuantityOccurrences(quantityText.text, requirement.Subject) {
+					if knowledgeEvidenceQuantityUnit(occurrence.Value) != knowledgeEvidenceQuantityUnit(requirement.Value) ||
+						occurrence.SubjectRelation == "other" || (occurrence.SubjectRelation == "implicit" && !questionBindsSubject) {
+						continue
+					}
+					if knowledgeEvidenceCriticalValuesEquivalent(occurrence.Value, requirement.Value) {
+						covered = true
+					} else {
+						conflicting = true
+					}
+				}
+			}
+		}
+		if conflicting {
+			return false, true
+		}
+		if !covered {
+			return false, false
+		}
+	}
+	return true, false
+}
+
+func knowledgeEvidenceMergeFAQQuantityConditions(question []string, answer []string, answerText string) []string {
+	universalDimensions := knowledgeEvidenceQuantityUniversalConditionDimensions(answerText)
+	if len(answer) == 0 && len(universalDimensions) == 0 {
+		return append([]string(nil), question...)
+	}
+	answerDimensions := make(map[string]struct{}, len(answer)+len(universalDimensions))
+	for dimension := range universalDimensions {
+		answerDimensions[dimension] = struct{}{}
+	}
+	for _, condition := range answer {
+		answerDimensions[knowledgeEvidenceQuantityConditionDimension(condition)] = struct{}{}
+	}
+	ret := make([]string, 0, len(question)+len(answer))
+	for _, condition := range question {
+		if _, overridden := answerDimensions[knowledgeEvidenceQuantityConditionDimension(condition)]; overridden {
+			continue
+		}
+		ret = appendIfMissing(ret, condition)
+	}
+	for _, condition := range answer {
+		if _, universal := universalDimensions[knowledgeEvidenceQuantityConditionDimension(condition)]; universal {
+			continue
+		}
+		ret = appendIfMissing(ret, condition)
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityUniversalConditionDimensions(text string) map[string]struct{} {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	ret := make(map[string]struct{}, 2)
+	if containsAny(compact, []string{
+		"每天", "每日", "天天", "任何日期", "任意日期", "所有日期", "全年",
+		"不分工作日和周末", "无论工作日还是周末", "无论工作日或周末",
+	}) {
+		ret["calendar_day_type"] = struct{}{}
+		ret["weekday"] = struct{}{}
+	}
+	if containsAny(compact, []string{
+		"全天", "全时段", "任何时间", "任意时间", "所有时段", "全部时段",
+		"不分白天晚上", "无论白天还是晚上", "无论白天或晚上",
+	}) {
+		ret["daypart"] = struct{}{}
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityConditionsComparable(required []string, candidate []string) bool {
+	if len(required) == 0 {
+		return len(candidate) == 0
+	}
+	if len(candidate) == 0 {
+		return true
+	}
+	if len(required) != len(candidate) {
+		return false
+	}
+	for _, condition := range required {
+		if !knowledgeEvidenceContainsString(candidate, condition) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceQuantityConditionsComparableWithUniversal(required []string, candidate []string, universalDimensions map[string]struct{}) bool {
+	if len(universalDimensions) == 0 {
+		return knowledgeEvidenceQuantityConditionsComparable(required, candidate)
+	}
+	filteredRequired := make([]string, 0, len(required))
+	for _, condition := range required {
+		if _, universal := universalDimensions[knowledgeEvidenceQuantityConditionDimension(condition)]; universal {
+			continue
+		}
+		filteredRequired = append(filteredRequired, condition)
+	}
+	return knowledgeEvidenceQuantityConditionsComparable(filteredRequired, candidate)
+}
+
+func knowledgeEvidenceFactsCoverQuantityRequirement(facts []knowledgeEvidenceFact, requirement knowledgeEvidenceQuantityRequirement) bool {
+	for _, fact := range facts {
+		for _, clause := range splitKnowledgeEvidenceAnswerClauses(fact.Statement) {
+			if !knowledgeEvidenceQuantityConditionsComparable(requirement.Conditions, knowledgeEvidenceConflictConditions(clause)) {
+				continue
+			}
+			for _, occurrence := range knowledgeEvidenceQuantityOccurrences(clause, requirement.Subject) {
+				if knowledgeEvidenceQuantityUnit(occurrence.Value) != knowledgeEvidenceQuantityUnit(requirement.Value) ||
+					occurrence.SubjectRelation == "other" ||
+					(requirement.Subject != "" && occurrence.SubjectRelation == "implicit") {
+					continue
+				}
+				if knowledgeEvidenceCriticalValuesEquivalent(occurrence.Value, requirement.Value) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceQuantityRequirementMissingAspect(requirement knowledgeEvidenceQuantityRequirement) string {
+	conditionLabels := make([]string, 0, len(requirement.Conditions))
+	for _, condition := range requirement.Conditions {
+		switch condition {
+		case "workday":
+			conditionLabels = append(conditionLabels, "工作日")
+		case "weekend":
+			conditionLabels = append(conditionLabels, "周末")
+		case "holiday":
+			conditionLabels = append(conditionLabels, "节假日")
+		case "night":
+			conditionLabels = append(conditionLabels, "夜间")
+		case "daytime":
+			conditionLabels = append(conditionLabels, "白天")
+		case "checkin_day":
+			conditionLabels = append(conditionLabels, "入住当天")
+		case "checkout_day":
+			conditionLabels = append(conditionLabels, "退房当天")
+		default:
+			conditionLabels = append(conditionLabels, condition)
+		}
+	}
+	return strings.Join(conditionLabels, "") + requirement.Subject + knowledgeEvidenceAspectLabel("quantity")
+}
+
+func knowledgeEvidenceSelectedCandidatesHaveMultiSubjectTaskBoundQuantityConflict(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+	requiredSubjects []string,
+) bool {
+	targets, combinedTotal := knowledgeEvidenceTaskQuantityTargetsBySubject(task.Query, requiredSubjects)
+	if combinedTotal {
+		queryValues := knowledgeEvidenceTaskBoundCriticalValues(task.Query)
+		return len(queryValues) != 1 || !knowledgeEvidenceSelectedCandidatesSupportCombinedQuantityTotal(task, layer, selectedCandidateIDs, requiredSubjects, queryValues[0])
+	}
+	openTargets := knowledgeEvidenceTaskOpenQuantityUnitsBySubject(task.Query, requiredSubjects)
+	if len(targets) == 0 && len(openTargets) == 0 {
+		return false
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	taskScope := knowledgeEvidenceConflictObjectScope(task.Query)
+	for subject, expectedValues := range targets {
+		for _, expected := range expectedValues {
+			expectedUnit := knowledgeEvidenceQuantityUnit(expected)
+			sameUnit := false
+			equivalent := false
+			conflicting := false
+			for _, candidate := range task.Candidates {
+				if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+					continue
+				}
+				if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+					continue
+				}
+				question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+				if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+					continue
+				}
+				confirmsQuestion := knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer)
+				if confirmsQuestion && knowledgeEvidenceSharedQuantityAppliesToSubjects(question, requiredSubjects) &&
+					strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+					if _, ok := knowledgeEvidenceEquivalentQuantityInText(question, expected); ok {
+						sameUnit = true
+						equivalent = true
+					}
+				}
+				quantityTexts := splitKnowledgeEvidenceAnswerClauses(answer)
+				for _, quantityText := range quantityTexts {
+					textScope := knowledgeEvidenceConflictObjectScope(quantityText)
+					if taskScope != "" && taskScope != "hotel" && textScope != "" && textScope != "hotel" && taskScope != textScope {
+						continue
+					}
+					for _, occurrence := range knowledgeEvidenceQuantityOccurrences(quantityText, subject) {
+						if occurrence.SubjectRelation != "required" || knowledgeEvidenceQuantityUnit(occurrence.Value) != expectedUnit {
+							continue
+						}
+						sameUnit = true
+						if knowledgeEvidenceCriticalValuesEquivalent(occurrence.Value, expected) {
+							equivalent = true
+						} else {
+							conflicting = true
+						}
+					}
+				}
+			}
+			if !sameUnit || !equivalent || conflicting {
+				return true
+			}
+		}
+	}
+	for subject, expectedUnits := range openTargets {
+		if !knowledgeEvidenceSelectedCandidatesSupportOpenQuantity(task, layer, selectedCandidateIDs, subject, expectedUnits) {
+			return true
+		}
+	}
+	return false
+}
+
+var knowledgeEvidenceOpenQuantityPattern = regexp.MustCompile(`(?:有|配|放|提供|准备|备有)?(?:几|多少)(瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|个)`)
+
+func knowledgeEvidenceTaskOpenQuantityUnitsBySubject(query string, requiredSubjects []string) map[string][]string {
+	if len(requiredSubjects) == 0 {
+		return nil
+	}
+	targets := make(map[string][]string, len(requiredSubjects))
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(query) {
+		matches := knowledgeEvidenceOpenQuantityPattern.FindAllStringSubmatchIndex(clause, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		clauseSubjects := knowledgeEvidenceContainedSubjects(clauseText, requiredSubjects)
+		if len(clauseSubjects) == 0 {
+			continue
+		}
+		if knowledgeEvidenceSharedQuantityAppliesToSubjects(clause, clauseSubjects) {
+			for _, match := range matches {
+				unit := clause[match[2]:match[3]]
+				for _, subject := range clauseSubjects {
+					targets[subject] = appendIfMissing(targets[subject], unit)
+				}
+			}
+			continue
+		}
+		for _, match := range matches {
+			unit := clause[match[2]:match[3]]
+			owner := ""
+			ownerIndex := -1
+			prefix := normalizeKnowledgeEvidenceSubjectForMatch(clause[:match[0]])
+			for _, subject := range clauseSubjects {
+				if index := strings.LastIndex(prefix, subject); index > ownerIndex {
+					owner = subject
+					ownerIndex = index
+				}
+			}
+			if owner == "" && len(clauseSubjects) == 1 {
+				owner = clauseSubjects[0]
+			}
+			if owner != "" {
+				targets[owner] = appendIfMissing(targets[owner], unit)
+			}
+		}
+	}
+	return targets
+}
+
+func knowledgeEvidenceSelectedCandidatesSupportOpenQuantity(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+	subject string,
+	expectedUnits []string,
+) bool {
+	for _, text := range selectedKnowledgeEvidenceQuantityTexts(task, layer, selectedCandidateIDs) {
+		for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+			for _, occurrence := range knowledgeEvidenceQuantityOccurrences(clause, subject) {
+				actualUnit := knowledgeEvidenceQuantityUnit(occurrence.Value)
+				unitMatches := knowledgeEvidenceOpenQuantityUnitMatches(expectedUnits, actualUnit)
+				if occurrence.SubjectRelation == "required" && unitMatches {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceOpenQuantityUnitMatches(expectedUnits []string, actualUnit string) bool {
+	if actualUnit == "" {
+		return false
+	}
+	if knowledgeEvidenceContainsString(expectedUnits, actualUnit) {
+		return true
+	}
+	if !knowledgeEvidenceContainsString(expectedUnits, "个") {
+		return false
+	}
+	return knowledgeEvidenceContainsString([]string{
+		"瓶", "张", "份", "台", "条", "套", "双", "把", "包", "盒", "袋", "件", "支", "只", "杯", "桶", "卷", "个",
+	}, actualUnit)
+}
+
+func knowledgeEvidenceSelectedCandidatesSupportCombinedQuantityTotal(
+	task knowledgeEvidenceJudgeTask,
+	layer string,
+	selectedCandidateIDs []string,
+	requiredSubjects []string,
+	expected string,
+) bool {
+	expectedNumber, expectedUnit, ok := knowledgeEvidenceQuantityNumericParts(expected)
+	if !ok || len(requiredSubjects) < 2 {
+		return false
+	}
+	texts := selectedKnowledgeEvidenceQuantityTexts(task, layer, selectedCandidateIDs)
+	if len(texts) == 0 {
+		return false
+	}
+	explicitTotalSeen := false
+	explicitTotalMatched := false
+	for _, text := range texts {
+		for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+			for _, value := range knowledgeEvidenceExplicitCombinedQuantityTotals(clause) {
+				if knowledgeEvidenceQuantityUnit(value) != expectedUnit {
+					continue
+				}
+				explicitTotalSeen = true
+				if knowledgeEvidenceCriticalValuesEquivalent(value, expected) {
+					explicitTotalMatched = true
+				} else {
+					return false
+				}
+			}
+		}
+	}
+	if explicitTotalSeen {
+		return explicitTotalMatched
+	}
+
+	total := 0
+	for _, subject := range requiredSubjects {
+		subjectValue := ""
+		for _, text := range texts {
+			for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+				if knowledgeEvidenceClauseHasCombinedQuantityTotal(clause) {
+					continue
+				}
+				for _, occurrence := range knowledgeEvidenceQuantityOccurrences(clause, subject) {
+					if occurrence.SubjectRelation != "required" || knowledgeEvidenceQuantityUnit(occurrence.Value) != expectedUnit {
+						continue
+					}
+					if subjectValue != "" && !knowledgeEvidenceCriticalValuesEquivalent(subjectValue, occurrence.Value) {
+						return false
+					}
+					subjectValue = occurrence.Value
+				}
+			}
+		}
+		value, unit, ok := knowledgeEvidenceQuantityNumericParts(subjectValue)
+		if !ok || unit != expectedUnit {
+			return false
+		}
+		total += value
+	}
+	return total == expectedNumber
+}
+
+func selectedKnowledgeEvidenceQuantityTexts(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) []string {
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	ret := make([]string, 0, len(selectedCandidateIDs)*2)
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		ret = append(ret, answer)
+		if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) {
+			ret = append(ret, question)
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceClauseHasCombinedQuantityTotal(text string) bool {
+	return containsAny(normalizeRuntimeKnowledgeQuery(text), []string{"一共", "总共", "合计", "共计"})
+}
+
+func knowledgeEvidenceExplicitCombinedQuantityTotals(text string) []string {
+	matches := knowledgeEvidenceCombinedQuantityTotalPattern.FindAllStringSubmatch(text, -1)
+	ret := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			ret = appendIfMissing(ret, strings.TrimSpace(match[1]))
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityNumericParts(value string) (int, string, bool) {
+	match := knowledgeEvidenceTaskBoundQuantityValuePattern.FindStringSubmatch(normalizeRuntimeKnowledgeQuery(value))
+	if len(match) != 3 {
+		return 0, "", false
+	}
+	if parsed, err := strconv.Atoi(match[1]); err == nil {
+		return parsed, match[2], true
+	}
+	parsed, ok := parseKnowledgeEvidenceEnumerationCount(match[1])
+	return parsed, match[2], ok
+}
+
+func knowledgeEvidenceTaskQuantityTargetsBySubject(query string, requiredSubjects []string) (map[string][]string, bool) {
+	queryValues := knowledgeEvidenceTaskBoundCriticalValues(query)
+	if len(queryValues) == 0 || len(requiredSubjects) < 2 {
+		return nil, false
+	}
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	shared := knowledgeEvidenceSharedQuantityAppliesToSubjects(query, requiredSubjects)
+	combinedTotal := len(queryValues) == 1 && !shared && containsAny(compact, []string{"一共", "总共", "合计", "共计"})
+	if combinedTotal {
+		return nil, true
+	}
+	targets := make(map[string][]string, len(requiredSubjects))
+	if len(queryValues) == 1 && shared {
+		for _, subject := range requiredSubjects {
+			targets[subject] = []string{queryValues[0]}
+		}
+		return targets, false
+	}
+	for _, subject := range requiredSubjects {
+		for _, occurrence := range knowledgeEvidenceQuantityOccurrences(query, subject) {
+			if occurrence.SubjectRelation == "required" {
+				targets[subject] = appendIfMissing(targets[subject], occurrence.Value)
+			}
+		}
+	}
+	return targets, false
+}
+
+func knowledgeEvidenceSharedQuantityAppliesToSubjects(text string, requiredSubjects []string) bool {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	sharedPredicateText := text
+	if quantityBounds := knowledgeEvidenceStrictQuantityPattern.FindStringIndex(text); quantityBounds != nil {
+		sharedPredicateText = text[:quantityBounds[0]]
+	}
+	sharedPredicateCompact := normalizeKnowledgeEvidenceSubjectForMatch(sharedPredicateText)
+	sharedPredicate := runtimeIntentClauseHasSharedPredicate(sharedPredicateText) ||
+		containsAny(sharedPredicateCompact, []string{"分别", "各有", "各自", "每种", "每个", "均有", "均配", "均提供"})
+	if len(requiredSubjects) < 2 || !sharedPredicate {
+		return false
+	}
+	for _, subject := range requiredSubjects {
+		if !strings.Contains(compact, subject) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceQuantityClauseSubject(clause string, requiredSubject string) string {
+	occurrences := knowledgeEvidenceQuantityOccurrences(clause, requiredSubject)
+	if len(occurrences) == 0 {
+		return "implicit"
+	}
+	return occurrences[0].SubjectRelation
+}
+
+func knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) bool {
+	if len(selectedCandidateIDs) < 2 {
+		return false
+	}
+	selected := make(map[string]struct{}, len(selectedCandidateIDs))
+	for _, candidateID := range selectedCandidateIDs {
+		selected[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	type selectedFAQ struct {
+		question  string
+		answer    string
+		signature string
+	}
+	selectedFAQs := make([]selectedFAQ, 0, len(selectedCandidateIDs))
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		if _, ok := selected[strings.TrimSpace(candidate.CandidateID)]; !ok {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		selectedFAQs = append(selectedFAQs, selectedFAQ{
+			question:  question,
+			answer:    answer,
+			signature: knowledgeEvidenceConflictQuestionSignature(question),
+		})
+	}
+	taskSignature := knowledgeEvidenceConflictQuestionSignature(task.Query)
+	for leftIndex := 0; leftIndex < len(selectedFAQs); leftIndex++ {
+		left := selectedFAQs[leftIndex]
+		if left.signature == "" || (taskSignature != "" && !knowledgeEvidenceConflictQuestionSignaturesCompatible(taskSignature, left.signature)) {
+			continue
+		}
+		for rightIndex := leftIndex + 1; rightIndex < len(selectedFAQs); rightIndex++ {
+			right := selectedFAQs[rightIndex]
+			if right.signature == "" || !knowledgeEvidenceConflictQuestionSignaturesCompatible(left.signature, right.signature) ||
+				(taskSignature != "" && !knowledgeEvidenceConflictQuestionSignaturesCompatible(taskSignature, right.signature)) {
+				continue
+			}
+			domain, role, _, ok := parseKnowledgeEvidenceConflictQuestionSignature(left.signature)
+			if !ok {
+				continue
+			}
+			switch domain {
+			case "time":
+				if conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(left.question, left.answer, right.question, right.answer); comparable && conflict {
+					return true
+				}
+			case "identity":
+				if knowledgeEvidenceIdentityValuesConflict(left.answer, right.answer) {
+					return true
+				}
+			case "address":
+				if role == "delivery" {
+					if knowledgeEvidenceDeliveryAddressAnswersConflict(left.answer, right.answer) {
+						return true
+					}
+				} else if knowledgeEvidenceFAQAnswersConflict(left.answer, right.answer) {
+					return true
+				}
+			default:
+				if knowledgeEvidenceFAQAnswersConflict(left.answer, right.answer) ||
+					knowledgeEvidenceConfigurationValuesConflict(task.Query, left.answer, right.answer) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceDeliveryAddressAnswersConflict(left string, right string) bool {
+	leftPayload, leftKind := knowledgeEvidenceDeliveryAddressPayload(left)
+	rightPayload, rightKind := knowledgeEvidenceDeliveryAddressPayload(right)
+	if leftPayload == "" || rightPayload == "" || leftKind == "" || rightKind == "" {
+		return false
+	}
+	return leftPayload != rightPayload && !strings.Contains(leftPayload, rightPayload) && !strings.Contains(rightPayload, leftPayload)
+}
+
+func knowledgeEvidenceDeliveryAddressPayload(answer string) (string, string) {
+	payload := normalizeRuntimeKnowledgeQuery(answer)
+	payload = strings.NewReplacer(
+		"外卖地址", "", "收货地址", "", "配送地址", "", "跑腿地址", "",
+		"应该填写", "", "应该填", "", "请填写", "", "请填", "", "填写", "", "填为", "", "填成", "",
+		"应该写", "", "请写", "", "写为", "", "写成", "", "填", "",
+	).Replace(payload)
+	for _, marker := range []string{
+		"对应的楼层房间号", "对应楼层房间号", "对应的楼层和房号", "对应楼层和房号",
+		"补充楼层和房号", "加上楼层和房号", "再加楼层和房号", "楼层及房间号", "楼层和房间号", "房间号",
+	} {
+		if index := strings.Index(payload, marker); index >= 0 {
+			payload = payload[:index]
+			break
+		}
+	}
+	payload = strings.Trim(payload, "，,。；;！!？?：:+加和及并再")
+	for _, suffix := range []string{"就可以了", "就可以", "即可", "就行了", "就行", "就好了", "就好"} {
+		payload = strings.TrimSuffix(payload, suffix)
+	}
+	for _, prefix := range []string{"是", "为"} {
+		payload = strings.TrimPrefix(payload, prefix)
+	}
+	payload = strings.Trim(payload, "，,。；;！!？?：:+加和及并再")
+	if len([]rune(payload)) < 2 {
+		return "", ""
+	}
+	switch {
+	case containsAny(payload, []string{"酒店", "宾馆", "公寓", "旅馆", "客栈", "民宿"}):
+		return payload, "venue"
+	case knowledgeEvidenceShortVenuePattern.MatchString(payload) && !knowledgeEvidenceGenericShortVenue(payload):
+		return payload, "venue"
+	case containsAny(payload, []string{"省", "市", "区", "县", "镇", "路", "街", "大道", "巷", "弄", "号"}):
+		return payload, "street"
+	default:
+		return "", ""
+	}
+}
+
+func knowledgeEvidenceGenericShortVenue(value string) bool {
+	switch normalizeRuntimeKnowledgeQuery(value) {
+	case "本店", "门店", "本门店", "该店", "此店", "到店", "店内":
+		return true
+	default:
+		return false
+	}
+}
+
+func knowledgeEvidenceEquivalentQuantityInText(text string, expected string) (string, bool) {
+	expectedKey := normalizeKnowledgeEvidenceQuantityValue(expected)
+	if expectedKey == "" {
+		return "", false
+	}
+	for _, value := range knowledgeEvidenceStrictQuantityPattern.FindAllString(text, -1) {
+		if normalizeKnowledgeEvidenceQuantityValue(value) == expectedKey {
+			return strings.TrimSpace(value), true
+		}
+	}
+	return "", false
+}
+
+type knowledgeEvidenceQuantityOccurrence struct {
+	Value           string
+	SubjectRelation string
+}
+
+func knowledgeEvidenceEquivalentTaskQuantityInText(
+	task knowledgeEvidenceJudgeTask,
+	faqQuestion string,
+	text string,
+	expected string,
+) (string, bool) {
+	expectedKey := normalizeKnowledgeEvidenceQuantityValue(expected)
+	if expectedKey == "" {
+		return "", false
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) == 0 {
+		inferredSubject := knowledgeEvidenceInferredQuantitySubjectForValue(task.Query, expected)
+		if inferredSubject == "" {
+			if len(knowledgeEvidenceTaskBoundCriticalValues(task.Query)) > 1 {
+				return "", false
+			}
+			return knowledgeEvidenceEquivalentQuantityInText(text, expected)
+		}
+		requiredSubjects = []string{inferredSubject}
+	}
+	if len(requiredSubjects) != 1 {
+		return "", false
+	}
+	requiredSubject := requiredSubjects[0]
+	questionBindsSubject := strings.Contains(
+		normalizeKnowledgeEvidenceSubjectForMatch(faqQuestion),
+		normalizeKnowledgeEvidenceSubjectForMatch(requiredSubject),
+	)
+	for _, occurrence := range knowledgeEvidenceQuantityOccurrences(text, requiredSubject) {
+		if normalizeKnowledgeEvidenceQuantityValue(occurrence.Value) != expectedKey {
+			continue
+		}
+		switch occurrence.SubjectRelation {
+		case "required":
+			return occurrence.Value, true
+		case "implicit":
+			if questionBindsSubject {
+				return occurrence.Value, true
+			}
+		}
+	}
+	return "", false
+}
+
+type knowledgeEvidenceQuantitySubjectBinding struct {
+	Value   string
+	Subject string
+}
+
+func knowledgeEvidenceInferredQuantitySubjectBindings(query string) []knowledgeEvidenceQuantitySubjectBinding {
+	indexes := knowledgeEvidenceStrictQuantityPattern.FindAllStringIndex(query, -1)
+	if len(indexes) == 0 {
+		return nil
+	}
+	if len(indexes) == 1 {
+		prefix := normalizeKnowledgeEvidenceSubjectForMatch(query[:indexes[0][0]])
+		if containsAny(prefix, []string{"分别", "各有", "各自", "以及", "和", "与", "及", "、"}) {
+			return nil
+		}
+	}
+	bindings := make([]knowledgeEvidenceQuantitySubjectBinding, 0, len(indexes))
+	for index, bounds := range indexes {
+		leftBoundary, rightBoundary := knowledgeEvidenceQuantityClauseBounds(query, bounds[0], bounds[1])
+		if index > 0 && indexes[index-1][1] > leftBoundary {
+			leftBoundary = indexes[index-1][1]
+		}
+		if index+1 < len(indexes) && indexes[index+1][0] < rightBoundary {
+			rightBoundary = indexes[index+1][0]
+		}
+		leadingSegment, trailingSegment := knowledgeEvidenceQuantityBindingSegments(
+			query[leftBoundary:bounds[0]],
+			query[bounds[1]:rightBoundary],
+		)
+		leadingObject := knowledgeEvidenceQuantityLeadingObject(leadingSegment)
+		trailingObject := knowledgeEvidenceQuantityTrailingObject(trailingSegment)
+		if leadingObject != "" && trailingObject != "" && !knowledgeEvidenceQuantityObjectsOverlap(leadingObject, trailingObject) {
+			return nil
+		}
+		subject := leadingObject
+		if subject == "" {
+			subject = trailingObject
+		}
+		if subject == "" {
+			return nil
+		}
+		bindings = append(bindings, knowledgeEvidenceQuantitySubjectBinding{
+			Value:   strings.TrimSpace(query[bounds[0]:bounds[1]]),
+			Subject: subject,
+		})
+	}
+	return bindings
+}
+
+func knowledgeEvidenceQuantityBindingSegments(leading string, trailing string) (string, string) {
+	connectors := []string{"以及", "而且", "和", "与", "及", "且", "、"}
+	leadingCompact := strings.TrimSpace(leading)
+	trailingCompact := strings.TrimSpace(trailing)
+
+	for _, connector := range connectors {
+		if strings.HasSuffix(leadingCompact, connector) {
+			leadingCompact = ""
+			break
+		}
+	}
+	if leadingCompact != "" {
+		for _, connector := range connectors {
+			if !strings.HasPrefix(leadingCompact, connector) {
+				continue
+			}
+			leadingCompact = strings.TrimSpace(strings.TrimPrefix(leadingCompact, connector))
+			break
+		}
+	}
+
+	for _, connector := range connectors {
+		if strings.HasPrefix(trailingCompact, connector) {
+			trailingCompact = ""
+			break
+		}
+	}
+	if trailingCompact != "" {
+		for _, connector := range connectors {
+			if !strings.HasSuffix(trailingCompact, connector) {
+				continue
+			}
+			trailingCompact = strings.TrimSpace(strings.TrimSuffix(trailingCompact, connector))
+			break
+		}
+	}
+	return leadingCompact, trailingCompact
+}
+
+func knowledgeEvidenceInferredQuantitySubjects(query string) []string {
+	bindings := knowledgeEvidenceInferredQuantitySubjectBindings(query)
+	ret := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		ret = appendIfMissing(ret, binding.Subject)
+	}
+	return ret
+}
+
+func knowledgeEvidenceInferredQuantitySubjectForValue(query string, expected string) string {
+	expectedKey := normalizeKnowledgeEvidenceQuantityValue(expected)
+	if expectedKey == "" {
+		return ""
+	}
+	matchedSubject := ""
+	for _, binding := range knowledgeEvidenceInferredQuantitySubjectBindings(query) {
+		if normalizeKnowledgeEvidenceQuantityValue(binding.Value) != expectedKey {
+			continue
+		}
+		if matchedSubject != "" && !knowledgeEvidenceQuantityObjectsOverlap(matchedSubject, binding.Subject) {
+			return ""
+		}
+		matchedSubject = binding.Subject
+	}
+	return matchedSubject
+}
+
+func knowledgeEvidenceQuantityOccurrences(text string, requiredSubject string) []knowledgeEvidenceQuantityOccurrence {
+	indexes := knowledgeEvidenceStrictQuantityPattern.FindAllStringIndex(text, -1)
+	if len(indexes) == 0 {
+		return nil
+	}
+	requiredSubject = normalizeKnowledgeEvidenceSubjectForMatch(requiredSubject)
+	ret := make([]knowledgeEvidenceQuantityOccurrence, 0, len(indexes))
+	for index, bounds := range indexes {
+		leftBoundary, rightBoundary := knowledgeEvidenceQuantityClauseBounds(text, bounds[0], bounds[1])
+		if index > 0 && indexes[index-1][1] > leftBoundary {
+			leftBoundary = indexes[index-1][1]
+		}
+		if index+1 < len(indexes) && indexes[index+1][0] < rightBoundary {
+			rightBoundary = indexes[index+1][0]
+		}
+		leading, trailing := knowledgeEvidenceQuantityBindingSegments(
+			text[leftBoundary:bounds[0]],
+			text[bounds[1]:rightBoundary],
+		)
+		ret = append(ret, knowledgeEvidenceQuantityOccurrence{
+			Value:           strings.TrimSpace(text[bounds[0]:bounds[1]]),
+			SubjectRelation: knowledgeEvidenceQuantityOccurrenceSubject(leading, trailing, requiredSubject),
+		})
+	}
+	return ret
+}
+
+func knowledgeEvidenceQuantityClauseBounds(text string, start int, end int) (int, int) {
+	leftBoundary := 0
+	rightBoundary := len(text)
+	for _, separator := range []string{"\n", "\r", "。", "！", "!", "？", "?", "；", ";", "，", ","} {
+		if index := strings.LastIndex(text[:start], separator); index >= 0 && index+len(separator) > leftBoundary {
+			leftBoundary = index + len(separator)
+		}
+		if offset := strings.Index(text[end:], separator); offset >= 0 && end+offset < rightBoundary {
+			rightBoundary = end + offset
+		}
+	}
+	return leftBoundary, rightBoundary
+}
+
+func knowledgeEvidenceQuantityOccurrenceSubject(leading string, trailing string, requiredSubject string) string {
+	requiredSubject = normalizeKnowledgeEvidenceSubjectForMatch(requiredSubject)
+	if requiredSubject == "" {
+		return "implicit"
+	}
+	leadingCompact := normalizeKnowledgeEvidenceSubjectForMatch(leading)
+	if strings.Contains(leadingCompact, requiredSubject) &&
+		(runtimeIntentClauseHasSharedPredicate(leading) || containsAny(leadingCompact, []string{"均有", "均配", "均提供"})) {
+		return "required"
+	}
+	leadingObject := knowledgeEvidenceQuantityLeadingObject(leading)
+	if leadingObject != "" {
+		if knowledgeEvidenceQuantityObjectsOverlap(leadingObject, requiredSubject) {
+			return "required"
+		}
+		return "other"
+	}
+	trailingObject := knowledgeEvidenceQuantityTrailingObject(trailing)
+	if trailingObject != "" {
+		if knowledgeEvidenceQuantityObjectsOverlap(trailingObject, requiredSubject) {
+			return "required"
+		}
+		return "other"
+	}
+	return "implicit"
+}
+
+func knowledgeEvidenceQuantityLeadingObject(value string) string {
+	value = knowledgeEvidenceQuantityTextWithoutConditionMarkers(value)
+	for _, connector := range []string{"、", "和", "与", "及"} {
+		if index := strings.LastIndex(value, connector); index > 0 {
+			value = value[index+len(connector):]
+		}
+	}
+	value = strings.Trim(value, "的了和与及、，,。；;！!？?")
+	if containsAny(value, []string{"又写", "写了", "写着", "标注", "注明", "说明里", "记录为", "记录是"}) {
+		return ""
+	}
+	for {
+		before := value
+		for _, suffix := range []string{
+			"一共", "总共", "共计", "共有", "另有", "另外有", "大约有", "大概有", "约有",
+			"最多有", "至少有", "还放", "放有", "放了", "放", "提供", "配备", "包含", "赠送", "供应", "准备", "备有",
+			"一共是", "总共是", "一共为", "总共为", "分别", "现在", "目前", "当前", "仍然", "仍", "又", "还", "也", "约", "有", "是", "为", "共",
+		} {
+			value = strings.TrimSuffix(value, suffix)
+		}
+		value = strings.Trim(value, "的了和与及、，,。；;！!？?")
+		if value == before {
+			break
+		}
+	}
+	for _, scope := range []string{"每个房间内", "每个房间里", "每个房间", "每间客房内", "每间客房里", "每间客房", "每间房内", "每间房里", "每间房", "房间内", "房间里", "客房内", "客房里", "房内", "房里", "房间", "客房", "酒店内", "酒店里", "门店内", "门店里", "酒店", "门店", "本店"} {
+		if value == scope {
+			return ""
+		}
+	}
+	runes := []rune(value)
+	if len(runes) < 2 || len(runes) > 16 {
+		return ""
+	}
+	return value
+}
+
+func knowledgeEvidenceQuantityTrailingObject(value string) string {
+	value = knowledgeEvidenceQuantityTextWithoutConditionMarkers(value)
+	value = strings.TrimLeft(value, "的")
+	if value == "" {
+		return ""
+	}
+	end := len(value)
+	for _, marker := range []string{
+		"都是", "都", "左右", "以上", "以下", "以内", "至少", "最多", "大约", "约",
+		"免费", "收费", "可以", "已经", "分别", "提供", "配备", "供应", "每",
+		"需要", "不能", "不会", "无法", "不再", "另有", "可", "是", "为", "有", "在", "放", "需", "会", "能", "不",
+	} {
+		if index := strings.Index(value, marker); index >= 0 && index < end {
+			end = index
+		}
+	}
+	object := strings.Trim(value[:end], "的了和与及、，,。；;！!？?吗嘛么呢呀啊")
+	runes := []rune(object)
+	if len(runes) < 2 || len(runes) > 16 {
+		return ""
+	}
+	return object
+}
+
+func knowledgeEvidenceQuantityTextWithoutConditionMarkers(value string) string {
+	value = normalizeKnowledgeEvidenceSubjectForMatch(value)
+	for _, marker := range []string{
+		"法定节假日", "节假日", "工作日", "平日", "平时", "周末", "双休日", "双休",
+		"夜间", "晚上", "夜里", "白天", "日间", "入住当天", "退房当天", "每天", "每日",
+	} {
+		value = strings.ReplaceAll(value, marker, "")
+	}
+	return knowledgeEvidenceStandaloneWeekdayPattern.ReplaceAllString(value, "")
+}
+
+func knowledgeEvidenceQuantityObjectsOverlap(left string, right string) bool {
+	left = normalizeKnowledgeEvidenceSubjectForMatch(left)
+	right = normalizeKnowledgeEvidenceSubjectForMatch(right)
+	return left != "" && right != "" && (strings.Contains(left, right) || strings.Contains(right, left))
+}
+
+func knowledgeEvidenceCriticalValuesEquivalent(left string, right string) bool {
+	leftQuantity := normalizeKnowledgeEvidenceQuantityValue(left)
+	rightQuantity := normalizeKnowledgeEvidenceQuantityValue(right)
+	if leftQuantity != "" || rightQuantity != "" {
+		return leftQuantity != "" && leftQuantity == rightQuantity
+	}
+	return normalizeRuntimeKnowledgeQuery(left) == normalizeRuntimeKnowledgeQuery(right)
+}
+
+func normalizeKnowledgeEvidenceQuantityValue(value string) string {
+	compact := normalizeRuntimeKnowledgeQuery(value)
+	match := knowledgeEvidenceTaskBoundQuantityValuePattern.FindStringSubmatch(compact)
+	if len(match) != 3 {
+		return ""
+	}
+	number := match[1]
+	if parsed, err := strconv.Atoi(number); err == nil {
+		return strconv.Itoa(parsed) + match[2]
+	}
+	parsed, ok := parseKnowledgeEvidenceEnumerationCount(number)
+	if !ok {
+		return compact
+	}
+	return strconv.Itoa(parsed) + match[2]
+}
+
+func knowledgeEvidenceQuantityUnit(value string) string {
+	match := knowledgeEvidenceTaskBoundQuantityValuePattern.FindStringSubmatch(normalizeRuntimeKnowledgeQuery(value))
+	if len(match) != 3 {
+		return ""
+	}
+	return match[2]
+}
+
+func knowledgeEvidenceTaskBoundCriticalValues(query string) []string {
+	values := make([]string, 0, 2)
+	for _, indexes := range knowledgeEvidenceStrictQuantityPattern.FindAllStringIndex(query, -1) {
+		match := query[indexes[0]:indexes[1]]
+		compact := normalizeRuntimeKnowledgeQuery(match)
+		if !containsAnySuffix(compact, []string{
+			"瓶", "间", "张", "份", "位", "人", "台", "条", "套", "双", "把", "包", "盒", "袋", "件", "支", "只", "辆", "杯", "桶", "卷", "个",
+		}) {
+			continue
+		}
+		if knowledgeEvidenceQuantityCounterIsScope(compact, query[indexes[1]:]) {
+			continue
+		}
+		if knowledgeEvidenceQuantityCounterIsRequestParameter(query, indexes[0], indexes[1]) {
+			continue
+		}
+		values = appendIfMissing(values, strings.TrimSpace(match))
+	}
+	return values
+}
+
+func knowledgeEvidenceQuantityCounterIsRequestParameter(query string, start int, end int) bool {
+	leftBoundary, rightBoundary := knowledgeEvidenceQuantityClauseBounds(query, start, end)
+	prefix := normalizeRuntimeKnowledgeQuery(query[leftBoundary:start])
+	suffix := normalizeRuntimeKnowledgeQuery(query[end:rightBoundary])
+	clause := normalizeRuntimeKnowledgeQuery(query[leftBoundary:rightBoundary])
+	explicitFactQuestion := containsAny(clause, []string{"免费", "收费", "价格", "费用", "金额", "多少钱"}) ||
+		(strings.Contains(clause, "有") && strings.Contains(clause, "吗"))
+	if strings.Contains(clause, "吗") && containsAny(clause, []string{
+		"每个房间", "每间房", "每间客房", "每个客房", "房间都", "客房都",
+	}) {
+		explicitFactQuestion = true
+	}
+	if explicitFactQuestion {
+		return false
+	}
+	for _, action := range []string{
+		"推荐", "选择", "选", "挑", "预订", "订", "申请", "安排", "叫", "点",
+		"添加", "加", "补充", "补", "送", "拿", "取", "领取", "自取", "更换", "换", "借",
+		"我要", "我需要", "我想要", "想要", "给我", "帮我准备", "准备", "要",
+	} {
+		if strings.HasSuffix(prefix, action) {
+			return true
+		}
+	}
+	pickupSuffix := containsAny(suffix, []string{
+		"怎么拿", "如何拿", "在哪拿", "哪里拿", "怎么取", "如何取", "在哪取", "哪里取",
+		"怎么领取", "如何领取", "怎么自取", "如何自取",
+	})
+	if !pickupSuffix {
+		return false
+	}
+	return true
+}
+
+func knowledgeEvidenceQuantityCounterIsScope(value string, remainder string) bool {
+	unit := knowledgeEvidenceQuantityUnit(value)
+	remainder = normalizeRuntimeKnowledgeQuery(remainder)
+	for _, scope := range []string{"房", "房间", "客房", "房型", "酒店", "门店", "订单", "地址", "地点", "楼层", "客户", "客人"} {
+		if strings.HasPrefix(remainder, scope) {
+			return true
+		}
+	}
+	if unit == "个" && strings.HasPrefix(remainder, "人") {
+		return true
+	}
+	if unit == "人" || unit == "位" {
+		for _, action := range []string{"住", "入住", "同住", "用餐", "办理", "预订", "订房"} {
+			if strings.HasPrefix(remainder, action) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var knowledgeEvidenceTaskBoundQuantityValuePattern = regexp.MustCompile(`^([0-9]+|[零〇一二三四五六七八九十两]+)(瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|个)$`)
+
+func containsAnySuffix(text string, suffixes []string) bool {
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(text, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterKnowledgeEvidenceFactsForTask(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []knowledgeEvidenceFact {
@@ -1710,7 +4817,12 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	if containsAny(query, []string{"几瓶", "几个", "几间", "几台", "几条", "几套", "几双", "几把", "几包", "几盒", "几袋", "几件", "几支", "几只", "几辆", "几杯", "几桶", "几卷", "多少瓶", "多少个", "多少台", "多少条", "多少套", "多少双", "多少把", "多少包", "多少盒", "多少袋", "多少件", "多少支", "多少只", "多少辆", "多少杯", "多少桶", "多少卷", "数量"}) {
 		appendAspect("quantity")
 	}
-	if containsAny(query, []string{"免费", "收费", "多少钱", "价格", "费用", "钱", "价"}) {
+	if len(knowledgeEvidenceTaskBoundCriticalValues(task.Query)) > 0 {
+		appendAspect("quantity")
+	}
+	if containsAny(query, []string{
+		"免费", "收费", "多少钱", "价格", "费用", "价钱", "房价", "单价", "收费标准", "要不要钱", "需要多少钱", "花多少钱", "付多少钱",
+	}) {
 		appendAspect("price")
 	}
 	if containsAny(query, []string{"几点", "多久", "什么时候", "何时", "时间"}) {
@@ -1719,16 +4831,14 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	if containsAny(query, []string{"在哪", "哪里", "地址", "位置", "楼层", "怎么填"}) {
 		appendAspect("location")
 	}
-	if !strings.Contains(query, "怎么填") && containsAny(query, []string{
-		"怎么", "如何", "怎样", "办理", "操作", "打开", "领取", "自取", "拿取", "取用", "获取", "去拿", "在哪拿", "怎么拿", "怎么取",
-	}) {
+	if !strings.Contains(query, "怎么填") && knowledgeEvidenceQueryAsksMethod(query) {
 		appendAspect("method")
 	}
-	if containsAny(query, []string{"有没有", "是否有", "有吗", "配备", "提供吗"}) {
+	if knowledgeEvidenceQueryAsksExistence(task.Query) {
 		appendAspect("existence")
 	}
 	if containsAny(query, []string{"送到", "哪些", "全部", "范围"}) ||
-		(strings.Contains(query, "都有") && !knowledgeEvidenceTaskNamesFiniteRoomTypeSet(task)) {
+		(strings.Contains(query, "都有") && !knowledgeEvidenceTaskNamesFiniteSubjectSet(task)) {
 		appendAspect("scope")
 	}
 	if canonicalIntentCode(task.Intent) == "service_request" && len(ret) == 0 {
@@ -1737,19 +4847,60 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	return ret
 }
 
-func knowledgeEvidenceTaskNamesFiniteRoomTypeSet(task knowledgeEvidenceJudgeTask) bool {
+func knowledgeEvidenceQueryAsksMethod(query string) bool {
+	if containsAny(query, []string{
+		"办理", "操作", "打开", "领取", "自取", "拿取", "取用", "获取", "去拿", "在哪拿", "使用", "申请", "登记", "支付", "付款", "联系", "投屏", "调整", "调节",
+	}) {
+		return true
+	}
+	for _, prefix := range []string{"怎么", "如何", "怎样"} {
+		for _, action := range []string{
+			"办", "开", "关", "用", "拿", "取", "申请", "登记", "入住", "退房", "支付", "付款", "联系", "走", "投屏", "调", "处理", "解决",
+		} {
+			if strings.Contains(query, prefix+action) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceQueryAsksExistence(text string) bool {
+	compactText := normalizeRuntimeKnowledgeQuery(text)
+	if containsAny(compactText, []string{"有没有", "是否有", "是不是有", "有无", "提供吗", "配备吗", "是否提供", "是否配备"}) {
+		return true
+	}
+	if !strings.Contains(compactText, "吗") {
+		return false
+	}
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(text) {
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		if strings.Contains(compact, "有") && len(knowledgeEvidenceTaskBoundCriticalValues(clause)) == 0 &&
+			!knowledgeEvidenceOpenQuantityPattern.MatchString(compact) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceTaskNamesFiniteSubjectSet(task knowledgeEvidenceJudgeTask) bool {
 	query := normalizeKnowledgeEvidenceSubjectForMatch(task.Query)
-	roomTypes := 0
+	entitiesByType := make(map[string]map[string]struct{}, len(task.Entities))
 	for _, entity := range task.Entities {
-		if !strings.EqualFold(strings.TrimSpace(entity.Type), "room_type") {
+		entityType := strings.ToLower(strings.TrimSpace(entity.Type))
+		if entityType == "" {
 			continue
 		}
 		value := normalizeKnowledgeEvidenceSubjectForMatch(normalizeKnowledgeEvidenceEntityText(entity))
-		if value == "" || !strings.Contains(query, value) {
+		if len([]rune(value)) < 2 || !strings.Contains(query, value) ||
+			knowledgeEvidenceContainsString([]string{"酒店", "门店", "房间", "客房", "房型", "客户", "服务", "问题"}, value) {
 			continue
 		}
-		roomTypes++
-		if roomTypes >= 2 {
+		if entitiesByType[entityType] == nil {
+			entitiesByType[entityType] = make(map[string]struct{}, 2)
+		}
+		entitiesByType[entityType][value] = struct{}{}
+		if len(entitiesByType[entityType]) >= 2 {
 			return true
 		}
 	}
@@ -1766,7 +4917,7 @@ func knowledgeEvidenceFactSupportsAspect(fact knowledgeEvidenceFact, aspect stri
 	case "quantity":
 		return fact.Aspect == "quantity" && knowledgeEvidenceStrictQuantityPattern.MatchString(compact)
 	case "price":
-		return fact.Aspect == "price" && (containsAny(compact, []string{"免费", "收费", "价格", "费用", "金额"}) || knowledgeEvidencePriceValuePattern.MatchString(compact))
+		return fact.Aspect == "price" && len(knowledgeEvidencePriceClaims(raw)) > 0
 	case "time":
 		return fact.Aspect == "time" && (knowledgeEvidenceAnswerTimePattern.MatchString(raw) || containsAny(compact, []string{"时间", "工作日", "分钟", "小时", "天", "点"}))
 	case "location":
@@ -1778,13 +4929,19 @@ func knowledgeEvidenceFactSupportsAspect(fact knowledgeEvidenceFact, aspect stri
 	case "condition":
 		return fact.Aspect == "condition" && containsAny(compact, []string{"如果", "条件", "取决于", "为准", "而定", "具体情况"})
 	case "existence":
-		return fact.Aspect == "existence" && containsAny(compact, []string{"有", "没有", "提供", "配备", "不提供", "无", "不含"})
+		return fact.Aspect == "existence" && containsAny(compact, []string{
+			"有", "没有", "提供", "配备", "不提供", "无", "不含",
+			"可以", "不可以", "支持", "不支持", "需要", "不需要", "无需", "不用", "不能",
+		})
 	default:
 		return fact.Aspect == aspect
 	}
 }
 
 func knowledgeEvidenceFactsCoverRequiredAspect(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact, aspect string) bool {
+	if aspect == "price" {
+		return knowledgeEvidencePriceFactsAnswerTask(task, facts)
+	}
 	for _, fact := range facts {
 		if aspect != "condition" && knowledgeEvidenceTextHasUncertaintyBoundary(fact.Statement+" "+strings.Join(fact.CriticalValues, " ")) {
 			continue
@@ -1799,21 +4956,97 @@ func knowledgeEvidenceFactsCoverRequiredAspect(task knowledgeEvidenceJudgeTask, 
 			return true
 		}
 	}
-	if aspect == "price" && (knowledgeEvidenceQueryAsksComparison(task.Query) || knowledgeEvidenceQueryAsksPriceBoundary(task.Query)) {
+	return false
+}
+
+func knowledgeEvidencePriceFactsAnswerTask(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) bool {
+	claims := make([]knowledgeEvidencePriceClaim, 0, len(facts)*2)
+	for _, fact := range facts {
+		if strings.TrimSpace(fact.Aspect) != "price" {
+			continue
+		}
+		for _, claim := range knowledgeEvidencePriceClaims(fact.Statement + " " + strings.Join(fact.CriticalValues, " ")) {
+			claims = appendKnowledgeEvidencePriceClaim(claims, claim)
+		}
+	}
+	if knowledgeEvidenceQueryAsksDirectionalPriceComparison(task.Query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "cheaper") ||
+			knowledgeEvidencePriceClaimsContain(claims, "dearer") ||
+			knowledgeEvidencePriceClaimCount(claims, "amount") >= 2
+	}
+	if knowledgeEvidenceQueryAsksComparison(task.Query) {
+		if knowledgeEvidencePriceClaimsContain(claims, "equal") ||
+			knowledgeEvidencePriceClaimsContain(claims, "not_equal") ||
+			knowledgeEvidencePriceClaimCount(claims, "amount") >= 2 ||
+			knowledgeEvidenceAllRequiredSubjectsHaveFreePriceFact(task, facts) {
+			return true
+		}
 		for _, fact := range facts {
 			compact := normalizeRuntimeKnowledgeQuery(fact.Statement)
 			if fact.Aspect == "method" && containsAny(compact, []string{"对比", "比较", "选择"}) {
 				return true
 			}
-			if (fact.Aspect == "condition" || fact.Aspect == "scope") && containsAny(compact, []string{"平台", "权益", "不同", "调整"}) {
+			if (fact.Aspect == "condition" || fact.Aspect == "scope") &&
+				knowledgeEvidencePriceClaimsContain(knowledgeEvidencePriceClaims(fact.Statement), "dynamic") {
+				return true
+			}
+		}
+		return false
+	}
+	if knowledgeEvidenceQueryAsksPriceAmount(task.Query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "amount") || knowledgeEvidencePriceClaimsContain(claims, "free")
+	}
+	if knowledgeEvidenceQueryAsksAbsolutePriceStatus(task.Query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "free") ||
+			knowledgeEvidencePriceClaimsContain(claims, "charged") ||
+			knowledgeEvidencePriceClaimsContain(claims, "amount")
+	}
+	if knowledgeEvidenceQueryAsksPriceBoundary(task.Query) {
+		if len(claims) > 0 {
+			return true
+		}
+		for _, fact := range facts {
+			compact := normalizeRuntimeKnowledgeQuery(fact.Statement)
+			if fact.Aspect == "method" && containsAny(compact, []string{"联系", "对比", "比较", "选择"}) {
 				return true
 			}
 			if fact.Aspect == "condition" && containsAny(compact, []string{"情况", "为准", "而定", "取决于"}) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	return knowledgeEvidencePriceClaimsContain(claims, "free") ||
+		knowledgeEvidencePriceClaimsContain(claims, "charged") ||
+		knowledgeEvidencePriceClaimsContain(claims, "amount") ||
+		knowledgeEvidencePriceClaimsContain(claims, "equal") ||
+		knowledgeEvidencePriceClaimsContain(claims, "not_equal")
+}
+
+func knowledgeEvidenceAllRequiredSubjectsHaveFreePriceFact(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) bool {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) < 2 {
+		return false
+	}
+	covered := make(map[string]struct{}, len(requiredSubjects))
+	for _, fact := range facts {
+		if strings.TrimSpace(fact.Aspect) != "price" ||
+			!knowledgeEvidencePriceClaimsContain(knowledgeEvidencePriceClaims(fact.Statement+" "+strings.Join(fact.CriticalValues, " ")), "free") {
+			continue
+		}
+		text := normalizeKnowledgeEvidenceSubjectForMatch(fact.Statement)
+		for _, subject := range requiredSubjects {
+			if strings.Contains(text, subject) {
+				covered[subject] = struct{}{}
+			}
+		}
+		if knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjectsForAspect(task, fact.Statement, "price") {
+			for _, subject := range requiredSubjects {
+				covered[subject] = struct{}{}
+			}
+		}
+	}
+	return len(covered) == len(requiredSubjects)
 }
 
 func knowledgeEvidenceTextHasLocationCue(text string) bool {
@@ -2012,14 +5245,43 @@ func knowledgeEvidenceMethodBoundaryRelevantToTask(task knowledgeEvidenceJudgeTa
 
 func missingRequiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact) []string {
 	ret := make([]string, 0, 2)
-	for _, aspect := range requiredKnowledgeEvidenceAspects(task) {
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	timeRequirements := requiredKnowledgeEvidenceTimeRequirements(task)
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	quantityRequirements := []knowledgeEvidenceQuantityRequirement(nil)
+	if len(requiredSubjects) <= 1 {
+		quantitySubject := ""
+		if len(requiredSubjects) == 1 {
+			quantitySubject = requiredSubjects[0]
+		}
+		quantityRequirements = knowledgeEvidenceTaskBoundQuantityRequirements(task, quantitySubject)
+	}
+	for _, aspect := range requiredAspects {
+		if aspect == "time" && len(timeRequirements) > 0 {
+			continue
+		}
+		if aspect == "quantity" && len(quantityRequirements) > 0 {
+			continue
+		}
 		if knowledgeEvidenceFactsCoverRequiredAspect(task, facts, aspect) {
 			continue
 		}
 		ret = append(ret, knowledgeEvidenceAspectLabel(aspect))
 	}
+	for _, requirement := range timeRequirements {
+		if knowledgeEvidenceFactsCoverSubjectConditionTimeSlot(facts, requirement.Subject, requirement.Condition, requirement.Slot) {
+			continue
+		}
+		ret = appendIfMissing(ret, knowledgeEvidenceTimeConditionLabel(requirement.Condition)+requirement.Subject+knowledgeEvidenceTimeSlotLabel(requirement.Slot))
+	}
+	for _, requirement := range quantityRequirements {
+		if knowledgeEvidenceFactsCoverQuantityRequirement(facts, requirement) {
+			continue
+		}
+		ret = appendIfMissing(ret, knowledgeEvidenceQuantityRequirementMissingAspect(requirement))
+	}
 	for _, requirement := range requiredKnowledgeEvidenceSubjectAspectPairs(task) {
-		if knowledgeEvidenceFactsCoverSubjectAspect(facts, requirement.Subject, requirement.Aspect) {
+		if knowledgeEvidenceFactsCoverSubjectAspect(task, facts, requirement.Subject, requirement.Aspect) {
 			continue
 		}
 		ret = appendIfMissing(ret, requirement.Subject+knowledgeEvidenceAspectLabel(requirement.Aspect))
@@ -2044,11 +5306,373 @@ func strictMechanicalMissingKnowledgeEvidenceAspects(task knowledgeEvidenceJudge
 	return missingRequiredKnowledgeEvidenceAspects(task, facts)
 }
 
+func unresolvedModelKnowledgeEvidenceMissingAspects(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact, missingAspects []string) []string {
+	if len(missingAspects) == 0 || len(facts) == 0 {
+		return append([]string(nil), missingAspects...)
+	}
+	requiredAspects := requiredKnowledgeEvidenceAspects(task)
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	ret := make([]string, 0, len(missingAspects))
+	for _, missingAspect := range missingAspects {
+		aspect := knowledgeEvidenceAspectFromMissingAspect(missingAspect)
+		aspectRequired := requiredKnowledgeEvidenceAspect(requiredAspects, aspect)
+		if aspect == "quantity" && len(knowledgeEvidenceTaskBoundCriticalValues(task.Query)) > 0 {
+			aspectRequired = true
+		}
+		if aspect == "" || !aspectRequired {
+			ret = append(ret, missingAspect)
+			continue
+		}
+
+		missingText := normalizeKnowledgeEvidenceSubjectForMatch(missingAspect)
+		mentionedSubjects := make([]string, 0, len(requiredSubjects))
+		for _, subject := range requiredSubjects {
+			if strings.Contains(missingText, subject) {
+				mentionedSubjects = append(mentionedSubjects, subject)
+			}
+		}
+		if len(mentionedSubjects) == 0 {
+			if len(requiredSubjects) > 1 {
+				ret = append(ret, missingAspect)
+				continue
+			}
+			if len(requiredSubjects) == 1 && !knowledgeEvidenceFactsCoverMissingAspect(task, facts, requiredSubjects[0], aspect, missingAspect) {
+				ret = append(ret, missingAspect)
+				continue
+			}
+			if len(requiredSubjects) == 0 && !knowledgeEvidenceFactsCoverMissingAspect(task, facts, "", aspect, missingAspect) {
+				ret = append(ret, missingAspect)
+			}
+			continue
+		}
+
+		resolved := true
+		for _, subject := range mentionedSubjects {
+			if !knowledgeEvidenceFactsCoverMissingAspect(task, facts, subject, aspect, missingAspect) {
+				resolved = false
+				break
+			}
+		}
+		if !resolved {
+			ret = append(ret, missingAspect)
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceFactsCoverMissingAspect(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact, subject string, aspect string, missingAspect string) bool {
+	if aspect == "time" {
+		role := knowledgeEvidenceConflictQuestionFieldRole(normalizeRuntimeKnowledgeQuery(missingAspect), "time")
+		if role == "start" || role == "end" || role == "duration" || role == "schedule" {
+			condition := ""
+			if conditions := knowledgeEvidenceCalendarConditions(missingAspect); len(conditions) == 1 {
+				condition = conditions[0]
+			}
+			return knowledgeEvidenceFactsCoverSubjectConditionTimeSlot(facts, subject, condition, role)
+		}
+	}
+	if strings.TrimSpace(subject) != "" {
+		return knowledgeEvidenceFactsCoverSubjectAspect(task, facts, subject, aspect)
+	}
+	return knowledgeEvidenceFactsCoverRequiredAspect(task, facts, aspect)
+}
+
+func requiredKnowledgeEvidenceTimeSlots(query string) []string {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	ret := make([]string, 0, 2)
+	asksRange := containsAny(compact, []string{
+		"几点到几点", "几点开始和结束", "几点开始与结束", "几点开始及结束", "几点开始、结束",
+		"开始和结束分别是几点", "开始与结束分别是几点", "开始及结束分别是几点",
+		"开始和结束时间", "开始与结束时间", "开始及结束时间",
+		"从什么时候到什么时候", "什么时候到什么时候", "从几点到几点", "几点至几点", "从何时到何时",
+	})
+	if asksRange || containsAny(compact, []string{"几点开始", "什么时候开始", "开始时间", "几点开门", "开门时间", "从几点"}) {
+		ret = append(ret, "start")
+	}
+	if asksRange || containsAny(compact, []string{"几点结束", "什么时候结束", "结束时间", "截止时间", "供应到几点", "营业到几点", "几点关门", "关门时间", "到几点"}) {
+		ret = append(ret, "end")
+	}
+	if containsAny(compact, []string{"多久", "多长时间", "时长"}) {
+		ret = append(ret, "duration")
+	}
+	return ret
+}
+
+func requiredKnowledgeEvidenceTimeSlotsForTask(task knowledgeEvidenceJudgeTask) []string {
+	if slots := requiredKnowledgeEvidenceTimeSlots(task.Query); len(slots) > 0 {
+		return slots
+	}
+	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "time") {
+		return nil
+	}
+	role := knowledgeEvidenceConflictQuestionFieldRole(normalizeRuntimeKnowledgeQuery(task.Query), "time")
+	switch role {
+	case "start", "end", "duration", "schedule":
+		return []string{role}
+	default:
+		return []string{"schedule"}
+	}
+}
+
+type knowledgeEvidenceTimeRequirement struct {
+	Subject   string
+	Condition string
+	Slot      string
+}
+
+func requiredKnowledgeEvidenceTimeRequirements(task knowledgeEvidenceJudgeTask) []knowledgeEvidenceTimeRequirement {
+	requiredSlots := requiredKnowledgeEvidenceTimeSlotsForTask(task)
+	if len(requiredSlots) == 0 {
+		return nil
+	}
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	requiredConditions := requiredKnowledgeEvidenceTimeConditions(task.Query)
+	defaultSubjects := append([]string(nil), requiredSubjects...)
+	if len(defaultSubjects) == 0 {
+		defaultSubjects = []string{""}
+	}
+	defaultConditions := append([]string(nil), requiredConditions...)
+	if len(defaultConditions) == 0 {
+		defaultConditions = []string{""}
+	}
+
+	ret := make([]knowledgeEvidenceTimeRequirement, 0, len(defaultSubjects)*len(defaultConditions)*len(requiredSlots))
+	seen := make(map[string]struct{}, cap(ret))
+	appendRequirements := func(subjects []string, conditions []string, slots []string) {
+		for _, subject := range subjects {
+			for _, condition := range conditions {
+				for _, slot := range slots {
+					key := subject + "\x00" + condition + "\x00" + slot
+					if _, exists := seen[key]; exists {
+						continue
+					}
+					seen[key] = struct{}{}
+					ret = append(ret, knowledgeEvidenceTimeRequirement{Subject: subject, Condition: condition, Slot: slot})
+				}
+			}
+		}
+	}
+
+	pendingSubjects := make([]string, 0, len(requiredSubjects))
+	pendingConditions := make([]string, 0, len(requiredConditions))
+	lastSubjects := []string(nil)
+	lastConditions := []string(nil)
+	lastSlots := []string(nil)
+	for _, clause := range splitKnowledgeEvidenceSubjectClauses(task.Query) {
+		clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		clauseSubjects := knowledgeEvidenceContainedSubjects(clauseText, requiredSubjects)
+		clauseConditions := requiredKnowledgeEvidenceTimeConditions(clause)
+		clauseSlots := requiredKnowledgeEvidenceTimeSlotsForClause(task, clause)
+		if len(clauseSlots) == 0 && len(lastSlots) > 0 && containsAny(normalizeRuntimeKnowledgeQuery(clause), []string{"呢", "那"}) {
+			clauseSlots = append([]string(nil), lastSlots...)
+		}
+		if len(clauseSlots) == 0 {
+			pendingSubjects = appendKnowledgeEvidenceStrings(pendingSubjects, clauseSubjects)
+			pendingConditions = appendKnowledgeEvidenceStrings(pendingConditions, clauseConditions)
+			continue
+		}
+
+		activeSubjects := appendKnowledgeEvidenceStrings(append([]string(nil), pendingSubjects...), clauseSubjects)
+		pendingSubjects = nil
+		if len(activeSubjects) == 0 {
+			if len(lastSubjects) > 0 {
+				activeSubjects = append([]string(nil), lastSubjects...)
+			} else {
+				activeSubjects = append([]string(nil), defaultSubjects...)
+			}
+		} else {
+			lastSubjects = append([]string(nil), activeSubjects...)
+		}
+
+		activeConditions := appendKnowledgeEvidenceStrings(append([]string(nil), pendingConditions...), clauseConditions)
+		pendingConditions = nil
+		if len(activeConditions) == 0 {
+			if len(lastConditions) > 0 {
+				activeConditions = append([]string(nil), lastConditions...)
+			} else {
+				activeConditions = append([]string(nil), defaultConditions...)
+			}
+		} else {
+			lastConditions = append([]string(nil), activeConditions...)
+		}
+		lastSlots = append([]string(nil), clauseSlots...)
+		appendRequirements(activeSubjects, activeConditions, clauseSlots)
+	}
+	if len(ret) == 0 {
+		appendRequirements(defaultSubjects, defaultConditions, requiredSlots)
+	}
+	return ret
+}
+
+func requiredKnowledgeEvidenceTimeSlotsForClause(task knowledgeEvidenceJudgeTask, clause string) []string {
+	if slots := requiredKnowledgeEvidenceTimeSlots(clause); len(slots) > 0 {
+		return slots
+	}
+	clauseTask := task
+	clauseTask.Query = clause
+	clauseTask.Objective = ""
+	clauseTask.Intent = ""
+	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(clauseTask), "time") {
+		return nil
+	}
+	return []string{knowledgeEvidenceConflictQuestionFieldRole(normalizeRuntimeKnowledgeQuery(clause), "time")}
+}
+
+func knowledgeEvidenceFactsCoverSubjectTimeSlot(facts []knowledgeEvidenceFact, subject string, slot string) bool {
+	return knowledgeEvidenceFactsCoverSubjectConditionTimeSlot(facts, subject, "", slot)
+}
+
+func knowledgeEvidenceFactsCoverSubjectConditionTimeSlot(facts []knowledgeEvidenceFact, subject string, condition string, slot string) bool {
+	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
+	for _, fact := range facts {
+		if !knowledgeEvidenceFactSupportsAspect(fact, "time") {
+			continue
+		}
+		activeSubject := ""
+		activeCondition := ""
+		slotText := fact.Statement
+		if len(knowledgeEvidenceIndividualTimePattern.FindAllString(slotText, -1)) == 0 {
+			slotText = strings.TrimSpace(slotText + " " + strings.Join(fact.CriticalValues, " "))
+		}
+		for _, clause := range splitKnowledgeEvidenceTimeClauses(slotText) {
+			clauseSubjectText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+			belongsToSubject := subject == ""
+			switch {
+			case subject != "" && strings.Contains(clauseSubjectText, subject):
+				activeSubject = subject
+				belongsToSubject = true
+			case subject != "" && knowledgeEvidenceTimeFactHasExplicitSubject(clause):
+				activeSubject = ""
+				belongsToSubject = false
+			case subject != "" && activeSubject == subject:
+				belongsToSubject = true
+			}
+			if !belongsToSubject {
+				continue
+			}
+			belongsToCondition := condition == ""
+			if condition != "" {
+				clauseConditions := knowledgeEvidenceCalendarConditions(clause)
+				switch {
+				case containsAny(normalizeRuntimeKnowledgeQuery(clause), []string{"每天", "每日", "天天"}):
+					belongsToCondition = true
+				case knowledgeEvidenceContainsString(clauseConditions, condition):
+					activeCondition = condition
+					belongsToCondition = true
+				case len(clauseConditions) > 0:
+					activeCondition = ""
+					belongsToCondition = false
+				case activeCondition == condition:
+					belongsToCondition = true
+				}
+			}
+			if !belongsToCondition {
+				continue
+			}
+			role := knowledgeEvidenceConflictQuestionFieldRole(normalizeRuntimeKnowledgeQuery(clause), "time")
+			if slot == "schedule" &&
+				(knowledgeEvidenceIndividualTimePattern.MatchString(clause) || knowledgeEvidenceDurationValuePattern.MatchString(clause)) {
+				return true
+			}
+			if strings.TrimSpace(knowledgeEvidenceTimeSlotValues(role, clause)[slot]) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requiredKnowledgeEvidenceTimeConditions(text string) []string {
+	return knowledgeEvidenceCalendarConditions(text)
+}
+
+func knowledgeEvidenceCalendarConditions(text string) []string {
+	ret := make([]string, 0, 3)
+	for _, condition := range knowledgeEvidenceConflictConditions(text) {
+		switch condition {
+		case "workday", "weekend", "holiday":
+			ret = appendIfMissing(ret, condition)
+		default:
+			if strings.HasPrefix(condition, "weekday:") {
+				ret = appendIfMissing(ret, condition)
+			}
+		}
+	}
+	return ret
+}
+
+func knowledgeEvidenceTimeConditionLabel(condition string) string {
+	switch condition {
+	case "workday":
+		return "工作日"
+	case "weekend":
+		return "周末"
+	case "holiday":
+		return "节假日"
+	case "weekday:monday":
+		return "周一"
+	case "weekday:tuesday":
+		return "周二"
+	case "weekday:wednesday":
+		return "周三"
+	case "weekday:thursday":
+		return "周四"
+	case "weekday:friday":
+		return "周五"
+	case "weekday:saturday":
+		return "周六"
+	case "weekday:sunday":
+		return "周日"
+	default:
+		return ""
+	}
+}
+
+func knowledgeEvidenceTimeSlotLabel(slot string) string {
+	switch slot {
+	case "start":
+		return "开始时间"
+	case "end":
+		return "结束时间"
+	case "duration":
+		return "时长"
+	default:
+		return "时间"
+	}
+}
+
+func knowledgeEvidenceAspectFromMissingAspect(value string) string {
+	compact := normalizeRuntimeKnowledgeQuery(value)
+	switch {
+	case containsAny(compact, []string{"数量", "几瓶", "几个", "几间", "几台", "几条", "几套", "几双", "几把", "几包", "几盒", "几袋", "几件", "几支", "几只", "几辆", "几杯", "几桶", "几卷", "瓶数", "个数"}):
+		return "quantity"
+	case containsAny(compact, []string{"费用", "收费", "免费", "价格", "金额", "多少钱"}):
+		return "price"
+	case containsAny(compact, []string{"时间", "几点", "多久", "什么时候"}):
+		return "time"
+	case containsAny(compact, []string{"位置", "地址", "地点", "楼层", "在哪里", "在哪"}):
+		return "location"
+	case containsAny(compact, []string{"办理方式", "操作方式", "领取方式", "使用方法", "怎么", "如何"}):
+		return "method"
+	case containsAny(compact, []string{"适用范围", "配送范围", "送达范围", "服务范围", "范围", "送到"}):
+		return "scope"
+	case containsAny(compact, []string{"适用条件", "使用条件", "条件", "限制"}):
+		return "condition"
+	case containsAny(compact, []string{"是否存在", "有没有", "是否有"}):
+		return "existence"
+	default:
+		return ""
+	}
+}
+
 func selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) bool {
 	if !requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(task), "existence") {
 		return true
 	}
 	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if subject, guarded := knowledgeEvidenceImplicitSingleExistenceSubject(task); guarded {
+		requiredSubjects = []string{subject}
+	}
 	if len(requiredSubjects) != 1 {
 		return true
 	}
@@ -2078,7 +5702,15 @@ func knowledgeEvidenceFAQAnswerSupportsSingleSubject(question string, answer str
 	if question == "" || answer == "" || subject == "" || isKnowledgeHandoffDirectiveContent(answer) {
 		return false
 	}
-	if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+	candidateSubject := knowledgeEvidenceRoomTypePredicateSubject(question, knowledgeEvidenceConflictRoomTypes(question))
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(question, []string{"existence"})
+	}
+	if candidateSubject != "" {
+		if !knowledgeEvidenceSemanticSubjectsEquivalent(candidateSubject, subject) {
+			return false
+		}
+	} else if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
 		return false
 	}
 	if strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(answer), subject) {
@@ -2091,23 +5723,44 @@ func knowledgeEvidenceFAQAnswerSupportsSingleSubject(question string, answer str
 }
 
 func knowledgeEvidenceFAQAnswerResolvesQuestionPolarity(answer string) bool {
+	_, _, ok := knowledgeEvidenceFAQAnswerPolarity(answer)
+	return ok
+}
+
+func knowledgeEvidenceFAQAnswerPolarity(answer string) (string, bool, bool) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" || knowledgeEvidenceTextHasUncertaintyBoundary(answer) {
-		return false
+		return "", false, false
 	}
-	for _, prefix := range []string{
-		"是的", "对的", "没错", "有的", "可以", "支持",
-		"没有", "没有的", "不可以", "不支持", "不需要", "无需", "不用", "不能", "不是",
+	for _, item := range []struct {
+		prefix   string
+		negative bool
+	}{
+		{prefix: "没有的", negative: true}, {prefix: "不可以", negative: true}, {prefix: "不支持", negative: true},
+		{prefix: "不需要", negative: true}, {prefix: "无需", negative: true}, {prefix: "不用", negative: true},
+		{prefix: "不能", negative: true}, {prefix: "不是", negative: true}, {prefix: "没有", negative: true},
+		{prefix: "是的"}, {prefix: "对的"}, {prefix: "没错"}, {prefix: "有的"}, {prefix: "可以"}, {prefix: "支持"},
 	} {
-		if !strings.HasPrefix(answer, prefix) {
+		if !strings.HasPrefix(answer, item.prefix) {
 			continue
 		}
-		remainder := strings.TrimSpace(strings.TrimPrefix(answer, prefix))
+		remainder := strings.TrimSpace(strings.TrimPrefix(answer, item.prefix))
 		if remainder == "" || strings.ContainsRune("，,。.!！；;：:", []rune(remainder)[0]) {
-			return true
+			return item.prefix, item.negative, true
 		}
 	}
-	return false
+	return "", false, false
+}
+
+func knowledgeEvidenceFAQAnswerIsPurePolarity(answer string, prefix string) bool {
+	answer = strings.TrimSpace(answer)
+	prefix = strings.TrimSpace(prefix)
+	if answer == "" || prefix == "" || !strings.HasPrefix(answer, prefix) {
+		return false
+	}
+	remainder := strings.TrimSpace(strings.TrimPrefix(answer, prefix))
+	remainder = strings.TrimSpace(strings.Trim(remainder, "，,。.!！；;：:"))
+	return remainder == ""
 }
 
 func knowledgeEvidenceFAQQuestionAsksForList(question string) bool {
@@ -2132,7 +5785,7 @@ type knowledgeEvidenceSubjectAspectRequirement struct {
 
 func requiredKnowledgeEvidenceSubjectAspectPairs(task knowledgeEvidenceJudgeTask) []knowledgeEvidenceSubjectAspectRequirement {
 	requiredAspects := requiredKnowledgeEvidenceAspects(task)
-	if len(requiredAspects) < 2 {
+	if len(requiredAspects) == 0 {
 		return nil
 	}
 	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
@@ -2168,6 +5821,9 @@ func requiredKnowledgeEvidenceSubjectAspectPairs(task knowledgeEvidenceJudgeTask
 	seen := make(map[string]struct{}, cap(ret))
 	for _, group := range groups {
 		if len(group.subjects) < 2 {
+			continue
+		}
+		if len(requiredAspects) == 1 && !knowledgeEvidenceSubjectGroupExplicitlyRequestsAspect(task, group.subjects, requiredAspects[0]) {
 			continue
 		}
 		pendingSubjects := make([]string, 0, len(group.subjects))
@@ -2210,6 +5866,56 @@ func requiredKnowledgeEvidenceSubjectAspectPairs(task knowledgeEvidenceJudgeTask
 	return ret
 }
 
+func knowledgeEvidenceSubjectGroupExplicitlyRequestsAspect(task knowledgeEvidenceJudgeTask, subjects []string, aspect string) bool {
+	if len(subjects) < 2 || strings.TrimSpace(aspect) == "" {
+		return false
+	}
+	if aspect == "price" && knowledgeEvidenceQueryAsksComparison(task.Query) {
+		return false
+	}
+	query := normalizeKnowledgeEvidenceSubjectForMatch(task.Query)
+	for _, subject := range subjects {
+		if !strings.Contains(query, subject) {
+			return false
+		}
+	}
+	covered := make(map[string]struct{}, len(subjects))
+	pendingSubjects := make([]string, 0, len(subjects))
+	allTaskSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	for _, clause := range splitKnowledgeEvidenceSubjectClauses(task.Query) {
+		clauseTask := task
+		clauseTask.Query = clause
+		clauseTask.Objective = ""
+		clauseTask.Intent = ""
+		clauseHasAspect := requiredKnowledgeEvidenceAspect(requiredKnowledgeEvidenceAspects(clauseTask), aspect)
+		clauseText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		clauseSubjects := knowledgeEvidenceContainedSubjects(clauseText, subjects)
+		if len(clauseSubjects) > 0 && !clauseHasAspect {
+			pendingSubjects = appendKnowledgeEvidenceStrings(pendingSubjects, clauseSubjects)
+			continue
+		}
+		if !clauseHasAspect {
+			continue
+		}
+		activeSubjects := clauseSubjects
+		if len(clauseSubjects) > 0 {
+			activeSubjects = appendKnowledgeEvidenceStrings(append([]string(nil), pendingSubjects...), clauseSubjects)
+			pendingSubjects = nil
+		} else if len(pendingSubjects) > 0 {
+			if len(knowledgeEvidenceContainedSubjects(clauseText, allTaskSubjects)) > 0 {
+				pendingSubjects = nil
+				continue
+			}
+			activeSubjects = pendingSubjects
+			pendingSubjects = nil
+		}
+		for _, subject := range activeSubjects {
+			covered[subject] = struct{}{}
+		}
+	}
+	return len(covered) == len(subjects)
+}
+
 func intersectKnowledgeEvidenceStrings(values []string, allowed []string) []string {
 	ret := make([]string, 0, len(values))
 	for _, value := range values {
@@ -2220,18 +5926,41 @@ func intersectKnowledgeEvidenceStrings(values []string, allowed []string) []stri
 	return ret
 }
 
-func knowledgeEvidenceFactsCoverSubjectAspect(facts []knowledgeEvidenceFact, subject string, aspect string) bool {
+func knowledgeEvidenceFactsCoverSubjectAspect(task knowledgeEvidenceJudgeTask, facts []knowledgeEvidenceFact, subject string, aspect string) bool {
 	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
 	for _, fact := range facts {
 		if !knowledgeEvidenceFactSupportsAspect(fact, aspect) {
+			continue
+		}
+		if aspect == "price" && !knowledgeEvidencePriceFactAnswersSubjectStatusTask(task, fact) {
 			continue
 		}
 		text := normalizeKnowledgeEvidenceSubjectForMatch(fact.Statement + " " + strings.Join(fact.CriticalValues, " "))
 		if strings.Contains(text, subject) {
 			return true
 		}
+		if knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjectsForAspect(task, fact.Statement, aspect) {
+			return true
+		}
 	}
 	return false
+}
+
+func knowledgeEvidencePriceFactAnswersSubjectStatusTask(task knowledgeEvidenceJudgeTask, fact knowledgeEvidenceFact) bool {
+	claims := knowledgeEvidencePriceClaims(fact.Statement + " " + strings.Join(fact.CriticalValues, " "))
+	if knowledgeEvidenceQueryAsksComparison(task.Query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "equal") ||
+			knowledgeEvidencePriceClaimsContain(claims, "not_equal") ||
+			knowledgeEvidencePriceClaimsContain(claims, "cheaper") ||
+			knowledgeEvidencePriceClaimsContain(claims, "dearer") ||
+			knowledgeEvidencePriceClaimsContain(claims, "amount")
+	}
+	if knowledgeEvidenceQueryAsksPriceAmount(task.Query) {
+		return knowledgeEvidencePriceClaimsContain(claims, "amount") || knowledgeEvidencePriceClaimsContain(claims, "free")
+	}
+	return knowledgeEvidencePriceClaimsContain(claims, "free") ||
+		knowledgeEvidencePriceClaimsContain(claims, "charged") ||
+		knowledgeEvidencePriceClaimsContain(claims, "amount")
 }
 
 func knowledgeEvidenceConfigurationFieldLabel(field string) string {
@@ -2314,7 +6043,51 @@ func knowledgeEvidenceContainsString(values []string, wanted string) bool {
 
 func knowledgeEvidenceQueryAsksComparison(query string) bool {
 	compact := normalizeRuntimeKnowledgeQuery(query)
-	return containsAny(compact, []string{"一样", "不同", "区别", "对比", "比较", "哪个", "哪家"})
+	compact = strings.NewReplacer(
+		"不同平台", "平台",
+		"不同房型", "房型",
+		"不同用品", "用品",
+		"不同设施", "设施",
+		"不同渠道", "渠道",
+	).Replace(compact)
+	return containsAny(compact, []string{
+		"价格一样", "费用一样", "收费一样", "金额一样", "价位一样", "价格是一样", "费用是一样", "收费是一样", "金额是一样", "价位是一样",
+		"价格相同", "费用相同", "收费相同", "金额相同", "价位相同", "同价",
+		"价格不一样", "费用不一样", "收费不一样", "金额不一样", "价位不一样", "价格是不一样", "费用是不一样", "收费是不一样", "金额是不一样", "价位是不一样",
+		"价格不同", "费用不同", "收费不同", "金额不同", "价位不同",
+		"是否不同", "有何不同", "有什么不同", "区别", "差别", "价差", "差多少", "对比", "比较",
+		"哪个更", "哪家更", "哪个便宜", "哪家便宜", "哪个贵", "哪家贵", "哪个划算", "哪家划算",
+	})
+}
+
+func knowledgeEvidenceQueryAsksDirectionalPriceComparison(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	return containsAny(compact, []string{
+		"哪个更", "哪家更", "哪个便宜", "哪家便宜", "哪个贵", "哪家贵", "哪个划算", "哪家划算",
+		"谁更便宜", "谁更贵", "价格更低", "费用更低", "收费更低", "价格更高", "费用更高", "收费更高",
+	})
+}
+
+func knowledgeEvidenceQueryAsksAbsolutePriceStatus(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	return containsAny(compact, []string{
+		"免费", "不免费", "收费", "不收费", "付费", "不付费", "要钱", "不要钱", "需不需要付费", "要不要收费",
+	})
+}
+
+func knowledgeEvidenceQueryAsksPriceAmount(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	return containsAny(compact, []string{"多少钱", "多少元", "多少块", "具体价格", "具体费用", "金额", "价钱"})
+}
+
+func knowledgeEvidencePriceClaimCount(claims []knowledgeEvidencePriceClaim, kind string) int {
+	count := 0
+	for _, claim := range claims {
+		if claim.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 func knowledgeEvidenceQueryAsksPriceBoundary(query string) bool {
@@ -2559,12 +6332,25 @@ func knowledgeEvidenceLayerHasConflictingCompleteAnswer(task knowledgeEvidenceJu
 		if _, skip := excluded[strings.TrimSpace(candidate.CandidateID)]; skip {
 			continue
 		}
+		if candidate.Hit.Score < knowledgeEvidenceJudgeReviewMinimumScore {
+			continue
+		}
 		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
 			continue
 		}
 		if !knowledgeEvidenceStrictExactConflictPeer(task, candidate, selectedQuestion, selectedAnswer, question, answer) {
 			continue
+		}
+		domain := knowledgeEvidenceConflictQuestionDomain(task.Query)
+		if domain == "time" && candidate.Hit.Score >= knowledgeEvidenceJudgeReviewMinimumScore &&
+			!knowledgeEvidenceTextHasUncertaintyBoundary(answer) && knowledgeEvidenceAnswerClauseIsGroundedFact(answer) {
+			if conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(task.Query, selectedAnswer, question, answer); comparable {
+				if conflict {
+					return true
+				}
+				continue
+			}
 		}
 		candidateTask := task
 		candidateTask.Candidates = []knowledgeEvidenceJudgeCandidate{candidate}
@@ -2579,7 +6365,6 @@ func knowledgeEvidenceLayerHasConflictingCompleteAnswer(task knowledgeEvidenceJu
 		); !complete {
 			continue
 		}
-		domain := knowledgeEvidenceConflictQuestionDomain(task.Query)
 		if domain == "time" {
 			if conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(task.Query, selectedAnswer, question, answer); comparable && conflict {
 				return true
@@ -2753,15 +6538,27 @@ func knowledgeEvidenceTextContainsAnyRoomType(text string, roomTypes []string) b
 	return false
 }
 
+var knowledgeEvidenceStandaloneWeekdayPattern = regexp.MustCompile(`(?:周|星期|礼拜)([一二三四五六日天])`)
+
 func knowledgeEvidenceConflictConditions(text string) []string {
 	compact := normalizeRuntimeKnowledgeQuery(text)
 	ret := make([]string, 0, 3)
+	workdayMarkers := []string{
+		"工作日", "平日", "平时", "周一到周五", "周一至周五", "周一到五", "周一至五",
+		"星期一到星期五", "星期一至星期五", "星期一到五", "星期一至五",
+		"礼拜一到礼拜五", "礼拜一至礼拜五",
+	}
+	weekendMarkers := []string{
+		"周末", "双休日", "双休", "周六日", "周六和周日", "周六与周日", "周六、周日", "周六到周日", "周六至周日",
+		"星期六和星期日", "星期六与星期日", "星期六、星期日", "星期六到星期日", "星期六至星期日",
+		"礼拜六和礼拜日", "礼拜六与礼拜日", "礼拜六到礼拜日", "礼拜六至礼拜日",
+	}
 	for _, item := range []struct {
 		canonical string
 		markers   []string
 	}{
-		{canonical: "workday", markers: []string{"工作日", "平日"}},
-		{canonical: "weekend", markers: []string{"周末"}},
+		{canonical: "workday", markers: workdayMarkers},
+		{canonical: "weekend", markers: weekendMarkers},
 		{canonical: "holiday", markers: []string{"节假日", "法定假日"}},
 		{canonical: "night", markers: []string{"夜间", "晚上", "夜里"}},
 		{canonical: "daytime", markers: []string{"白天", "日间"}},
@@ -2770,6 +6567,22 @@ func knowledgeEvidenceConflictConditions(text string) []string {
 	} {
 		if containsAny(compact, item.markers) {
 			ret = appendIfMissing(ret, item.canonical)
+		}
+	}
+	standaloneText := compact
+	for _, marker := range append(append([]string(nil), workdayMarkers...), weekendMarkers...) {
+		standaloneText = strings.ReplaceAll(standaloneText, marker, "")
+	}
+	weekdayNames := map[string]string{
+		"一": "monday", "二": "tuesday", "三": "wednesday", "四": "thursday",
+		"五": "friday", "六": "saturday", "日": "sunday", "天": "sunday",
+	}
+	for _, match := range knowledgeEvidenceStandaloneWeekdayPattern.FindAllStringSubmatch(standaloneText, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		if weekday := weekdayNames[match[1]]; weekday != "" {
+			ret = appendIfMissing(ret, "weekday:"+weekday)
 		}
 	}
 	return ret
@@ -2791,7 +6604,7 @@ func knowledgeEvidenceConflictQuestionSignature(text string) string {
 		domain = "address"
 	case containsAny(compact, []string{"几瓶", "多少瓶", "几个", "多少个", "有多少", "数量"}):
 		domain = "quantity"
-	case containsAny(compact, []string{"几点", "什么时候", "时间", "多久", "多长时间", "时长"}):
+	case containsAny(compact, []string{"几点", "什么时候", "时间", "多久", "多长时间", "时长", "多晚", "多早"}):
 		domain = "time"
 	case containsAny(compact, []string{"老板", "董事长", "创始人", "负责人"}) && containsAny(compact, []string{"是谁", "叫什么", "姓名", "名字", "哪位"}):
 		domain = "identity"
@@ -2809,6 +6622,12 @@ func knowledgeEvidenceConflictQuestionSignature(text string) string {
 		}
 		return domain + ":" + fieldRole + "|" + scope
 	}
+	if domain == "address" && fieldRole == "delivery" {
+		// "怎么填"、"填哪些"、"应该写什么" all ask for the same
+		// delivery-address value. Their wording is not an object conflict; any
+		// real conflict must come from the selected address facts themselves.
+		return domain + ":" + fieldRole + "|"
+	}
 	subject := strings.NewReplacer(
 		"你们酒店", "酒店", "咱们酒店", "酒店", "本酒店", "酒店", "门店", "酒店", "本店", "酒店",
 		"会议室", "", "会议厅", "", "会场", "", "停车场", "", "车库", "", "停车位", "", "车位", "",
@@ -2817,13 +6636,19 @@ func knowledgeEvidenceConflictQuestionSignature(text string) string {
 		"联系电话", "", "联系方式", "", "联系号码", "", "电话号码", "", "手机号", "", "电话", "", "号码", "",
 		"具体地址", "", "外卖地址", "", "收货地址", "", "配送地址", "", "跑腿地址", "", "地址", "", "位置在哪里", "", "位置在哪", "", "位置", "",
 		"有几瓶", "", "几瓶", "", "多少瓶", "", "有多少个", "", "多少个", "", "有多少", "", "几个", "", "数量", "",
+		"营业到多晚", "", "供应到多晚", "", "开放到多晚", "", "开到多晚", "", "到多晚", "", "多晚", "",
+		"最早多早", "", "多早", "",
 		"几点开始", "", "几点结束", "", "几点", "", "什么时候", "", "时间", "", "开始", "", "结束", "",
 		"多久", "", "多长时间", "", "时长", "",
+		"分别", "", "各自", "", "逐项", "",
 		"老板", "", "董事长", "", "创始人", "", "负责人", "", "姓名", "", "名字", "", "哪位", "", "叫什么", "", "是谁", "",
 		"在哪里", "", "在哪", "", "是什么", "", "是多少", "", "多少", "", "怎么填", "", "如何填", "", "填写", "",
 		"有没有", "", "是否", "", "是不是", "", "有", "", "的", "", "吗", "", "呢", "", "是", "",
 	).Replace(compact)
 	subject = strings.TrimSpace(subject)
+	if domain == "time" {
+		subject = strings.Trim(subject, "从到和与及")
+	}
 	if subject == "酒店" {
 		subject = ""
 	}
@@ -2853,9 +6678,9 @@ func knowledgeEvidenceConflictQuestionFieldRole(compact string, domain string) s
 	switch domain {
 	case "time":
 		switch {
-		case containsAny(compact, []string{"几点开始", "什么时候开始", "开始时间", "最早几点", "几点开门", "开门时间"}):
+		case containsAny(compact, []string{"几点开始", "什么时候开始", "开始时间", "最早几点", "几点开门", "开门时间", "多早"}):
 			return "start"
-		case containsAny(compact, []string{"几点结束", "什么时候结束", "结束时间", "截止时间", "最晚几点", "供应到几点", "营业到几点", "几点关门", "关门时间"}):
+		case containsAny(compact, []string{"几点结束", "什么时候结束", "结束时间", "截止时间", "最晚几点", "供应到几点", "营业到几点", "几点关门", "关门时间", "多晚"}):
 			return "end"
 		case containsAny(compact, []string{"多久", "多长时间", "时长"}):
 			return "duration"
@@ -2936,38 +6761,175 @@ func knowledgeEvidenceTimeRolesOverlap(left string, right string) bool {
 func knowledgeEvidenceTimeSlotAnswersConflict(leftQuestion string, leftAnswer string, rightQuestion string, rightAnswer string) (bool, bool) {
 	leftRole := knowledgeEvidenceConflictQuestionFieldRole(normalizeStrictKnowledgeEvidenceFAQText(leftQuestion), "time")
 	rightRole := knowledgeEvidenceConflictQuestionFieldRole(normalizeStrictKnowledgeEvidenceFAQText(rightQuestion), "time")
-	leftValues := knowledgeEvidenceTimeSlotValues(leftRole, leftAnswer)
-	rightValues := knowledgeEvidenceTimeSlotValues(rightRole, rightAnswer)
+	leftValuesByCondition := knowledgeEvidenceTimeSlotValuesByConditionForQuestion(leftQuestion, leftRole, leftAnswer)
+	rightValuesByCondition := knowledgeEvidenceTimeSlotValuesByConditionForQuestion(rightQuestion, rightRole, rightAnswer)
 	compared := false
-	for _, slot := range []string{"start", "end", "duration"} {
-		leftValue := strings.TrimSpace(leftValues[slot])
-		rightValue := strings.TrimSpace(rightValues[slot])
-		if leftValue == "" || rightValue == "" {
-			continue
-		}
-		compared = true
-		if normalizeRuntimeKnowledgeQuery(leftValue) != normalizeRuntimeKnowledgeQuery(rightValue) {
-			return true, true
+	for leftCondition, leftValues := range leftValuesByCondition {
+		for rightCondition, rightValues := range rightValuesByCondition {
+			if leftCondition != "" && rightCondition != "" && leftCondition != rightCondition {
+				continue
+			}
+			for _, slot := range []string{"start", "end", "duration", "schedule"} {
+				leftValue := strings.TrimSpace(leftValues[slot])
+				rightValue := strings.TrimSpace(rightValues[slot])
+				if leftValue == "" || rightValue == "" {
+					continue
+				}
+				compared = true
+				if normalizeRuntimeKnowledgeQuery(leftValue) != normalizeRuntimeKnowledgeQuery(rightValue) {
+					return true, true
+				}
+			}
 		}
 	}
 	return false, compared
 }
 
+func knowledgeEvidenceTimeSlotValuesByConditionForQuestion(question string, role string, answer string) map[string]map[string]string {
+	_, _, subject, ok := parseKnowledgeEvidenceConflictQuestionSignature(knowledgeEvidenceConflictQuestionSignature(question))
+	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
+	clauses := splitKnowledgeEvidenceTimeClauses(answer)
+	if ok && subject != "" {
+		clauses = knowledgeEvidenceTimeClausesForSubject(question, answer, subject)
+	}
+	if len(clauses) == 0 {
+		return map[string]map[string]string{"": knowledgeEvidenceTimeSlotValues(role, answer)}
+	}
+	questionConditions := knowledgeEvidenceCalendarConditions(question)
+	defaultCondition := ""
+	if len(questionConditions) == 1 {
+		defaultCondition = questionConditions[0]
+	}
+	grouped := make(map[string][]string, len(questionConditions)+1)
+	activeConditions := []string(nil)
+	for _, clause := range clauses {
+		conditions := knowledgeEvidenceCalendarConditions(clause)
+		if containsAny(normalizeRuntimeKnowledgeQuery(clause), []string{"每天", "每日", "天天"}) {
+			conditions = []string{""}
+		}
+		if len(conditions) > 0 {
+			activeConditions = append([]string(nil), conditions...)
+		} else if len(activeConditions) > 0 {
+			conditions = activeConditions
+		} else {
+			conditions = []string{defaultCondition}
+		}
+		for _, condition := range conditions {
+			grouped[condition] = append(grouped[condition], clause)
+		}
+	}
+	ret := make(map[string]map[string]string, len(grouped))
+	for condition, conditionClauses := range grouped {
+		ret[condition] = knowledgeEvidenceTimeSlotValues(role, strings.Join(conditionClauses, "，"))
+	}
+	return ret
+}
+
+func knowledgeEvidenceTimeSlotValuesForQuestion(question string, role string, answer string) map[string]string {
+	_, _, subject, ok := parseKnowledgeEvidenceConflictQuestionSignature(knowledgeEvidenceConflictQuestionSignature(question))
+	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
+	if !ok || subject == "" {
+		return knowledgeEvidenceTimeSlotValues(role, answer)
+	}
+	selected := knowledgeEvidenceTimeClausesForSubject(question, answer, subject)
+	if len(selected) == 0 {
+		return map[string]string{}
+	}
+	return knowledgeEvidenceTimeSlotValues(role, strings.Join(selected, "，"))
+}
+
+func knowledgeEvidenceTimeClausesForSubject(question string, answer string, subject string) []string {
+	clauses := splitKnowledgeEvidenceTimeClauses(answer)
+	if len(clauses) == 0 {
+		return nil
+	}
+	subject = normalizeKnowledgeEvidenceSubjectForMatch(subject)
+	if subject == "" || !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+		return clauses
+	}
+	selected := make([]string, 0, len(clauses))
+	activeSubject := subject
+	for _, clause := range clauses {
+		clauseSubjectText := normalizeKnowledgeEvidenceSubjectForMatch(clause)
+		switch {
+		case strings.Contains(clauseSubjectText, subject):
+			activeSubject = subject
+			selected = append(selected, clause)
+		case knowledgeEvidenceTimeFactHasExplicitSubject(clause):
+			activeSubject = ""
+		case activeSubject == subject:
+			selected = append(selected, clause)
+		}
+	}
+	return selected
+}
+
 func knowledgeEvidenceTimeSlotValues(role string, answer string) map[string]string {
 	ret := make(map[string]string, 3)
-	individualTimes := knowledgeEvidenceIndividualTimePattern.FindAllString(answer, -1)
-	if len(individualTimes) >= 2 {
-		ret["start"] = individualTimes[0]
-		ret["end"] = individualTimes[len(individualTimes)-1]
-	} else if len(individualTimes) == 1 {
-		compact := normalizeRuntimeKnowledgeQuery(answer)
-		switch {
-		case containsAny(compact, []string{"结束", "截止", "关门", "退房", "供应到", "营业到"}):
-			ret["end"] = individualTimes[0]
-		case containsAny(compact, []string{"开始", "开门", "入住", "起"}):
-			ret["start"] = individualTimes[0]
-		case role == "start" || role == "end":
-			ret[role] = individualTimes[0]
+	type clockMatch struct {
+		start          int
+		end            int
+		raw            string
+		value          string
+		period         string
+		explicitPeriod bool
+		role           string
+	}
+	indexes := knowledgeEvidenceIndividualTimePattern.FindAllStringIndex(answer, -1)
+	matches := make([]clockMatch, 0, len(indexes))
+	for index, bounds := range indexes {
+		raw := answer[bounds[0]:bounds[1]]
+		period := knowledgeEvidenceClockPeriod(raw)
+		explicitPeriod := period != ""
+		if period == "" && index > 0 {
+			connector := answer[indexes[index-1][1]:bounds[0]]
+			if knowledgeEvidenceTimeRangeConnector(connector) && !containsAny(normalizeRuntimeKnowledgeQuery(connector), []string{"次日", "第二天", "翌日"}) {
+				period = matches[index-1].period
+			}
+		}
+		matchRole := knowledgeEvidenceTimeStatementRole(knowledgeEvidenceTimeClauseForMatch(answer, bounds[0], bounds[1]))
+		matches = append(matches, clockMatch{
+			start:          bounds[0],
+			end:            bounds[1],
+			raw:            raw,
+			value:          normalizeKnowledgeEvidenceClockTimeWithPeriod(raw, period),
+			period:         period,
+			explicitPeriod: explicitPeriod,
+			role:           matchRole,
+		})
+	}
+	if len(matches) == 2 && knowledgeEvidenceTimeRangeConnector(answer[matches[0].end:matches[1].start]) {
+		matches[1].value = normalizeKnowledgeEvidenceInheritedNightRangeEnd(
+			matches[0].raw,
+			matches[0].period,
+			matches[1].raw,
+			matches[1].period,
+			matches[1].explicitPeriod,
+			matches[1].value,
+		)
+	}
+	rangeAssigned := false
+	if len(matches) == 2 &&
+		knowledgeEvidenceTimeRangeConnector(answer[matches[0].end:matches[1].start]) &&
+		knowledgeEvidenceTimeStatementRole(knowledgeEvidenceTimeSuffixForMatch(answer, matches[1].end)) != "start" {
+		ret["start"] = matches[0].value
+		ret["end"] = matches[1].value
+		rangeAssigned = true
+	}
+	if !rangeAssigned {
+		explicitRole := false
+		for _, match := range matches {
+			if match.role == "" || match.value == "" {
+				continue
+			}
+			explicitRole = true
+			ret[match.role] = match.value
+		}
+		if !explicitRole && len(matches) == 2 && knowledgeEvidenceTimeRangeConnector(answer[matches[0].end:matches[1].start]) {
+			ret["start"] = matches[0].value
+			ret["end"] = matches[1].value
+		} else if !explicitRole && len(matches) > 0 && (role == "start" || role == "end" || role == "schedule") {
+			ret[role] = matches[0].value
 		}
 	}
 	if duration := knowledgeEvidenceDurationValuePattern.FindString(answer); duration != "" {
@@ -2976,18 +6938,253 @@ func knowledgeEvidenceTimeSlotValues(role string, answer string) map[string]stri
 	return ret
 }
 
+func normalizeKnowledgeEvidenceInheritedNightRangeEnd(startRaw string, startPeriod string, endRaw string, endPeriod string, endExplicitPeriod bool, currentValue string) string {
+	if endExplicitPeriod || !containsAny(startPeriod, []string{"晚上", "夜里", "夜间"}) || endPeriod != startPeriod {
+		return currentValue
+	}
+	startHour, startOK := knowledgeEvidenceClockRawHour(startRaw)
+	endHour, endOK := knowledgeEvidenceClockRawHour(endRaw)
+	if !startOK || !endOK || endHour == 12 || endHour < 1 || endHour > 11 || endHour >= startHour {
+		return currentValue
+	}
+	return normalizeKnowledgeEvidenceClockTimeWithPeriod(endRaw, "")
+}
+
+func knowledgeEvidenceClockRawHour(value string) (int, bool) {
+	raw := strings.Trim(strings.TrimSpace(value), "，,。；;！!？?")
+	if period := knowledgeEvidenceClockPeriod(raw); period != "" {
+		raw = strings.TrimPrefix(raw, period)
+	}
+	normalized := normalizeKnowledgeEvidenceClockTimeWithPeriod(raw, "")
+	parts := strings.SplitN(normalized, ":", 2)
+	if len(parts) != 2 {
+		return 0, false
+	}
+	hour, err := strconv.Atoi(parts[0])
+	return hour, err == nil
+}
+
+func knowledgeEvidenceTimeSuffixForMatch(answer string, end int) string {
+	clauseEnd := len(answer)
+	for _, separator := range []string{"，", ",", "；", ";", "。", "！", "!", "？", "?"} {
+		if offset := strings.Index(answer[end:], separator); offset >= 0 && end+offset < clauseEnd {
+			clauseEnd = end + offset
+		}
+	}
+	return strings.TrimSpace(answer[end:clauseEnd])
+}
+
+func normalizeKnowledgeEvidenceClockTime(value string) string {
+	return normalizeKnowledgeEvidenceClockTimeWithPeriod(value, "")
+}
+
+func normalizeKnowledgeEvidenceClockTimeWithPeriod(value string, inheritedPeriod string) string {
+	raw := strings.Trim(strings.TrimSpace(value), "，,。；;！!？?")
+	period := knowledgeEvidenceClockPeriod(raw)
+	if period == "" {
+		period = inheritedPeriod
+	} else {
+		raw = strings.TrimPrefix(raw, period)
+	}
+	if parts := strings.SplitN(raw, ":", 2); len(parts) == 2 {
+		hour, hourErr := strconv.Atoi(strings.TrimSpace(parts[0]))
+		minute, minuteErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if hourErr == nil && minuteErr == nil && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 {
+			hour = knowledgeEvidenceClockHourWithPeriod(hour, period)
+			return fmt.Sprintf("%02d:%02d", hour, minute)
+		}
+		return normalizeRuntimeKnowledgeQuery(value)
+	}
+	compact := normalizeRuntimeKnowledgeQuery(raw)
+	if compact == "" {
+		return ""
+	}
+
+	pointIndex := strings.Index(compact, "点")
+	if pointIndex <= 0 {
+		return normalizeRuntimeKnowledgeQuery(value)
+	}
+	hour, ok := parseKnowledgeEvidenceClockNumber(compact[:pointIndex])
+	if !ok || hour < 0 || hour > 23 {
+		return normalizeRuntimeKnowledgeQuery(value)
+	}
+	minuteText := strings.TrimSpace(compact[pointIndex+len("点"):])
+	minute := 0
+	switch minuteText {
+	case "", "整":
+	case "半":
+		minute = 30
+	default:
+		minuteText = strings.TrimSuffix(minuteText, "分")
+		var minuteOK bool
+		minute, minuteOK = parseKnowledgeEvidenceClockNumber(minuteText)
+		if !minuteOK || minute < 0 || minute > 59 {
+			return normalizeRuntimeKnowledgeQuery(value)
+		}
+	}
+	hour = knowledgeEvidenceClockHourWithPeriod(hour, period)
+	return fmt.Sprintf("%02d:%02d", hour, minute)
+}
+
+func knowledgeEvidenceClockPeriod(value string) string {
+	value = strings.TrimSpace(value)
+	for _, marker := range []string{"凌晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里", "夜间"} {
+		if strings.HasPrefix(value, marker) {
+			return marker
+		}
+	}
+	return ""
+}
+
+func knowledgeEvidenceClockHourWithPeriod(hour int, period string) int {
+	if containsAny(period, []string{"晚上", "夜里", "夜间"}) && hour == 12 {
+		return 0
+	}
+	if containsAny(period, []string{"下午", "傍晚", "晚上", "夜里", "夜间"}) && hour < 12 {
+		return hour + 12
+	}
+	if period == "凌晨" && hour == 12 {
+		return 0
+	}
+	if period == "中午" && hour > 0 && hour < 11 {
+		return hour + 12
+	}
+	return hour
+}
+
+func knowledgeEvidenceTimeRangeConnector(value string) bool {
+	compact := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "").Replace(strings.TrimSpace(value))
+	compact = strings.Trim(compact, "，,。；;：:")
+	switch compact {
+	case "-", "~", "～", "至", "到",
+		"开始到", "开始至", "营业到", "营业至", "供应到", "供应至", "开放到", "开放至",
+		"到次日", "至次日", "到第二天", "至第二天", "到翌日", "至翌日":
+		return true
+	default:
+		return false
+	}
+}
+
+func knowledgeEvidenceTimeStatementRole(value string) string {
+	compact := normalizeRuntimeKnowledgeQuery(value)
+	hasStart := containsAny(compact, []string{"开始", "开门", "入住", "起"})
+	hasEnd := containsAny(compact, []string{"结束", "截止", "关门", "退房", "供应到", "营业到"})
+	if hasStart == hasEnd {
+		return ""
+	}
+	if hasStart {
+		return "start"
+	}
+	return "end"
+}
+
+func knowledgeEvidenceTimeClauseForMatch(answer string, start int, end int) string {
+	clauseStart := 0
+	for _, separator := range []string{"，", ",", "；", ";", "。", "！", "!", "？", "?"} {
+		if index := strings.LastIndex(answer[:start], separator); index >= 0 && index+len(separator) > clauseStart {
+			clauseStart = index + len(separator)
+		}
+	}
+	clauseEnd := len(answer)
+	for _, separator := range []string{"，", ",", "；", ";", "。", "！", "!", "？", "?"} {
+		if offset := strings.Index(answer[end:], separator); offset >= 0 && end+offset < clauseEnd {
+			clauseEnd = end + offset
+		}
+	}
+	return strings.TrimSpace(answer[clauseStart:clauseEnd])
+}
+
+func parseKnowledgeEvidenceClockNumber(value string) (int, bool) {
+	if parsed, err := strconv.Atoi(value); err == nil {
+		return parsed, true
+	}
+	if value == "零" || value == "〇" {
+		return 0, true
+	}
+	return parseKnowledgeEvidenceEnumerationCount(value)
+}
+
 func knowledgeEvidenceIdentityValuesConflict(left string, right string) bool {
-	leftValue := knowledgeEvidenceIdentityValue(left)
-	rightValue := knowledgeEvidenceIdentityValue(right)
-	return leftValue != "" && rightValue != "" && normalizeRuntimeKnowledgeQuery(leftValue) != normalizeRuntimeKnowledgeQuery(rightValue)
+	leftValue := normalizeKnowledgeEvidenceIdentityValue(knowledgeEvidenceIdentityValue(left))
+	rightValue := normalizeKnowledgeEvidenceIdentityValue(knowledgeEvidenceIdentityValue(right))
+	return leftValue != "" && rightValue != "" && leftValue != rightValue
+}
+
+func normalizeKnowledgeEvidenceIdentityValue(value string) string {
+	value = normalizeRuntimeKnowledgeQuery(value)
+	for _, suffix := range []string{"先生", "女士", "老师"} {
+		value = strings.TrimSuffix(value, suffix)
+	}
+	return value
 }
 
 func knowledgeEvidenceIdentityValue(answer string) string {
-	match := knowledgeEvidenceIdentityValuePattern.FindStringSubmatch(strings.TrimSpace(answer))
-	if len(match) < 2 {
+	trimmed := strings.Trim(strings.TrimSpace(answer), "，,。；;！!？?：:")
+	clauses := splitKnowledgeEvidenceAnswerClauses(trimmed)
+	if len(clauses) == 0 {
+		clauses = []string{trimmed}
+	}
+	for _, clause := range clauses {
+		for _, pattern := range []*regexp.Regexp{knowledgeEvidenceRoleFirstIdentityPattern, knowledgeEvidencePersonFirstIdentityPattern} {
+			match := pattern.FindStringSubmatch(strings.TrimSpace(clause))
+			if len(match) < 2 {
+				continue
+			}
+			value := trimKnowledgeEvidenceIdentityCandidate(match[1])
+			if knowledgeEvidenceIdentityValueUnavailable(value) || knowledgeEvidenceIdentityValueIsRoleOrContext(value) {
+				continue
+			}
+			return value
+		}
+	}
+	trimmed = trimKnowledgeEvidenceIdentityCandidate(trimmed)
+	if knowledgeEvidenceIdentityValueUnavailable(trimmed) || !knowledgeEvidenceBareIdentityValuePattern.MatchString(trimmed) || knowledgeEvidenceIdentityValueIsRoleOrContext(trimmed) {
 		return ""
 	}
-	return strings.TrimSpace(match[1])
+	return trimmed
+}
+
+func trimKnowledgeEvidenceIdentityCandidate(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), "，,。；;！!？?：:")
+	for {
+		before := value
+		for _, prefix := range []string{"本店由", "门店由", "目前", "现任", "现在", "由"} {
+			if strings.HasPrefix(value, prefix) {
+				value = strings.TrimPrefix(value, prefix)
+				break
+			}
+		}
+		if value == before {
+			break
+		}
+	}
+	for _, boundary := range []string{
+		"同时担任", "并且担任", "并担任", "且担任", "主要负责", "联系方式", "联系电话",
+		"负责", "主管", "管理", "分管", "兼任", "任职", "从事", "担任", "电话", "微信",
+	} {
+		index := strings.Index(value, boundary)
+		if index <= 0 || len([]rune(value[:index])) < 2 {
+			continue
+		}
+		value = value[:index]
+		break
+	}
+	return strings.Trim(strings.TrimSpace(value), "，,。；;！!？?：:")
+}
+
+func knowledgeEvidenceIdentityValueIsRoleOrContext(value string) bool {
+	return containsAny(normalizeRuntimeKnowledgeQuery(value), []string{
+		"老板", "董事长", "创始人", "负责人", "经理", "管家", "酒店", "公司", "集团", "门店",
+	})
+}
+
+func knowledgeEvidenceIdentityValueUnavailable(value string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(value)
+	return knowledgeEvidenceTextHasUncertaintyBoundary(value) || containsAny(compact, []string{
+		"暂无", "未公开", "不详", "保密", "没有资料", "无资料", "没有信息", "无相关信息",
+		"不知道", "不清楚", "无法提供", "不能提供", "不便提供", "无法确认", "不能确认",
+		"请联系前台", "联系前台", "请咨询前台", "咨询前台", "请联系门店", "联系门店", "请咨询门店", "咨询门店",
+	})
 }
 
 func knowledgeEvidenceJudgeTaskContainsCandidate(candidates []knowledgeEvidenceJudgeCandidate, candidateID string) bool {
@@ -3291,6 +7488,40 @@ func knowledgeEvidenceJudgeCandidateCompletesTask(task knowledgeEvidenceJudgeTas
 	return questionMatch, questionMatch >= 0.94 && knowledgeEvidenceAnswerClauseIsGroundedFact(answer)
 }
 
+func knowledgeEvidenceJudgeReviewCandidateCompletesTask(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate) (float64, bool) {
+	if candidate.Hit.Score < knowledgeEvidenceJudgeReviewMinimumScore {
+		return 0, false
+	}
+	question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+	questionMatch, matched := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
+	configurationTask := knowledgeEvidenceConfigurationTopic(task.Query) != ""
+	configurationMatch := configurationTask && knowledgeEvidenceConfigurationCandidateMatchesTask(task, candidate, question, answer)
+	storeSemanticMatch := knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(
+		task,
+		candidate,
+		question,
+		answer,
+		knowledgeEvidenceJudgeReviewMinimumScore,
+	)
+	if question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) ||
+		knowledgeEvidenceTextHasUncertaintyBoundary(answer) ||
+		(!matched && !configurationMatch && !storeSemanticMatch) ||
+		!knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) ||
+		len(knowledgeEvidenceSelectedCandidateExplicitSubjectGaps(task, candidate.Layer, []string{candidate.CandidateID})) > 0 ||
+		!selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, candidate.Layer, []string{candidate.CandidateID}) {
+		return questionMatch, false
+	}
+	repaired, ok := repairModelSelectedKnowledgeEvidenceLayer(
+		task,
+		candidate.Layer,
+		knowledgeEvidenceDecisionDirectSingle,
+		[]string{candidate.CandidateID},
+		nil,
+		false,
+	)
+	return questionMatch, ok && len(repaired.MissingAspects) == 0 && len(repaired.SupportedFacts) > 0
+}
+
 func knowledgeEvidenceDirectFAQCandidateEligibility(
 	task knowledgeEvidenceJudgeTask,
 	candidate knowledgeEvidenceJudgeCandidate,
@@ -3318,6 +7549,9 @@ func knowledgeEvidenceDirectFAQCandidateEligibility(
 	if !knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) {
 		return question, answer, questionMatch, nil, false
 	}
+	if len(knowledgeEvidenceSelectedCandidateExplicitSubjectGaps(task, candidate.Layer, []string{candidate.CandidateID})) > 0 {
+		return question, answer, questionMatch, nil, false
+	}
 	if !selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, candidate.Layer, []string{candidate.CandidateID}) {
 		return question, answer, questionMatch, nil, false
 	}
@@ -3334,9 +7568,25 @@ func knowledgeEvidenceStoreServiceSemanticFAQMatches(
 	question string,
 	answer string,
 ) bool {
+	return knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(
+		task,
+		candidate,
+		question,
+		answer,
+		knowledgeEvidenceDirectFAQMinimumScore,
+	)
+}
+
+func knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(
+	task knowledgeEvidenceJudgeTask,
+	candidate knowledgeEvidenceJudgeCandidate,
+	question string,
+	answer string,
+	minimumScore float32,
+) bool {
 	if strings.TrimSpace(candidate.Layer) != knowledgeEvidenceLayerStore ||
 		!knowledgeEvidenceTaskAllowsStoreServiceSemanticFAQ(task) ||
-		candidate.Hit.Score < knowledgeEvidenceDirectFAQMinimumScore {
+		candidate.Hit.Score < minimumScore {
 		return false
 	}
 	requiredEntities := requiredKnowledgeEvidenceSubjectEntities(task)
@@ -3734,7 +7984,7 @@ func requiredKnowledgeEvidenceSubjectEntities(task knowledgeEvidenceJudgeTask) [
 	ret := make([]string, 0, len(task.Entities))
 	for _, entity := range task.Entities {
 		value := normalizeKnowledgeEvidenceSubjectForMatch(normalizeKnowledgeEvidenceEntityText(entity))
-		if len([]rune(value)) < 2 || !strings.Contains(query, value) || knowledgeEvidenceContainsString([]string{"酒店", "门店", "房间", "客房", "房型", "客户", "服务", "问题", "地址", "位置"}, value) {
+		if len([]rune(value)) < 2 || !strings.Contains(query, value) || knowledgeEvidenceContainsString([]string{"酒店", "门店", "房间", "客房", "房型", "客户", "服务", "问题", "地址", "位置", "附近"}, value) {
 			continue
 		}
 		ret = appendIfMissing(ret, value)
@@ -3747,15 +7997,128 @@ func normalizeKnowledgeEvidenceSubjectForMatch(text string) string {
 		"wi-fi", "wifi",
 		"无线网络", "wifi",
 		"无线网", "wifi",
+		"开发票", "发票",
 		"董事长", "老板",
 		"书桌", "办公桌",
+		"卫生间", "洗手间",
 		"周边", "附近",
 	).Replace(normalizeRuntimeKnowledgeQuery(text))
+}
+
+func canonicalKnowledgeEvidenceSemanticSubject(text string) string {
+	value := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	for {
+		before := value
+		for _, suffix := range []string{"服务", "设施", "设备", "用品"} {
+			base := strings.TrimSuffix(value, suffix)
+			if base != value && len([]rune(base)) >= 2 {
+				value = base
+				break
+			}
+		}
+		if value == before {
+			break
+		}
+	}
+	return strings.Trim(value, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+}
+
+func knowledgeEvidenceSemanticSubjectsEquivalent(left string, right string) bool {
+	left = canonicalKnowledgeEvidenceSemanticSubject(left)
+	right = canonicalKnowledgeEvidenceSemanticSubject(right)
+	return left != "" && right != "" && left == right
+}
+
+func knowledgeEvidenceSingleSubjectForAspects(text string, aspects []string) string {
+	clauses := splitKnowledgeEvidenceAnswerClauses(text)
+	if len(clauses) == 0 {
+		clauses = []string{text}
+	}
+	subjects := make([]string, 0, 2)
+	appendSubject := func(subject string) bool {
+		subject = canonicalKnowledgeEvidenceSemanticSubject(subject)
+		if len([]rune(subject)) < 2 {
+			return true
+		}
+		for _, existing := range subjects {
+			if knowledgeEvidenceSemanticSubjectsEquivalent(existing, subject) {
+				return true
+			}
+		}
+		subjects = append(subjects, subject)
+		return len(subjects) == 1
+	}
+	for _, clause := range clauses {
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		if requiredKnowledgeEvidenceAspect(aspects, "existence") && knowledgeEvidenceClauseExpressesExistence(compact) {
+			if !appendSubject(knowledgeEvidenceSingleExistenceSubject(clause)) {
+				return ""
+			}
+		}
+		if requiredKnowledgeEvidenceAspect(aspects, "price") && containsAny(compact, []string{
+			"免费", "收费", "多少钱", "价格", "费用", "金额", "价钱", "价位", "要钱", "付费", "付钱",
+		}) {
+			if !appendSubject(knowledgeEvidenceSinglePriceSubject(clause)) {
+				return ""
+			}
+		}
+		if requiredKnowledgeEvidenceAspect(aspects, "time") && containsAny(compact, []string{"几点", "什么时候", "何时", "时间", "多久"}) {
+			if !appendSubject(knowledgeEvidenceSingleCompanionSubject(clause, []string{
+				"几点开始", "几点结束", "几点", "什么时候", "何时", "时间是多少", "时间", "多久",
+			})) {
+				return ""
+			}
+		}
+		if requiredKnowledgeEvidenceAspect(aspects, "location") && containsAny(compact, []string{"在哪里", "在哪", "哪里", "地址", "位置", "楼层"}) {
+			if !appendSubject(knowledgeEvidenceSingleCompanionSubject(clause, []string{
+				"在哪里吃", "在哪吃", "哪里吃", "在哪里拿", "在哪拿", "哪里拿", "在哪里", "在哪", "哪里", "地址", "位置", "楼层",
+			})) {
+				return ""
+			}
+		}
+	}
+	if len(subjects) != 1 {
+		return ""
+	}
+	return subjects[0]
+}
+
+func knowledgeEvidenceClauseExpressesExistence(compact string) bool {
+	compact = normalizeRuntimeKnowledgeQuery(compact)
+	return containsAny(compact, []string{
+		"有没有", "是否有", "是不是有", "有无", "有吗", "提供吗", "配备吗", "是否提供", "是否配备", "有哪些", "有什么",
+		"提供", "配备", "配有", "设有", "存在", "供应", "可不可以", "能不能", "能否", "可以", "支持",
+	}) || strings.Contains(compact, "有")
+}
+
+func knowledgeEvidenceSingleCompanionSubject(text string, markers []string) string {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	compact = strings.NewReplacer(
+		"麻烦请问一下", "", "麻烦请问", "", "麻烦问一下", "", "麻烦问下", "",
+		"我想请问一下", "", "我想请问", "", "我想问一下", "", "我想问", "",
+		"请问一下", "", "请问", "", "想问一下", "", "想问", "", "麻烦", "",
+		"你们酒店", "", "咱们酒店", "", "本酒店", "", "你们门店", "", "本门店", "", "你们家", "", "咱们家", "", "你们", "", "咱们", "", "本店", "", "酒店", "", "门店", "",
+		"每个房间", "", "房间里面", "", "房间内", "", "房间里", "", "客房内", "", "客房里", "", "房内", "", "客房", "", "房间", "",
+	).Replace(compact)
+	for _, marker := range markers {
+		compact = strings.ReplaceAll(compact, normalizeRuntimeKnowledgeQuery(marker), "")
+	}
+	compact = strings.Trim(compact, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if len([]rune(compact)) < 2 || len([]rune(compact)) > 24 || containsAny(compact, []string{"什么", "哪些", "哪个", "哪种", "啥"}) {
+		return ""
+	}
+	return compact
 }
 
 func knowledgeEvidenceCandidateMatchesTaskSubjects(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate, question string, answer string) bool {
 	if knowledgeEvidenceConfigurationTopic(task.Query) != "" &&
 		!knowledgeEvidenceConfigurationScopeMatches(task.Query, strings.Join([]string{question, answer, candidate.Hit.Title}, " ")) {
+		return false
+	}
+	if !knowledgeEvidenceCandidateMatchesImplicitSinglePriceSubject(task, candidate, question, answer) {
+		return false
+	}
+	if !knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(task, candidate, question, answer) {
 		return false
 	}
 	required := requiredKnowledgeEvidenceSubjectEntities(task)
@@ -3769,6 +8132,198 @@ func knowledgeEvidenceCandidateMatchesTaskSubjects(task knowledgeEvidenceJudgeTa
 		}
 	}
 	return true
+}
+
+func knowledgeEvidenceCandidateMatchesImplicitSinglePriceSubject(
+	task knowledgeEvidenceJudgeTask,
+	candidate knowledgeEvidenceJudgeCandidate,
+	question string,
+	answer string,
+) bool {
+	taskSubject, guarded := knowledgeEvidenceImplicitSinglePriceSubject(task)
+	if !guarded {
+		return true
+	}
+	candidateSubject := ""
+	if inferred := knowledgeEvidenceInferredQuantitySubjects(question); len(inferred) == 1 {
+		candidateSubject = inferred[0]
+	}
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(question, requiredKnowledgeEvidenceAspects(task))
+	}
+	if candidateSubject == "" && strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), canonicalKnowledgeEvidenceSemanticSubject(taskSubject)) {
+		return true
+	}
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(strings.Join([]string{candidate.Hit.Title, answer, candidate.Hit.Content}, " "), requiredKnowledgeEvidenceAspects(task))
+	}
+	if knowledgeEvidenceSemanticSubjectsEquivalent(taskSubject, candidateSubject) {
+		return true
+	}
+	taskScope := knowledgeEvidenceConflictObjectScope(task.Query)
+	candidateScope := knowledgeEvidenceCandidateApplicabilityScope(task, candidate, question, answer)
+	if taskScope == "" || candidateScope == "" || taskScope != candidateScope {
+		return false
+	}
+	return knowledgeEvidenceSemanticSubjectsEquivalent(
+		knowledgeEvidenceSubjectWithoutGenericScope(taskSubject),
+		knowledgeEvidenceSubjectWithoutGenericScope(candidateSubject),
+	)
+}
+
+func knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(
+	task knowledgeEvidenceJudgeTask,
+	candidate knowledgeEvidenceJudgeCandidate,
+	question string,
+	answer string,
+) bool {
+	taskSubject, guarded := knowledgeEvidenceImplicitSingleExistenceSubject(task)
+	if !guarded {
+		return true
+	}
+	anchors := explicitKnowledgeEvidenceTaskRoomTypes(task)
+	candidateSubject := knowledgeEvidenceRoomTypePredicateSubject(question, anchors)
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(question, requiredKnowledgeEvidenceAspects(task))
+	}
+	if candidateSubject == "" && strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), canonicalKnowledgeEvidenceSemanticSubject(taskSubject)) {
+		return true
+	}
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(candidate.Hit.Title, requiredKnowledgeEvidenceAspects(task))
+	}
+	if candidateSubject == "" {
+		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(answer, requiredKnowledgeEvidenceAspects(task))
+	}
+	return knowledgeEvidenceSemanticSubjectsEquivalent(taskSubject, candidateSubject)
+}
+
+func knowledgeEvidenceImplicitSingleExistenceSubject(task knowledgeEvidenceJudgeTask) (string, bool) {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	aspects := requiredKnowledgeEvidenceAspects(task)
+	if !requiredKnowledgeEvidenceAspect(aspects, "existence") || knowledgeEvidenceQueryAsksComparison(task.Query) {
+		return "", false
+	}
+	anchors := explicitKnowledgeEvidenceTaskRoomTypes(task)
+	if len(anchors) > 0 {
+		predicates := make([]string, 0, len(requiredSubjects))
+		for _, subject := range requiredSubjects {
+			if !knowledgeEvidenceContainsString(anchors, subject) {
+				predicates = appendIfMissing(predicates, subject)
+			}
+		}
+		switch len(predicates) {
+		case 1:
+			return predicates[0], true
+		case 0:
+			if subject := knowledgeEvidenceRoomTypePredicateSubject(task.Query, anchors); subject != "" {
+				return subject, true
+			}
+		}
+		return "", false
+	}
+	if len(requiredSubjects) > 1 {
+		return "", false
+	}
+	if len(requiredSubjects) == 1 {
+		return requiredSubjects[0], true
+	}
+	if inferredSubjects := knowledgeEvidenceInferredQuantitySubjects(task.Query); len(inferredSubjects) == 1 {
+		return inferredSubjects[0], true
+	}
+	subject := knowledgeEvidenceSingleSubjectForAspects(task.Query, aspects)
+	if len([]rune(subject)) < 2 || containsAny(subject, []string{"和", "与", "及", "、", "分别", "各自"}) {
+		return "", false
+	}
+	return subject, true
+}
+
+func knowledgeEvidenceRoomTypePredicateSubject(text string, anchors []string) string {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	if compact == "" {
+		return ""
+	}
+	hasRoomTypeContext := len(anchors) > 0 || containsAny(compact, []string{
+		"房型", "哪种客房", "哪些客房", "哪几种客房", "什么客房",
+	})
+	if !hasRoomTypeContext {
+		return ""
+	}
+	for _, anchor := range anchors {
+		compact = strings.ReplaceAll(compact, normalizeKnowledgeEvidenceSubjectForMatch(anchor), "")
+	}
+	compact = strings.NewReplacer(
+		"有该设施的房型", "", "配备该设施的房型", "", "提供该设施的房型", "",
+		"哪些房型", "", "哪几种房型", "", "哪种房型", "", "什么房型", "", "所有房型", "", "全部房型", "", "各个房型", "", "各房型", "", "房型", "",
+		"哪些客房", "", "哪几种客房", "", "哪种客房", "", "什么客房", "", "所有客房", "", "全部客房", "", "各个客房", "", "各客房", "",
+		"都有", "有", "均有", "有", "都", "", "均", "",
+	).Replace(compact)
+	compact = strings.Trim(compact, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了和与及、")
+	return knowledgeEvidenceSingleExistenceSubject(compact)
+}
+
+func knowledgeEvidenceSubjectWithoutGenericScope(subject string) string {
+	return strings.Trim(strings.NewReplacer(
+		"每个房间", "", "每间房", "", "房间里面", "", "房间内", "", "房间里", "", "客房里面", "", "客房内", "", "客房里", "", "房内", "", "客房", "", "房间", "",
+		"酒店里面", "", "酒店内", "", "门店里面", "", "门店内", "", "本店内", "", "店内", "", "酒店", "", "门店", "", "本店", "",
+	).Replace(canonicalKnowledgeEvidenceSemanticSubject(subject)), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+}
+
+func knowledgeEvidenceSingleExistenceSubject(text string) string {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	if compact == "" || containsAny(compact, []string{"和", "与", "及", "、", "分别", "各自"}) {
+		return ""
+	}
+	compact = strings.NewReplacer(
+		"麻烦请问一下", "", "麻烦请问", "", "麻烦问一下", "", "麻烦问下", "",
+		"我想请问一下", "", "我想请问", "", "我想问一下", "", "我想问", "",
+		"请问一下", "", "请问", "", "想问一下", "", "想问", "", "麻烦", "",
+		"你们酒店", "", "咱们酒店", "", "本酒店", "", "你们门店", "", "本门店", "", "你们家", "", "咱们家", "", "你们", "", "咱们", "", "本店", "", "酒店", "", "门店", "",
+		"每个房间", "", "房间里面", "", "房间内", "", "房间里", "", "客房内", "", "客房里", "", "房内", "", "客房", "", "房间", "",
+		"是否配备", "", "是否配有", "", "是否设有", "", "是否提供", "", "是否存在", "", "是不是有", "", "有没有", "", "是否有", "", "有无", "", "是否", "",
+		"都有哪些", "", "有哪些", "", "有什么", "",
+		"可不可以", "", "能不能", "", "能否", "", "是否可以", "", "可以", "", "支持", "",
+		"不提供", "", "未提供", "", "没有", "", "提供", "", "配备", "", "配有", "", "设有", "", "存在", "", "供应", "", "有", "",
+		"的吗", "", "的么", "", "的吗", "", "吗", "", "呢", "", "么", "", "嘛", "",
+	).Replace(compact)
+	compact = strings.Trim(compact, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if len([]rune(compact)) < 2 || len([]rune(compact)) > 24 || containsAny(compact, []string{"什么", "哪些", "哪个", "哪种", "啥"}) {
+		return ""
+	}
+	return compact
+}
+
+func knowledgeEvidenceImplicitSinglePriceSubject(task knowledgeEvidenceJudgeTask) (string, bool) {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) > 1 {
+		return "", false
+	}
+	aspects := requiredKnowledgeEvidenceAspects(task)
+	if !requiredKnowledgeEvidenceAspect(aspects, "price") || knowledgeEvidenceQueryAsksComparison(task.Query) {
+		return "", false
+	}
+	if len(requiredSubjects) == 1 {
+		return requiredSubjects[0], true
+	}
+	if inferredSubjects := knowledgeEvidenceInferredQuantitySubjects(task.Query); len(inferredSubjects) == 1 {
+		return inferredSubjects[0], true
+	}
+	subject := knowledgeEvidenceSingleSubjectForAspects(task.Query, aspects)
+	if len([]rune(subject)) < 2 || containsAny(subject, []string{"和", "与", "及", "、", "还是", "分别", "各自"}) {
+		return "", false
+	}
+	return subject, true
+}
+
+func knowledgeEvidenceSinglePriceSubject(text string) string {
+	compact := normalizeKnowledgeEvidenceSubjectForMatch(text)
+	subject := strings.NewReplacer(
+		"你们酒店", "", "咱们酒店", "", "本酒店", "", "你们门店", "", "本门店", "", "你们家", "", "咱们家", "", "你们", "", "咱们", "", "本店", "",
+		"怎么收费", "", "如何收费", "", "是否收费", "", "是不是免费", "", "是否免费", "", "有没有收费", "",
+		"多少钱", "", "价格", "", "费用", "", "金额", "", "价钱", "", "价位", "", "免费", "", "收费", "", "付费", "", "要钱", "", "付钱", "", "花钱", "",
+		"是否", "", "是不是", "", "有没有", "", "需要", "", "的", "", "吗", "", "呢", "", "是", "", "都", "",
+	).Replace(compact)
+	return strings.Trim(subject, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
 }
 
 // Model-selected evidence owns semantic synonym resolution. The local guard
@@ -3800,6 +8355,12 @@ func knowledgeEvidenceCandidateHasExplicitTaskConflict(
 	question string,
 	answer string,
 ) bool {
+	if !knowledgeEvidenceCandidateMatchesImplicitSinglePriceSubject(task, candidate, question, answer) {
+		return true
+	}
+	if !knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(task, candidate, question, answer) {
+		return true
+	}
 	candidateText := strings.Join([]string{question, answer, candidate.Hit.Title}, " ")
 	if knowledgeEvidenceConfigurationTopic(task.Query) != "" &&
 		!knowledgeEvidenceConfigurationScopeMatches(task.Query, candidateText) {
@@ -4016,7 +8577,7 @@ func knowledgeEvidenceCandidateAnchoredSubjectCoverage(
 			coveredPairs = appendKnowledgeEvidenceStrings(coveredPairs, explicitPairs)
 			continue
 		}
-		if knowledgeEvidenceFAQAnswerConfirmsQuestion(clause) {
+		if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(task, question, answer) && knowledgeEvidenceFAQAnswerConfirmsQuestion(clause) {
 			coveredAnchors = appendKnowledgeEvidenceStrings(coveredAnchors, questionAnchors)
 			coveredPairs = appendKnowledgeEvidenceStrings(coveredPairs, questionPairs)
 			continue
@@ -4137,7 +8698,7 @@ func splitKnowledgeEvidenceSubjectPairKey(pair string) (string, string) {
 }
 
 func highConfidenceKnowledgeConsensusSelection(task knowledgeEvidenceJudgeTask, layer string, requiredEntities []string) (knowledgeEvidenceLayerSelection, bool) {
-	const minimumScore = float32(0.85)
+	minimumScore := knowledgeEvidenceDirectFAQMinimumScore
 	var best *knowledgeEvidenceJudgeCandidate
 	bestTarget := ""
 	bestPredicate := ""
@@ -4756,7 +9317,7 @@ func normalizeKnowledgeEvidenceFacts(taskID string, layer string, facts []knowle
 				return nil, fmt.Errorf("empty critical value for fact %s", factID)
 			}
 			if _, exists := seenValues[value]; exists {
-				return nil, fmt.Errorf("duplicate critical value %q for fact %s", value, factID)
+				continue
 			}
 			seenValues[value] = struct{}{}
 			criticalValues = append(criticalValues, value)
@@ -4967,16 +9528,22 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 		if !ok || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 		if isKnowledgeHandoffDirectiveContent(answer) {
 			continue
 		}
+		allowedTimeClauses, filterTimeClauses := knowledgeEvidenceAllowedTimeClauseSet(task, question, answer)
 		for _, clause := range splitKnowledgeEvidenceAnswerClauses(answer) {
 			if !knowledgeEvidenceAnswerClauseIsGroundedFact(clause) {
 				continue
 			}
 			for _, classified := range knowledgeEvidenceAnswerClauseAspects(clause) {
 				aspect := classified.Aspect
+				if aspect == "time" && filterTimeClauses {
+					if _, ok := allowedTimeClauses[normalizeRuntimeKnowledgeQuery(clause)]; !ok {
+						continue
+					}
+				}
 				criticalValue := classified.CriticalValue
 				criticalValues := knowledgeEvidenceAnswerClauseCriticalValues(clause, criticalValue)
 				criticalValues = appendKnowledgeEvidenceCriticalValues(
@@ -5010,6 +9577,24 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 	}
 	selection.SupportedFacts = finalizeKnowledgeEvidenceFactsForTask(task, selection.SupportedFacts)
 	return selection
+}
+
+func knowledgeEvidenceAllowedTimeClauseSet(task knowledgeEvidenceJudgeTask, question string, answer string) (map[string]struct{}, bool) {
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if len(requiredSubjects) != 1 {
+		return nil, false
+	}
+	subject := requiredSubjects[0]
+	if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+		return nil, false
+	}
+	allowed := make(map[string]struct{})
+	for _, clause := range knowledgeEvidenceTimeClausesForSubject(question, answer, subject) {
+		if normalized := normalizeRuntimeKnowledgeQuery(clause); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	return allowed, true
 }
 
 func knowledgeEvidenceFAQClauseRequiredForTask(task knowledgeEvidenceJudgeTask, aspect string, clause string, criticalValues []string, facts []knowledgeEvidenceFact) bool {
@@ -5184,7 +9769,7 @@ func knowledgeEvidenceAnswerClauseAspects(clause string) []knowledgeEvidenceClau
 	if knowledgeEvidenceNegativeBoundaryAnchor(clause) != "" {
 		appendAspect("existence", "")
 	}
-	if knowledgeEvidenceAnswerTimePattern.MatchString(clause) || strings.Contains(compact, "时间") || strings.Contains(compact, "几点") {
+	if knowledgeEvidenceIndividualTimePattern.MatchString(clause) || strings.Contains(compact, "时间") || strings.Contains(compact, "几点") {
 		appendAspect("time", "")
 	}
 	if containsAny(compact, []string{"免费", "收费", "价格", "费用", "金额"}) {
@@ -5208,11 +9793,30 @@ func knowledgeEvidenceAnswerClauseAspects(clause string) []knowledgeEvidenceClau
 	if containsAny(compact, []string{"如果", "需要", "取决于", "为准", "而定"}) {
 		appendAspect("condition", "")
 	}
+	if knowledgeEvidenceClauseHasPositiveExistencePredicate(clause) {
+		appendAspect("existence", "")
+	}
 	if len(ret) == 0 {
 		appendAspect("other", "")
 	}
 	return ret
 
+}
+
+func knowledgeEvidenceClauseHasPositiveExistencePredicate(clause string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(clause)
+	if compact == "" || knowledgeEvidenceTextHasNegativeBoundary(compact) || knowledgeEvidenceTextHasUncertaintyBoundary(compact) {
+		return false
+	}
+	if containsAny(compact, []string{"配备", "配有", "设有", "提供", "存在", "供应", "装有", "带有"}) {
+		return true
+	}
+	plain := strings.NewReplacer(
+		"所有", "", "如有需要", "", "若有需要", "", "如果有需要", "", "有需要", "",
+		"如有问题", "", "若有问题", "", "如果有问题", "", "有问题", "",
+		"如有疑问", "", "若有疑问", "", "如果有疑问", "", "有疑问", "",
+	).Replace(compact)
+	return strings.Contains(plain, "有")
 }
 
 func knowledgeEvidenceAnswerClauseAspect(clause string) (string, string) {
@@ -5267,8 +9871,16 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 	for _, match := range knowledgeEvidenceGuidanceNumberPattern.FindAllString(clause, -1) {
 		values = appendIfMissing(values, strings.TrimSpace(match))
 	}
-	timeMatches := knowledgeEvidenceAnswerTimePattern.FindAllString(clause, -1)
-	for _, match := range timeMatches {
+	rangeTimeMatches := knowledgeEvidenceAnswerTimePattern.FindAllString(clause, -1)
+	timeMatches := append([]string(nil), rangeTimeMatches...)
+	for _, match := range rangeTimeMatches {
+		values = appendIfMissing(values, strings.TrimSpace(match))
+	}
+	for _, match := range knowledgeEvidenceIndividualTimePattern.FindAllString(clause, -1) {
+		timeMatches = appendIfMissing(timeMatches, match)
+		if knowledgeEvidenceNumberIsPartOfTime(match, rangeTimeMatches) {
+			continue
+		}
 		values = appendIfMissing(values, strings.TrimSpace(match))
 	}
 	for _, matchIndex := range knowledgeEvidenceAnswerNumberPattern.FindAllStringIndex(clause, -1) {
@@ -5287,11 +9899,8 @@ func knowledgeEvidenceAnswerClauseCriticalValues(clause string, criticalValue st
 	if anchor := knowledgeEvidenceLocationAnchor(clause); anchor != "" {
 		values = appendIfMissing(values, anchor)
 	}
-	compact := normalizeRuntimeKnowledgeQuery(clause)
-	for _, value := range []string{"免费", "收费"} {
-		if strings.Contains(compact, value) {
-			values = appendIfMissing(values, value)
-		}
+	for _, value := range knowledgeEvidencePriceCriticalValues(clause) {
+		values = appendIfMissing(values, value)
 	}
 	for _, fieldValues := range knowledgeEvidenceConfigurationValues(clause) {
 		for _, value := range fieldValues {
@@ -5330,7 +9939,10 @@ func knowledgeEvidenceNumberIsPartOfTime(number string, timeMatches []string) bo
 
 func knowledgeEvidenceTextHasNegativeBoundary(text string) bool {
 	compact := normalizeRuntimeKnowledgeQuery(text)
-	return containsAny(compact, []string{"并不是", "并非", "没有", "不是", "不能", "不会", "无法", "不可", "不含", "不提供", "不支持", "不需要", "无需", "未配备", "暂不"})
+	return containsAny(compact, []string{
+		"不免费", "并非免费", "并不是免费", "不是免费",
+		"并不是", "并非", "没有", "不是", "不能", "不会", "无法", "不可", "不含", "不提供", "不支持", "不需要", "无需", "不用", "未配备", "暂不",
+	})
 }
 
 func knowledgeEvidenceNegativeBoundaryAnchor(clause string) string {
@@ -5385,6 +9997,26 @@ func splitKnowledgeEvidenceAnswerClauses(answer string) []string {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if len([]rune(normalizeRuntimeKnowledgeQuery(part))) < 3 {
+			continue
+		}
+		ret = append(ret, part)
+	}
+	return ret
+}
+
+func splitKnowledgeEvidenceTimeClauses(answer string) []string {
+	parts := strings.FieldsFunc(strings.TrimSpace(answer), func(r rune) bool {
+		switch r {
+		case '\n', '\r', '。', '！', '!', '？', '?', '；', ';', '，', ',':
+			return true
+		default:
+			return false
+		}
+	})
+	ret := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
 			continue
 		}
 		ret = append(ret, part)
@@ -5458,12 +10090,16 @@ func knowledgeEvidenceGuidanceFactIndex(clause string, aspect string, criticalVa
 var knowledgeEvidenceGuidanceNumberPattern = regexp.MustCompile(`[0-9][0-9-]{5,}[0-9]`)
 var knowledgeEvidenceGuidanceQuotedPattern = regexp.MustCompile(`[“\"]([^”\"]{1,20})[”\"]`)
 var knowledgeEvidenceAnswerTimePattern = regexp.MustCompile(`[0-9]{1,2}:[0-9]{2}(?:\s*(?:-|~|至|到)\s*[0-9]{1,2}:[0-9]{2})?`)
-var knowledgeEvidenceIndividualTimePattern = regexp.MustCompile(`[0-9]{1,2}:[0-9]{2}`)
+var knowledgeEvidenceIndividualTimePattern = regexp.MustCompile(`(?:(?:凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|夜间)?(?:[0-9]{1,2}:[0-9]{2}|(?:[0-9]{1,2}|[零〇一二三四五六七八九十两]{1,3})点(?:半|(?:[0-9]{1,2}|[零〇一二三四五六七八九十两]{1,3})分)?))`)
 var knowledgeEvidenceDurationValuePattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?\s*(?:分钟|小时|天)`)
-var knowledgeEvidenceIdentityValuePattern = regexp.MustCompile(`(?:姓名|名字)?(?:是|为|叫)([\p{Han}A-Za-z·]{2,20})`)
+var knowledgeEvidenceRoleFirstIdentityPattern = regexp.MustCompile(`(?:老板|董事长|创始人|负责人|经理|管家)(?:姓名|名字)?(?:是|为|叫)([\p{Han}A-Za-z·]{2,20}(?:先生|女士|老师)?)`)
+var knowledgeEvidencePersonFirstIdentityPattern = regexp.MustCompile(`([\p{Han}A-Za-z·]{2,20}(?:先生|女士|老师)?)(?:是|为|担任)(?:老板|董事长|创始人|负责人|经理|管家)`)
+var knowledgeEvidenceBareIdentityValuePattern = regexp.MustCompile(`^[\p{Han}A-Za-z·]{2,20}(?:先生|女士|老师)?$`)
+var knowledgeEvidenceShortVenuePattern = regexp.MustCompile(`^[\p{Han}A-Za-z0-9·]{2,20}店$`)
 var knowledgeEvidenceAnswerNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?(?:\s*(?:-|~|至|到)\s*[0-9]+(?:\.[0-9]+)?)?(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|天|晚|小时|分钟|分|秒|元|块|折|层|楼|号|公里|米|工作日)?`)
 var knowledgeEvidenceAnswerChineseQuantityPattern = regexp.MustCompile(`[零〇一二三四五六七八九十百千万两]+(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|天|晚|小时|分钟|元|块|折|层|楼|号|公里|米|工作日)`)
 var knowledgeEvidenceStrictQuantityPattern = regexp.MustCompile(`(?:[0-9]+(?:\.[0-9]+)?|[零〇一二三四五六七八九十百千万两]+)(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷|天|晚|小时|分钟|元|块|折|公里|米|工作日)`)
+var knowledgeEvidenceCombinedQuantityTotalPattern = regexp.MustCompile(`(?:一共|总共|合计|共计)(?:是|为|有|共有)?\s*((?:[0-9]+|[零〇一二三四五六七八九十百千万两]+)(?:个|瓶|间|张|份|位|人|台|条|套|双|把|包|盒|袋|件|支|只|辆|杯|桶|卷))`)
 var knowledgeEvidencePriceValuePattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?(?:元|块|折)`)
 var knowledgeEvidenceConfigurationFieldMarkerPattern = regexp.MustCompile(`(?i)(?:wifi|wi-fi|无线网|无线网络)?\s*(账号|帐号|用户名|名称|名字|ssid|密码|口令)\s*(?:是|为|[:：])?\s*`)
 
@@ -5607,20 +10243,27 @@ func strictExactKnowledgeEvidenceHandoffSelectionMatches(
 	return selectedDirective
 }
 
-func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int) models.AIConfig {
+func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int, candidateCount int) models.AIConfig {
 	if taskCount < 1 {
 		taskCount = 1
 	}
-	requiredTimeout := 4*time.Second + time.Duration(taskCount)*time.Second
-	if requiredTimeout > knowledgeEvidenceJudgeMaxTimeout {
-		requiredTimeout = knowledgeEvidenceJudgeMaxTimeout
+	legacyRequiredTimeout := 4*time.Second + time.Duration(taskCount)*time.Second
+	if legacyRequiredTimeout > 15*time.Second {
+		legacyRequiredTimeout = 15 * time.Second
 	}
 	configuredTimeout := time.Duration(config.TimeoutMS) * time.Millisecond
 	if config.TimeoutMS <= 0 {
-		configuredTimeout = knowledgeEvidenceJudgeMaxTimeout
-	} else if configuredTimeout < requiredTimeout {
-		configuredTimeout = requiredTimeout
-	} else if configuredTimeout > knowledgeEvidenceJudgeMaxTimeout {
+		configuredTimeout = 15 * time.Second
+	} else if configuredTimeout < legacyRequiredTimeout {
+		configuredTimeout = legacyRequiredTimeout
+	} else if configuredTimeout > 15*time.Second {
+		configuredTimeout = 15 * time.Second
+	}
+	dynamicTimeout := knowledgeEvidenceJudgeTimeoutBudget(taskCount, candidateCount)
+	if dynamicTimeout > configuredTimeout {
+		configuredTimeout = dynamicTimeout
+	}
+	if configuredTimeout > knowledgeEvidenceJudgeMaxTimeout {
 		configuredTimeout = knowledgeEvidenceJudgeMaxTimeout
 	}
 	config.TimeoutMS = int(configuredTimeout / time.Millisecond)
@@ -5641,6 +10284,46 @@ func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int
 	}
 	config.MaxRetryCount = 0
 	return config
+}
+
+func knowledgeEvidenceJudgeTimeoutWithinParent(ctx context.Context, configured time.Duration) (time.Duration, bool) {
+	if configured <= 0 {
+		return 0, false
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return configured, true
+	}
+	return knowledgeEvidenceJudgeTimeoutWithinRemaining(configured, time.Until(deadline))
+}
+
+func knowledgeEvidenceJudgeTimeoutWithinRemaining(configured time.Duration, remaining time.Duration) (time.Duration, bool) {
+	available := remaining - knowledgeEvidenceJudgeDeadlineReserve
+	if configured <= 0 || available < time.Millisecond {
+		return 0, false
+	}
+	if configured < available {
+		return configured, true
+	}
+	return available, true
+}
+
+func knowledgeEvidenceJudgeTimeoutBudget(taskCount int, candidateCount int) time.Duration {
+	if taskCount < 1 {
+		taskCount = 1
+	}
+	if candidateCount < 0 {
+		candidateCount = 0
+	}
+	budget := 8*time.Second + time.Duration(taskCount)*1250*time.Millisecond + time.Duration(candidateCount)*350*time.Millisecond
+	budget = ((budget + time.Second - 1) / time.Second) * time.Second
+	if budget < knowledgeEvidenceJudgeMinTimeout {
+		return knowledgeEvidenceJudgeMinTimeout
+	}
+	if budget > knowledgeEvidenceJudgeMaxTimeout {
+		return knowledgeEvidenceJudgeMaxTimeout
+	}
+	return budget
 }
 
 func knowledgeEvidenceJudgeUsageContext(ctx context.Context, req RunInput, resolved *services.ResolvedAIConfig) context.Context {

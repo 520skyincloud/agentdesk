@@ -249,6 +249,33 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsCompleteStoreFAQInSingleSlot(
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetUsesPointSevenOnlyForJudgeVisibility(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "service_request",
+		Query:     "拖鞋没了",
+		SubIntent: "supplies_self_help",
+		Objective: "action_request",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.96, Content: "问题：浴巾在哪里拿\n答案：浴巾在洗衣房领取。"}},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: rag.RetrieveResult{Score: 0.70, Content: "问题：需要额外拖鞋怎么办\n答案：可前往1313对面洗衣房领取拖鞋。"}},
+			{CandidateID: "T1C3", Layer: knowledgeEvidenceLayerGeneral, Hit: rag.RetrieveResult{Score: 0.99, Content: "问题：用品不够怎么办\n答案：请联系门店同事。"}},
+		},
+	}
+
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates([]knowledgeEvidenceJudgeTask{task}, map[string]string{"T1": "action_request"}, 1)
+	if len(limited) != 1 || len(limited[0].Candidates) != 1 || limited[0].Candidates[0].CandidateID != "T1C2" {
+		t.Fatalf("a grounded 0.70 store FAQ must reach Judge without becoming a deterministic answer: %#v", limited)
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairHighConfidenceInsufficientKnowledgeSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("the 0.70 visibility threshold must not bypass Judge: repaired=%d selections=%#v", repaired, selections)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsLowScoreStrictExactStoreFAQAtTightQuotas(t *testing.T) {
 	base := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",

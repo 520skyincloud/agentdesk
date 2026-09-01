@@ -268,9 +268,9 @@ func TestRuntimeIntentDetectSystemPromptRoutesPublicCompanyIdentityToKnowledge(t
 func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, expected := range []string{
-		"紧邻的上一条 AI 客服消息正在就一个业务问题追问确认、偏好、条件、范围、身份字段或选项",
+		"clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段",
 		"附近餐饮推荐，偏好麻辣口味",
-		"不能从更早历史里挑一个旧主题强行续接",
+		"不能从更早、非紧邻历史里挑一个旧主题强行续接",
 		"answer_rejected 只有本轮用户提示明确启用",
 		"answer_rejected 不是关键词命中",
 	} {
@@ -1344,6 +1344,35 @@ func TestRuntimeIntentTaskResolvedTextAndSourceRefsAreBackwardCompatible(t *test
 	}
 }
 
+func TestResolvedBusinessReferenceRemainsKnowledgeTaskAndUsesResolvedQuery(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:            "hotel_info",
+		SubIntent:                "room_facilities",
+		NeedsKnowledge:           true,
+		SemanticContractExpected: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent:             "hotel_info",
+			SubIntent:          "room_facilities",
+			Objective:          "availability",
+			RelationToPrevious: "reference_previous",
+			ResolutionState:    runtimeIntentResolutionResolvedFromContext,
+			Text:               "那麦田呢",
+			ResolvedText:       "麦田房型有没有办公桌",
+			SourceRefs:         []string{"U1"},
+			NeedsKnowledge:     true,
+			Entities:           []callbacks.IntentEntityTraceData{{Text: "麦田", Type: "room_type"}, {Text: "办公桌", Type: "facility"}},
+		}},
+	}
+	tasks := buildReplyTaskPlans(intent)
+	if len(tasks) != 1 || !tasks[0].ReplyRequired || tasks[0].OutputKind != "text" || tasks[0].Text != "麦田房型有没有办公桌" {
+		t.Fatalf("resolved business reference must remain an answerable knowledge task, got %#v", tasks)
+	}
+	questions, ok := runtimeKnowledgeQuestionsFromReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: tasks}, intent)
+	if !ok || len(questions) != 1 || questions[0].Query != "麦田房型有没有办公桌" || questions[0].OriginalText != "那麦田呢" {
+		t.Fatalf("retrieval must use resolvedText while preserving the original reference, got %#v", questions)
+	}
+}
+
 func TestParseRuntimeIntentDetectJSONRejectsUnknownOrTrailingOutput(t *testing.T) {
 	base := `{"primaryIntent":"interaction","subIntent":"chat","confidence":0.9,"needsKnowledge":false,"needsTool":false,"needsResource":false,"needsHumanRoute":false,"needsClarification":false,"resourceType":"","resourceAction":"","resourceActions":[],"secondaryIntents":[],"mixedSubTasks":[],"intentTasks":[],"reason":"chat"}`
 	if _, err := parseRuntimeIntentDetectJSON(strings.Replace(base, `"reason":"chat"`, `"reason":"chat","unexpected":true`, 1)); err == nil {
@@ -1510,13 +1539,26 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 	}}
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
 	if !strings.Contains(prompt, "每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask") ||
-		!strings.Contains(prompt, "每个 URef 至少被 sourceRefs 引用一次") ||
+		!strings.Contains(prompt, "每个包含自包含业务问题的 URef 都必须由以它为 sourceRefs[0] 的 Task 主认领") ||
+		!strings.Contains(prompt, "context sourceRef 只负责补全，不能替代前一个 URef 自己的独立业务 Task") ||
 		!strings.Contains(prompt, "不能只处理最后一句或最后一个问题") {
 		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
 	}
 	for _, expected := range []string{"[CURRENT_TURN_SOURCE_REFS]", "U1: 早餐有吗", "U2: 停车免费吗", "resolvedText", "sourceRefs[0]"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected source-bound intent prompt to contain %q, got %q", expected, prompt)
+		}
+	}
+}
+
+func TestRuntimeIntentRepairInstructionRequiresPrimaryOwnership(t *testing.T) {
+	instruction := buildRuntimeIntentProtocolRepairInstruction(fmt.Errorf("missing source U1"))
+	for _, expected := range []string{
+		"每个包含自包含业务问题的 URef 都必须有对应 intentTask 以该 URef 作为 sourceRefs[0]",
+		"context sourceRefs 不能算覆盖",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("repair instruction missing primary ownership rule %q: %s", expected, instruction)
 		}
 	}
 }

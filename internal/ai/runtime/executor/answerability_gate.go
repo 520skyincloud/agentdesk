@@ -1297,6 +1297,9 @@ func bestCompleteKnowledgeEvidenceJudgeCandidateIndex(task knowledgeEvidenceJudg
 		}
 		questionMatch, ok := knowledgeEvidenceJudgeCandidateCompletesTask(task, candidate)
 		if !ok {
+			questionMatch, ok = knowledgeEvidenceJudgeReviewCandidateCompletesTask(task, candidate)
+		}
+		if !ok {
 			continue
 		}
 		if bestIndex < 0 || questionMatch > bestQuestionMatch+0.02 ||

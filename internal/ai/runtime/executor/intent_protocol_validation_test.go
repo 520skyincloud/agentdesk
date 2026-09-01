@@ -55,6 +55,96 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsServiceStateWithEllipticalAct
 	}
 }
 
+func TestCollapseExactRuntimeIntentTasksKeepsSameTextFromDifferentContextOwners(t *testing.T) {
+	first := validRuntimeIntentProtocolTask("麦田呢", "availability")
+	first.SubIntent = "room_type_facility"
+	first.RelationToPrevious = "reference_previous"
+	first.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	first.ResolvedText = "麦田房型有没有办公桌"
+	first.SourceRefs = runtimeIntentSourceRefList{"U2", "U1"}
+
+	second := first
+	second.ResolvedText = "麦田房型有没有沙发"
+	second.SourceRefs = runtimeIntentSourceRefList{"U4", "U3"}
+
+	got := collapseExactRuntimeIntentTasks(runtimeIntentTaskList{first, second})
+	if len(got) != 2 {
+		t.Fatalf("same text from different source/context owners must remain two tasks: %#v", got)
+	}
+
+	duplicate := first
+	duplicate.ResolvedText = "麦田房型有没有办公桌？"
+	got = collapseExactRuntimeIntentTasks(runtimeIntentTaskList{first, duplicate})
+	if len(got) != 1 {
+		t.Fatalf("the same source-owned task may collapse exactly normalized resolved wording: %#v", got)
+	}
+
+	paraphrase := first
+	paraphrase.ResolvedText = "麦田这个房型是否有办公桌"
+	got = collapseExactRuntimeIntentTasks(runtimeIntentTaskList{first, paraphrase})
+	if len(got) != 2 {
+		t.Fatalf("different resolved ownership must remain distinct even when it looks like a paraphrase: %#v", got)
+	}
+
+	office := first
+	office.SourceRefs = runtimeIntentSourceRefList{"U3", "U1"}
+	office.ResolvedText = "麦田房型有没有办公桌"
+	sofa := first
+	sofa.SourceRefs = runtimeIntentSourceRefList{"U3", "U2"}
+	sofa.ResolvedText = "麦田房型有没有沙发"
+	got = collapseExactRuntimeIntentTasks(runtimeIntentTaskList{office, sofa})
+	if len(got) != 2 {
+		t.Fatalf("one current reference bound to different context sources must remain separate tasks: %#v", got)
+	}
+}
+
+func TestValidateRuntimeIntentInteractionAgainstAdjacentContextRejectsSlotValueMixedWithInteraction(t *testing.T) {
+	context := runtimeIntentProtocolRepairContext{
+		PreviousCustomerText: "空调坏了",
+		AdjacentAIReply:      "方便说下是哪个房间吗？",
+	}
+	for _, test := range []struct {
+		name      string
+		text      string
+		subIntent string
+	}{
+		{name: "thanks plus room", text: "谢谢，1208", subIntent: "thanks"},
+		{name: "frustration plus room", text: "1208，你烦不烦", subIntent: "frustration"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+				Intent: "interaction", SubIntent: test.subIntent, Objective: "social",
+				RelationToPrevious: "follow_up", ResolutionState: "clear",
+				Text: test.text, ResolvedText: test.text, SourceRefs: runtimeIntentSourceRefList{"U1"},
+			}}}
+			if err := validateRuntimeIntentInteractionAgainstAdjacentContext(parsed, test.text, context); err == nil {
+				t.Fatalf("slot value mixed with interaction must trigger Intent protocol repair: %#v", parsed.IntentTasks)
+			}
+		})
+	}
+
+	pure := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "interaction", SubIntent: "thanks", Objective: "social",
+		RelationToPrevious: "follow_up", ResolutionState: "clear",
+		Text: "谢谢啦", ResolvedText: "谢谢啦", SourceRefs: runtimeIntentSourceRefList{"U1"},
+	}}}
+	if err := validateRuntimeIntentInteractionAgainstAdjacentContext(pure, "谢谢啦", context); err != nil {
+		t.Fatalf("a whole-message interaction may still close the clarification: %v", err)
+	}
+}
+
+func TestRuntimeIntentProtocolPreviousTurnCanOwnRepeatRequiresAnchorMatch(t *testing.T) {
+	if !runtimeIntentProtocolPreviousTurnCanOwnRepeat("再说一遍", "早餐几点") {
+		t.Fatal("a bare repeat may bind the only previous business question")
+	}
+	if !runtimeIntentProtocolPreviousTurnCanOwnRepeat("早餐再说一遍", "早餐几点") {
+		t.Fatal("a matching repeat anchor must bind the only previous business question")
+	}
+	if runtimeIntentProtocolPreviousTurnCanOwnRepeat("你的名字再说一遍", "早餐几点") {
+		t.Fatal("a non-empty unrelated anchor must not be captured by the only previous question")
+	}
+}
+
 // The legacy fixtures below document the retired local task-boundary and
 // context-rewrite heuristics. Active model-owned contract coverage lives in
 // intent_protocol_model_owned_test.go.
@@ -591,53 +681,116 @@ func legacyTestRepairRuntimeIntentDetectProtocolRejectsSameObjectiveDifferentRep
 	}
 }
 
-func legacyTestValidateRuntimeIntentDetectProtocolRequiresCoverageForExplicitDistinctTargets(t *testing.T) {
-	currentText := "入住方式和开门方式分别说，不要混在一起。"
+func TestValidateRuntimeIntentDetectProtocolRequiresExplicitSeparatedTargets(t *testing.T) {
+	for _, currentText := range []string{
+		"入住方式和开门方式分别说，不要混在一起。",
+	} {
+		t.Run(currentText, func(t *testing.T) {
+			compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+				Intent:             "hotel_info",
+				SubIntent:          "checkin_process",
+				Objective:          "method",
+				RelationToPrevious: "independent",
+				ResolutionState:    "clear",
+				Text:               currentText,
+				ResolvedText:       currentText,
+				SourceRefs:         runtimeIntentSourceRefList{"U1"},
+				NeedsKnowledge:     true,
+			}}}
+			if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err == nil {
+				t.Fatal("an explicit request for separate answers must not collapse into one task")
+			}
+
+			distinct := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+				{
+					Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+					RelationToPrevious: "independent", ResolutionState: "clear",
+					Text: "入住方式", ResolvedText: "酒店怎么办理入住", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+				},
+				{
+					Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+					RelationToPrevious: "independent", ResolutionState: "clear",
+					Text: "开门方式", ResolvedText: "酒店房门怎么打开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+				},
+			}}
+			if err := validateRuntimeIntentDetectProtocol(distinct, nil, currentText); err != nil {
+				t.Fatalf("the model may also return distinct ordered tasks: %v", err)
+			}
+		})
+	}
+
+	currentText := "矿泉水数量和费用是什么？"
+	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{validRuntimeIntentProtocolTask(currentText, "compound_information")}}
+	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err != nil {
+		t.Fatalf("a same-subject compound request without a separation directive must remain model-owned: %v", err)
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolLeavesSharedNounTargetsToModel(t *testing.T) {
+	currentText := "办公桌和沙发分别有哪些房型？"
 	compound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
-		Intent:             "hotel_info",
-		SubIntent:          "checkin_process",
-		Objective:          "method",
-		RelationToPrevious: "independent",
-		ResolutionState:    "clear",
-		Text:               currentText,
-		ResolvedText:       currentText,
-		SourceRefs:         runtimeIntentSourceRefList{"U1"},
-		NeedsKnowledge:     true,
+		Intent: "hotel_info", SubIntent: "room_facilities", Objective: "compound_information",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
 	}}}
-	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err == nil || !strings.Contains(err.Error(), "atomic question") {
-		t.Fatalf("explicitly separate answer targets must trigger Intent protocol repair, got %v", err)
+	if err := validateRuntimeIntentDetectProtocol(compound, nil, currentText); err != nil {
+		t.Fatalf("a compound shared-predicate task remains a valid model decision: %v", err)
 	}
 
 	distinct := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
 		{
-			Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+			Intent: "hotel_info", SubIntent: "room_facilities", Objective: "scope",
 			RelationToPrevious: "independent", ResolutionState: "clear",
-			Text: "入住方式", ResolvedText: "酒店怎么办理入住", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+			Text: "办公桌", ResolvedText: "办公桌有哪些房型", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
 		},
 		{
-			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
+			Intent: "hotel_info", SubIntent: "room_facilities", Objective: "scope",
 			RelationToPrevious: "independent", ResolutionState: "clear",
-			Text: "开门方式", ResolvedText: "酒店房门怎么打开", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
+			Text: "沙发", ResolvedText: "沙发有哪些房型", SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
 		},
 	}}
 	if err := validateRuntimeIntentDetectProtocol(distinct, nil, currentText); err != nil {
-		t.Fatalf("distinct tasks must satisfy explicit candidate coverage: %v", err)
+		t.Fatalf("distinct shared-source tasks remain valid when the model chooses them: %v", err)
+	}
+	if got := currentTurnTaskCandidates(currentText); len(got) != 1 {
+		t.Fatalf("coverage-only noun splitting must not create local Intent tasks: %#v", got)
 	}
 
-	reusedCompound := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
-		{
-			Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
-			RelationToPrevious: "independent", ResolutionState: "clear",
-			Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
-		},
-		{
-			Intent: "hotel_info", SubIntent: "room_access", Objective: "method",
-			RelationToPrevious: "independent", ResolutionState: "clear",
-			Text: currentText, ResolvedText: currentText, SourceRefs: runtimeIntentSourceRefList{"U1"}, NeedsKnowledge: true,
-		},
-	}}
-	if err := validateRuntimeIntentDetectProtocol(reusedCompound, nil, currentText); err == nil {
-		t.Fatalf("reused compound tasks must be rejected, got %v", err)
+}
+
+func TestRuntimeIntentActionRequestRejectsBarePredicateWithQuantity(t *testing.T) {
+	for _, text := range []string{
+		"预约一个", "预订一个", "申请一份", "补充一份", "配送两瓶", "办理一份", "领取一个", "帮我叫一个", "订一个",
+	} {
+		t.Run(text, func(t *testing.T) {
+			if runtimeIntentActionRequestHasTarget(text) {
+				t.Fatalf("a bare action predicate plus quantity must not count as a concrete target: %q", text)
+			}
+		})
+	}
+
+	for _, text := range []string{"预约早餐", "申请发票", "配送矿泉水", "预订一个房间", "帮我叫一个人"} {
+		t.Run("complete_"+text, func(t *testing.T) {
+			if !runtimeIntentActionRequestHasTarget(text) {
+				t.Fatalf("a concrete action target must remain valid: %q", text)
+			}
+		})
+	}
+}
+
+func TestValidateRuntimeIntentDetectProtocolKeepsBarePredicateWithQuantityAsClarify(t *testing.T) {
+	for _, text := range []string{"预订一个", "申请一份", "帮我叫一个"} {
+		t.Run(text, func(t *testing.T) {
+			task := validRuntimeIntentProtocolTask(text, "action_request")
+			task.Intent = "interaction"
+			task.SubIntent = "clarify"
+			task.ResolutionState = runtimeIntentResolutionAmbiguous
+			task.NeedsKnowledge = false
+
+			if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, text); err != nil {
+				t.Fatalf("an incomplete predicate-plus-quantity action must remain valid interaction/clarify: %v", err)
+			}
+		})
 	}
 }
 
@@ -859,7 +1012,7 @@ func TestValidateRuntimeIntentDetectProtocolAcceptsCountedQuestionLead(t *testin
 	}
 }
 
-func legacyTestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessInformationTarget(t *testing.T) {
+func TestValidateRuntimeIntentDetectProtocolRejectsInteractionForBusinessInformationTarget(t *testing.T) {
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
 		Intent: "interaction", SubIntent: "clarify", Objective: "method",
 		RelationToPrevious: "independent", ResolutionState: "clear",

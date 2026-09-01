@@ -544,11 +544,105 @@ func TestBuildRuntimeIntentDetectUserPromptExplainsContextDependentShortTurns(t 
 		"吴朝伟",
 		"房号为1208",
 		"玩的呢/玩的勒",
-		"不能按普通闲聊处理",
+		"不能按普通闲聊或 interaction/clarify 处理",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("context-dependent intent prompt missing %q: %s", expected, prompt)
 		}
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptUsesHumanServiceSlotQuestion(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "空调坏了，需要处理。"},
+		{ID: 2, SenderType: enums.IMSenderTypeAgent, MessageType: enums.IMMessageTypeText, Content: "方便说下是哪个房间吗？"},
+	}}
+	currentText := "1208"
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: currentText,
+	}}, history, nil)
+	for _, expected := range []string{
+		"紧邻上一组历史消息确为 人工客服答复",
+		"紧邻 人工客服答复组",
+		"回答紧邻客服正在追问的必要字段",
+		"房号为1208",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("human-service clarification prompt missing %q: %s", expected, prompt)
+		}
+	}
+
+	context := buildRuntimeIntentProtocolRepairContext(history)
+	if context.AdjacentAIReply != "" || !strings.Contains(context.AdjacentServiceReply, "哪个房间") ||
+		!strings.Contains(context.PreviousCustomerText, "空调坏了") {
+		t.Fatalf("human-service pair must reach Intent repair context: %#v", context)
+	}
+	task := validRuntimeIntentProtocolTask(currentText, "unknown")
+	task.Intent = "interaction"
+	task.SubIntent = "clarify"
+	task.ResolutionState = runtimeIntentResolutionAmbiguous
+	task.ResolvedText = currentText
+	task.Entities = nil
+	task.NeedsKnowledge = false
+	err := validateRuntimeIntentResolvedReferenceContext(
+		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, currentText, context, true,
+	)
+	if err == nil || !strings.Contains(err.Error(), "adjacent service clarification") {
+		t.Fatalf("human-service slot answer must trigger the existing Intent repair attempt: %v", err)
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptSeparatesClarificationFromCompletedAnswerReferences(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "合柴房型有没有办公桌？"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "合柴房型有办公桌。"},
+	}}
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		ID:          3,
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "那麦田呢？",
+	}}, history, nil)
+	for _, expected := range []string{
+		"clarification_answer 只用于回答紧邻客服正在追问的必要字段",
+		"客户业务问题 + 客服已完成答复",
+		"必须使用 follow_up/reference_previous",
+		"没有紧邻业务上下文时",
+		"承接已完成业务答复继续问细节用 follow_up",
+		"比较其他对象、复述或重新回答用 reference_previous",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("completed-answer reference prompt missing %q: %s", expected, prompt)
+		}
+	}
+	if strings.Contains(prompt, "没有紧邻业务追问时") {
+		t.Fatalf("prompt must distinguish completed business context from an active clarification question: %s", prompt)
+	}
+}
+
+func TestBuildRuntimeIntentDetectUserPromptKeepsRepeatBusinessTaskAfterNoDataAnswer(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "外卖地址怎么填？"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "不好意思，当前资料没有写明。"},
+	}}
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		ID:          3,
+		SenderType:  enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText,
+		Content:     "外卖地址再说一遍，只要正确地址。",
+	}}, history, nil)
+	for _, expected := range []string{
+		"即使上一答复说没有资料、无法确认或需要同事处理",
+		"不能降成 interaction/clarify",
+		"紧邻已完成的业务答复仍然是合法上下文",
+		"客户明确表示同一问题仍未解决",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("no-data repeat prompt missing %q: %s", expected, prompt)
+		}
+	}
+	if strings.Contains(prompt, "或仍未解决同一问题时统一用 answer_rejected") {
+		t.Fatalf("repeat-business guidance must not conflict with the explicit rejection rule: %s", prompt)
 	}
 }
 

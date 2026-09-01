@@ -2,10 +2,12 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
@@ -171,6 +173,58 @@ func TestKnowledgeEvidenceJudgeFailureUsesStrictExactFAQWithoutScoreThreshold(t 
 	}
 	if collector.Data.Pipeline.EvidenceJudge.Status != knowledgeEvidenceDecisionMalformed || len(collector.Data.Pipeline.EvidenceJudge.Tasks) != 1 || collector.Data.Pipeline.EvidenceJudge.Tasks[0].DecisionSource != "exact_faq_fallback" || collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer {
 		t.Fatalf("expected exact fallback trace, got %#v", collector.Data.Pipeline.EvidenceJudge)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeFailureDoesNotUseLegacySemanticScoreRescue(t *testing.T) {
+	storeHit := judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往1313对面洗衣房领取拖鞋。", 0.93)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		"拖鞋没了": {
+			KnowledgeBaseIDs: []int64{1, 2},
+			RawHits:          []rag.RetrieveResult{storeHit},
+			Hits:             []rag.RetrieveResult{storeHit},
+			ContextResults:   []rag.RetrieveResult{storeHit},
+			ContextText:      storeHit.Content,
+		},
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return failedKnowledgeEvidenceJudgeOutcome(tasks, callbacks.KnowledgeEvidenceJudgeTraceData{
+			SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+			Status:        knowledgeEvidenceDecisionMalformed,
+			Reason:        "simulated protocol failure",
+		}, knowledgeEvidenceDecisionMalformed)
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "service_request", Text: "拖鞋没了", ResolvedText: "拖鞋没了",
+		Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true,
+	}}})
+	intent := hotelInfoIntent()
+	intent.PrimaryIntent = "service_request"
+	intent.MatchedIntentCode = "service_request"
+	intent.SubIntent = "supplies_self_help"
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+		Intent: "service_request", SubIntent: "supplies_self_help", Objective: "action_request",
+		Text: "拖鞋没了", ResolvedText: "拖鞋没了", NeedsKnowledge: true,
+		Entities: []callbacks.IntentEntityTraceData{{Text: "拖鞋", Type: "supply"}},
+	}}
+	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("拖鞋没了", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+		Intent:    intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if judge.calls != 1 {
+		t.Fatalf("Judge must still be called exactly once, calls=%d", judge.calls)
+	}
+	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 1 || len(state.RetrieveResult.EffectiveHits) != 0 || strings.TrimSpace(state.RetrieveResult.ContextText) != "" {
+		t.Fatalf("a non-exact semantic FAQ must remain diagnostic-only after Judge failure: %#v", state.RetrieveResult)
+	}
+	if trace := collector.Data.Pipeline.EvidenceJudge; len(trace.Tasks) != 1 || trace.Tasks[0].DecisionSource == "store_exact_faq_rescue" {
+		t.Fatalf("the production Judge path must not invoke the legacy semantic score rescue: %#v", trace)
 	}
 }
 
@@ -1236,6 +1290,474 @@ func TestParseKnowledgeEvidenceJudgeResponseIsolatesInvalidAndMissingSelections(
 	}
 	if _, exists := parsed["UNKNOWN"]; exists {
 		t.Fatalf("unknown task must never enter parsed selections: %#v", parsed["UNKNOWN"])
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRepairsMalformedFactsWithoutDroppingSiblingTask(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{
+		{
+			TaskID:    "T1",
+			Query:     "外卖地址应该怎么填",
+			Objective: "method",
+			Entities:  []knowledgeEvidenceJudgeEntity{{Text: "外卖地址", Type: "location"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "外卖地址", "问题：外卖地址填哪些\n答案：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.96),
+			}},
+		},
+		{
+			TaskID:    "T2",
+			Query:     "早餐几点",
+			Objective: "time",
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T2C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "早餐时间", "问题：早餐几点\n答案：早餐时间是7:00-9:30。", 0.95),
+			}},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[` +
+		`{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"location","statement":"外卖地址填写丽斯未来酒店合肥南七店加对应楼层房间号。","criticalValues":"丽斯未来酒店合肥南七店"}],"missingAspects":[]}]},` +
+		`{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T2C1"],"supportedFacts":[{"factId":"T2F1","aspect":"time","statement":"早餐时间是7:00-9:30。","criticalValues":["7:00-9:30"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("a malformed fact field must be isolated to its own layer: %v", err)
+	}
+	address := parsed["T1"][knowledgeEvidenceLayerStore]
+	if address.Decision != knowledgeEvidenceDecisionDirectSingle || address.DecisionSource != "model_selected_repair" ||
+		len(address.SelectedCandidateIDs) != 1 || address.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("the model-selected address FAQ must survive local fact repair: %#v", address)
+	}
+	joinedAddress := ""
+	for _, fact := range address.SupportedFacts {
+		joinedAddress += fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	}
+	for _, required := range []string{"丽斯未来酒店合肥南七店", "楼层", "房间号"} {
+		if !strings.Contains(joinedAddress, required) {
+			t.Fatalf("repaired address facts lost %q: %#v", required, address.SupportedFacts)
+		}
+	}
+	breakfast := parsed["T2"][knowledgeEvidenceLayerStore]
+	if breakfast.Decision != knowledgeEvidenceDecisionDirectSingle || breakfast.DecisionSource != "model" ||
+		len(breakfast.SupportedFacts) != 1 || !strings.Contains(breakfast.SupportedFacts[0].Statement, "7:00-9:30") {
+		t.Fatalf("a malformed sibling layer must not damage a valid task: %#v", breakfast)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRepairsMalformedMissingAspectsWithoutPromotingPartial(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "外卖机器人能送到房间吗",
+		Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "外卖机器人", Type: "facility"},
+			{Text: "房间", Type: "location"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "外卖机器人", "问题：有外卖机器人吗\n答案：有外卖机器人的。", 0.96),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"门店有外卖机器人。","criticalValues":[]}],"missingAspects":"机器人配送范围"}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse partial response with malformed missingAspects: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || selection.DecisionSource != "model_selected_repair" ||
+		len(selection.SelectedCandidateIDs) != 1 || len(selection.SupportedFacts) == 0 || len(selection.MissingAspects) == 0 {
+		t.Fatalf("malformed missingAspects must be recomputed without promoting partial evidence: %#v", selection)
+	}
+	if !strings.Contains(strings.Join(selection.MissingAspects, " "), "范围") {
+		t.Fatalf("partial repair must retain the unproven delivery scope: %#v", selection.MissingAspects)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponsePromotesCompletePartialWithMalformedMissingAspects(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "你们有外卖机器人吗",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "外卖机器人", Type: "facility"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "外卖机器人", "问题：你们有外卖机器人吗\n答案：有外卖机器人的。", 0.96),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"门店有外卖机器人。","criticalValues":[]}],"missingAspects":"是否存在"}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse complete partial response with malformed missingAspects: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model_selected_repair" ||
+		len(selection.SelectedCandidateIDs) != 1 || len(selection.SupportedFacts) == 0 || len(selection.MissingAspects) != 0 {
+		t.Fatalf("a mechanically complete selected FAQ must survive malformed missingAspects repair: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRestoresTaskBoundQuantityAlongsidePrice(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有两瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse price-only model fact: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model_selected_repair" {
+		t.Fatalf("the selected FAQ should be repaired rather than discarded: %#v", selection)
+	}
+	joined := ""
+	for _, fact := range selection.SupportedFacts {
+		joined += fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	}
+	for _, required := range []string{"两瓶", "免费"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("repaired facts must retain both quantity and price, missing %q in %#v", required, selection.SupportedFacts)
+		}
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponsePromotesPartialWhenSelectedFAQProvesMissingQuantity(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有两瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":["矿泉水数量"]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse repairable partial response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model_selected_repair" || len(selection.MissingAspects) != 0 {
+		t.Fatalf("a complete selected FAQ must be promoted instead of handed off: %#v", selection)
+	}
+	joined := ""
+	for _, fact := range selection.SupportedFacts {
+		joined += fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	}
+	for _, required := range []string{"两瓶", "免费"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("promoted facts lost %q: %#v", required, selection.SupportedFacts)
+		}
+	}
+}
+
+func TestUnresolvedModelKnowledgeEvidenceMissingAspectsKeepsOtherSubjectQuantity(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		Query:     "矿泉水有两瓶，枕头有几个",
+		Objective: "compound_information",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "枕头", Type: "supply"},
+		},
+	}
+	facts := []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "quantity",
+		Statement:      "房间内有两瓶矿泉水。",
+		CriticalValues: []string{"两瓶"},
+	}}
+	missing := unresolvedModelKnowledgeEvidenceMissingAspects(task, facts, []string{"枕头数量"})
+	if len(missing) != 1 || missing[0] != "枕头数量" {
+		t.Fatalf("one subject's quantity must not resolve another subject: %#v", missing)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingSelectedQuantity(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有四瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有四瓶矿泉水。","criticalValues":["四瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse conflicting selected quantity: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("two bottles must not accept a selected FAQ that only confirms four: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingSelectedQuantityWithoutEntities(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有四瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有四瓶矿泉水。","criticalValues":["四瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse conflicting selected quantity without entities: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("an omitted entity list must not let four bottles answer two bottles: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsEquivalentSelectedQuantityWithoutEntities(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内2瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有两瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse equivalent selected quantity without entities: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || !knowledgeEvidenceFactsContainCriticalValue(selection.SupportedFacts, "2瓶") {
+		t.Fatalf("an omitted entity list must still accept an equivalent quantity: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryRequestedTimeSlot(t *testing.T) {
+	startOnlyTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始，几点结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "早餐开始时间", "问题：早餐几点开始\n答案：早餐7:00开始。", 0.97),
+		}},
+	}
+	t.Run("direct start only is invalid", func(t *testing.T) {
+		raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐7:00开始。","criticalValues":["7:00"]}],"missingAspects":[]}]}]}`
+		parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{startOnlyTask})
+		if err != nil {
+			t.Fatalf("parse start-only direct response: %v", err)
+		}
+		selection := parsed["T1"][knowledgeEvidenceLayerStore]
+		if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+			t.Fatalf("start time alone cannot fully answer start and end: %#v", selection)
+		}
+	})
+	t.Run("partial start keeps missing end", func(t *testing.T) {
+		raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐7:00开始。","criticalValues":["7:00"]}],"missingAspects":["早餐结束时间"]}]}]}`
+		parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{startOnlyTask})
+		if err != nil {
+			t.Fatalf("parse start-only partial response: %v", err)
+		}
+		selection := parsed["T1"][knowledgeEvidenceLayerStore]
+		if selection.Decision != knowledgeEvidenceDecisionPartial || !strings.Contains(strings.Join(selection.MissingAspects, " "), "结束") {
+			t.Fatalf("the unproven end time must remain missing: %#v", selection)
+		}
+	})
+	t.Run("schedule range covers both slots", func(t *testing.T) {
+		completeTask := startOnlyTask
+		completeTask.Candidates = []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "早餐时间", "问题：早餐时间\n答案：早餐时间为7:00-9:30。", 0.97),
+		}}
+		raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐时间为7:00-9:30。","criticalValues":["7:00-9:30"]}],"missingAspects":[]}]}]}`
+		parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{completeTask})
+		if err != nil {
+			t.Fatalf("parse complete schedule response: %v", err)
+		}
+		selection := parsed["T1"][knowledgeEvidenceLayerStore]
+		if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.MissingAspects) != 0 {
+			t.Fatalf("a time range must cover both requested slots: %#v", selection)
+		}
+	})
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseTreatsChineseAndArabicTaskBoundQuantitiesAsEquivalent(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内2瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水数量和费用", "问题：房间里有两瓶矿泉水吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse equivalent numeric quantity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model_selected_repair" ||
+		!knowledgeEvidenceFactsContainCriticalValue(selection.SupportedFacts, "2瓶") {
+		t.Fatalf("2瓶 and 两瓶 must share one grounded quantity value: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRestoresIndividualCounterQuantity(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两个枕头是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "枕头", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "枕头数量和费用", "问题：房间里有两个枕头吗\n答案：是的，都是免费的。", 0.97),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内枕头都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse individual-counter quantity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model_selected_repair" ||
+		!knowledgeEvidenceFactsContainCriticalValue(selection.SupportedFacts, "两个") ||
+		!knowledgeEvidenceFactsContainCriticalValue(selection.SupportedFacts, "免费") {
+		t.Fatalf("two pillows and their price must both remain grounded: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceTaskBoundCriticalValuesExcludesIndividualCounterScope(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		excluded  []string
+		preserved []string
+	}{
+		{name: "one room capacity", query: "一间房最多住几个人", excluded: []string{"一间"}},
+		{name: "two guests sharing one room", query: "两个人住一间房可以吗", excluded: []string{"两个", "一间"}},
+		{name: "three rooms facility scope", query: "三间房都有办公桌吗", excluded: []string{"三间"}},
+		{name: "requested towel amount", query: "浴巾需要加一条，怎么取", excluded: []string{"一条"}},
+		{name: "recommendation result count", query: "推荐一个既有沙发又有办公桌的房型", excluded: []string{"一个"}},
+		{name: "requested pickup amount", query: "帮我拿两瓶矿泉水", excluded: []string{"两瓶"}},
+		{name: "requested first person amount", query: "我要两瓶矿泉水", excluded: []string{"两瓶"}},
+		{name: "requested needed amount", query: "我需要两条浴巾", excluded: []string{"两条"}},
+		{name: "bottled water quantity", query: "房间内有两瓶矿泉水吗", preserved: []string{"两瓶"}},
+		{name: "bottled water price scope", query: "两瓶矿泉水是否都免费", preserved: []string{"两瓶"}},
+		{name: "delivery action does not erase price quantity", query: "你们送两瓶矿泉水都免费吗", preserved: []string{"两瓶"}},
+		{name: "postposed pickup does not erase price quantity", query: "两瓶矿泉水免费吗怎么拿", preserved: []string{"两瓶"}},
+		{name: "postposed pickup does not erase existence quantity", query: "房间有两瓶矿泉水吗怎么拿", preserved: []string{"两瓶"}},
+		{name: "pillow quantity", query: "房间内有两个枕头吗", preserved: []string{"两个"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := knowledgeEvidenceTaskBoundCriticalValues(test.query)
+			for _, excluded := range test.excluded {
+				if containsString(values, excluded) {
+					t.Fatalf("scope quantity %q must be excluded: %#v", excluded, values)
+				}
+			}
+			for _, preserved := range test.preserved {
+				if !containsString(values, preserved) {
+					t.Fatalf("answer quantity %q must be preserved: %#v", preserved, values)
+				}
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDoesNotForceContextQuantityIntoDirectAnswer(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "一个房间最多住几个人",
+		Objective: "quantity",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "房间", Type: "room"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "入住人数", "问题：一个房间最多住几个人\n答案：每间房最多住2人。", 0.96),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"每间房最多住2人。","criticalValues":["2人"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse room occupancy response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SupportedFacts) != 1 ||
+		!knowledgeEvidenceFactsContainCriticalValue(selection.SupportedFacts, "2人") {
+		t.Fatalf("one room is query scope, while 2 people is the grounded answer: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseKeepsPartialWhenTaskBoundQuantityIsStillMissing(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水费用", "问题：房间内矿泉水收费吗\n答案：房间内矿泉水是免费的。", 0.92),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内矿泉水是免费的。","criticalValues":["免费"]}],"missingAspects":["矿泉水数量"]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse partial quantity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || len(selection.SelectedCandidateIDs) != 1 || len(selection.SupportedFacts) == 0 {
+		t.Fatalf("a confirmed price fact must survive while quantity remains unresolved: %#v", selection)
+	}
+	joinedFacts := ""
+	for _, fact := range selection.SupportedFacts {
+		joinedFacts += fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	}
+	if !strings.Contains(joinedFacts, "免费") || strings.Contains(joinedFacts, "两瓶") {
+		t.Fatalf("partial evidence must preserve only the grounded price fact: %#v", selection.SupportedFacts)
+	}
+	if !strings.Contains(strings.Join(selection.MissingAspects, " "), "数量") {
+		t.Fatalf("the unresolved quantity must remain explicit: %#v", selection.MissingAspects)
 	}
 }
 
@@ -2688,10 +3210,42 @@ func TestKnowledgeEvidenceFAQAnswerConfirmationIsStrict(t *testing.T) {
 			t.Fatalf("strict affirmative answer should confirm its FAQ question: %q", answer)
 		}
 	}
-	for _, answer := range []string{"可以联系门店确认。", "可以咨询同事。", "可以尝试申请。", "支持联系管家。", "提供咨询服务。", "不需要。", "不能。"} {
+	for _, answer := range []string{
+		"可以联系门店确认。", "可以咨询同事。", "可以尝试申请。", "支持联系管家。", "提供咨询服务。", "不需要。", "不能。",
+	} {
 		if knowledgeEvidenceFAQAnswerConfirmsQuestion(answer) {
 			t.Fatalf("guidance or negative answer must not confirm its FAQ question: %q", answer)
 		}
+	}
+}
+
+func TestKnowledgeEvidenceFAQAnswerConfirmationChecksTaskBoundContradictions(t *testing.T) {
+	breakfast := knowledgeEvidenceJudgeTask{
+		Query:     "有早餐吗",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	if !knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(breakfast, "有早餐吗", "是的，但不需要预约。") {
+		t.Fatal("an unrelated reservation condition must not erase breakfast existence")
+	}
+	if !knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(breakfast, "有早餐吗", "是的，早餐正常提供，但具体菜品可能调整。") {
+		t.Fatal("uncertainty about an unrelated detail must not erase breakfast existence")
+	}
+	for _, answer := range []string{"是的，不过当前没有提供。", "是的，但不提供早餐。", "是的，当前有早餐，不过实际上早餐没有提供。"} {
+		if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(breakfast, "有早餐吗", answer) {
+			t.Fatalf("a contradictory answer must not confirm the FAQ question: %q", answer)
+		}
+	}
+	water := knowledgeEvidenceJudgeTask{
+		Query:     "有两瓶矿泉水吗",
+		Objective: "quantity",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+	}
+	if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(water, "有两瓶矿泉水吗", "是的，但不是两瓶，是四瓶。") {
+		t.Fatal("a conflicting quantity must not confirm the FAQ premise")
+	}
+	if knowledgeEvidenceFAQAnswerConfirmsTaskQuestion(water, "有两瓶矿泉水吗", "是的，但具体数量不确定。") {
+		t.Fatal("an uncertain quantity must not confirm the FAQ premise")
 	}
 }
 
@@ -3250,6 +3804,613 @@ func TestSelectedExistenceFAQUsesQuestionAnswerUnitForShortAndListAnswers(t *tes
 				t.Fatalf("unexpected FAQ unit support result: got %v want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEntitylessSingleExistenceQuestionKeepsCandidateSubjectBound(t *testing.T) {
+	tests := []struct {
+		name              string
+		query             string
+		candidateQuestion string
+		candidateAnswer   string
+		want              bool
+	}{
+		{name: "same subject", query: "有早餐吗", candidateQuestion: "有早餐吗", candidateAnswer: "有的。", want: true},
+		{name: "different subject", query: "有早餐吗", candidateQuestion: "有晚餐吗", candidateAnswer: "有晚餐。", want: false},
+		{name: "specific coupon cannot answer breakfast", query: "有早餐吗", candidateQuestion: "有早餐券吗", candidateAnswer: "有的。", want: false},
+		{name: "breakfast cannot answer specific coupon", query: "有早餐券吗", candidateQuestion: "有早餐吗", candidateAnswer: "有的。", want: false},
+		{name: "specific quiet room cannot answer air conditioner", query: "房间有空调吗", candidateQuestion: "有静音空调房吗", candidateAnswer: "有的。", want: false},
+		{name: "normalized synonym", query: "房间有书桌吗", candidateQuestion: "客房配备办公桌吗", candidateAnswer: "有的。", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, test.candidateQuestion, "问题："+test.candidateQuestion+"\n答案："+test.candidateAnswer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: test.query, Objective: "availability",
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			candidate := task.Candidates[0]
+			question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if got := knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer); got != test.want {
+				t.Fatalf("candidate subject guard mismatch: got=%v want=%v question=%q answer=%q", got, test.want, question, answer)
+			}
+			if got := selectedKnowledgeEvidenceAnswersMatchSingleExistenceSubject(task, knowledgeEvidenceLayerStore, []string{"T1C1"}); got != test.want {
+				t.Fatalf("selected existence subject guard mismatch: got=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGenericEntityDoesNotDisableConcreteExistenceSubjectGuard(t *testing.T) {
+	tests := []struct {
+		name              string
+		query             string
+		entity            knowledgeEvidenceJudgeEntity
+		candidateQuestion string
+		candidateAnswer   string
+		want              bool
+	}{
+		{name: "generic room rejects sofa", query: "房间有空调吗", entity: knowledgeEvidenceJudgeEntity{Text: "房间", Type: "location"}, candidateQuestion: "房间有沙发吗", candidateAnswer: "有的。", want: false},
+		{name: "generic room accepts air conditioner", query: "房间有空调吗", entity: knowledgeEvidenceJudgeEntity{Text: "房间", Type: "location"}, candidateQuestion: "客房配备空调吗", candidateAnswer: "有的。", want: true},
+		{name: "generic hotel rejects dinner", query: "酒店有早餐吗", entity: knowledgeEvidenceJudgeEntity{Text: "酒店", Type: "location"}, candidateQuestion: "酒店有晚餐吗", candidateAnswer: "有的。", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, test.candidateQuestion, "问题："+test.candidateQuestion+"\n答案："+test.candidateAnswer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: test.query, Objective: "availability", Entities: []knowledgeEvidenceJudgeEntity{test.entity},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			candidate := task.Candidates[0]
+			question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if got := knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer); got != test.want {
+				t.Fatalf("generic entity subject guard mismatch: got=%v want=%v subject=%q", got, test.want, func() string { subject, _ := knowledgeEvidenceImplicitSingleExistenceSubject(task); return subject }())
+			}
+		})
+	}
+}
+
+func TestSingleExistenceSubjectSurvivesSameSubjectCompoundAspects(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "有早餐吗，还免费吗", Objective: "compound_information"}
+	subject, guarded := knowledgeEvidenceImplicitSingleExistenceSubject(task)
+	if !guarded || subject != "早餐" {
+		t.Fatalf("same-subject compound question must retain the breakfast binding: subject=%q guarded=%v", subject, guarded)
+	}
+
+	breakfastHit := judgeTestHit(1, 101, "早餐是否提供且免费", "问题：有早餐吗，早餐免费吗\n答案：有早餐，并且免费。", 0.97)
+	dinnerHit := judgeTestHit(1, 102, "晚餐是否提供且免费", "问题：有晚餐吗，晚餐免费吗\n答案：有晚餐，并且免费。", 0.97)
+	for _, test := range []struct {
+		name string
+		hit  rag.RetrieveResult
+		want bool
+	}{
+		{name: "same subject", hit: breakfastHit, want: true},
+		{name: "different subject", hit: dinnerHit, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := knowledgeEvidenceJudgeCandidate{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: test.hit}
+			task.Candidates = []knowledgeEvidenceJudgeCandidate{candidate}
+			question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+			if got := knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer); got != test.want {
+				t.Fatalf("compound subject guard mismatch: got=%v want=%v question=%q answer=%q", got, test.want, question, answer)
+			}
+		})
+	}
+}
+
+func TestEntitylessMultiSubjectExistenceDoesNotInventSingleSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Query: "办公桌和沙发都有吗", Objective: "availability"}
+	if subject, guarded := knowledgeEvidenceImplicitSingleExistenceSubject(task); guarded || subject != "" {
+		t.Fatalf("a compound existence question must stay model-owned, got subject=%q guarded=%v", subject, guarded)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsEntitylessCrossSubjectExistence(t *testing.T) {
+	hit := judgeTestHit(1, 101, "有晚餐吗", "问题：有晚餐吗\n答案：有晚餐。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "有早餐吗", Objective: "availability",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"有晚餐。","criticalValues":["晚餐"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse cross-subject existence response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("an entityless breakfast question must not accept a dinner fact: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseKeepsReviewQuestionOutOfPriceAndMethod(t *testing.T) {
+	hit := judgeTestHit(1, 101, "住客评价怎么样", "问题：住客评价怎么样\n答案：住客普遍评价房间干净，入住方便。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "你们酒店住客评价怎么样", Intent: "hotel_info", Objective: "general_guidance",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	if aspects := requiredKnowledgeEvidenceAspects(task); knowledgeEvidenceContainsString(aspects, "price") || knowledgeEvidenceContainsString(aspects, "method") {
+		t.Fatalf("a guest-review question must not inherit price or method from substrings: %#v", aspects)
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"other","statement":"住客普遍评价房间干净，入住方便。","criticalValues":[]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse exact guest-review FAQ: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("an exact grounded review FAQ must remain direct: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseKeepsWalletRequestOutOfPrice(t *testing.T) {
+	hit := judgeTestHit(1, 101, "钱包落在房间了怎么办", "问题：钱包落在房间了怎么办\n答案：请先确认房号，再联系门店同事处理。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "钱包落在房间了怎么办", Intent: "service_request", Objective: "method",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	aspects := requiredKnowledgeEvidenceAspects(task)
+	if !knowledgeEvidenceContainsString(aspects, "method") || knowledgeEvidenceContainsString(aspects, "price") {
+		t.Fatalf("a wallet service request must require method without inventing price: %#v", aspects)
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"请先确认房号，再联系门店同事处理。","criticalValues":[]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse exact wallet service FAQ: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("an exact grounded wallet FAQ must remain direct: %#v", selection)
+	}
+}
+
+func TestTaskBoundQuantityConflictKeepsDifferentConditionsIndependent(t *testing.T) {
+	tests := []struct {
+		name              string
+		query             string
+		candidateQuestion string
+		wantConflict      bool
+	}{
+		{name: "matching conditions", query: "工作日矿泉水两瓶，周末四瓶吗", candidateQuestion: "工作日矿泉水两瓶，周末四瓶吗", wantConflict: false},
+		{name: "same condition differs", query: "工作日矿泉水两瓶，周末四瓶吗", candidateQuestion: "工作日矿泉水三瓶，周末四瓶吗", wantConflict: true},
+		{name: "weekend is missing", query: "工作日矿泉水两瓶，周末四瓶吗", candidateQuestion: "工作日矿泉水两瓶吗", wantConflict: true},
+		{name: "same value still requires weekend", query: "工作日矿泉水两瓶，周末两瓶吗", candidateQuestion: "工作日矿泉水两瓶吗", wantConflict: true},
+		{name: "different explicit condition does not cover", query: "工作日矿泉水两瓶，周末四瓶吗", candidateQuestion: "工作日矿泉水两瓶，节假日矿泉水四瓶吗", wantConflict: true},
+		{name: "conditional evidence cannot answer a general rule", query: "矿泉水两瓶吗", candidateQuestion: "工作日矿泉水两瓶吗", wantConflict: true},
+		{name: "general evidence can answer a conditioned same-value rule", query: "工作日矿泉水两瓶，周末两瓶吗", candidateQuestion: "矿泉水两瓶吗", wantConflict: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, "矿泉水数量", "问题："+test.candidateQuestion+"\n答案：是的。", 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: test.query, Objective: "quantity",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			got := knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"})
+			if got != test.wantConflict {
+				question, answer := splitKnowledgeEvidenceFAQForQuery(hit, task.Query)
+				clauses := splitKnowledgeEvidenceAnswerClauses(question)
+				clauseOccurrences := make([][]knowledgeEvidenceQuantityOccurrence, 0, len(clauses))
+				for _, clause := range clauses {
+					clauseOccurrences = append(clauseOccurrences, knowledgeEvidenceQuantityOccurrences(clause, "矿泉水"))
+				}
+				t.Fatalf("condition-bound quantity conflict mismatch: got=%v want=%v queryValues=%#v queryConditions=%#v question=%q answer=%q clauses=%#v clauseOccurrences=%#v questionOccurrences=%#v answerOccurrences=%#v",
+					got, test.wantConflict,
+					knowledgeEvidenceTaskBoundCriticalValues(task.Query),
+					knowledgeEvidenceQuantityConditionsByValue(task.Query, "矿泉水"),
+					question,
+					answer,
+					clauses,
+					clauseOccurrences,
+					knowledgeEvidenceQuantityOccurrences(question, "矿泉水"),
+					knowledgeEvidenceQuantityOccurrences(answer, "矿泉水"),
+				)
+			}
+		})
+	}
+}
+
+func TestTaskBoundQuantityConflictRejectsNarrowerFAQScope(t *testing.T) {
+	tests := []struct {
+		name              string
+		query             string
+		candidateQuestion string
+		candidateAnswer   string
+	}{
+		{
+			name:              "extra daypart condition",
+			query:             "工作日矿泉水两瓶吗",
+			candidateQuestion: "工作日晚上矿泉水两瓶吗",
+			candidateAnswer:   "是的。",
+		},
+		{
+			name:              "answer inherits faq question condition",
+			query:             "周末矿泉水两瓶吗",
+			candidateQuestion: "工作日矿泉水两瓶吗",
+			candidateAnswer:   "矿泉水有两瓶。",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, "矿泉水数量", "问题："+test.candidateQuestion+"\n答案："+test.candidateAnswer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: test.query, Objective: "quantity",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+				t.Fatal("a narrower or differently conditioned FAQ must not cover the query")
+			}
+		})
+	}
+}
+
+func TestTaskBoundQuantityConflictAllowsExplicitDateUniversalAnswerToOverrideFAQDate(t *testing.T) {
+	hit := judgeTestHit(
+		1,
+		101,
+		"矿泉水数量",
+		"问题：周末矿泉水两瓶吗\n答案：每天矿泉水都有两瓶。",
+		0.97,
+	)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "工作日矿泉水两瓶吗", Objective: "quantity",
+		Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("an answer that explicitly applies every day must not inherit the FAQ question's different calendar-day condition")
+	}
+}
+
+func TestTaskBoundQuantityUniversalAnswerOnlyOverridesDeclaredDimension(t *testing.T) {
+	tests := []struct {
+		name         string
+		answer       string
+		wantConflict bool
+	}{
+		{name: "date universal keeps unmentioned daypart", answer: "每天矿泉水都有两瓶。", wantConflict: true},
+		{name: "date universal plus matching daypart", answer: "每天晚上矿泉水都有两瓶。", wantConflict: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(
+				1,
+				101,
+				"矿泉水数量",
+				"问题：周末白天矿泉水两瓶吗\n答案："+test.answer,
+				0.97,
+			)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: "工作日晚上矿泉水两瓶吗", Objective: "quantity",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			if got := knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}); got != test.wantConflict {
+				t.Fatalf("dimension-specific universal condition mismatch: got=%v want=%v", got, test.wantConflict)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceQuantityConditionsComparableKeepsImplicitScopeStrict(t *testing.T) {
+	tests := []struct {
+		name      string
+		required  []string
+		candidate []string
+		want      bool
+	}{
+		{name: "candidate silently omits daypart", required: []string{"workday", "night"}, candidate: []string{"workday"}, want: false},
+		{name: "candidate adds daypart", required: []string{"workday"}, candidate: []string{"workday", "night"}, want: false},
+		{name: "candidate conflicts on calendar", required: []string{"workday", "night"}, candidate: []string{"weekend"}, want: false},
+		{name: "conditioned evidence cannot prove general", required: nil, candidate: []string{"workday"}, want: false},
+		{name: "general evidence proves conditioned", required: []string{"workday"}, candidate: nil, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := knowledgeEvidenceQuantityConditionsComparable(test.required, test.candidate); got != test.want {
+				t.Fatalf("quantity condition comparison mismatch: got=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceQuantityConditionsComparableWithUniversalOnlyWidensDeclaredDimension(t *testing.T) {
+	tests := []struct {
+		name      string
+		required  []string
+		candidate []string
+		universal map[string]struct{}
+		want      bool
+	}{
+		{
+			name:      "date universal keeps matching daypart",
+			required:  []string{"workday", "night"},
+			candidate: []string{"night"},
+			universal: map[string]struct{}{"calendar_day_type": {}},
+			want:      true,
+		},
+		{
+			name:      "date universal does not erase daypart",
+			required:  []string{"workday", "night"},
+			candidate: []string{"daytime"},
+			universal: map[string]struct{}{"calendar_day_type": {}},
+			want:      false,
+		},
+		{
+			name:      "daypart universal keeps matching date",
+			required:  []string{"workday", "night"},
+			candidate: []string{"workday"},
+			universal: map[string]struct{}{"daypart": {}},
+			want:      true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := knowledgeEvidenceQuantityConditionsComparableWithUniversal(test.required, test.candidate, test.universal); got != test.want {
+				t.Fatalf("universal quantity condition comparison mismatch: got=%v want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTaskBoundQuantityRequirementsKeepSameValueConditionsSeparate(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "工作日矿泉水两瓶，周末两瓶吗", Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+	}
+	requirements := knowledgeEvidenceTaskBoundQuantityRequirements(task, "矿泉水")
+	if len(requirements) != 2 {
+		t.Fatalf("same quantity under two conditions must remain two requirements: %#v", requirements)
+	}
+	if strings.Join(requirements[0].Conditions, ",") == strings.Join(requirements[1].Conditions, ",") {
+		t.Fatalf("workday and weekend requirements must not collapse: %#v", requirements)
+	}
+}
+
+func TestTaskBoundQuantityRequirementsSplitSharedPredicateConditions(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "工作日和周末矿泉水都是两瓶吗", Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+	}
+	requirements := knowledgeEvidenceTaskBoundQuantityRequirements(task, "矿泉水")
+	if len(requirements) != 2 {
+		t.Fatalf("shared quantity predicate must expand to one requirement per condition: %#v", requirements)
+	}
+	if len(requirements[0].Conditions) != 1 || len(requirements[1].Conditions) != 1 ||
+		requirements[0].Conditions[0] == requirements[1].Conditions[0] {
+		t.Fatalf("workday and weekend must remain independently provable: %#v", requirements)
+	}
+
+	workdayOnly := judgeTestHit(1, 101, "工作日矿泉水数量", "问题：工作日矿泉水两瓶吗\n答案：是的。", 0.97)
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: workdayOnly}}
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("a workday-only FAQ must not prove the shared weekend requirement")
+	}
+
+	complete := judgeTestHit(1, 102, "工作日和周末矿泉水数量", "问题：工作日和周末矿泉水都是两瓶吗\n答案：是的。", 0.97)
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: complete}}
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("an FAQ covering both named conditions must remain complete")
+	}
+}
+
+func TestTaskBoundQuantityRequirementsPreserveCrossDimensionConjunction(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "入住当天晚上矿泉水是两瓶吗", Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+	}
+	requirements := knowledgeEvidenceTaskBoundQuantityRequirements(task, "矿泉水")
+	if len(requirements) != 1 || len(requirements[0].Conditions) != 2 ||
+		!knowledgeEvidenceContainsString(requirements[0].Conditions, "checkin_day") ||
+		!knowledgeEvidenceContainsString(requirements[0].Conditions, "night") {
+		t.Fatalf("stay-day and daypart conditions must remain conjunctive: %#v", requirements)
+	}
+
+	checkinDay := judgeTestHit(1, 101, "入住当天矿泉水数量", "问题：入住当天矿泉水两瓶吗\n答案：是的。", 0.97)
+	night := judgeTestHit(2, 102, "晚上矿泉水数量", "问题：晚上矿泉水两瓶吗\n答案：是的。", 0.96)
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{
+		{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: checkinDay},
+		{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: night},
+	}
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1", "T1C2"}) {
+		t.Fatal("separate stay-day and night FAQs must not prove their intersection")
+	}
+
+	combined := judgeTestHit(3, 103, "入住当天晚上矿泉水数量", "问题：入住当天晚上矿泉水是两瓶吗\n答案：是的。", 0.98)
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: combined}}
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("one FAQ covering the full cross-dimension condition must remain complete")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsSplitCrossDimensionQuantityFacts(t *testing.T) {
+	checkinDay := judgeTestHit(1, 101, "入住当天矿泉水数量", "问题：入住当天矿泉水两瓶吗\n答案：是的。", 0.97)
+	night := judgeTestHit(2, 102, "晚上矿泉水数量", "问题：晚上矿泉水两瓶吗\n答案：是的。", 0.96)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "入住当天晚上矿泉水是两瓶吗", Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: checkinDay},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: night},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"入住当天矿泉水有两瓶。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"quantity","statement":"晚上矿泉水有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse split cross-dimension facts: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("facts covering each condition separately must not prove the conjunction: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseClosesEveryConditionedQuantityFact(t *testing.T) {
+	completeHit := judgeTestHit(1, 101, "矿泉水数量", "问题：工作日矿泉水两瓶，周末两瓶吗\n答案：是的。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "工作日矿泉水两瓶，周末两瓶吗", Objective: "quantity",
+		Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: completeHit}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"工作日矿泉水有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conditioned quantity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		if missing := strictMechanicalMissingKnowledgeEvidenceAspects(task, selection.SupportedFacts); len(missing) != 0 {
+			t.Fatalf("a direct selection must be repaired to cover every condition: selection=%#v missing=%#v", selection, missing)
+		}
+	}
+
+	workdayOnlyHit := judgeTestHit(1, 102, "工作日矿泉水数量", "问题：工作日矿泉水两瓶吗\n答案：是的。", 0.97)
+	task.Candidates = []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: workdayOnlyHit}}
+	inventedWeekend := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"工作日矿泉水有两瓶，周末矿泉水有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	parsed, err = parseKnowledgeEvidenceJudgeResponse(inventedWeekend, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse incomplete candidate response: %v", err)
+	}
+	selection = parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a workday-only candidate cannot become direct by inventing a weekend fact: %#v", selection)
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceShortPolarityFAQUsesQuestionSubject(t *testing.T) {
+	tests := []struct {
+		name              string
+		query             string
+		subject           string
+		answer            string
+		modelStatement    string
+		expectedStatement string
+		unexpected        string
+	}{
+		{name: "positive capability", query: "可以开发票吗", subject: "发票", answer: "可以。", modelStatement: "可以开发票。", expectedStatement: "可以开发票。"},
+		{name: "explicit capability overrides negative question", query: "不能开发票吗", subject: "发票", answer: "可以。", modelStatement: "可以开发票。", expectedStatement: "可以开发票。", unexpected: "\"statement\":\"不能开发票。\""},
+		{name: "explicit availability overrides negative question", query: "没有空调吗", subject: "空调", answer: "有的。", modelStatement: "有空调。", expectedStatement: "有空调。", unexpected: "\"statement\":\"没有空调。\""},
+		{name: "negative availability", query: "有静音空调房吗", subject: "静音空调房", answer: "没有。", modelStatement: "有静音空调房。", expectedStatement: "没有静音空调房。", unexpected: "\"statement\":\"有静音空调房。\""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, tt.subject, "问题："+tt.query+"\n答案："+tt.answer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: tt.query, Objective: "availability",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: tt.subject, Type: "facility"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			if statement, ok := resolvedKnowledgeEvidenceFAQQuestionStatement(task, tt.query, tt.answer); !ok || statement != tt.expectedStatement {
+				t.Fatalf("unexpected resolved FAQ statement: statement=%q ok=%v", statement, ok)
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":%q,"criticalValues":[%q]}],"missingAspects":[]}]}]}`, tt.modelStatement, tt.subject)
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse short-polarity response: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+				t.Fatalf("short polarity answer must remain directly usable: %#v", selection)
+			}
+			found := false
+			for _, fact := range selection.SupportedFacts {
+				if fact.Statement == tt.expectedStatement {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("resolved question subject and polarity missing: %#v", selection.SupportedFacts)
+			}
+
+			result := &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit},
+				ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+			}
+			batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: tt.query, Result: result}}}
+			batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, tt.query, batch.Questions)
+			applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+			if !strings.Contains(result.ContextText, tt.expectedStatement) || (tt.unexpected != "" && strings.Contains(result.ContextText, tt.unexpected)) {
+				t.Fatalf("applied fact boundary lost short-answer polarity: %q", result.ContextText)
+			}
+		})
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceRejectsConditionalPolarityInheritance(t *testing.T) {
+	hit := judgeTestHit(1, 101, "发票", "问题：可以开发票吗\n答案：可以，联系门店确认。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "可以开发票吗", Objective: "availability",
+		Entities:   []knowledgeEvidenceJudgeEntity{{Text: "发票", Type: "service"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"可以开发票。","criticalValues":["发票"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conditional polarity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision == knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("conditional confirmation must not become an unconditional direct fact: %#v", selection)
+	}
+
+	result := &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content}
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: task.Query, Result: result}}}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, task.Query, batch.Questions)
+	applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+	if len(result.EffectiveHits) != 0 || strings.Contains(result.ContextText, "可以开发票") {
+		t.Fatalf("apply must not expose an unconditional fact from conditional guidance: %#v", result)
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceRejectsConditionalYesPolarityInheritance(t *testing.T) {
+	hit := judgeTestHit(1, 101, "发票", "问题：可以开发票吗\n答案：是的，联系门店确认。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "可以开发票吗", Objective: "availability",
+		Entities:   []knowledgeEvidenceJudgeEntity{{Text: "发票", Type: "service"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"可以开发票。","criticalValues":["发票"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conditional yes-polarity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision == knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("conditional yes confirmation must not become an unconditional direct fact: %#v", selection)
+	}
+
+	result := &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content}
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: task.Query, Result: result}}}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, task.Query, batch.Questions)
+	applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+	if len(result.EffectiveHits) != 0 || strings.Contains(result.ContextText, "可以开发票") {
+		t.Fatalf("apply must not expose an unconditional fact from conditional yes guidance: %#v", result)
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceRejectsContradictedYesPolarityInheritance(t *testing.T) {
+	hit := judgeTestHit(1, 101, "矿泉水费用", "问题：矿泉水免费吗\n答案：是的，但不是免费的。", 0.97)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "矿泉水免费吗", Objective: "price",
+		Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse contradicted yes-polarity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	foundNegative := false
+	for _, fact := range selection.SupportedFacts {
+		if strings.Contains(fact.Statement, "矿泉水免费") && !knowledgeEvidenceTextHasNegativeBoundary(fact.Statement) {
+			t.Fatalf("a later task-relevant negation must cancel the false affirmative fact: %#v", selection)
+		}
+		if knowledgeEvidenceTextHasNegativeBoundary(fact.Statement) && strings.Contains(fact.Statement, "免费") {
+			foundNegative = true
+		}
+	}
+	if !foundNegative {
+		t.Fatalf("the grounded negative answer must remain available after removing the false affirmative fact: %#v", selection)
 	}
 }
 
@@ -4001,15 +5162,16 @@ func TestKnowledgeEvidenceJudgeSourceContextOnlyUsesAdjacentTurnForReference(t *
 
 func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutRetries(t *testing.T) {
 	for _, tc := range []struct {
-		timeoutMS int
-		taskCount int
-		want      int
-	}{{0, 1, 15_000}, {3_000, 1, 5_000}, {4_000, 8, 12_000}, {15_000, 8, 15_000}, {60_000, 8, 15_000}} {
+		timeoutMS      int
+		taskCount      int
+		candidateCount int
+		want           int
+	}{{0, 1, 3, 15_000}, {3_000, 1, 3, 11_000}, {60_000, 1, 3, 15_000}, {4_000, 4, 28, 23_000}, {15_000, 8, 28, 28_000}, {60_000, 8, 28, 28_000}, {60_000, 100, 100, 28_000}} {
 		config := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{
 			TimeoutMS:       tc.timeoutMS,
 			MaxOutputTokens: 8_192,
 			MaxRetryCount:   3,
-		}, tc.taskCount)
+		}, tc.taskCount, tc.candidateCount)
 		if config.TimeoutMS != tc.want {
 			t.Fatalf("expected configured timeout %dms to normalize to %dms, got %d", tc.timeoutMS, tc.want, config.TimeoutMS)
 		}
@@ -4020,8 +5182,8 @@ func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutRetries(t
 			t.Fatalf("knowledge judge must not retry, got %d", config.MaxRetryCount)
 		}
 	}
-	longBatch := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{TimeoutMS: 4_000, MaxOutputTokens: 1_024}, 8)
-	if longBatch.TimeoutMS != 12_000 || longBatch.MaxOutputTokens != 2_560 {
+	longBatch := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{TimeoutMS: 4_000, MaxOutputTokens: 1_024}, 8, 28)
+	if longBatch.TimeoutMS != 28_000 || longBatch.MaxOutputTokens != 2_560 {
 		t.Fatalf("eight-task batch needs enough protocol capacity, got timeout=%d output=%d", longBatch.TimeoutMS, longBatch.MaxOutputTokens)
 	}
 }
@@ -4172,6 +5334,34 @@ func TestParseKnowledgeEvidenceJudgeResponseRejectsMalformedFactsOnInsufficientL
 	}
 }
 
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsOmittedOrNullEmptyArraysOnInsufficientLayer(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "T1",
+		Query:  "早餐几点",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "门店早餐", "问题：早餐几点\n答案：7:00-9:30。", 0.9),
+		}},
+	}}
+	tests := map[string]string{
+		"omitted": `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"insufficient","selectedCandidateIds":[]}]}]}`,
+		"null":    `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":null,"missingAspects":null}]}]}`,
+	}
+	for name, raw := range tests {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+			if err != nil {
+				t.Fatalf("parse response: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+				t.Fatalf("empty insufficient arrays must normalize safely: %#v", selection)
+			}
+		})
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeResponseNormalizesUnknownGroundedAspectToOther(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID: "T1",
@@ -4215,6 +5405,29 @@ func TestModelSelectedRepairKeepsCandidateAndRebuildsOnlyItsFacts(t *testing.T) 
 	}
 	if len(selection.SupportedFacts) == 0 || strings.Contains(selection.SupportedFacts[0].Statement, "罍街") {
 		t.Fatalf("repair used facts outside the selected FAQ: %#v", selection.SupportedFacts)
+	}
+}
+
+func TestModelSelectedRepairRejectsWrongSubjectAfterMalformedFactNormalization(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:   "T1",
+		Query:    "麦田房型有沙发吗",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "麦田", Type: "room_type"}, {Text: "沙发", Type: "facility"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "麦田办公桌", "问题：麦田房型有办公桌吗\n答案：麦田房型有办公桌。", 0.96),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"麦田房型有办公桌。","criticalValues":["麦田","办公桌"]},{"factId":"T1F1","aspect":"existence","statement":"麦田房型有办公桌。","criticalValues":["麦田","办公桌"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("malformed model facts must not let an unrelated selected FAQ bypass subject validation: %#v", selection)
 	}
 }
 
@@ -4835,6 +6048,14 @@ func TestStrictExactFactualFallbackRejectsSameLayerConflictingCriticalValuesOuts
 			conflictQuestion: "早餐什么时候开始",
 			conflictAnswer:   "早餐8:00开始。",
 		},
+		{
+			name:             "conditional schedule distribution marker",
+			query:            "工作日和周末早餐时间分别是多少",
+			exactQuestion:    "工作日和周末早餐时间分别是多少",
+			exactAnswer:      "工作日早餐7:00开始，周末早餐8:00开始。",
+			conflictQuestion: "周末早餐几点开始",
+			conflictAnswer:   "周末早餐9:00开始。",
+		},
 	}
 
 	for _, test := range tests {
@@ -5074,43 +6295,6 @@ func TestJudgeProtocolFailureKeepsRawHitsAndDoesNotRequestHandoff(t *testing.T) 
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	if len(dispositions) != 1 || !dispositions[0].NeedsRetry || dispositions[0].NeedsHandoff {
 		t.Fatalf("judge protocol failure must not become a handoff: %#v", dispositions)
-	}
-}
-
-func TestKnowledgeEvidenceLayerPriorityUsesValidLayerDespiteOtherProtocolFailure(t *testing.T) {
-	candidates := map[string]knowledgeEvidenceJudgeCandidate{
-		"S1": {CandidateID: "S1", Layer: knowledgeEvidenceLayerStore},
-		"G1": {CandidateID: "G1", Layer: knowledgeEvidenceLayerGeneral},
-	}
-	direct := knowledgeEvidenceLayerSelection{
-		Decision:             knowledgeEvidenceDecisionDirectSingle,
-		SelectedCandidateIDs: []string{"G1"},
-		SupportedFacts:       []knowledgeEvidenceFact{{FactID: "F1", Aspect: "other", Statement: "通用答案"}},
-	}
-	selections := map[string]knowledgeEvidenceLayerSelection{
-		knowledgeEvidenceLayerStore:   {Decision: knowledgeEvidenceDecisionProtocolInvalid},
-		knowledgeEvidenceLayerGeneral: direct,
-	}
-	if got := selectKnowledgeEvidenceLayer(selections, candidates, "问题"); got != knowledgeEvidenceLayerGeneral {
-		t.Fatalf("valid general evidence must survive a failed store layer: %q", got)
-	}
-
-	storeDirect := direct
-	storeDirect.SelectedCandidateIDs = []string{"S1"}
-	selections[knowledgeEvidenceLayerStore] = storeDirect
-	selections[knowledgeEvidenceLayerGeneral] = knowledgeEvidenceLayerSelection{Decision: knowledgeEvidenceDecisionTimeout}
-	if got := selectKnowledgeEvidenceLayer(selections, candidates, "问题"); got != knowledgeEvidenceLayerStore {
-		t.Fatalf("general protocol failure must not clear a valid store answer: %q", got)
-	}
-
-	selections[knowledgeEvidenceLayerStore] = knowledgeEvidenceLayerSelection{
-		Decision:             knowledgeEvidenceDecisionPartial,
-		SelectedCandidateIDs: []string{"S1"},
-		SupportedFacts:       []knowledgeEvidenceFact{{FactID: "F2", Aspect: "existence", Statement: "门店有外卖机器人。"}},
-		MissingAspects:       []string{"适用范围"},
-	}
-	if got := selectKnowledgeEvidenceLayer(selections, candidates, "外卖机器人能送到房间吗"); got != knowledgeEvidenceLayerStore {
-		t.Fatalf("valid store partial evidence must survive a failed general layer: %q", got)
 	}
 }
 
@@ -5544,5 +6728,2163 @@ func TestStrictExactFactualFallbackRejectsConflictingOwnerNames(t *testing.T) {
 	}
 	if !knowledgeEvidenceIdentityValuesConflict("老板是汤东强。", "董事长为李明。") {
 		t.Fatal("owner identity extractor failed to expose the conflicting names")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsSelectedQuantityThatAlsoConflicts(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：房间里有两瓶矿泉水吗\n答案：是的，房间内两瓶免费，但同一房间说明里又写了四瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内两瓶矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conflicting quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("a matching quantity must not hide another selected value with the same unit: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseIgnoresQuantityFromDifferentScope(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：房间里有两瓶矿泉水吗\n答案：是的，房间内两瓶免费，会议室另有四瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内两瓶矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse scope-bound quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("a meeting-room quantity must not invalidate the selected room answer: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingQuantityAcrossSelectedCandidatesWithoutEntities(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "两瓶矿泉水", "问题：房间里有两瓶矿泉水吗\n答案：是的，都是免费的。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "四瓶矿泉水", "问题：房间里有四瓶矿泉水吗\n答案：是的。", 0.96)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水都是免费的。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse multi-candidate quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("multiple selected candidates cannot bypass the task quantity constraint: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingSelectedDeliveryAddresses(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "外卖地址怎么填",
+		Objective: "location",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "南七外卖地址", "问题：外卖地址怎么填\n答案：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "外卖收货地址", "问题：收货地址应该写什么\n答案：壹间公寓+对应楼层房间号。", 0.96)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"location","statement":"外卖地址填写丽斯未来酒店合肥南七店加对应楼层房间号。","criticalValues":["丽斯未来酒店合肥南七店"]},{"factId":"T1F2","aspect":"location","statement":"外卖地址填写壹间公寓加对应楼层房间号。","criticalValues":["壹间公寓"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conflicting delivery addresses: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("different selected delivery address values must not reach Generate: %#v", selection)
+	}
+}
+
+func TestSelectedDeliveryAddressConflictAllowsSameAddressWithComplementaryWording(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "外卖地址怎么填",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "外卖地址", "问题：外卖地址怎么填\n答案：丽斯未来酒店合肥南七店+对应楼层房间号。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "收货地址", "问题：收货地址应该写什么\n答案：外卖地址请填写丽斯未来酒店合肥南七店，并补充楼层和房号。", 0.96)},
+		},
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task, knowledgeEvidenceLayerStore, []string{"T1C1", "T1C2"}) {
+		t.Fatal("the same delivery address with complementary room-number wording must remain combinable")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseUsesFAQQuestionSubjectForTimeRange(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始和结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "早餐时间", "问题：早餐几点到几点\n答案：7:00-9:30。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"7:00-9:30。","criticalValues":["7:00-9:30"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse subject-bound time range: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.MissingAspects) != 0 ||
+		len(selection.SupportedFacts) == 0 || !strings.Contains(selection.SupportedFacts[0].Statement, "早餐") {
+		probeFacts := bindKnowledgeEvidenceFAQTimeSubject(task, "早餐几点到几点", "7:00-9:30。", []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "7:00-9:30。", CriticalValues: []string{"7:00-9:30"}}})
+		t.Fatalf("the FAQ question must bind its subject to an answer-only time range: selection=%#v facts=%#v missing=%#v", selection, probeFacts, missingRequiredKnowledgeEvidenceAspects(task, probeFacts))
+	}
+}
+
+func TestBindKnowledgeEvidenceFAQTimeSubjectDoesNotRelabelDifferentSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+	}
+	lunchFact := knowledgeEvidenceFact{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "午餐12:00开始。",
+		CriticalValues: []string{"12:00"},
+	}
+	got := bindKnowledgeEvidenceFAQTimeSubject(
+		task,
+		"早餐几点开始",
+		"早餐7:00开始，午餐12:00开始。",
+		[]knowledgeEvidenceFact{lunchFact},
+	)
+	if len(got) != 1 || got[0].Statement != lunchFact.Statement {
+		t.Fatalf("an explicitly named different time subject must not be relabeled as breakfast: %#v", got)
+	}
+
+	subjectless := bindKnowledgeEvidenceFAQTimeSubject(
+		task,
+		"早餐几点开始",
+		"7:00开始。",
+		[]knowledgeEvidenceFact{{FactID: "T1F2", Aspect: "time", Statement: "7:00开始。", CriticalValues: []string{"7:00"}}},
+	)
+	if len(subjectless) != 1 || !strings.Contains(subjectless[0].Statement, "早餐") {
+		t.Fatalf("a subjectless time answer from the same FAQ must still bind to breakfast: %#v", subjectless)
+	}
+}
+
+func TestMissingRequiredKnowledgeEvidenceAspectsRequiresEveryTimeSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐和晚餐几点开始",
+		Objective: "time",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "早餐", Type: "meal"},
+			{Text: "晚餐", Type: "meal"},
+		},
+	}
+	facts := []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "早餐7:00开始。",
+		CriticalValues: []string{"7:00"},
+	}}
+	missing := missingRequiredKnowledgeEvidenceAspects(task, facts)
+	joined := strings.Join(missing, " ")
+	if !strings.Contains(joined, "晚餐开始时间") || strings.Contains(joined, "早餐开始时间") {
+		t.Fatalf("time completeness must be checked for every requested subject: %#v", missing)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRepairsChineseNaturalTimeFacts(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始，几点结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "早餐时间", "问题：早餐时间\n答案：早餐早上七点开始，晚上九点结束。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[],"missingAspects":[]}]}]}`
+	question, answer := splitKnowledgeEvidenceFAQForQuery(task.Candidates[0].Hit, task.Query)
+	rebuilt := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, answer)
+	rebuilt = enrichKnowledgeEvidenceFactsFromFAQUnit(task, question, answer, rebuilt)
+	grounded := groundedKnowledgeEvidenceFacts(task, knowledgeEvidenceLayerStore, []string{"T1C1"}, rebuilt)
+	if len(grounded) != 2 {
+		t.Fatalf("Chinese start and end time facts must both remain grounded before protocol repair: rebuilt=%#v grounded=%#v", rebuilt, grounded)
+	}
+	if missing := strictMechanicalMissingKnowledgeEvidenceAspects(task, grounded); len(missing) != 0 {
+		t.Fatalf("Chinese time facts must cover both requested slots before protocol repair: rebuilt=%#v grounded=%#v missing=%#v", rebuilt, grounded, missing)
+	}
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse Chinese natural time: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.MissingAspects) != 0 {
+		t.Fatalf("Chinese start and end times must survive deterministic repair: %#v", selection)
+	}
+}
+
+func TestRequiredKnowledgeEvidenceTimeSlotsRecognizesStartAndEndConjunction(t *testing.T) {
+	got := requiredKnowledgeEvidenceTimeSlots("早餐几点开始和结束")
+	if len(got) != 2 || got[0] != "start" || got[1] != "end" {
+		t.Fatalf("start/end conjunction must require both slots, got %#v", got)
+	}
+
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始和结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "早餐开始时间", "问题：早餐几点开始\n答案：早餐7:00开始。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐7:00开始。","criticalValues":["7:00"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse incomplete start/end response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("a start time alone cannot answer a start-and-end question: %#v", selection)
+	}
+
+	endOnly := requiredKnowledgeEvidenceTimeSlots("早餐开始了吗，几点结束")
+	if len(endOnly) != 1 || endOnly[0] != "end" {
+		t.Fatalf("mentioning that breakfast started must not invent a requested start-time slot: %#v", endOnly)
+	}
+}
+
+func TestKnowledgeEvidenceNaturalAndNumericTimesCompareAsEquivalent(t *testing.T) {
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+		"早餐几点开始", "早餐7:00开始。",
+		"早餐几点开始", "早餐早上七点开始。",
+	)
+	if conflict || !comparable {
+		t.Fatalf("equivalent natural and numeric times must compare cleanly: conflict=%v comparable=%v numeric=%#v natural=%#v", conflict, comparable,
+			knowledgeEvidenceTimeSlotValues("start", "早餐7:00开始。"), knowledgeEvidenceTimeSlotValues("start", "早餐早上七点开始。"))
+	}
+}
+
+func TestKnowledgeEvidenceTimeConflictComparisonKeepsSubjectsSeparate(t *testing.T) {
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+		"早餐几点开始", "早餐7点开始，午餐12点开始。",
+		"早餐几点开始", "早餐7点开始。",
+	)
+	if conflict || !comparable {
+		t.Fatalf("lunch time must not overwrite breakfast during conflict comparison: conflict=%v comparable=%v left=%#v", conflict, comparable,
+			knowledgeEvidenceTimeSlotValuesForQuestion("早餐几点开始", "start", "早餐7点开始，午餐12点开始。"))
+	}
+}
+
+func TestKnowledgeEvidenceTimeConflictComparisonBindsLeadingImplicitClauseToFAQSubject(t *testing.T) {
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+		"早餐几点开始", "7点开始，午餐12点开始。",
+		"早餐几点开始", "早餐8点开始。",
+	)
+	if !conflict || !comparable {
+		t.Fatalf("the leading subjectless clause must remain bound to breakfast: conflict=%v comparable=%v left=%#v", conflict, comparable,
+			knowledgeEvidenceTimeSlotValuesForQuestion("早餐几点开始", "start", "7点开始，午餐12点开始。"))
+	}
+}
+
+func TestKnowledgeEvidenceTimeConflictComparisonKeepsExclusiveConditionsSeparate(t *testing.T) {
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+		"工作日早餐几点开始", "工作日早餐7点开始。",
+		"周末早餐几点开始", "周末早餐8点开始。",
+	)
+	if conflict || comparable {
+		t.Fatalf("weekday and weekend schedules are complementary rather than conflicting: conflict=%v comparable=%v", conflict, comparable)
+	}
+}
+
+func TestFilterKnowledgeEvidenceFAQTimeFactsDropsExplicitOtherSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+	}
+	facts := filterKnowledgeEvidenceFAQTimeFacts(task, "早餐时间", "早餐7点开始，午餐12点开始。", []knowledgeEvidenceFact{
+		{FactID: "T1F1", Aspect: "time", Statement: "早餐7点开始。", CriticalValues: []string{"7点"}},
+		{FactID: "T1F2", Aspect: "time", Statement: "午餐12点开始。", CriticalValues: []string{"12点"}},
+	})
+	if len(facts) != 1 || !strings.Contains(facts[0].Statement, "早餐") || strings.Contains(facts[0].Statement, "午餐") {
+		t.Fatalf("an explicit lunch clause must not survive in breakfast facts: %#v", facts)
+	}
+}
+
+func TestKnowledgeEvidenceClockNormalizationHandlesMidnightAndNextDayRange(t *testing.T) {
+	if got := normalizeKnowledgeEvidenceClockTime("晚上12点"); got != "00:00" {
+		t.Fatalf("evening twelve must normalize to midnight, got %q", got)
+	}
+	values := knowledgeEvidenceTimeSlotValues("schedule", "晚上10点到次日2点。")
+	if values["start"] != "22:00" || values["end"] != "02:00" {
+		t.Fatalf("a next-day endpoint must not inherit the evening period: %#v", values)
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsDoNotInferRangeAcrossThreePoints(t *testing.T) {
+	values := knowledgeEvidenceTimeSlotValues("schedule", "7点，12点到18点。")
+	if values["start"] != "" || values["end"] != "" {
+		t.Fatalf("three time points must not be collapsed into one implicit range: %#v", values)
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsDoNotTurnTwoStartsIntoACompleteRange(t *testing.T) {
+	values := knowledgeEvidenceTimeSlotValues("schedule", "工作日7点开始，周末8点开始。")
+	if values["start"] == "" || values["end"] != "" {
+		t.Fatalf("two conditional start times must not invent an end time: %#v", values)
+	}
+
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始和结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "早餐开始时间", "问题：早餐时间\n答案：工作日7点开始，周末8点开始。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"工作日7点开始。","criticalValues":["7点"]},{"factId":"T1F2","aspect":"time","statement":"周末8点开始。","criticalValues":["8点"]}],"missingAspects":["早餐结束时间"]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conditional start times: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionPartial || !strings.Contains(strings.Join(selection.MissingAspects, " "), "结束") {
+		t.Fatalf("the unresolved end time must survive reconciliation: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsRecognizeStartToImplicitEndRange(t *testing.T) {
+	values := knowledgeEvidenceTimeSlotValues("schedule", "早餐时间为7点开始到9点。")
+	if values["start"] != "07:00" || values["end"] != "09:00" {
+		t.Fatalf("an explicit connected range must preserve both endpoints: %#v", values)
+	}
+
+	values = knowledgeEvidenceTimeSlotValues("schedule", "早餐时间为7点到9点结束。")
+	if values["start"] != "07:00" || values["end"] != "09:00" {
+		t.Fatalf("an end-marked connected range must preserve both endpoints: %#v", values)
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsDoNotTreatArrivalWordsAsRangeConnectors(t *testing.T) {
+	for _, answer := range []string{
+		"14:00签到，18:00离店。",
+		"14:00到店，18:00离店。",
+	} {
+		values := knowledgeEvidenceTimeSlotValues("schedule", answer)
+		if values["start"] != "" || values["end"] != "" {
+			t.Fatalf("arrival wording must not become an implicit time range: answer=%q values=%#v", answer, values)
+		}
+	}
+	for _, answer := range []string{"7点到9点。", "7点至9点。", "7点开始到9点。"} {
+		values := knowledgeEvidenceTimeSlotValues("schedule", answer)
+		if values["start"] != "07:00" || values["end"] != "09:00" {
+			t.Fatalf("an explicit range connector must remain supported: answer=%q values=%#v", answer, values)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceAfternoonPeriodPropagatesAcrossNaturalRange(t *testing.T) {
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+		"早餐时间", "下午2点到5点。",
+		"早餐时间", "14:00-17:00。",
+	)
+	if conflict || !comparable {
+		t.Fatalf("an afternoon prefix must apply to both ends of a natural range: conflict=%v comparable=%v left=%#v right=%#v", conflict, comparable,
+			knowledgeEvidenceTimeSlotValues("schedule", "下午2点到5点。"), knowledgeEvidenceTimeSlotValues("schedule", "14:00-17:00。"))
+	}
+}
+
+func TestKnowledgeEvidenceIdentityComparisonIgnoresHonorificSuffixes(t *testing.T) {
+	if knowledgeEvidenceIdentityValuesConflict("老板是汤东强。", "董事长为汤东强先生。") {
+		t.Fatal("the same identity with an honorific suffix must not be treated as a conflict")
+	}
+	if !knowledgeEvidenceIdentityValuesConflict("老板是汤东强先生。", "董事长为李明女士。") {
+		t.Fatal("different names must remain conflicting after honorific normalization")
+	}
+}
+
+func TestKnowledgeEvidenceIdentityComparisonSupportsBothRoleOrders(t *testing.T) {
+	if knowledgeEvidenceIdentityValuesConflict("老板是汤东强。", "汤东强是老板。") {
+		t.Fatal("the same owner written in opposite role order must not conflict")
+	}
+	if knowledgeEvidenceIdentityValuesConflict("董事长为汤东强先生。", "汤东强先生担任董事长。") {
+		t.Fatal("opposite role order must preserve honorific normalization")
+	}
+	if !knowledgeEvidenceIdentityValuesConflict("汤东强是老板。", "李明是老板。") {
+		t.Fatal("different people assigned to the same role must remain conflicting")
+	}
+	if value := knowledgeEvidenceIdentityValue("汤东强是老板。"); normalizeKnowledgeEvidenceIdentityValue(value) != "汤东强" {
+		t.Fatalf("person-first role assignment extracted the wrong identity: %q", value)
+	}
+	if value := knowledgeEvidenceIdentityValue("老板。"); value != "" {
+		t.Fatalf("a role word must never be accepted as a person identity: %q", value)
+	}
+}
+
+func TestKnowledgeEvidenceIdentityComparisonIgnoresUnavailableBareReplies(t *testing.T) {
+	for _, unavailable := range []string{"不知道。", "无法提供。", "请联系前台。"} {
+		if knowledgeEvidenceIdentityValuesConflict(unavailable, "汤东强。") {
+			t.Fatalf("an unavailable reply must not be parsed as a conflicting person name: %q", unavailable)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsDoNotCrossSubjects(t *testing.T) {
+	facts := []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "早餐7点开始，午餐9点结束。",
+		CriticalValues: []string{"7点", "9点"},
+	}}
+	if !knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "start") {
+		t.Fatal("breakfast must retain its own start time")
+	}
+	if knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "end") {
+		t.Fatal("lunch end time must not complete the breakfast range")
+	}
+	if !knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "午餐", "end") {
+		t.Fatal("lunch must retain its own end time")
+	}
+}
+
+func TestKnowledgeEvidenceTimeSlotsKeepRangeBeforeNextSubject(t *testing.T) {
+	facts := []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "早餐7点开始到9点，午餐12点开始。",
+		CriticalValues: []string{"7点", "9点", "12点"},
+	}}
+	if !knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "start") ||
+		!knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "end") {
+		t.Fatalf("breakfast range must keep both endpoints: %#v", facts)
+	}
+	if !knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "午餐", "start") ||
+		knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "午餐", "end") {
+		t.Fatalf("lunch must expose only its explicit start: %#v", facts)
+	}
+}
+
+func TestBindKnowledgeEvidenceFAQTimeSubjectAllowsGenericBusinessHours(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点到几点",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+	}
+	facts := bindKnowledgeEvidenceFAQTimeSubject(task, task.Query, "营业时间为7点到9点。", []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "营业时间为7点到9点。",
+		CriticalValues: []string{"7点", "9点"},
+	}})
+	if len(facts) != 1 || !strings.Contains(facts[0].Statement, "早餐") ||
+		!knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "start") ||
+		!knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "end") {
+		t.Fatalf("generic FAQ hours must bind to the question's unique subject: %#v", facts)
+	}
+}
+
+func TestBindKnowledgeEvidenceFAQTimeSubjectRejectsCheckoutTime(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点结束",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "meal"}},
+	}
+	facts := bindKnowledgeEvidenceFAQTimeSubject(task, task.Query, "退房12点。", []knowledgeEvidenceFact{{
+		FactID:         "T1F1",
+		Aspect:         "time",
+		Statement:      "退房12点。",
+		CriticalValues: []string{"12点"},
+	}})
+	if len(facts) != 1 || strings.Contains(facts[0].Statement, "早餐") ||
+		knowledgeEvidenceFactsCoverSubjectTimeSlot(facts, "早餐", "end") {
+		t.Fatalf("checkout time must not be relabeled as breakfast: %#v", facts)
+	}
+}
+
+func TestRequiredKnowledgeEvidenceTimeSlotsRecognizesNaturalRangeQuestions(t *testing.T) {
+	for _, query := range []string{"早餐从什么时候到什么时候", "早餐几点至几点"} {
+		got := requiredKnowledgeEvidenceTimeSlots(query)
+		if len(got) != 2 || got[0] != "start" || got[1] != "end" {
+			t.Fatalf("%q must require both time endpoints, got %#v", query, got)
+		}
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseIgnoresQuantityForExplicitDifferentSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：房间里有两瓶矿泉水吗\n答案：房间内两瓶矿泉水免费，另有四瓶饮料。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内两瓶矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse different-subject quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("a drink quantity must not conflict with mineral-water quantity: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseInfersQuerySubjectWhenEntitiesAreMissing(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：房间里有两瓶矿泉水吗\n答案：房间内两瓶矿泉水免费，另有四瓶饮料。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内两瓶矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse missing-entity different-subject quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("an explicitly different drink quantity must not invalidate mineral water when Intent omits entities: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsMissingEntityQuantitySubjectSwap(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水有两瓶，饮料有四瓶吗",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "饮品数量",
+				"问题：矿泉水有两瓶，饮料有四瓶吗\n答案：矿泉水有四瓶，饮料有两瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水有两瓶，饮料有四瓶。","criticalValues":["两瓶","四瓶"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse missing-entity quantity swap: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("omitted entities must not allow quantities to swap between explicit query subjects: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceQuantityClauseSubjectClassification(t *testing.T) {
+	tests := map[string]string{
+		"四瓶矿泉水": "required",
+		"四瓶饮料":  "other",
+		"矿泉水四瓶": "required",
+		"饮料四瓶":  "other",
+		"又写了四瓶": "implicit",
+	}
+	for clause, want := range tests {
+		if got := knowledgeEvidenceQuantityClauseSubject(clause, "矿泉水"); got != want {
+			t.Fatalf("unexpected quantity subject for %q: got %q want %q", clause, got, want)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceQuantityOccurrencesKeepConjoinedSubjectsSeparate(t *testing.T) {
+	for _, text := range []string{"房间内有两瓶矿泉水和四瓶饮料", "房间内有两瓶矿泉水、四瓶饮料"} {
+		occurrences := knowledgeEvidenceQuantityOccurrences(text, "矿泉水")
+		if len(occurrences) != 2 || occurrences[0].SubjectRelation != "required" || occurrences[1].SubjectRelation != "other" {
+			t.Fatalf("conjoined quantities must keep their adjacent objects for %q: %#v", text, occurrences)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceQuantityOccurrencesAllowQuestionBoundRoomAdverbs(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		Query:     "房间里有四瓶矿泉水吗",
+		Objective: "quantity",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+	}
+	for _, answer := range []string{"房间里又有四瓶。", "房间里现在有四瓶。", "房间内还放了四瓶。"} {
+		if _, ok := knowledgeEvidenceEquivalentTaskQuantityInText(task, task.Query, answer, "四瓶"); !ok {
+			t.Fatalf("the FAQ question must bind an elliptical room quantity for %q", answer)
+		}
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsMultiSubjectQuantitySwap(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料分别有两瓶吗",
+		Objective: "compound_information",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "饮品数量",
+				"问题：矿泉水和饮料分别有两瓶吗\n答案：饮料两瓶，矿泉水四瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水和饮料分别有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse multi-subject quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("one subject's matching value must not hide another subject's conflicting quantity: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsSharedQuantityPredicate(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都有两瓶吗",
+		Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "饮品数量",
+				"问题：矿泉水和饮料都有两瓶吗\n答案：矿泉水和饮料都有两瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水和饮料都有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	requiredSubjects := requiredKnowledgeEvidenceSubjectEntities(task)
+	if !knowledgeEvidenceSharedQuantityAppliesToSubjects(task.Query, requiredSubjects) {
+		t.Fatalf("shared predicate must be recognized for %#v", requiredSubjects)
+	}
+	if targets, combined := knowledgeEvidenceTaskQuantityTargetsBySubject(task.Query, requiredSubjects); combined || len(targets["矿泉水"]) != 1 || len(targets["饮料"]) != 1 {
+		t.Fatalf("shared value must bind to both subjects: combined=%v targets=%#v", combined, targets)
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("the matching shared FAQ must not have an explicit subject conflict")
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("the matching shared FAQ must not have a task-bound quantity conflict")
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("a single matching FAQ must not conflict with itself")
+	}
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse shared quantity predicate: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("a shared quantity predicate must bind the value to every named subject: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsUnpunctuatedQuantityBindings(t *testing.T) {
+	tests := []struct {
+		name   string
+		query  string
+		answer string
+		values []string
+	}{
+		{name: "and", query: "矿泉水有两瓶和饮料有四瓶吗", answer: "矿泉水有两瓶和饮料有四瓶。", values: []string{"两瓶", "四瓶"}},
+		{name: "also", query: "矿泉水有两瓶且枕头有三个", answer: "矿泉水有两瓶且枕头有三个。", values: []string{"两瓶", "三个"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     test.query,
+				Objective: "compound_information",
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "用品数量", "问题："+test.query+"\n答案："+test.answer, 0.97),
+				}},
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":%q,"criticalValues":[%q,%q]}],"missingAspects":[]}]}]}`,
+				test.answer, test.values[0], test.values[1])
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse unpunctuated quantity binding: %v", err)
+			}
+			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+				t.Fatalf("correct unpunctuated subject bindings must remain answerable: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsUnpunctuatedQuantitySwap(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水有两瓶和饮料有四瓶吗",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "饮品数量",
+				"问题：矿泉水有两瓶和饮料有四瓶吗\n答案：矿泉水有四瓶和饮料有两瓶。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水有两瓶，饮料有四瓶。","criticalValues":["两瓶","四瓶"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse unpunctuated quantity swap: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("swapped values must remain protocol-invalid after connector-aware binding: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsAffirmativeAnswerThatNarrowsMultiSubjectQuestion(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		objective string
+		answer    string
+		aspect    string
+		statement string
+		partial   string
+		missing   string
+		values    []string
+	}{
+		{
+			name:      "quantity",
+			query:     "矿泉水和饮料都有两瓶吗",
+			objective: "quantity",
+			answer:    "是的，矿泉水有两瓶。",
+			aspect:    "quantity",
+			statement: "矿泉水和饮料都有两瓶。",
+			partial:   "矿泉水有两瓶。",
+			missing:   "饮料数量",
+			values:    []string{"两瓶"},
+		},
+		{
+			name:      "price",
+			query:     "矿泉水和饮料都免费吗",
+			objective: "price",
+			answer:    "是的，矿泉水免费。",
+			aspect:    "price",
+			statement: "矿泉水和饮料都免费。",
+			partial:   "矿泉水免费。",
+			missing:   "饮料费用",
+			values:    []string{"免费"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     test.query,
+				Objective: test.objective,
+				Entities: []knowledgeEvidenceJudgeEntity{
+					{Text: "矿泉水", Type: "supply"},
+					{Text: "饮料", Type: "supply"},
+				},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "饮品信息", "问题："+test.query+"\n答案："+test.answer, 0.97),
+				}},
+			}
+			valuesJSON, err := json.Marshal(test.values)
+			if err != nil {
+				t.Fatalf("marshal critical values: %v", err)
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":%q,"statement":%q,"criticalValues":%s}],"missingAspects":[]}]}]}`,
+				test.aspect, test.statement, valuesJSON)
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse narrowed affirmative answer: %v", err)
+			}
+			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+				t.Fatalf("an affirmative answer naming only one required subject must not confirm every subject: %#v", selection)
+			}
+
+			partialRaw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":%q,"statement":%q,"criticalValues":%s}],"missingAspects":[]}]}]}`,
+				test.aspect, test.partial, valuesJSON)
+			parsed, err = parseKnowledgeEvidenceJudgeResponse(partialRaw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse narrowed partial answer: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionPartial || !knowledgeEvidenceContainsString(selection.MissingAspects, test.missing) {
+				t.Fatalf("a narrowed answer may retain its grounded fact only as partial evidence: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsCollectiveMultiSubjectAnswer(t *testing.T) {
+	for _, answer := range []string{"是的。", "都是免费的。"} {
+		t.Run(answer, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     "矿泉水和饮料都免费吗",
+				Objective: "price",
+				Entities: []knowledgeEvidenceJudgeEntity{
+					{Text: "矿泉水", Type: "supply"},
+					{Text: "饮料", Type: "supply"},
+				},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "饮品费用", "问题：矿泉水和饮料都免费吗\n答案："+answer, 0.97),
+				}},
+			}
+			raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水和饮料都免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse collective multi-subject answer: %v", err)
+			}
+			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+				t.Fatalf("a bare or collective answer may confirm every named subject: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseKeepsCollectiveFactWithSingleSubjectDetail(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		objective string
+		answer    string
+		aspect    string
+		statement string
+		values    []string
+	}{
+		{
+			name:      "group price with one quantity detail",
+			query:     "矿泉水和饮料都免费吗",
+			objective: "price",
+			answer:    "都是免费的，矿泉水每天补两瓶。",
+			aspect:    "price",
+			statement: "矿泉水和饮料都免费。",
+			values:    []string{"免费"},
+		},
+		{
+			name:      "group existence with one location detail",
+			query:     "矿泉水和饮料都有吗",
+			objective: "availability",
+			answer:    "都有的，矿泉水放在桌上。",
+			aspect:    "existence",
+			statement: "矿泉水和饮料都有。",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     test.query,
+				Objective: test.objective,
+				Entities: []knowledgeEvidenceJudgeEntity{
+					{Text: "矿泉水", Type: "supply"},
+					{Text: "饮料", Type: "supply"},
+				},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "饮品信息", "问题："+test.query+"\n答案："+test.answer, 0.97),
+				}},
+			}
+			valuesJSON, err := json.Marshal(test.values)
+			if err != nil {
+				t.Fatalf("marshal critical values: %v", err)
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":%q,"statement":%q,"criticalValues":%s}],"missingAspects":[]}]}]}`,
+				test.aspect, test.statement, valuesJSON)
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse collective fact with detail: %v", err)
+			}
+			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+				t.Fatalf("a single-subject detail must not erase the collective fact: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsCrossedFAQQuestionAndAnswerSubjects(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都免费吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "饮品费用", "问题：饮料免费吗\n答案：矿泉水免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse crossed FAQ subjects: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("a FAQ answer about another subject must not inherit the question subject: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseCombinesSubjectBoundBareAnswers(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都免费吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "矿泉水费用", "问题：矿泉水免费吗\n答案：是的。", 0.97),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(2, 102, "饮料费用", "问题：饮料免费吗\n答案：是的。", 0.96),
+			},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水免费。","criticalValues":["免费"]},{"factId":"T1F2","aspect":"price","statement":"饮料免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse subject-bound bare answers: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("two subject-bound bare answers should jointly cover the task: %#v", selection)
+	}
+}
+
+func TestStrictExactKnowledgeEvidenceFAQSelectionRejectsNarrowedMultiSubjectAnswer(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都免费吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "饮品费用", "问题：矿泉水和饮料都免费吗\n答案：是的，矿泉水免费。", 0.97),
+		}},
+	}
+
+	if selection, ok := strictExactKnowledgeEvidenceFAQSelection(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("exact FAQ fallback must not promote a narrowed answer to direct: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseAcceptsConjoinedDifferentSubjectQuantity(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：房间内两瓶矿泉水是否免费\n答案：房间内有两瓶矿泉水和四瓶饮料，都是免费的。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conjoined quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("an explicitly different drink quantity must not invalidate mineral water: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsQuantityBoundToDifferentSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水有四瓶且免费吗",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "矿泉水数量和费用",
+				"问题：矿泉水有四瓶且免费吗\n答案：饮料四瓶，矿泉水免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水有四瓶。","criticalValues":["四瓶"]},{"factId":"T1F2","aspect":"price","statement":"矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse different-subject quantity response: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a drink quantity must not satisfy the mineral-water quantity slot: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceIdentityComparisonSupportsBareNames(t *testing.T) {
+	if !knowledgeEvidenceIdentityValuesConflict("汤东强。", "李明。") {
+		t.Fatal("different bare names must conflict")
+	}
+	if knowledgeEvidenceIdentityValuesConflict("汤东强。", "汤东强先生。") {
+		t.Fatal("a bare name and the same honorific name must match")
+	}
+	if knowledgeEvidenceIdentityValuesConflict("暂无资料。", "李明。") {
+		t.Fatal("an uncertainty answer is not an identity value")
+	}
+	if knowledgeEvidenceIdentityValuesConflict("老板是暂无资料。", "李明。") {
+		t.Fatal("an explicit no-data phrase is not an identity value")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingBareIdentityAnswers(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "老板是谁",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "老板信息", "问题：老板是谁\n答案：汤东强。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "老板姓名", "问题：老板叫什么\n答案：李明。", 0.96)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"identity","statement":"老板是汤东强。","criticalValues":["汤东强"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conflicting bare identities: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("conflicting bare identity answers must not reach Generate: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceDeliveryAddressShortVenueConflicts(t *testing.T) {
+	if !knowledgeEvidenceDeliveryAddressAnswersConflict("南七店+对应楼层房间号", "东七店+对应楼层房间号") {
+		t.Fatal("different short store names must conflict")
+	}
+	if knowledgeEvidenceDeliveryAddressAnswersConflict("丽斯未来酒店合肥南七店+对应楼层房间号", "南七店+对应楼层房间号") {
+		t.Fatal("a full venue name and its contained short name must match")
+	}
+	if payload, kind := knowledgeEvidenceDeliveryAddressPayload("到店后联系管家"); payload != "" || kind != "" {
+		t.Fatalf("generic arrival wording must not become a venue: payload=%q kind=%q", payload, kind)
+	}
+	if !knowledgeEvidenceDeliveryAddressAnswersConflict("外卖地址填南七店即可", "外卖地址填东七店即可") {
+		t.Fatal("common fill/suffix wording must not hide conflicting short store names")
+	}
+	if !knowledgeEvidenceDeliveryAddressAnswersConflict("外卖地址填南七店即可", "安徽省合肥市蜀山区望江西路123号") {
+		t.Fatal("a concrete venue and a different concrete street address must conflict")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsVenueStreetDeliveryConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "外卖地址怎么填",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "门店地址", "问题：外卖地址怎么填\n答案：南七店+对应楼层房间号。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "街道地址", "问题：收货地址怎么填\n答案：安徽省合肥市蜀山区望江西路123号。", 0.96)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"location","statement":"外卖地址是南七店。","criticalValues":["南七店"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse venue/street delivery conflict: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("cross-kind concrete delivery destinations must conflict: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsConflictingShortStoreAddresses(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1",
+		Query:  "外卖地址怎么填",
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "南七外卖地址", "问题：外卖地址怎么填\n答案：南七店+对应楼层房间号。", 0.97)},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "东七外卖地址", "问题：外卖地址怎么填\n答案：东七店+对应楼层房间号。", 0.96)},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"location","statement":"外卖地址填写南七店加对应楼层房间号。","criticalValues":["南七店"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conflicting short store addresses: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("conflicting short store addresses must not reach Generate: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceCollectiveAnswerKeepsQuestionSubjectScopeLocal(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都免费吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+	}
+	for _, answer := range []string{
+		"都是免费的，矿泉水每天补两瓶。",
+		"是的，都是免费的。",
+		"矿泉水和饮料都是免费的。",
+	} {
+		if !knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(task, answer) {
+			t.Fatalf("a genuine collective answer must cover both task subjects: %q", answer)
+		}
+	}
+	for _, answer := range []string{
+		"矿泉水收费，早餐和晚餐都是免费的。",
+		"矿泉水收费，都是免费的。",
+		"停车位都是免费的。",
+	} {
+		if knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(task, answer) {
+			t.Fatalf("an unrelated or narrowed collective clause must not expand to all task subjects: %q", answer)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceQuantityGroundingKeepsSubjectValueBindings(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料分别有几瓶",
+		Objective: "quantity",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+	}
+	evidence := []string{"矿泉水有两瓶，饮料有四瓶。"}
+	correct := knowledgeEvidenceFact{FactID: "T1F1", Aspect: "quantity", Statement: "矿泉水有两瓶，饮料有四瓶。", CriticalValues: []string{"两瓶", "四瓶"}}
+	if !knowledgeEvidenceFactQuantityBindingsGroundedByParts(task, correct, evidence) {
+		t.Fatal("matching subject-to-quantity bindings must remain grounded")
+	}
+	swapped := knowledgeEvidenceFact{FactID: "T1F1", Aspect: "quantity", Statement: "矿泉水有四瓶，饮料有两瓶。", CriticalValues: []string{"四瓶", "两瓶"}}
+	if knowledgeEvidenceFactQuantityBindingsGroundedByParts(task, swapped, evidence) {
+		t.Fatal("the same subjects and values with swapped ownership must not remain grounded")
+	}
+}
+
+func TestKnowledgeEvidencePureOpenQuantityRequiresEverySubject(t *testing.T) {
+	newTask := func(answer string) knowledgeEvidenceJudgeTask {
+		return knowledgeEvidenceJudgeTask{
+			TaskID: "T1", Query: "矿泉水和饮料分别有几瓶", Objective: "quantity",
+			Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}, {Text: "饮料", Type: "supply"}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(1, 101, "饮品数量", "问题：矿泉水和饮料分别有几瓶\n答案："+answer, 0.97),
+			}},
+		}
+	}
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(newTask("矿泉水有两瓶，饮料有四瓶。"), knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("a pure open quantity answer covering both subjects must remain complete")
+	}
+	task := newTask("矿泉水有两瓶，饮料免费。")
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(task, knowledgeEvidenceLayerStore, []string{"T1C1"}) {
+		t.Fatal("a pure open quantity answer must provide a quantity for every requested subject")
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水有两瓶。","criticalValues":["两瓶"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse pure open multi-subject quantity: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("missing per-subject quantity coverage must not remain direct: %#v", selection)
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceGenericCountUnitCompatibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		answer     string
+		statement  string
+		wantDirect bool
+	}{
+		{name: "countable bottle and item", answer: "矿泉水有两瓶，枕头有两个。", statement: "矿泉水有两瓶，枕头有两个。", wantDirect: true},
+		{name: "room unit cannot answer generic item count", answer: "矿泉水有两间，枕头有两个。", statement: "矿泉水有两间，枕头有两个。"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, "用品数量", "问题：矿泉水和枕头分别有几个\n答案："+tt.answer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: "矿泉水和枕头分别有几个", Objective: "quantity",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}, {Text: "枕头", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":%q,"criticalValues":[]}],"missingAspects":[]}]}]}`, tt.statement)
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse generic-count response: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if gotDirect := selection.Decision == knowledgeEvidenceDecisionDirectSingle; gotDirect != tt.wantDirect {
+				t.Fatalf("generic-count compatibility mismatch: %#v", selection)
+			}
+
+			result := &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content}
+			batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: task.Query, Result: result}}}
+			batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, task.Query, batch.Questions)
+			applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+			if gotApplied := len(result.EffectiveHits) == 1; gotApplied != tt.wantDirect {
+				t.Fatalf("applied generic-count selection mismatch: %#v", result)
+			}
+		})
+	}
+}
+
+func TestParseAndApplyKnowledgeEvidenceSingleAspectRequiresEverySameTypeSubject(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		answer     string
+		statement  string
+		wantDirect bool
+	}{
+		{name: "other aspect cannot replace beverage price", query: "矿泉水和饮料都免费吗", answer: "矿泉水免费，饮料有四瓶。", statement: "矿泉水免费。"},
+		{name: "collective price covers both subjects", query: "矿泉水和饮料都免费吗", answer: "矿泉水和饮料都是免费的。", statement: "矿泉水和饮料都是免费的。", wantDirect: true},
+		{name: "elliptical aspect still requires every subject", query: "矿泉水和饮料呢，收费吗", answer: "矿泉水免费，饮料有四瓶。", statement: "矿泉水免费。"},
+		{name: "elliptical collective price covers both subjects", query: "矿泉水和饮料呢，收费吗", answer: "矿泉水和饮料都是免费的。", statement: "矿泉水和饮料都是免费的。", wantDirect: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, "饮品费用", "问题："+tt.query+"\n答案："+tt.answer, 0.97)
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: tt.query, Objective: "price",
+				Entities:   []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}, {Text: "饮料", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":%q,"criticalValues":["免费"]}],"missingAspects":[]}]}]}`, tt.statement)
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse same-type subject response: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if gotDirect := selection.Decision == knowledgeEvidenceDecisionDirectSingle; gotDirect != tt.wantDirect {
+				t.Fatalf("single-aspect subject completeness mismatch: %#v", selection)
+			}
+
+			result := &retrievers.KnowledgeRetrieveResult{KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content}
+			batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: task.Query, Result: result}}}
+			batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, task.Query, batch.Questions)
+			applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+			if gotApplied := len(result.EffectiveHits) == 1; gotApplied != tt.wantDirect {
+				t.Fatalf("applied single-aspect selection mismatch: %#v", result)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceCombinedQuantityTotalRequiresExactEvidence(t *testing.T) {
+	newTask := func(query string, answer string) knowledgeEvidenceJudgeTask {
+		return knowledgeEvidenceJudgeTask{
+			TaskID:    "T1",
+			Query:     query,
+			Objective: "quantity",
+			Entities: []knowledgeEvidenceJudgeEntity{
+				{Text: "矿泉水", Type: "supply"},
+				{Text: "饮料", Type: "supply"},
+			},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "饮品数量", "问题：矿泉水和饮料分别有几瓶\n答案："+answer, 0.97),
+			}},
+		}
+	}
+	selected := []string{"T1C1"}
+	matching := newTask("矿泉水和饮料一共六瓶吗", "矿泉水有两瓶，饮料有四瓶。")
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(matching, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("two plus four bottles must support an exact six-bottle total")
+	}
+	wrongSum := newTask("矿泉水和饮料一共六瓶吗", "矿泉水有两瓶，饮料有两瓶。")
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(wrongSum, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("a four-bottle sum must conflict with a six-bottle total")
+	}
+	explicitConflict := newTask("矿泉水和饮料一共六瓶吗", "矿泉水有两瓶，饮料有四瓶，总共五瓶。")
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(explicitConflict, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("an explicit conflicting total must override a coincidentally matching item sum")
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsPriceOnlyDirectForFixedQuantityQuestion(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "房间内两瓶矿泉水是否都免费",
+		Objective: "compound_information",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "矿泉水费用", "问题：房间内矿泉水免费吗\n答案：是的，免费的。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"房间内矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse price-only fixed-quantity response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("price evidence alone must not complete a fixed-quantity question: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceTimeCompletenessBindsEachRequestedCondition(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "工作日和周末早餐分别几点开始",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	workdayOnly := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "工作日早餐7点开始。", CriticalValues: []string{"7点"}}}
+	missing := missingRequiredKnowledgeEvidenceAspects(task, workdayOnly)
+	if !knowledgeEvidenceContainsString(missing, "周末早餐开始时间") {
+		t.Fatalf("a workday-only fact must leave the weekend slot missing: %#v", missing)
+	}
+	complete := append(workdayOnly, knowledgeEvidenceFact{FactID: "T1F2", Aspect: "time", Statement: "周末早餐8点开始。", CriticalValues: []string{"8点"}})
+	if missing = missingRequiredKnowledgeEvidenceAspects(task, complete); len(missing) != 0 {
+		t.Fatalf("both requested calendar conditions must close the time task: %#v", missing)
+	}
+}
+
+func TestKnowledgeEvidenceTimeCompletenessPreservesRequestedSubjectConditionPairs(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "工作日早餐几点，周末晚餐几点",
+		Objective: "time",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "早餐", Type: "meal"},
+			{Text: "晚餐", Type: "meal"},
+		},
+	}
+	workdayBreakfast := knowledgeEvidenceFact{FactID: "T1F1", Aspect: "time", Statement: "工作日早餐7点。", CriticalValues: []string{"7点"}}
+	missing := missingRequiredKnowledgeEvidenceAspects(task, []knowledgeEvidenceFact{workdayBreakfast})
+	if !knowledgeEvidenceContainsString(missing, "周末晚餐时间") {
+		t.Fatalf("the actual second subject-condition pair must remain missing: %#v", missing)
+	}
+	if knowledgeEvidenceContainsString(missing, "周末早餐时间") || knowledgeEvidenceContainsString(missing, "工作日晚餐时间") {
+		t.Fatalf("time requirements must not invent cartesian subject-condition pairs: %#v", missing)
+	}
+	complete := append([]knowledgeEvidenceFact{workdayBreakfast}, knowledgeEvidenceFact{
+		FactID: "T1F2", Aspect: "time", Statement: "周末晚餐18点。", CriticalValues: []string{"18点"},
+	})
+	if missing = missingRequiredKnowledgeEvidenceAspects(task, complete); len(missing) != 0 {
+		t.Fatalf("the two requested subject-condition pairs must close the task: %#v", missing)
+	}
+
+	slotTask := task
+	slotTask.Query = "工作日早餐几点开始，周末晚餐几点结束"
+	slotFacts := []knowledgeEvidenceFact{
+		{FactID: "T2F1", Aspect: "time", Statement: "工作日早餐7点开始。", CriticalValues: []string{"7点"}},
+		{FactID: "T2F2", Aspect: "time", Statement: "周末晚餐20点结束。", CriticalValues: []string{"20点"}},
+	}
+	if missing = missingRequiredKnowledgeEvidenceAspects(slotTask, slotFacts); len(missing) != 0 {
+		t.Fatalf("each clause must retain its own subject, condition, and slot instead of forming a cartesian product: %#v", missing)
+	}
+}
+
+func TestKnowledgeEvidenceIdentityTrimsTrailingDescriptions(t *testing.T) {
+	if knowledgeEvidenceIdentityValuesConflict("老板是汤东强负责门店运营。", "董事长为汤东强主管战略。") {
+		t.Fatal("the same name with trailing role descriptions must not conflict")
+	}
+	if !knowledgeEvidenceIdentityValuesConflict("老板是汤东强负责门店运营。", "董事长为李明负责门店运营。") {
+		t.Fatal("different names must still conflict after trimming shared descriptions")
+	}
+	if knowledgeEvidenceIdentityValuesConflict("目前汤东强是老板。", "老板是汤东强。") {
+		t.Fatal("context prefixes must not become part of the person's name")
+	}
+}
+
+func TestKnowledgeEvidenceNightRangeHandlesImplicitCrossMidnightEnd(t *testing.T) {
+	tests := []struct {
+		text      string
+		wantStart string
+		wantEnd   string
+	}{
+		{text: "晚上8点到2点", wantStart: "20:00", wantEnd: "02:00"},
+		{text: "晚上8点到9点", wantStart: "20:00", wantEnd: "21:00"},
+		{text: "晚上10点到12点", wantStart: "22:00", wantEnd: "00:00"},
+		{text: "下午2点到5点", wantStart: "14:00", wantEnd: "17:00"},
+		{text: "晚上10点到次日2点", wantStart: "22:00", wantEnd: "02:00"},
+	}
+	for _, test := range tests {
+		t.Run(test.text, func(t *testing.T) {
+			values := knowledgeEvidenceTimeSlotValues("", test.text)
+			if values["start"] != test.wantStart || values["end"] != test.wantEnd {
+				t.Fatalf("unexpected normalized range: %#v", values)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRequiresEveryConditionForGenericScheduleQuestion(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "工作日和周末早餐时间分别是多少",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "工作日早餐时间", "问题：工作日早餐时间是多少\n答案：工作日早餐时间是7点。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"工作日早餐时间是7点。","criticalValues":["7点"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse generic conditioned schedule: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("workday-only evidence must not complete a workday-and-weekend schedule question: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDoesNotInheritQuestionSubjectsFromUnrelatedAnswer(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水和饮料都免费吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "矿泉水", Type: "supply"},
+			{Text: "饮料", Type: "supply"},
+		},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "饮品费用", "问题：矿泉水和饮料都免费吗\n答案：停车位免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水和饮料都免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse unrelated answer subject inheritance: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("an unrelated parking answer must not inherit mineral-water and beverage subjects from the FAQ question: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsSingleSubjectPriceBorrowedFromAnotherFAQ(t *testing.T) {
+	for _, answer := range []string{"是的，免费。", "是的，不收费。", "是的，无需付费。"} {
+		t.Run(answer, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     "停车免费吗",
+				Objective: "price",
+				Entities:  []knowledgeEvidenceJudgeEntity{{Text: "停车", Type: "facility"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "早餐费用", "问题：早餐免费吗\n答案："+answer, 0.97),
+				}},
+			}
+			raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"停车免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse cross-subject price fact: %v", err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+				t.Fatalf("a breakfast price answer must not support parking, even through a price synonym: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsPriceBorrowedFromAnotherFAQWithoutEntities(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "停车免费吗",
+		Objective: "price",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "早餐费用", "问题：早餐免费吗\n答案：是的，免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"停车免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse entity-free cross-subject price fact: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a breakfast price answer must not support parking when Intent omitted entities: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsSingleSubjectTimeBorrowedFromAnotherFAQ(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐几点开始",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "晚餐时间", "问题：晚餐几点开始\n答案：晚上六点。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐晚上六点开始。","criticalValues":["晚上六点"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse cross-subject time fact: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a dinner clock value must not support the breakfast task: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsNaturalTimeQuestionBorrowedFromAnotherFAQWithoutEntities(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "早餐开到多晚",
+		Objective: "time",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "健身房时间", "问题：健身房几点关门\n答案：晚上十点。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐营业到晚上十点。","criticalValues":["晚上十点"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse entity-free natural time fact: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a fitness-room closing time must not support a natural breakfast time question without entities: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRejectsSingleSubjectQuantityBorrowedFromAnotherSubject(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "矿泉水有几瓶",
+		Objective: "quantity",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "饮品信息", "问题：房间饮品怎么配置\n答案：饮料有四瓶，矿泉水免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"矿泉水有四瓶。","criticalValues":["四瓶"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse borrowed single-subject quantity: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a beverage quantity must not complete the mineral-water quantity task: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceGroundingRejectsSwappedMultiSubjectCriticalValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		task      knowledgeEvidenceJudgeTask
+		evidence  string
+		facts     []knowledgeEvidenceFact
+		candidate string
+		raw       string
+	}{
+		{
+			name: "price",
+			task: knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: "矿泉水和饮料分别怎么收费", Objective: "price",
+				Entities: []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}, {Text: "饮料", Type: "supply"}},
+			},
+			evidence:  "矿泉水免费，饮料收费。",
+			facts:     []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "price", Statement: "矿泉水收费。", CriticalValues: []string{"收费"}}, {FactID: "T1F2", Aspect: "price", Statement: "饮料免费。", CriticalValues: []string{"免费"}}},
+			candidate: "问题：矿泉水和饮料分别怎么收费\n答案：矿泉水免费，饮料收费。",
+			raw:       `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"矿泉水收费。","criticalValues":["收费"]},{"factId":"T1F2","aspect":"price","statement":"饮料免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`,
+		},
+		{
+			name: "time",
+			task: knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: "早餐和退房时间分别是多少", Objective: "time",
+				Entities: []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}, {Text: "退房", Type: "service"}},
+			},
+			evidence:  "早餐7点开始，退房12点。",
+			facts:     []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "早餐12点。", CriticalValues: []string{"12点"}}, {FactID: "T1F2", Aspect: "time", Statement: "退房7点开始。", CriticalValues: []string{"7点"}}},
+			candidate: "问题：早餐和退房时间分别是多少\n答案：早餐7点开始，退房12点。",
+			raw:       `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"time","statement":"早餐12点。","criticalValues":["12点"]},{"factId":"T1F2","aspect":"time","statement":"退房7点开始。","criticalValues":["7点"]}],"missingAspects":[]}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, fact := range test.facts {
+				if knowledgeEvidenceFactGroundedForTask(test.task, fact, []string{test.evidence}) {
+					t.Errorf("swapped %s fact must not be grounded by values owned by another subject: %#v", test.name, fact)
+				}
+			}
+			test.task.Candidates = []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "subject-bound "+test.name, test.candidate, 0.97),
+			}}
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(test.raw, []knowledgeEvidenceJudgeTask{test.task})
+			if err != nil {
+				t.Fatalf("parse swapped %s facts: %v", test.name, err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+				for _, fact := range selection.SupportedFacts {
+					if !knowledgeEvidenceFactGroundedForTask(test.task, fact, []string{test.evidence}) {
+						t.Errorf("a direct %s repair must contain only correctly bound facts: %#v", test.name, selection)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRequiresFixedQuantityForConfirmStatusAndPolicy(t *testing.T) {
+	for _, objective := range []string{"confirm", "status", "policy"} {
+		t.Run(objective, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID:    "T1",
+				Query:     "房间明确配置两瓶矿泉水",
+				Objective: objective,
+				Entities:  []knowledgeEvidenceJudgeEntity{{Text: "矿泉水", Type: "supply"}},
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1",
+					Layer:       knowledgeEvidenceLayerStore,
+					Hit:         judgeTestHit(1, 101, "矿泉水配置", "问题：房间有矿泉水吗\n答案：房间有矿泉水。", 0.97),
+				}},
+			}
+			raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"房间有矿泉水。","criticalValues":["矿泉水"]}],"missingAspects":[]}]}]}`
+
+			parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse fixed quantity for %s objective: %v", objective, err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+				t.Fatalf("%s must preserve the explicit two-bottle quantity before becoming direct: %#v", objective, selection)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceConditionalScheduleConflictMatchesConditionAndSlot(t *testing.T) {
+	tests := []struct {
+		name           string
+		question       string
+		answer         string
+		wantConflict   bool
+		wantComparable bool
+	}{
+		{name: "workday start conflict", question: "工作日早餐几点开始", answer: "工作日早餐8点开始。", wantConflict: true, wantComparable: true},
+		{name: "weekend start match", question: "周末早餐几点开始", answer: "周末早餐8点开始。", wantComparable: true},
+		{name: "weekend start conflict", question: "周末早餐几点开始", answer: "周末早餐9点开始。", wantConflict: true, wantComparable: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict(
+				"工作日和周末早餐时间分别是多少",
+				"工作日早餐7点开始，周末早餐8点开始。",
+				test.question,
+				test.answer,
+			)
+			if conflict != test.wantConflict || comparable != test.wantComparable {
+				t.Fatalf("condition-and-slot conflict mismatch: conflict=%v comparable=%v", conflict, comparable)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceIdentityComparisonIgnoresCombinedContextPrefix(t *testing.T) {
+	if knowledgeEvidenceIdentityValuesConflict("目前本店由汤东强是老板。", "老板是汤东强。") {
+		t.Fatal("a combined context prefix must not turn the same owner identity into a conflict")
+	}
+}
+
+func TestKnowledgeEvidenceCompleteSubjectGroupAliasRequiresClauseLocalAspect(t *testing.T) {
+	comparisonTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "携程和美团的价格一样吗",
+		Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{
+			{Text: "携程", Type: "company"},
+			{Text: "美团", Type: "company"},
+		},
+	}
+	if !knowledgeEvidenceFAQAnswerCollectivelyCoversTaskSubjects(comparisonTask, "不同平台的权益不一样，建议对比价格后选择。") {
+		t.Fatal("a clause-local platform comparison must retain complete subject-group inheritance")
+	}
+
+	freeTask := comparisonTask
+	freeTask.Query = "携程和美团都免费吗"
+	freeTask.Candidates = []knowledgeEvidenceJudgeCandidate{{
+		CandidateID: "T1C1",
+		Layer:       knowledgeEvidenceLayerStore,
+		Hit:         judgeTestHit(1, 101, "平台费用", "问题：携程和美团都免费吗\n答案：不同平台权益不一样，停车位免费。", 0.97),
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"携程和美团都免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{freeTask})
+	if err != nil {
+		t.Fatalf("parse unrelated alias answer: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a group alias in one clause must not borrow another subject's price from a later clause: %#v", selection)
+	}
+
+	relativeTask := freeTask
+	relativeTask.Candidates = []knowledgeEvidenceJudgeCandidate{{
+		CandidateID: "T1C1",
+		Layer:       knowledgeEvidenceLayerStore,
+		Hit:         judgeTestHit(1, 102, "平台费用", "问题：携程和美团都免费吗\n答案：不同平台价格不一样，停车位免费。", 0.97),
+	}}
+	parsed, err = parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{relativeTask})
+	if err != nil {
+		t.Fatalf("parse relative platform price answer: %v", err)
+	}
+	selection = parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a relative platform-price comparison must not prove an absolute free predicate: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceSingleTimeConditionBindsRequestedSchedule(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "周末早餐几点开始",
+		Objective: "time",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	wrongCondition := []knowledgeEvidenceFact{{
+		FactID: "T1F1", Aspect: "time", Statement: "工作日早餐7点开始。", CriticalValues: []string{"7点"},
+	}}
+	missing := missingRequiredKnowledgeEvidenceAspects(task, wrongCondition)
+	if !knowledgeEvidenceContainsString(missing, "周末早餐开始时间") {
+		t.Fatalf("a workday schedule must not complete a weekend-only question: %#v", missing)
+	}
+	matching := []knowledgeEvidenceFact{{
+		FactID: "T1F1", Aspect: "time", Statement: "星期六和星期日早餐8点开始。", CriticalValues: []string{"8点"},
+	}}
+	if missing = missingRequiredKnowledgeEvidenceAspects(task, matching); len(missing) != 0 {
+		t.Fatalf("an equivalent weekend expression must satisfy the requested condition: %#v", missing)
+	}
+}
+
+func TestKnowledgeEvidenceCalendarConditionCommonExpressions(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{text: "周一到周五早餐7点开始", want: "workday"},
+		{text: "周一至周五早餐7点开始", want: "workday"},
+		{text: "星期一到星期五早餐7点开始", want: "workday"},
+		{text: "星期一至星期五早餐7点开始", want: "workday"},
+		{text: "周六日早餐8点开始", want: "weekend"},
+		{text: "周六和周日早餐8点开始", want: "weekend"},
+		{text: "星期六和星期日早餐8点开始", want: "weekend"},
+		{text: "星期六到星期日早餐8点开始", want: "weekend"},
+		{text: "法定假日早餐9点开始", want: "holiday"},
+		{text: "平时早餐7点开始", want: "workday"},
+		{text: "星期三早餐7点开始", want: "weekday:wednesday"},
+		{text: "礼拜五早餐7点开始", want: "weekday:friday"},
+		{text: "双休早餐8点开始", want: "weekend"},
+		{text: "礼拜天早餐8点开始", want: "weekday:sunday"},
+	}
+	for _, test := range tests {
+		t.Run(test.text, func(t *testing.T) {
+			conditions := requiredKnowledgeEvidenceTimeConditions(test.text)
+			if len(conditions) != 1 || conditions[0] != test.want {
+				t.Fatalf("unexpected normalized condition: %#v", conditions)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceStandaloneWeekdayConditionDoesNotCrossWeekend(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "礼拜天早餐几点开始", Objective: "time",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	wrong := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "星期三早餐7点开始。", CriticalValues: []string{"7点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, wrong); !knowledgeEvidenceContainsString(missing, "周日早餐开始时间") {
+		t.Fatalf("a standalone workday must not satisfy a standalone weekend query: %#v", missing)
+	}
+	matching := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "星期日早餐8点开始。", CriticalValues: []string{"8点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, matching); len(missing) != 0 {
+		t.Fatalf("equivalent standalone weekend forms must match: %#v", missing)
+	}
+}
+
+func TestKnowledgeEvidenceStandaloneWeekdaysRemainDistinct(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "周一早餐几点开始", Objective: "time",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	wrong := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "周五早餐7点开始。", CriticalValues: []string{"7点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, wrong); !knowledgeEvidenceContainsString(missing, "周一早餐开始时间") {
+		t.Fatalf("a Friday schedule must not satisfy a Monday question: %#v", missing)
+	}
+	matching := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "星期一早餐8点开始。", CriticalValues: []string{"8点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, matching); len(missing) != 0 {
+		t.Fatalf("equivalent Monday expressions must match: %#v", missing)
+	}
+}
+
+func TestKnowledgeEvidenceMixedFixedAndOpenQuantityBindings(t *testing.T) {
+	newTask := func(answer string) knowledgeEvidenceJudgeTask {
+		return knowledgeEvidenceJudgeTask{
+			TaskID:    "T1",
+			Query:     "矿泉水两瓶，饮料有几瓶",
+			Objective: "quantity",
+			Entities: []knowledgeEvidenceJudgeEntity{
+				{Text: "矿泉水", Type: "supply"},
+				{Text: "饮料", Type: "supply"},
+			},
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 101, "饮品数量", "问题：房间饮品有几瓶\n答案："+answer, 0.97),
+			}},
+		}
+	}
+	selected := []string{"T1C1"}
+	complete := newTask("矿泉水有两瓶，饮料有四瓶。")
+	if knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(complete, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("the fixed two-bottle value and an open four-bottle value must both be accepted")
+	}
+	missingOpen := newTask("矿泉水有两瓶。")
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(missingOpen, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("a selected answer without any beverage bottle count must remain incomplete")
+	}
+	wrongFixed := newTask("矿泉水有三瓶，饮料有四瓶。")
+	if !knowledgeEvidenceSelectedCandidatesHaveTaskBoundQuantityConflict(wrongFixed, knowledgeEvidenceLayerStore, selected) {
+		t.Fatal("an open quantity must not hide a conflicting fixed mineral-water count")
+	}
+}
+
+func TestKnowledgeEvidenceJudgeTimeoutWithinRemainingReservesParentDeadline(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured time.Duration
+		remaining  time.Duration
+		want       time.Duration
+		wantOK     bool
+	}{
+		{name: "long parent keeps configured timeout", configured: 28 * time.Second, remaining: 60 * time.Second, want: 28 * time.Second, wantOK: true},
+		{name: "thirty second parent keeps twelve second downstream reserve", configured: 28 * time.Second, remaining: 30 * time.Second, want: 18 * time.Second, wantOK: true},
+		{name: "short parent trims judge", configured: 28 * time.Second, remaining: 25 * time.Second, want: 13 * time.Second, wantOK: true},
+		{name: "configured timeout remains lower", configured: 15 * time.Second, remaining: 40 * time.Second, want: 15 * time.Second, wantOK: true},
+		{name: "one second judge budget remains", configured: 15 * time.Second, remaining: 13 * time.Second, want: time.Second, wantOK: true},
+		{name: "no stage budget remains", configured: 15 * time.Second, remaining: 12 * time.Second, wantOK: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := knowledgeEvidenceJudgeTimeoutWithinRemaining(test.configured, test.remaining)
+			if ok != test.wantOK || got != test.want {
+				t.Fatalf("timeout budget mismatch: got=%s ok=%v want=%s ok=%v", got, ok, test.want, test.wantOK)
+			}
+		})
+	}
+
+	configured := 28 * time.Second
+	got, ok := knowledgeEvidenceJudgeTimeoutWithinParent(context.Background(), configured)
+	if !ok || got != configured {
+		t.Fatalf("a context without a parent deadline must keep the configured timeout: got=%s ok=%v", got, ok)
+	}
+}
+
+func TestKnowledgeEvidencePriceClaimsSeparatePolarityRelationAndPolicy(t *testing.T) {
+	tests := []struct {
+		name           string
+		text           string
+		wantClaims     []string
+		unwantedClaims []string
+		comparison     bool
+	}{
+		{name: "negative free status", text: "不同平台都不免费。", wantClaims: []string{"charged"}, unwantedClaims: []string{"free", "not_equal"}},
+		{name: "free status", text: "不同平台都不收费。", wantClaims: []string{"free"}, unwantedClaims: []string{"charged", "not_equal"}},
+		{name: "no charge required", text: "矿泉水无需收费。", wantClaims: []string{"free"}, unwantedClaims: []string{"charged"}},
+		{name: "does not need charge", text: "矿泉水不需要收费。", wantClaims: []string{"free"}, unwantedClaims: []string{"charged"}},
+		{name: "no payment required", text: "矿泉水不用付费。", wantClaims: []string{"free"}, unwantedClaims: []string{"charged"}},
+		{name: "explicit price relation", text: "不同平台价格不一样。", wantClaims: []string{"not_equal"}, comparison: true},
+		{name: "relative free policy", text: "不同平台免费政策不一样。", wantClaims: []string{"dynamic"}, unwantedClaims: []string{"free", "charged", "not_equal"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			claims := knowledgeEvidencePriceClaims(test.text)
+			for _, kind := range test.wantClaims {
+				if !knowledgeEvidencePriceClaimsContain(claims, kind) {
+					t.Fatalf("missing %s claim in %#v", kind, claims)
+				}
+			}
+			for _, kind := range test.unwantedClaims {
+				if knowledgeEvidencePriceClaimsContain(claims, kind) {
+					t.Fatalf("unexpected %s claim in %#v", kind, claims)
+				}
+			}
+			if got := knowledgeEvidenceQueryAsksComparison(test.text); got != test.comparison {
+				t.Fatalf("comparison mismatch: got=%v want=%v", got, test.comparison)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidencePriceGroundingAcceptsEquivalentFreePhrases(t *testing.T) {
+	fact := knowledgeEvidenceFact{
+		FactID: "T1F1", Aspect: "price", Statement: "矿泉水免费。", CriticalValues: []string{"免费"},
+	}
+	for _, evidence := range []string{"矿泉水不收费。", "矿泉水无需收费。", "矿泉水不需要付费。", "矿泉水不用付费。"} {
+		t.Run(evidence, func(t *testing.T) {
+			if !knowledgeEvidenceFactGroundedByText(fact, []string{evidence}) {
+				t.Fatalf("equivalent free wording must ground the canonical free fact: %q", evidence)
+			}
+		})
+	}
+	if got := knowledgeEvidencePriceCriticalValues("矿泉水无需收费。"); len(got) != 1 || got[0] != "免费" {
+		t.Fatalf("free critical values must be canonical and customer-safe: %#v", got)
+	}
+}
+
+func TestKnowledgeEvidenceQuantityRequestParametersStaySeparateFromFacts(t *testing.T) {
+	for _, query := range []string{
+		"我要两瓶矿泉水",
+		"我需要两条浴巾",
+		"能不能送两瓶水",
+		"帮我拿两瓶水，是否可以送到房间",
+	} {
+		if got := knowledgeEvidenceTaskBoundCriticalValues(query); len(got) != 0 {
+			t.Fatalf("a service request quantity must not become a knowledge fact: query=%q values=%#v", query, got)
+		}
+	}
+
+	for _, query := range []string{
+		"你们送两瓶矿泉水都免费吗",
+		"每个房间送两瓶水吗",
+		"原来两瓶矿泉水都免费吗",
+	} {
+		got := knowledgeEvidenceTaskBoundCriticalValues(query)
+		if !knowledgeEvidenceContainsString(got, "两瓶") {
+			t.Fatalf("a factual quantity must remain a required value: query=%q values=%#v", query, got)
+		}
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDoesNotReverseNegativePriceEvidence(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "携程和美团都免费吗", Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "携程", Type: "company"}, {Text: "美团", Type: "company"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "平台费用", "问题：携程和美团都免费吗\n答案：不同平台都不免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"携程和美团都免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse negative price evidence: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	for _, fact := range selection.SupportedFacts {
+		claims := knowledgeEvidencePriceClaims(fact.Statement + " " + strings.Join(fact.CriticalValues, " "))
+		if knowledgeEvidencePriceClaimsContain(claims, "free") && !knowledgeEvidencePriceClaimsContain(claims, "charged") {
+			t.Fatalf("negative evidence must never become a positive free fact: %#v", selection)
+		}
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDoesNotUseRelativePolicyAsAbsolutePrice(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "携程和美团都免费吗", Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "携程", Type: "company"}, {Text: "美团", Type: "company"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "平台政策", "问题：携程和美团都免费吗\n答案：不同平台免费政策不一样。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"携程和美团都免费。","criticalValues":["免费"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse relative price policy: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a relative policy must not complete an absolute free-status question: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseDoesNotTreatChargedGroupAsPriceDifference(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "携程和美团价格一样吗", Objective: "price",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "携程", Type: "company"}, {Text: "美团", Type: "company"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "平台费用", "问题：携程和美团价格一样吗\n答案：不同平台都不免费。", 0.97),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"price","statement":"携程和美团价格不一样。","criticalValues":["价格不同"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse non-comparison price evidence: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision == knowledgeEvidenceDecisionDirectSingle || selection.Decision == knowledgeEvidenceDecisionDirectCombined {
+		t.Fatalf("a shared charged status does not prove equal or different prices: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceConditionalAffirmationKeepsBindingQualifier(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "可以开发票吗", Objective: "availability",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "发票", Type: "service"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "发票", "问题：可以开发票吗\n答案：是的，仅限退房前办理。", 0.97),
+		}},
+	}
+	statement, ok := resolvedKnowledgeEvidenceFAQQuestionStatement(task, "可以开发票吗", "是的，仅限退房前办理。")
+	if !ok || !strings.Contains(statement, "可以开发票") || !strings.Contains(statement, "退房前") {
+		t.Fatalf("conditional affirmation must resolve with its restriction: statement=%q ok=%v", statement, ok)
+	}
+	unconditional := knowledgeEvidenceFact{FactID: "T1F1", Aspect: "existence", Statement: "可以开发票。", CriticalValues: []string{"发票"}}
+	parts := knowledgeEvidenceCandidateGroundingParts(task, task.Candidates[0])
+	if knowledgeEvidenceFactGroundedForTask(task, unconditional, parts) {
+		t.Fatalf("an unconditional capability must not ground against qualified evidence: parts=%#v", parts)
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"可以开发票。","criticalValues":["发票"]}],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse conditional affirmation: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	for _, fact := range selection.SupportedFacts {
+		if strings.Contains(fact.Statement, "可以开发票") && !strings.Contains(fact.Statement, "退房前") {
+			t.Fatalf("an unconditional capability must not survive a qualified FAQ: %#v", selection)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceGroundingScopesQualifiersToStrongPropositionBoundaries(t *testing.T) {
+	airConditioningFact := knowledgeEvidenceFact{Aspect: "existence", Statement: "房间配有空调。", CriticalValues: []string{"空调"}}
+	parts := knowledgeEvidenceGroundingPartsCompatibleWithFact(
+		airConditioningFact,
+		[]string{"房间配有空调。发票仅限退房后申请。"},
+	)
+	if !knowledgeEvidenceContainsString(parts, "房间配有空调") {
+		t.Fatalf("a qualifier in a separate sentence must not contaminate the air-conditioning fact: %#v", parts)
+	}
+
+	unqualifiedFact := knowledgeEvidenceFact{Aspect: "method", Statement: "可以办理。"}
+	parts = knowledgeEvidenceGroundingPartsCompatibleWithFact(unqualifiedFact, []string{"可以办理，仅限退房前。"})
+	if len(parts) != 0 {
+		t.Fatalf("a comma-tail qualifier must remain bound to the preceding conclusion: %#v", parts)
+	}
+}
+
+func TestKnowledgeEvidenceBindingQualifiersCannotBeInventedOrReplaced(t *testing.T) {
+	tests := []struct {
+		name     string
+		evidence string
+		fact     string
+		want     bool
+	}{
+		{name: "matching checkout boundary", evidence: "仅限退房前办理。", fact: "发票仅限退房前办理。", want: true},
+		{name: "checkin day cannot become checkout day", evidence: "入住当天早餐7点开始。", fact: "退房当天早餐7点开始。", want: false},
+		{name: "unqualified evidence cannot invent workday", evidence: "早餐7点开始。", fact: "仅工作日早餐7点开始。", want: false},
+		{name: "room type restriction cannot become membership", evidence: "仅限指定房型使用。", fact: "仅限会员使用。", want: false},
+		{name: "named room type restrictions remain distinct", evidence: "仅限合柴房型使用。", fact: "仅限麦田房型使用。", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fact := knowledgeEvidenceFact{Aspect: "condition", Statement: test.fact}
+			if got := knowledgeEvidenceFactPreservesBindingQualifiers(fact, test.evidence); got != test.want {
+				t.Fatalf("binding qualifier mismatch: got=%v want=%v evidence=%q fact=%q required=%#v actual=%#v", got, test.want, test.evidence, test.fact,
+					knowledgeEvidenceBindingQualifierSignatures(test.evidence), knowledgeEvidenceBindingQualifierSignatures(test.fact))
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceGenericScheduleBindsConditionAndDetectsConflict(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "周末早餐时间是多少", Objective: "time",
+		Entities: []knowledgeEvidenceJudgeEntity{{Text: "早餐", Type: "service"}},
+	}
+	wrongCondition := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "工作日早餐时间是7点。", CriticalValues: []string{"7点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, wrongCondition); !knowledgeEvidenceContainsString(missing, "周末早餐时间") {
+		t.Fatalf("a workday generic schedule must not complete a weekend task: %#v", missing)
+	}
+	matching := []knowledgeEvidenceFact{{FactID: "T1F1", Aspect: "time", Statement: "周末早餐时间是8点。", CriticalValues: []string{"8点"}}}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, matching); len(missing) != 0 {
+		t.Fatalf("a matching weekend generic schedule must complete the task: %#v", missing)
+	}
+	conflict, comparable := knowledgeEvidenceTimeSlotAnswersConflict("早餐时间是多少", "早餐时间是7点。", "早餐时间是多少", "早餐时间是8点。")
+	if !conflict || !comparable {
+		t.Fatalf("two different generic schedules must conflict: conflict=%v comparable=%v", conflict, comparable)
+	}
+	conflict, comparable = knowledgeEvidenceTimeSlotAnswersConflict("工作日早餐时间是多少", "工作日早餐时间是7点。", "周末早餐时间是多少", "周末早餐时间是8点。")
+	if conflict || comparable {
+		t.Fatalf("different calendar conditions must remain incomparable: conflict=%v comparable=%v", conflict, comparable)
 	}
 }

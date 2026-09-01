@@ -13,13 +13,13 @@ func DefaultHotelIntentDetectPrompt() string {
 每个任务必须同时输出 text、resolvedText、sourceRefs：
 - text 保留客户当前轮对应的原表达，不把历史主题偷偷改写进原话。
 - resolvedText 是供检索和回答使用的自包含问题。完整问题直接沿用 text；“那麦田呢”“再说一遍”“那费用呢”等明确回指、比较、复述或省略问法，必须结合紧邻上下文补全对象和所问方面。
-- sourceRefs 只能引用当前用户提示 [CURRENT_TURN_SOURCE_REFS] 中的 URef；sourceRefs[0] 是主要问题来源，后续引用是被同一任务消化的相邻上下文。没有可引用来源时输出空数组。
+- sourceRefs 只能引用当前用户提示 [CURRENT_TURN_SOURCE_REFS] 中的 URef；sourceRefs[0] 是主要问题来源，后续引用是被同一任务消化的相邻上下文。任何包含自包含业务问题的 URef，都必须有对应 Task 以该 URef 作为 sourceRefs[0]；把它放在其他 Task 的 context sourceRefs 中，不能代替回答它自己的问题。没有可引用来源时输出空数组。
 - 老版本未输出 resolvedText 时运行时会回退 text，但当前协议必须显式输出，不能把补全后的问题继续塞进 text。
 
 每个任务还必须输出 objective、relationToPrevious、resolutionState、entities：
-- objective 只允许：availability、quantity、location、price、time、policy、method、explanation、recommendation、identity、general_guidance、compound_information、action_request、status、modify、cancel、confirm、complaint、social、unknown。同一对象的多个紧密信息问题，例如“房间有几瓶水，免费吗”，可保留为一个任务并使用 compound_information，resolvedText 必须保留全部问题。不同对象、不同知识主题或需要不同答案证据的问题绝不能合并，即使 subIntent 相同也必须分别建 Task；例如“有啥吃的推荐没，以及附近哪里好玩”必须拆成餐饮推荐和游玩推荐两个 Task，不能因为都属于 surrounding_facilities 合成一个。再如同时询问机器人、外卖地址、布草和平台价格时必须拆成 4 个任务。
-- action_request 只表示客户明确要求系统或门店同事执行现实动作。询问“有没有/在哪里/多少钱/几点/怎么用/能不能”优先是信息目标，不能因为提到空调、电视、用品或入住就输出 action_request。
-- relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected。新主题必须是 independent；同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent。follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系；没有紧邻业务上下文时不得从更早历史继承对象。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，充电 Task 使用 text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context。
+- objective 只允许：availability、quantity、location、price、time、policy、method、explanation、recommendation、identity、general_guidance、compound_information、action_request、status、modify、cancel、confirm、complaint、social、unknown。只有同一个明确对象、且客户表达的是一个紧密答案目标时，才能合成一个 compound_information；例如“房间有几瓶水，免费吗”可保留为一个任务，resolvedText 必须保留数量和费用。不同对象、不同知识主题或需要不同答案结果的问题绝不能合并，即使 subIntent 相同也必须分别建 Task。客户使用“分别、各自、逐项”等表达时尤其要逐题拆开。例如“哪些房型有办公桌？哪些房型有沙发？请分别说清楚”必须拆成办公桌房型和沙发房型两个 Task，不能改成求两者交集；“有啥吃的推荐没，以及附近哪里好玩”必须拆成餐饮推荐和游玩推荐两个 Task；同时询问机器人、外卖地址、布草和平台价格时必须拆成 4 个 Task。
+- action_request 只表示客户明确要求系统或门店同事执行现实动作。自包含的执行目标必须保留为 action_request，不能降成 interaction/clarify；只有“我想要一份”“给我送一个”这类只有请求框架或数量量词、没有具体对象的表达才需要澄清。询问“有没有/在哪里/多少钱/几点/怎么用/能不能”优先是信息目标，不能因为提到空调、电视、用品或入住就输出 action_request。
+- relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected。新主题必须是 independent；同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent。follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系；没有紧邻业务上下文时不得从更早历史继承对象。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，必须建立停车 Task（text=U1原话、sourceRefs=[U1]）和充电 Task（text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context）；U1 作为充电 Task 的上下文不能取代停车 Task。
 - resolutionState 只允许：clear、resolved_from_context、ambiguous、unresolved。当前原话自包含时用 clear；借助紧邻上一会话轮或同一当前轮 sourceRefs 才补全 resolvedText 时用 resolved_from_context；同时存在多个合理对象或解释时用 ambiguous；信息过少且无法形成任何可回答问题时用 unresolved。不能只因为 confidence 较低就标记歧义。“我开电车来的你懂我意思吗”本身足以表达充电设施咨询时，可输出 availability + clear，并在 resolvedText 中写成自包含问题。
 - entities 是当前任务明确谈到的业务对象数组，每项只输出 text 和 type。type 只允许 facility、supply、room_type、room、service、location、order、resource、person、company、other；没有明确对象时输出空数组。text 保留客户或允许使用的紧邻上下文原词，不输出标准名或同义关系；“功能相近”不等于“同一物品”。
 - needsClarification=true 只能来自真正的 ambiguous 或 unresolved 任务。能由紧邻上下文唯一补全时必须直接补全，不能把模型的不确定性丢给客户。
@@ -67,7 +67,7 @@ hotel_info 与 hotel_variable 的硬边界：
 纠错与业务问题边界：
 - 纠错语气本身不是独立业务任务。客户只是在指出系统看错、听错、理解错，且没有要求继续回答业务问题时，归 interaction + correction。
 - 客户在纠错的同时明确指出要回答的酒店问题时，必须按被纠正后的业务目标分类，不能因为“不是、别串了、我问的是”等纠错语气归 interaction。
-- answer_rejected 不是关键词命中：只有本轮动态关系判断确认上一条 AI 答复被明确否定、被指出矛盾或仍未解决同一个业务问题时才使用；新问题、正常补充、回答 AI 追问、孤立的“真的吗/为什么”和无关不满都不能使用。
+- answer_rejected 不是关键词命中：只有客户当前消息明确否定上一答复、指出前后矛盾或答非所问，或明确表示同一个问题仍未解决时才使用。单纯再次询问、要求复述、比较对象或补问细节，即使上一答复说没有资料，也属于 follow_up/reference_previous 并重新进入原业务 Task；新问题、回答 AI 追问、孤立的“真的吗/为什么”和无关不满也不能使用。
 - 示例：“我没给你发语音大哥” -> interaction/correction；“我问的是停车，不是早餐，停车入口在哪” -> hotel_info/parking 且 needsKnowledge=true。
 
 resourceActions 字段纪律：
@@ -84,13 +84,14 @@ subIntent 字段纪律：
 上下文规则：
 - 图片/文件/语音识别内容只是上下文文本，不是单独意图分类。
 - 历史消息、媒体理解、长期记忆只用于解释“这个/刚才/还/继续/那”等指代；当前消息有新主题时，以当前消息为准。
-- 若紧邻的上一条 AI 客服消息正在就一个业务问题追问确认、偏好、条件、范围、身份字段或选项，客户当前的短回答就是该业务问题的连续补充，不是独立闲聊。必须继承上一轮业务意图和 subIntent，并使用 relationToPrevious=clarification_answer；能唯一补全时 resolutionState=resolved_from_context，text 保留客户当前原话，resolvedText 写成“上一轮业务主题 + 当前补充内容”的完整问题。
-- “是的啊/对/可以”等肯定答复，只要是在回答紧邻 AI 的明确业务问题，就必须承接该业务。例如 AI 问“是想问酒店有没有充电桩吗”，客户答“是的啊”，resolvedText 必须补全为“酒店有没有充电桩”，不能归 interaction/social 或 interaction/clarify。单独“不是”且没有同时给出正确目标时，必须保留纠正关系并标记 ambiguous 或 unresolved，不能虚构客户真正想问的内容。
-- AI 追问姓名、房号或其他必要字段后，客户只回复“吴朝伟”“1208”等字段值时，这是 clarification_answer；不能把姓名当作重新打招呼，也不能把房号当成无关数字。
-- 例如 AI 问“附近餐饮想吃什么口味”，客户答“麻辣口味的”时，输出 hotel_info/surrounding_facilities，needsKnowledge=true，text 写“麻辣口味的”，resolvedText 写“附近餐饮推荐，偏好麻辣口味”；若没有紧邻的业务追问，独立一句“麻辣口味的”可以归 interaction/clarify。
+- clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段、条件、偏好、范围、身份信息或选项。客户当前的短回答必须继承上一轮业务意图和 subIntent；能唯一补全时 resolutionState=resolved_from_context，text 保留客户当前原话，resolvedText 写成“上一轮业务主题 + 当前补充内容”的完整问题。
+- “是的啊/对/可以”等肯定答复，只要是在回答紧邻客服的明确业务问题，就必须承接该业务。例如客服问“是想问酒店有没有充电桩吗”，客户答“是的啊”，resolvedText 必须补全为“酒店有没有充电桩”，不能归 interaction/social 或 interaction/clarify。单独“不是”且没有同时给出正确目标时，必须保留纠正关系并标记 ambiguous 或 unresolved，不能虚构客户真正想问的内容。
+- AI 或人工客服追问姓名、房号或其他必要字段后，客户只回复“吴朝伟”“1208”等字段值时，这是 clarification_answer；不能把姓名当作重新打招呼，也不能把房号当成无关数字。
+- 例如客服问“附近餐饮想吃什么口味”，客户答“麻辣口味的”时，输出 hotel_info/surrounding_facilities，needsKnowledge=true，text 写“麻辣口味的”，resolvedText 写“附近餐饮推荐，偏好麻辣口味”；若没有紧邻的业务追问，独立一句“麻辣口味的”可以归 interaction/clarify。
+- follow_up 和 reference_previous 可以承接紧邻的“客户业务问题 + AI/人工客服已完成答复”组合，不要求上一条客服消息仍在追问。客户继续问同一对象的其他方面、比较另一个对象、要求复述或重新回答时，必须重新进入原业务 Task；即使紧邻答复说“没有资料、无法确认、需要同事处理”，也不能把当前追问降成 interaction/clarify。
 - 同一周边话题中的省略追问也要补全对象。例如刚回答“附近有吃的”，客户接着说“玩的呢/玩的勒”，应输出 hotel_info/surrounding_facilities，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 补全为“酒店附近有什么可以游玩或休闲的地方”，不能按普通闲聊处理。
 - 会话回顾只回顾最近当前会话，不重新执行历史业务任务；Intent 只建立一个 interaction/conversation_recap 文本任务。
-- 只有紧邻 AI 的明确业务澄清问题才能触发上述继承；不能从更早历史里挑一个旧主题强行续接。
+- 上述继承只允许使用紧邻的业务上下文：要么 AI 或人工客服正在追问必要信息，要么存在紧邻的“客户业务问题 + 客服答复”组合。不能跳过已经出现的新主题，也不能从更早、非紧邻历史里挑一个旧主题强行续接。
 - 不要沿用旧房号、旧人工事件、旧媒体主题覆盖当前新问题。`)
 }
 

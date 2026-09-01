@@ -14,6 +14,9 @@ func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) 
 		"action_request 只表示客户明确要求系统或门店同事执行现实动作",
 		"relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected",
 		"同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent",
+		"任何包含自包含业务问题的 URef，都必须有对应 Task 以该 URef 作为 sourceRefs[0]",
+		"必须建立停车 Task",
+		"U1 作为充电 Task 的上下文不能取代停车 Task",
 		"resolutionState 只允许：clear、resolved_from_context、ambiguous、unresolved",
 		"我开电车来的你懂我意思吗",
 		"不能只因为 confidence 较低就标记歧义",
@@ -22,12 +25,23 @@ func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) 
 		"interaction/conversation_recap",
 		"是的啊/对/可以",
 		"单独“不是”",
-		"AI 追问姓名、房号或其他必要字段",
+		"AI 或人工客服追问姓名、房号或其他必要字段",
+		"clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段",
+		"follow_up 和 reference_previous 可以承接紧邻的“客户业务问题 + AI/人工客服已完成答复”组合",
+		"即使紧邻答复说“没有资料、无法确认、需要同事处理”",
+		"不能从更早、非紧邻历史里挑一个旧主题强行续接",
+		"不同答案结果的问题绝不能合并",
+		"同一个明确对象、且客户表达的是一个紧密答案目标",
+		"必须拆成办公桌房型和沙发房型两个 Task",
+		"单纯再次询问、要求复述、比较对象或补问细节",
 		"玩的呢/玩的勒",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("default intent prompt missing semantic contract %q", expected)
 		}
+	}
+	if strings.Contains(prompt, "只有紧邻 AI 的明确业务澄清问题才能触发上述继承") {
+		t.Fatal("default intent prompt must not restrict all business references to clarification questions")
 	}
 }
 

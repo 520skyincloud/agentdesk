@@ -2,6 +2,8 @@ package executor
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
 	"agent-desk/internal/models"
@@ -233,6 +235,9 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 	if !enforce {
 		return nil
 	}
+	if err := validateRuntimeIntentInteractionAgainstAdjacentContext(parsed, currentText, context); err != nil {
+		return err
+	}
 	sourceTexts := currentTurnIntentSourceTexts(currentText)
 	for taskIndex, task := range parsed.IntentTasks {
 		if semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext {
@@ -298,6 +303,390 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 	}
 	return nil
 }
+
+func validateRuntimeIntentInteractionAgainstAdjacentContext(parsed runtimeIntentDetectJSON, currentText string, context runtimeIntentProtocolRepairContext) error {
+	previousCustomerText := strings.TrimSpace(context.PreviousCustomerText)
+	adjacentServiceReply := runtimeIntentProtocolAdjacentServiceReply(context)
+	if previousCustomerText == "" || adjacentServiceReply == "" {
+		return nil
+	}
+	sourceTexts := currentTurnIntentSourceTexts(currentText)
+	for taskIndex, task := range parsed.IntentTasks {
+		text := strings.TrimSpace(task.Text)
+		if text == "" && len(task.SourceRefs) > 0 {
+			primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+			if primaryIndex >= 0 && primaryIndex < len(sourceTexts) {
+				text = sourceTexts[primaryIndex]
+			}
+		}
+		answerRejectedIntent := canonicalIntentCode(task.Intent) == "human_complaint_risk" && strings.TrimSpace(task.SubIntent) == "answer_rejected"
+		answerRejectedRelation := semanticGateNormalizeRelation(task.RelationToPrevious) == "answer_rejected"
+		if answerRejectedIntent || answerRejectedRelation {
+			if !answerRejectedIntent || !answerRejectedRelation {
+				return fmt.Errorf("intentTasks[%d] answer_rejected classification and relation must agree", taskIndex)
+			}
+			if !runtimeIntentProtocolAnswerRejectionGrounded(task, text, context) {
+				return fmt.Errorf("intentTasks[%d] answer_rejected is not grounded in the adjacent AI answer", taskIndex)
+			}
+			continue
+		}
+		if canonicalIntentCode(task.Intent) != "interaction" || runtimeIntentProtocolIsConversationRecapTask(task) {
+			continue
+		}
+		if runtimeIntentProtocolExplicitlyRejectsAdjacentAIAnswer(task, text, context) {
+			return fmt.Errorf("intentTasks[%d] explicit rejection of the adjacent AI answer cannot remain interaction", taskIndex)
+		}
+		if runtimeIntentProtocolExplicitRepeatReference(text) &&
+			runtimeIntentProtocolPreviousTurnHasHotelBusinessTarget(previousCustomerText) &&
+			runtimeIntentProtocolPreviousTurnCanOwnRepeat(text, previousCustomerText) {
+			return fmt.Errorf("intentTasks[%d] completed-answer repeat cannot remain interaction", taskIndex)
+		}
+		if runtimeIntentProtocolCancellationNeedsPreviousRelation(task, text) {
+			return fmt.Errorf("intentTasks[%d] cancellation of the adjacent task must use cancel_previous", taskIndex)
+		}
+		if !runtimeIntentProtocolAdjacentServiceReplyAsksForSlot(adjacentServiceReply) ||
+			runtimeIntentTaskHasSelfContainedBusinessRequest(task) {
+			continue
+		}
+		if runtimeIntentProtocolIsExplicitPureInteraction(task, text) {
+			continue
+		}
+		if runtimeIntentProtocolInteractionAnswersAdjacentSlot(task, text, adjacentServiceReply) {
+			return fmt.Errorf("intentTasks[%d] answer to adjacent service clarification cannot remain interaction", taskIndex)
+		}
+	}
+	return nil
+}
+
+func runtimeIntentProtocolExplicitlyRejectsAdjacentAIAnswer(task runtimeIntentTaskJSON, text string, context runtimeIntentProtocolRepairContext) bool {
+	return runtimeIntentProtocolHasAnswerRejectionSignal(strings.Join([]string{text, task.ResolvedText}, " ")) &&
+		runtimeIntentProtocolAnswerRejectionGrounded(task, text, context)
+}
+
+func runtimeIntentProtocolAnswerRejectionGrounded(task runtimeIntentTaskJSON, text string, context runtimeIntentProtocolRepairContext) bool {
+	if strings.TrimSpace(context.PreviousCustomerText) == "" || strings.TrimSpace(context.AdjacentAIReply) == "" {
+		return false
+	}
+	current := strings.Join([]string{text, task.ResolvedText}, " ")
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(current), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" || !runtimeIntentProtocolHasAnswerRejectionSignal(compact) {
+		return false
+	}
+	if runtimeIntentProtocolDirectlyReferencesAdjacentAnswer(compact) {
+		return true
+	}
+	return runtimeIntentProtocolAnswerRejectionSharesTopic(
+		compact,
+		context.PreviousCustomerText+" "+context.AdjacentAIReply,
+	)
+}
+
+func runtimeIntentProtocolHasAnswerRejectionSignal(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" {
+		return false
+	}
+	if containsAny(compact, []string{
+		"答非所问", "没有回答我的问题", "没回答我的问题", "没有回答问题", "没回答问题",
+		"你回答错了", "你回复错了", "你答错了", "你说错了", "回答不对", "回复不对", "说的不对",
+		"前后矛盾", "说法矛盾", "你刚才不是说", "你前面不是说", "你不是说",
+		"我问的是", "我说的是", "不是我问的", "不是这个问题",
+		"还是没解决", "仍然没解决", "根本没解决", "问题还没解决", "问题没有解决",
+	}) {
+		return true
+	}
+	return containsAny(compact, []string{
+		"客服说", "前台说", "人工客服说", "真人客服说", "酒店同事说", "门店同事说", "管家说",
+		"客服告诉我", "前台告诉我", "工作人员告诉我", "现场明明", "实际明明",
+	})
+}
+
+func runtimeIntentProtocolDirectlyReferencesAdjacentAnswer(compact string) bool {
+	return containsAny(compact, []string{
+		"答非所问", "没有回答我的问题", "没回答我的问题", "没有回答问题", "没回答问题",
+		"你回答错了", "你回复错了", "你答错了", "你说错了", "回答不对", "回复不对", "说的不对",
+		"前后矛盾", "说法矛盾", "还是没解决", "仍然没解决", "根本没解决", "问题还没解决", "问题没有解决",
+	})
+}
+
+func runtimeIntentProtocolAnswerRejectionSharesTopic(current string, context string) bool {
+	current = normalizeRuntimeKnowledgeQuery(current)
+	context = normalizeRuntimeKnowledgeQuery(context)
+	if current == "" || context == "" {
+		return false
+	}
+	if runtimeIntentProtocolAnswerRejectionSharesAspect(current, context) {
+		return true
+	}
+	for _, phrase := range []string{
+		"你刚才不是说", "你前面不是说", "你不是说", "我问的是", "我说的是", "不是我问的", "不是这个问题",
+		"客服告诉我", "前台告诉我", "工作人员告诉我", "人工客服说", "真人客服说", "酒店同事说", "门店同事说",
+		"客服说", "前台说", "管家说", "现场明明", "实际明明", "刚才", "前面", "之前",
+	} {
+		current = strings.ReplaceAll(current, normalizeRuntimeKnowledgeQuery(phrase), "")
+	}
+	current = strings.Trim(current, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	for size := 4; size >= 2; size-- {
+		for _, anchor := range runtimeIntentProtocolRuneWindows(current, size) {
+			if runtimeIntentProtocolGenericAnswerRejectionAnchor(anchor) || !strings.Contains(context, anchor) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolAnswerRejectionSharesAspect(current string, context string) bool {
+	aspectGroups := [][]string{
+		{"步行", "走路", "开车", "驾车", "打车", "骑行", "公交", "地铁", "换乘", "路线", "怎么走", "多远", "公里", "分钟"},
+		{"微信转账", "支付宝", "银行卡", "现金", "刷卡", "付款", "支付", "转账"},
+	}
+	for _, group := range aspectGroups {
+		if containsAny(current, group) && containsAny(context, group) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolGenericAnswerRejectionAnchor(anchor string) bool {
+	anchor = normalizeRuntimeKnowledgeQuery(anchor)
+	if anchor == "" || runtimeIntentProtocolGenericReferenceAnchor(anchor) {
+		return true
+	}
+	return containsAny(anchor, []string{
+		"客服", "前台", "同事", "人工", "真人", "现场", "实际", "明明", "刚才", "前面", "之前",
+		"回答", "回复", "问题", "你说", "我问", "我说", "可以", "不可以", "不能", "不是", "就是", "有没", "没有", "是否",
+	})
+}
+
+func runtimeIntentProtocolCancellationNeedsPreviousRelation(task runtimeIntentTaskJSON, text string) bool {
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	if subIntent != "cancel" && subIntent != "cancellation" {
+		return false
+	}
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" || !runtimeIntentProtocolIsExplicitCancellationInteraction(task, compact) {
+		return false
+	}
+	return semanticGateNormalizeRelation(task.RelationToPrevious) != "cancel_previous"
+}
+
+func runtimeIntentProtocolInteractionAnswersAdjacentSlot(task runtimeIntentTaskJSON, text string, reply string) bool {
+	relation := semanticGateNormalizeRelation(task.RelationToPrevious)
+	if relation == "clarification_answer" ||
+		(semanticGateNormalizeResolution(task.ResolutionState) == runtimeIntentResolutionResolvedFromContext && semanticGateRelationUsesPrevious(relation)) {
+		return true
+	}
+	compactText := normalizeRuntimeKnowledgeQuery(text)
+	compactReply := normalizeRuntimeKnowledgeQuery(reply)
+	if compactText == "" || compactReply == "" {
+		return false
+	}
+	if containsAny(compactReply, []string{"房间", "房号", "门牌号", "几号房"}) &&
+		runtimeIntentProtocolRoomNumberSlotValuePattern.MatchString(compactText) {
+		return true
+	}
+	if containsAny(compactReply, []string{"是否", "有没有", "有无", "可以吗", "能吗", "确认", "取消"}) &&
+		containsAny(compactText, []string{"是的", "对的", "没错", "不是", "不对", "有的", "没有", "可以", "不可以", "能", "不能", "确认", "取消"}) {
+		return true
+	}
+	if containsAny(compactReply, []string{"姓名", "名字", "怎么称呼"}) {
+		return runtimeIntentProtocolNameSlotValuePattern.MatchString(compactText) || runtimeIntentProtocolTaskHasEntityType(task, "name", "guest_name", "person")
+	}
+	if containsAny(compactReply, []string{"几点", "时间", "什么时候"}) {
+		return runtimeIntentProtocolTimeSlotValuePattern.MatchString(compactText) || runtimeIntentProtocolTaskHasEntityType(task, "time", "datetime")
+	}
+	if containsAny(compactReply, []string{"什么房型", "哪个房型", "哪种房型", "哪间房", "哪个房间"}) {
+		return (runtimeIntentProtocolTaskDeclaresClarification(task) && !runtimeIntentProtocolOriginalIsIndependentQuestion(text) && runtimeIntentProtocolNameSlotValuePattern.MatchString(strings.TrimSuffix(compactText, "的"))) ||
+			runtimeIntentProtocolTaskHasEntityType(task, "room_type", "room")
+	}
+	if containsAny(compactReply, []string{"口味", "偏好", "想吃什么", "喜欢什么"}) {
+		return containsAny(compactText, []string{"口味", "偏好", "想吃", "喜欢"}) ||
+			runtimeIntentProtocolTaskHasEntityType(task, "preference", "flavor", "taste")
+	}
+	if containsAny(compactReply, []string{"哪个门店", "哪家店", "什么位置", "哪个位置", "地址是", "在哪里", "在哪"}) {
+		return runtimeIntentProtocolTaskHasEntityType(task, "location", "store", "address")
+	}
+	return false
+}
+
+func runtimeIntentProtocolTaskHasEntityType(task runtimeIntentTaskJSON, expected ...string) bool {
+	for _, entity := range task.Entities {
+		entityType := strings.ToLower(strings.TrimSpace(entity.Type))
+		for _, candidate := range expected {
+			if entityType == candidate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolTaskDeclaresClarification(task runtimeIntentTaskJSON) bool {
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "clarify", "clarification", "clarification_answer", "missing_detail", "slot_answer", "provide_detail":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeIntentProtocolPreviousTurnCanOwnRepeat(repeatText string, previousCustomerText string) bool {
+	previousCandidates := currentTurnTaskCandidates(previousCustomerText)
+	if len(previousCandidates) == 0 {
+		return false
+	}
+	if len(previousCandidates) == 1 {
+		previous := strings.TrimSpace(previousCandidates[0])
+		if previous == "" || runtimeIntentAtomicCandidateRequiresContext(previous) {
+			return false
+		}
+		anchor := runtimeIntentProtocolRepeatReferenceAnchor(repeatText)
+		if anchor == "" {
+			return true
+		}
+		previousText := runtimeIntentProtocolRepeatReferenceComparableText(previous)
+		return strings.Contains(previousText, anchor) || strings.Contains(anchor, previousText)
+	}
+
+	anchor := runtimeIntentProtocolRepeatReferenceAnchor(repeatText)
+	if len([]rune(anchor)) < 2 {
+		return false
+	}
+	matches := 0
+	for _, candidate := range previousCandidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || runtimeIntentAtomicCandidateRequiresContext(candidate) {
+			continue
+		}
+		candidateText := runtimeIntentProtocolRepeatReferenceComparableText(candidate)
+		if strings.Contains(candidateText, anchor) || strings.Contains(anchor, candidateText) {
+			matches++
+		}
+	}
+	return matches == 1
+}
+
+func runtimeIntentProtocolPreviousTurnHasHotelBusinessTarget(previousCustomerText string) bool {
+	for _, candidate := range currentTurnTaskCandidates(previousCustomerText) {
+		compact := normalizeRuntimeKnowledgeQuery(candidate)
+		if compact != "" && runtimeIntentProtocolTextHasHotelBusinessAnchor(compact) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolIsExplicitPureInteraction(task runtimeIntentTaskJSON, text string) bool {
+	if task.NeedsKnowledge || task.NeedsResource || task.NeedsTool || task.NeedsHumanRoute || strings.TrimSpace(task.ResourceAction) != "" {
+		return false
+	}
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" {
+		return false
+	}
+	if runtimeIntentProtocolIsExplicitCancellationInteraction(task, compact) {
+		return true
+	}
+	if runtimeIntentProtocolOriginalIsIndependentQuestion(text) || runtimeIntentStandaloneTaskLabel(text) {
+		return false
+	}
+	if containsAny(compact, []string{"是的", "对的", "没错", "不是", "不对"}) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "thanks", "thank_you":
+		return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{
+			"谢谢您的帮助", "谢谢你的帮助", "非常感谢", "太感谢了", "感谢您", "感谢你", "谢谢您", "谢谢你", "辛苦了", "多谢", "谢谢", "感谢", "辛苦",
+		})
+	case "acknowledgement", "acknowledgment":
+		return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{
+			"已经知道了", "已经明白了", "已经了解了", "可以了", "收到了", "知道了", "明白了", "了解了", "好的", "好", "行",
+		})
+	case "greeting":
+		return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{"早上好", "下午好", "晚上好", "你好", "您好"})
+	case "farewell":
+		return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{"再见", "拜拜", "晚安"})
+	case "frustration", "insult_complaint":
+		return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{
+			"你烦不烦", "烦不烦", "烦死了", "太烦了", "真烦", "太慢了", "怎么这么慢", "回复太慢", "服务太差", "态度太差", "听不懂人话", "答非所问", "什么玩意", "真无语", "无语", "垃圾", "傻逼",
+		})
+	}
+	if !strings.EqualFold(strings.TrimSpace(task.Objective), "social") {
+		return false
+	}
+	return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{
+		"谢谢您的帮助", "谢谢你的帮助", "非常感谢", "太感谢了", "已经解决了", "问题解决了", "不需要了", "不用了", "收到了", "知道了", "明白了", "了解了", "可以了",
+		"早上好", "下午好", "晚上好", "感谢您", "感谢你", "谢谢您", "谢谢你", "辛苦了", "取消吧", "算了吧", "没事了",
+		"谢谢", "感谢", "辛苦", "你好", "您好", "再见", "拜拜", "晚安", "不用", "不需要", "算了", "取消", "没事", "解决了", "收到", "知道", "明白", "了解", "好的", "好", "行",
+	})
+}
+
+func runtimeIntentProtocolIsExplicitCancellationInteraction(task runtimeIntentTaskJSON, compact string) bool {
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	if subIntent != "cancel" && subIntent != "cancellation" &&
+		semanticGateNormalizeRelation(task.RelationToPrevious) != "cancel_previous" {
+		return false
+	}
+	return runtimeIntentProtocolContainsOnlyInteractionPhrases(compact, []string{
+		"已经解决了", "问题解决了", "已经解决", "问题解决", "不需要了", "不用了", "没事了", "取消吧", "算了吧", "不需要", "不用", "算了", "取消", "没事", "解决了", "解决",
+		"是的", "对的", "没错", "不是", "不对",
+	})
+}
+
+func runtimeIntentProtocolContainsOnlyInteractionPhrases(compact string, phrases []string) bool {
+	remaining := strings.TrimSpace(compact)
+	for _, phrase := range phrases {
+		remaining = strings.ReplaceAll(remaining, normalizeRuntimeKnowledgeQuery(phrase), "")
+	}
+	remaining = strings.Trim(remaining, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了哟哦诶额")
+	return remaining == ""
+}
+
+func runtimeIntentProtocolAdjacentServiceReplyAsksForSlot(reply string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(reply)
+	if compact == "" || runtimeIntentProtocolIsGenericOpenHelpQuestion(compact) {
+		return false
+	}
+	if strings.Contains(compact, "吗") && containsAny(compact, []string{"是问", "想问", "指的是", "意思是", "说的是", "确认一下"}) {
+		return true
+	}
+	if !strings.ContainsAny(reply, "?？") && !containsAny(compact, []string{"请问", "方便说", "告诉我", "说下", "提供一下", "回复"}) {
+		return false
+	}
+	return containsAny(compact, []string{
+		"哪个", "哪种", "什么", "多少", "几号", "几点", "哪里", "在哪", "房间", "房号", "姓名", "名字",
+		"口味", "偏好", "条件", "范围", "选项", "是否", "有没有", "有无", "可以吗", "能吗", "确认", "取消",
+	})
+}
+
+func runtimeIntentProtocolIsGenericOpenHelpQuestion(compact string) bool {
+	for _, prefix := range []string{"您好", "你好", "请问"} {
+		compact = strings.TrimPrefix(compact, prefix)
+	}
+	compact = strings.TrimRight(compact, "吗呢啊呀")
+	switch compact {
+	case "有什么可以帮您", "有什么能帮您", "需要什么帮助",
+		"您想了解什么", "你想了解什么", "您想问什么", "你想问什么", "今天想聊点什么", "想聊点什么",
+		"您还有什么想了解的", "你还有什么想了解的", "还有什么想了解的", "有什么想了解的",
+		"您还有什么想咨询的", "你还有什么想咨询的", "还有什么想咨询的", "有什么想咨询的":
+		return true
+	}
+	if containsAny(compact, []string{"房型", "房间", "房号", "姓名", "名字", "口味", "偏好", "条件", "范围", "选项", "几点", "时间", "哪里", "在哪"}) {
+		return false
+	}
+	hasOpenQuestion := containsAny(compact, []string{"还有什么", "有什么", "还需要", "是否还需要"})
+	hasHelpTopic := containsAny(compact, []string{"需要", "帮助", "了解", "咨询", "想问", "想聊", "问题"})
+	return hasOpenQuestion && hasHelpTopic
+}
+
+var (
+	runtimeIntentProtocolRoomNumberSlotValuePattern = regexp.MustCompile(`(?:^|[^0-9])[0-9]{3,6}(?:房|房间|号)?(?:[^0-9]|$)`)
+	runtimeIntentProtocolNameSlotValuePattern       = regexp.MustCompile(`^[\p{Han}A-Za-z·]{2,20}$`)
+	runtimeIntentProtocolTimeSlotValuePattern       = regexp.MustCompile(`(?:[0-9]{1,2}[:：][0-9]{2}|(?:凌晨|早上|上午|中午|下午|傍晚|晚上|夜里)?(?:[0-9]{1,2}|[零〇一二三四五六七八九十两]{1,3})点(?:半|[0-9]{1,2}分)?)`)
+)
 
 func runtimeIntentProtocolIsConversationRecapTask(task runtimeIntentTaskJSON) bool {
 	if canonicalIntentCode(task.Intent) != "interaction" {
@@ -1026,9 +1415,16 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 		if !semanticGateValidResolution(resolution) {
 			return fmt.Errorf("intentTasks[%d].resolutionState is missing or invalid", index)
 		}
+		if canonicalIntentCode(task.Intent) == "interaction" && !runtimeIntentProtocolIsConversationRecapTask(task) &&
+			runtimeIntentInteractionContradictsBusinessProtocol(task, resolution) {
+			return fmt.Errorf("intentTasks[%d] interaction carries a clear business information target", index)
+		}
 	}
 	if requireSourceRefs && len(sourceTexts) > 0 {
 		if err := validateRuntimeIntentProtocolModelOwnedSources(tasks, sourceTexts); err != nil {
+			return err
+		}
+		if err := validateRuntimeIntentProtocolAtomicCoverageBySource(tasks, sourceTexts); err != nil {
 			return err
 		}
 	}
@@ -1042,6 +1438,17 @@ func validateRuntimeIntentDetectProtocol(parsed runtimeIntentDetectJSON, profile
 func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSON, sourceTexts []string) error {
 	lastPrimarySource := -1
 	referencedSources := make([]bool, len(sourceTexts))
+	lastUniqueOffsetBySource := make(map[int]int, len(sourceTexts))
+	executableTasksBySource := make(map[int]int, len(sourceTexts))
+	for _, task := range tasks {
+		if len(task.SourceRefs) == 0 || !runtimeIntentProtocolTaskHasExecutableBusiness(task) {
+			continue
+		}
+		primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+		if primarySource >= 0 && primarySource < len(sourceTexts) {
+			executableTasksBySource[primarySource]++
+		}
+	}
 
 	for taskIndex, task := range tasks {
 		primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
@@ -1049,6 +1456,18 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 			return fmt.Errorf("intentTasks[%d] is out of current-turn source order", taskIndex)
 		}
 		lastPrimarySource = primarySource
+		if primarySource >= 0 && primarySource < len(sourceTexts) {
+			offset, unique := runtimeIntentProtocolUniqueTaskOffset(sourceTexts[primarySource], task.Text)
+			if executableTasksBySource[primarySource] > 1 && runtimeIntentProtocolTaskHasExecutableBusiness(task) && !unique {
+				return fmt.Errorf("intentTasks[%d].text cannot be uniquely located in its multi-task current source", taskIndex)
+			}
+			if unique {
+				if previousOffset, exists := lastUniqueOffsetBySource[primarySource]; exists && offset < previousOffset {
+					return fmt.Errorf("intentTasks[%d] is out of current-turn source text order", taskIndex)
+				}
+				lastUniqueOffsetBySource[primarySource] = offset
+			}
+		}
 		for _, ref := range task.SourceRefs {
 			sourceIndex := runtimeIntentSourceRefIndex(ref)
 			if sourceIndex >= 0 && sourceIndex < len(referencedSources) {
@@ -1062,6 +1481,41 @@ func validateRuntimeIntentProtocolModelOwnedSources(tasks []runtimeIntentTaskJSO
 		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolUniqueTaskOffset(sourceText string, taskText string) (int, bool) {
+	source := normalizeRuntimeKnowledgeQuery(sourceText)
+	task := normalizeRuntimeIntentProtocolAtomicText(taskText)
+	if source == "" || task == "" {
+		return 0, false
+	}
+	matchedOffset := -1
+	matchedCandidates := 0
+	searchFrom := 0
+	for _, candidate := range currentTurnTaskCandidates(sourceText) {
+		candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+		if candidateText == "" {
+			continue
+		}
+		relative := strings.Index(source[searchFrom:], candidateText)
+		if relative < 0 {
+			continue
+		}
+		offset := searchFrom + relative
+		if candidateText == task {
+			matchedOffset = offset
+			matchedCandidates++
+		}
+		searchFrom = offset + len(candidateText)
+	}
+	if matchedCandidates == 1 {
+		return matchedOffset, true
+	}
+	first := strings.Index(source, task)
+	if first < 0 || strings.Index(source[first+len(task):], task) >= 0 {
+		return 0, false
+	}
+	return first, true
 }
 
 func runtimeIntentProtocolExactTaskKey(task runtimeIntentTaskJSON) string {
@@ -1080,8 +1534,37 @@ func runtimeIntentProtocolExactTaskKey(task runtimeIntentTaskJSON) string {
 		strings.Join(entities, ","),
 		fmt.Sprintf("%t|%t|%t|%t", task.NeedsKnowledge, task.NeedsResource, task.NeedsTool, task.NeedsHumanRoute),
 		strings.TrimSpace(task.ResourceAction),
+		runtimeIntentProtocolSourceOwnershipKey(task),
 	}
 	return strings.Join(parts, "|")
+}
+
+func runtimeIntentProtocolSourceOwnershipKey(task runtimeIntentTaskJSON) string {
+	if len(task.SourceRefs) == 0 {
+		return ""
+	}
+	primary := strings.ToUpper(strings.TrimSpace(task.SourceRefs[0]))
+	if semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext || len(task.SourceRefs) == 1 {
+		return primary
+	}
+	contextRefs := make([]string, 0, len(task.SourceRefs)-1)
+	seen := make(map[string]struct{}, len(task.SourceRefs)-1)
+	for _, ref := range task.SourceRefs[1:] {
+		normalized := strings.ToUpper(strings.TrimSpace(ref))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		contextRefs = append(contextRefs, normalized)
+	}
+	if len(contextRefs) == 0 {
+		return primary
+	}
+	sort.Strings(contextRefs)
+	return primary + "<-" + strings.Join(contextRefs, ",")
 }
 
 // validateRuntimeIntentProtocolAtomicCoverageBySource is a conservative
@@ -1096,8 +1579,7 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 
 		sourceTasks := make([]runtimeIntentTaskJSON, 0, len(tasks))
 		for _, task := range tasks {
-			if !runtimeIntentProtocolTaskHasExecutableBusiness(task) || len(task.SourceRefs) == 0 ||
-				runtimeIntentSourceRefIndex(task.SourceRefs[0]) != sourceIndex {
+			if len(task.SourceRefs) == 0 || runtimeIntentSourceRefIndex(task.SourceRefs[0]) != sourceIndex {
 				continue
 			}
 			sourceTasks = append(sourceTasks, task)
@@ -1106,24 +1588,38 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 			if len(sourceTasks) == 0 {
 				return fmt.Errorf("current-turn source U%d does not cover atomic question 1 of 1: %s", sourceIndex+1, strings.TrimSpace(candidates[0]))
 			}
+			ownerKeys := make(map[string]struct{}, len(sourceTasks))
+			disjointModelSpans := len(sourceTasks) > 1 && runtimeIntentProtocolTasksHaveDisjointSourceSpans(sourceText, sourceTasks)
+			for taskIndex, task := range sourceTasks {
+				groundingCandidate := candidates[0]
+				if disjointModelSpans {
+					groundingCandidate = task.Text
+				}
+				if !runtimeIntentProtocolSingleSourceTaskGroundedInCandidate(task, groundingCandidate, sourceText) {
+					return fmt.Errorf("current-turn source U%d task %d is not grounded in atomic question 1 of 1: %s", sourceIndex+1, taskIndex+1, strings.TrimSpace(candidates[0]))
+				}
+				if taskIndex == 0 {
+					ownerKeys[runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[0])] = struct{}{}
+					continue
+				}
+				if !disjointModelSpans && !runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidates[0]) {
+					return fmt.Errorf("current-turn source U%d atomic question 1 of 1 has duplicate task ownership", sourceIndex+1)
+				}
+				key := runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[0])
+				if _, exists := ownerKeys[key]; exists {
+					return fmt.Errorf("current-turn source U%d atomic question 1 of 1 has duplicate task ownership", sourceIndex+1)
+				}
+				ownerKeys[key] = struct{}{}
+			}
 			continue
 		}
 
 		covered := make([]bool, len(candidates))
-		usedExactTasks := make([]bool, len(sourceTasks))
-		for candidateIndex, candidate := range candidates {
-			candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
-			for taskIndex, task := range sourceTasks {
-				if usedExactTasks[taskIndex] || normalizeRuntimeIntentProtocolAtomicText(task.Text) != candidateText {
-					continue
-				}
-				covered[candidateIndex] = true
-				usedExactTasks[taskIndex] = true
-				break
-			}
-		}
+		usedTasks := make([]bool, len(sourceTasks))
+		ownerKeys := make([]map[string]struct{}, len(candidates))
+		ownerCounts := make([]int, len(candidates))
 
-		for _, task := range sourceTasks {
+		for taskIndex, task := range sourceTasks {
 			if semanticGateNormalizeObjective(task.Objective) != "compound_information" {
 				continue
 			}
@@ -1133,7 +1629,59 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 			}
 			for _, candidateIndex := range candidateIndexes {
 				covered[candidateIndex] = true
+				ownerCounts[candidateIndex]++
+				if ownerKeys[candidateIndex] == nil {
+					ownerKeys[candidateIndex] = make(map[string]struct{}, 1)
+				}
+				ownerKeys[candidateIndex][runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[candidateIndex])] = struct{}{}
 			}
+			usedTasks[taskIndex] = true
+		}
+
+		lastCandidateIndex := 0
+		for taskIndex, task := range sourceTasks {
+			if usedTasks[taskIndex] {
+				continue
+			}
+			matchedCandidate := -1
+			bestScore := 0
+			ambiguousBest := false
+			for candidateIndex := lastCandidateIndex; candidateIndex < len(candidates); candidateIndex++ {
+				score := runtimeIntentProtocolTaskCandidateGroundingScore(task, candidates[candidateIndex])
+				if score <= 0 || score < bestScore {
+					continue
+				}
+				if score == bestScore {
+					ambiguousBest = true
+					continue
+				}
+				matchedCandidate = candidateIndex
+				bestScore = score
+				ambiguousBest = false
+			}
+			if ambiguousBest {
+				return fmt.Errorf("current-turn source U%d task %d cannot be uniquely grounded in atomic questions", sourceIndex+1, taskIndex+1)
+			}
+			if matchedCandidate < 0 {
+				return fmt.Errorf("current-turn source U%d has an extra executable business task %d", sourceIndex+1, taskIndex+1)
+			}
+			key := runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[matchedCandidate])
+			if ownerCounts[matchedCandidate] > 0 {
+				if !runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidates[matchedCandidate]) {
+					return fmt.Errorf("current-turn source U%d atomic question %d of %d has duplicate task ownership", sourceIndex+1, matchedCandidate+1, len(candidates))
+				}
+				if _, exists := ownerKeys[matchedCandidate][key]; exists {
+					return fmt.Errorf("current-turn source U%d atomic question %d of %d has duplicate task ownership", sourceIndex+1, matchedCandidate+1, len(candidates))
+				}
+			}
+			if ownerKeys[matchedCandidate] == nil {
+				ownerKeys[matchedCandidate] = make(map[string]struct{}, 1)
+			}
+			ownerKeys[matchedCandidate][key] = struct{}{}
+			ownerCounts[matchedCandidate]++
+			covered[matchedCandidate] = true
+			usedTasks[taskIndex] = true
+			lastCandidateIndex = matchedCandidate
 		}
 
 		for candidateIndex, isCovered := range covered {
@@ -1141,8 +1689,247 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 				return fmt.Errorf("current-turn source U%d does not cover atomic question %d of %d: %s", sourceIndex+1, candidateIndex+1, len(candidates), strings.TrimSpace(candidates[candidateIndex]))
 			}
 		}
+		for taskIndex, used := range usedTasks {
+			if !used {
+				return fmt.Errorf("current-turn source U%d has an extra executable business task %d", sourceIndex+1, taskIndex+1)
+			}
+		}
 	}
 	return nil
+}
+
+func runtimeIntentProtocolTasksHaveDisjointSourceSpans(sourceText string, tasks []runtimeIntentTaskJSON) bool {
+	source := normalizeRuntimeKnowledgeQuery(sourceText)
+	if source == "" || len(tasks) <= 1 {
+		return false
+	}
+	previousEnd := -1
+	for _, task := range tasks {
+		text := normalizeRuntimeIntentProtocolAtomicText(task.Text)
+		if text == "" {
+			return false
+		}
+		start := strings.Index(source, text)
+		if start < 0 || strings.Index(source[start+len(text):], text) >= 0 || start < previousEnd {
+			return false
+		}
+		previousEnd = start + len(text)
+	}
+	return true
+}
+
+func runtimeIntentProtocolSingleSourceTaskGroundedInCandidate(task runtimeIntentTaskJSON, candidate string, _ string) bool {
+	return runtimeIntentProtocolTaskCandidateGroundingScore(task, candidate) > 0
+}
+
+func runtimeIntentProtocolTaskCandidateGroundingScore(task runtimeIntentTaskJSON, candidate string) int {
+	expectedObjective := runtimeIntentAtomicKnowledgeObjective(candidate)
+	actualObjective := semanticGateNormalizeObjective(task.Objective)
+	taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
+	candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+	literalExact := taskText != "" && taskText == candidateText
+	if !(canonicalIntentCode(task.Intent) == "interaction" && literalExact) &&
+		!runtimeIntentProtocolAtomicObjectivesCompatible(expectedObjective, actualObjective) {
+		return 0
+	}
+	if !runtimeIntentProtocolTaskResolvedTextGroundedInCandidate(task, candidate) {
+		return 0
+	}
+	if taskText != "" && candidateText != "" {
+		if taskText == candidateText {
+			return 10000
+		}
+		if strings.Contains(candidateText, taskText) {
+			return 9000 + len([]rune(taskText))
+		}
+	}
+	bestScore := 0
+	for _, entity := range task.Entities {
+		anchor := runtimeIntentProtocolEntityAnchor(entity)
+		if runtimeIntentConcreteEntityText(anchor) && strings.Contains(normalizeRuntimeKnowledgeQuery(candidate), anchor) {
+			score := 7000 + len([]rune(anchor))
+			if score > bestScore {
+				bestScore = score
+			}
+		}
+	}
+	candidateCore := runtimeIntentProtocolAtomicTopicCore(candidate)
+	if len([]rune(candidateCore)) < 2 {
+		return bestScore
+	}
+	for _, text := range runtimeIntentProtocolTaskTextVariants(task) {
+		taskCore := runtimeIntentProtocolAtomicTopicCore(text)
+		if len([]rune(taskCore)) < 2 {
+			continue
+		}
+		if strings.Contains(taskCore, candidateCore) || strings.Contains(candidateCore, taskCore) {
+			score := 6000 + min(len([]rune(taskCore)), len([]rune(candidateCore)))
+			if score > bestScore {
+				bestScore = score
+			}
+		}
+		for size := 4; size >= 2; size-- {
+			for _, anchor := range runtimeIntentProtocolRuneWindows(candidateCore, size) {
+				if runtimeIntentProtocolGenericSingleTaskTopicAnchor(anchor) || !strings.Contains(taskCore, anchor) {
+					continue
+				}
+				score := 4000 + size
+				if score > bestScore {
+					bestScore = score
+				}
+			}
+		}
+	}
+	return bestScore
+}
+
+func runtimeIntentProtocolTaskResolvedTextGroundedInCandidate(task runtimeIntentTaskJSON, candidate string) bool {
+	if semanticGateNormalizeResolution(task.ResolutionState) == runtimeIntentResolutionResolvedFromContext ||
+		runtimeIntentProtocolIsConversationRecapTask(task) {
+		return true
+	}
+	resolved := normalizeRuntimeIntentProtocolAtomicText(task.ResolvedText)
+	if resolved == "" {
+		resolved = normalizeRuntimeIntentProtocolAtomicText(task.Text)
+	}
+	taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
+	candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+	if resolved == "" || candidateText == "" {
+		return false
+	}
+	if !runtimeIntentProtocolTaskEntitiesGroundedInCandidateText(task, candidate) {
+		return false
+	}
+	if resolved == taskText || resolved == candidateText {
+		return true
+	}
+	if runtimeIntentProtocolImpliedChargingQuestion(candidate, task.ResolvedText) {
+		return true
+	}
+	candidateAspect := runtimeIntentProtocolReferenceAspect(candidate)
+	resolvedAspect := runtimeIntentProtocolReferenceAspect(task.ResolvedText)
+	if candidateAspect != "" && resolvedAspect != "" && candidateAspect != resolvedAspect {
+		return false
+	}
+	candidateCore := runtimeIntentProtocolAtomicTopicCore(candidate)
+	resolvedCore := runtimeIntentProtocolAtomicTopicCore(task.ResolvedText)
+	if runtimeIntentProtocolTopicCoresOverlap(candidateCore, resolvedCore) {
+		return true
+	}
+	taskCore := runtimeIntentProtocolAtomicTopicCore(task.Text)
+	return runtimeIntentProtocolTopicCoresOverlap(taskCore, resolvedCore) &&
+		runtimeIntentProtocolTopicCoresOverlap(candidateCore, taskCore)
+}
+
+func runtimeIntentProtocolImpliedChargingQuestion(candidate string, resolvedText string) bool {
+	candidateText := normalizeRuntimeKnowledgeQuery(candidate)
+	resolved := normalizeRuntimeKnowledgeQuery(resolvedText)
+	return containsAny(candidateText, []string{"电车", "电动车", "新能源车"}) &&
+		containsAny(candidateText, []string{"懂我意思", "明白我意思"}) &&
+		containsAny(resolved, []string{"充电桩", "充电"})
+}
+
+func runtimeIntentProtocolTaskEntitiesGroundedInCandidateText(task runtimeIntentTaskJSON, candidate string) bool {
+	candidateText := normalizeRuntimeKnowledgeQuery(candidate)
+	taskText := normalizeRuntimeKnowledgeQuery(task.Text)
+	resolvedText := normalizeRuntimeKnowledgeQuery(task.ResolvedText)
+	for _, entity := range task.Entities {
+		anchor := runtimeIntentProtocolEntityAnchor(entity)
+		if !runtimeIntentConcreteEntityText(anchor) || runtimeIntentProtocolAspectOnlyEntity(anchor) ||
+			!strings.Contains(resolvedText, anchor) {
+			continue
+		}
+		if !strings.Contains(candidateText, anchor) && !strings.Contains(taskText, anchor) {
+			return false
+		}
+	}
+	return true
+}
+
+func runtimeIntentProtocolTopicCoresOverlap(left string, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if len([]rune(left)) < 2 || len([]rune(right)) < 2 {
+		return false
+	}
+	if strings.Contains(left, right) || strings.Contains(right, left) {
+		return true
+	}
+	for size := 4; size >= 2; size-- {
+		for _, anchor := range runtimeIntentProtocolRuneWindows(left, size) {
+			if runtimeIntentProtocolGenericSingleTaskTopicAnchor(anchor) || !strings.Contains(right, anchor) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidate string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(candidate)
+	return runtimeIntentAtomicKnowledgeObjective(candidate) == "compound_information" ||
+		runtimeIntentClauseHasSharedPredicate(candidate) ||
+		containsAny(compact, []string{"分别", "各自", "逐项"})
+}
+
+func runtimeIntentProtocolTaskCandidateOwnershipKey(task runtimeIntentTaskJSON, candidate string) string {
+	aspect := strings.ToLower(strings.TrimSpace(task.Objective))
+	if aspect == "" {
+		aspect = "unknown"
+	}
+	subject := runtimeIntentProtocolAtomicTopicCore(task.Text)
+	if len([]rune(subject)) < 2 {
+		subject = runtimeIntentProtocolAtomicTopicCore(task.ResolvedText)
+	}
+	if len([]rune(subject)) < 2 {
+		subject = runtimeIntentProtocolAtomicTopicCore(candidate)
+	}
+	return aspect + "|" + subject
+}
+
+func runtimeIntentProtocolAtomicObjectivesCompatible(expected string, actual string) bool {
+	if actual == "" || actual == "unknown" || !semanticGateValidObjective(actual) ||
+		expected == "general_guidance" || actual == expected || actual == "compound_information" {
+		return true
+	}
+	if expected != "compound_information" {
+		return false
+	}
+	switch actual {
+	case "availability", "quantity", "price", "time", "location", "method", "policy", "scope", "condition", "explanation", "general_guidance":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeIntentProtocolAtomicTopicCore(text string) string {
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	for from, to := range map[string]string{
+		"早饭": "早餐", "无线网络": "wifi", "无线网": "wifi",
+		"房门怎么打开": "开门", "怎么打开房门": "开门", "打开房门": "开门", "房门打开": "开门", "开房门": "开门",
+	} {
+		compact = strings.ReplaceAll(compact, from, to)
+	}
+	for _, phrase := range []string{
+		"可以不可以", "可不可以", "有没有", "是不是", "是否有", "能不能", "什么时候", "为什么", "怎么办", "咋办",
+		"怎么", "如何", "多少", "几个", "几瓶", "几点", "多久", "哪里", "哪儿", "在哪", "哪个", "什么",
+		"酒店", "门店", "房间", "客房", "房型", "当前", "相关", "问题", "服务", "是否",
+		"麻烦问下", "麻烦问一下", "麻烦请问", "请问一下", "请问", "麻烦", "告诉我", "说一下", "说下",
+		"供应时间", "开放时间", "营业时间", "开始时间", "结束时间", "时间", "价格", "费用", "收费情况", "收费", "免费",
+		"供应", "开放", "营业", "开始", "结束", "情况", "方法", "方式", "流程", "办理", "操作", "提供",
+	} {
+		compact = strings.ReplaceAll(compact, phrase, "")
+	}
+	return strings.Trim(compact, "的了呢啊呀哈吧吗么哦啦这那和与都也")
+}
+
+func runtimeIntentProtocolGenericSingleTaskTopicAnchor(anchor string) bool {
+	anchor = normalizeRuntimeKnowledgeQuery(anchor)
+	return anchor == "" || containsAny(anchor, []string{
+		"可以", "需要", "有没", "没有", "是否", "是不", "能不", "不能", "知道", "了解", "一下", "告诉", "说下",
+	})
 }
 
 func runtimeIntentProtocolCompoundCoveredCandidateIndexes(task runtimeIntentTaskJSON, candidates []string) []int {
@@ -1164,6 +1951,12 @@ func runtimeIntentProtocolCompoundCandidatesAreRelated(task runtimeIntentTaskJSO
 	if len(candidateIndexes) <= 1 {
 		return true
 	}
+	for _, candidateIndex := range candidateIndexes {
+		if candidateIndex < 0 || candidateIndex >= len(candidates) ||
+			!runtimeIntentProtocolCompoundCandidateIsKnowledgeOnly(candidates[candidateIndex]) {
+			return false
+		}
+	}
 	if runtimeIntentProtocolCompoundCandidatesShareEntity(task, candidates, candidateIndexes) {
 		return true
 	}
@@ -1182,7 +1975,10 @@ func runtimeIntentProtocolCompoundCandidatesAreRelated(task runtimeIntentTaskJSO
 		candidateText := normalizeRuntimeKnowledgeQuery(candidates[candidateIndex])
 		if strings.Contains(candidateText, subject) {
 			hasAnchoredCandidate = true
-			continue
+			if runtimeIntentProtocolCompoundResidualIsAspectOnly(candidateText, subject) {
+				continue
+			}
+			return false
 		}
 		if !runtimeIntentProtocolDependentAspectCandidate(candidateText) {
 			return false
@@ -1199,8 +1995,13 @@ func runtimeIntentProtocolCompoundCandidatesShareEntity(task runtimeIntentTaskJS
 		}
 		shared := true
 		for _, candidateIndex := range candidateIndexes {
-			if candidateIndex < 0 || candidateIndex >= len(candidates) ||
-				!strings.Contains(normalizeRuntimeKnowledgeQuery(candidates[candidateIndex]), entityText) {
+			if candidateIndex < 0 || candidateIndex >= len(candidates) {
+				shared = false
+				break
+			}
+			candidateText := normalizeRuntimeKnowledgeQuery(candidates[candidateIndex])
+			if !strings.Contains(candidateText, entityText) ||
+				!runtimeIntentProtocolCompoundResidualIsAspectOnly(candidateText, entityText) {
 				shared = false
 				break
 			}
@@ -1210,6 +2011,24 @@ func runtimeIntentProtocolCompoundCandidatesShareEntity(task runtimeIntentTaskJS
 		}
 	}
 	return false
+}
+
+func runtimeIntentProtocolCompoundResidualIsAspectOnly(candidate string, subject string) bool {
+	residual := normalizeRuntimeKnowledgeQuery(candidate)
+	residual = strings.ReplaceAll(residual, normalizeRuntimeKnowledgeQuery(subject), "")
+	core := runtimeIntentProtocolAtomicTopicCore(residual)
+	core = strings.Trim(core, "有是要会能可的了呢啊呀哈吧吗么哦啦这那和与都也")
+	return len([]rune(core)) < 2 || runtimeIntentProtocolAspectOnlyEntity(core)
+}
+
+func runtimeIntentProtocolCompoundCandidateIsKnowledgeOnly(candidate string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(candidate)
+	if containsAny(compact, []string{"转人工", "找人工", "找客服", "接客服", "接同事", "联系同事"}) {
+		return false
+	}
+	actionVerb := containsAny(compact, []string{"送来", "送上来", "送到", "拿来", "拿上来", "换一个", "换新的", "修一下", "来看看", "过来处理", "叫人", "派人", "安排人"})
+	actionRequest := containsAny(compact, []string{"帮我", "给我", "麻烦", "请人", "让人"})
+	return !actionVerb || !actionRequest
 }
 
 func runtimeIntentProtocolCompoundSingleConcreteSubject(task runtimeIntentTaskJSON, candidates []string, candidateIndexes []int) string {
@@ -1447,11 +2266,361 @@ func runtimeIntentTaskHasExplicitBusinessInformationTarget(task runtimeIntentTas
 			continue
 		}
 		switch strings.TrimSpace(entity.Type) {
-		case "facility", "supply", "room_type", "room", "service", "location", "order", "company":
+		case "facility", "supply", "room_type", "room", "service", "location", "order", "person", "company":
 			return true
 		}
 	}
 	return false
+}
+
+func runtimeIntentClarifyHasStructuredAlternativeTargets(task runtimeIntentTaskJSON) bool {
+	text := normalizeRuntimeKnowledgeQuery(task.Text)
+	byType := make(map[string]map[string]struct{}, len(task.Entities))
+	for _, entity := range task.Entities {
+		entityType := strings.TrimSpace(entity.Type)
+		entityText := normalizeRuntimeKnowledgeQuery(entity.Text)
+		if entityType == "" || entityText == "" || strings.Contains(text, entityText) {
+			continue
+		}
+		if byType[entityType] == nil {
+			byType[entityType] = make(map[string]struct{}, 2)
+		}
+		byType[entityType][entityText] = struct{}{}
+	}
+	for _, values := range byType {
+		if len(values) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentTaskHasSelfContainedBusinessRequest(task runtimeIntentTaskJSON) bool {
+	objective := semanticGateNormalizeObjective(task.Objective)
+	switch objective {
+	case "availability", "quantity", "location", "price", "time", "policy", "method", "explanation", "recommendation", "identity", "general_guidance", "compound_information", "status", "confirm", "action_request":
+	default:
+		return false
+	}
+	text := strings.TrimSpace(task.Text)
+	if text == "" || isRuntimeIntentOutputConstraintClause(text) ||
+		runtimeIntentAtomicCandidateRequiresContext(text) || isDependentIntentTaskClause(text) ||
+		runtimeIntentClarifyHasStructuredAlternativeTargets(task) {
+		return false
+	}
+	compact := normalizeRuntimeKnowledgeQuery(text)
+	if objective == "action_request" {
+		return runtimeIntentActionRequestHasTarget(compact)
+	}
+	return len([]rune(compact)) >= 2 && (runtimeIntentStandaloneTaskLabel(text) || containsAny(compact, []string{
+		"告诉我", "跟我说", "说一下", "说下", "讲一下", "讲下", "说清楚",
+		"发给我", "发我", "给我发", "给我看", "给我查", "帮我查", "查一下", "查下",
+		"介绍一下", "介绍下", "推荐一下", "推荐下", "列一下", "列出", "说明一下", "说明下",
+	}))
+}
+
+func runtimeIntentActionRequestHasTarget(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" {
+		return false
+	}
+
+	for {
+		before := compact
+		for _, prefix := range []string{
+			"麻烦帮我一下", "麻烦帮我", "麻烦给我", "麻烦请", "麻烦",
+			"可以帮我", "能不能帮我", "能否帮我", "可不可以帮我",
+			"请帮我一下", "请帮我", "请给我", "请",
+			"帮我一下", "帮我", "帮忙", "给我", "我想要", "我需要", "我想", "我要", "需要", "想要",
+		} {
+			if !strings.HasPrefix(compact, prefix) {
+				continue
+			}
+			compact = strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(compact, prefix)), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+			break
+		}
+		if compact == before {
+			break
+		}
+	}
+	compact = strings.Trim(compact, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	if compact == "" {
+		return false
+	}
+
+	for _, suffix := range []string{"发给我", "给我发", "发我", "送给我", "给我送", "送来", "送上来", "拿给我", "给我拿"} {
+		if !strings.HasSuffix(compact, suffix) {
+			continue
+		}
+		return runtimeIntentActionRequestHasTargetAfterActionPrefix(strings.TrimSuffix(compact, suffix))
+	}
+	for _, prefix := range []string{
+		"派人过来", "叫人过来", "让人过来", "派人来", "叫人来", "让人来",
+		"安排", "派人", "叫人", "让人",
+	} {
+		if !strings.HasPrefix(compact, prefix) {
+			continue
+		}
+		return runtimeIntentActionRequestHasTarget(strings.TrimPrefix(compact, prefix))
+	}
+	for _, prefix := range []string{
+		"联系", "通知", "转接", "发送", "提供", "确认", "查看", "查询", "获取",
+		"处理", "取消", "删除", "添加", "帮助", "帮忙", "告诉", "说说", "讲讲", "看看", "查查", "说", "讲", "看", "查",
+		"发", "送", "拿", "换", "修", "开", "关",
+	} {
+		if !strings.HasPrefix(compact, prefix) {
+			continue
+		}
+		return runtimeIntentActionRequestHasTargetAfterActionPrefix(strings.TrimPrefix(compact, prefix))
+	}
+	return runtimeIntentActionRequestHasConcreteTarget(compact)
+}
+
+func runtimeIntentActionRequestHasTargetAfterActionPrefix(text string) bool {
+	target := runtimeIntentActionRequestTargetCore(text)
+	return target != "" &&
+		!runtimeIntentActionRequestTargetIsQuantityOnly(target) &&
+		!runtimeIntentActionRequestIsBarePredicateWithQuantity(target)
+}
+
+func runtimeIntentActionRequestHasConcreteTarget(text string) bool {
+	target := runtimeIntentActionRequestTargetCore(text)
+	return target != "" &&
+		!runtimeIntentActionRequestIsBarePredicateSequence(target) &&
+		!runtimeIntentActionRequestTargetIsQuantityOnly(target) &&
+		!runtimeIntentActionRequestIsBarePredicateWithQuantity(target)
+}
+
+func runtimeIntentActionRequestIsBarePredicateSequence(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了一下")
+	if compact == "" {
+		return false
+	}
+	if runtimeIntentActionRequestIsBarePredicate(compact) {
+		return true
+	}
+	runes := []rune(compact)
+	for index := 1; index < len(runes); index++ {
+		if runtimeIntentActionRequestIsBarePredicate(string(runes[:index])) &&
+			runtimeIntentActionRequestIsBarePredicateSequence(string(runes[index:])) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentActionRequestIsBarePredicate(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了一下")
+	switch compact {
+	case "帮", "帮助", "帮忙", "说", "说说", "讲", "讲讲", "告诉", "确认", "看看", "看", "查看", "查查", "查", "查询", "获取", "提供",
+		"处理", "安排", "弄", "搞", "做", "执行", "操作", "发", "发送", "送", "拿", "换", "修", "联系", "通知", "转接", "取消", "删除", "添加", "开", "关",
+		"预约", "预订", "申请", "补充", "配送", "办理", "领取", "叫", "订", "租", "借", "过来", "来", "点":
+		return true
+	default:
+		return false
+	}
+}
+
+var runtimeIntentActionRequestQuantityOnlyPattern = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]+)?|[零〇一二三四五六七八九十百千万两半几]+|若干|多少)(?:个|份|瓶|件|张|套|间|些|点|位|次|条|双|把|包|盒|袋|支|只|杯|桶|卷|晚|天|小时|分钟)?$`)
+
+func runtimeIntentActionRequestTargetIsQuantityOnly(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	return compact != "" && runtimeIntentActionRequestQuantityOnlyPattern.MatchString(compact)
+}
+
+func runtimeIntentActionRequestIsBarePredicateWithQuantity(text string) bool {
+	compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	for index := range compact {
+		if index == 0 || !runtimeIntentActionRequestIsBarePredicate(compact[:index]) {
+			continue
+		}
+		if runtimeIntentActionRequestTargetIsQuantityOnly(compact[index:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentActionRequestTargetCore(text string) string {
+	target := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	for {
+		before := target
+		for _, prefix := range []string{"给我一下", "给我", "一下", "下"} {
+			target = strings.TrimPrefix(target, prefix)
+		}
+		for _, suffix := range []string{"给我一下", "给我", "一下", "下", "我"} {
+			target = strings.TrimSuffix(target, suffix)
+		}
+		target = strings.Trim(target, "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+		if target == before {
+			break
+		}
+	}
+	switch target {
+	case "", "事", "事情", "东西", "帮助", "忙", "这个", "那个", "它", "这", "那", "问题", "服务", "操作":
+		return ""
+	default:
+		return target
+	}
+}
+
+func runtimeIntentInteractionContradictsBusinessProtocol(task runtimeIntentTaskJSON, resolution string) bool {
+	subIntent := strings.ToLower(strings.TrimSpace(task.SubIntent))
+	if task.NeedsKnowledge || task.NeedsHumanRoute {
+		return true
+	}
+	if task.NeedsTool {
+		resourceAction := strings.ToLower(strings.TrimSpace(task.ResourceAction))
+		return subIntent != "weather_query" || task.NeedsResource ||
+			(resourceAction != "" && resourceAction != "get_weather") ||
+			!runtimeIntentProtocolIsExplicitWeatherQuestion(task)
+	}
+	// Resource delivery remains a valid model-owned interaction task. The
+	// executor normalizes the concrete resource action later; rejecting it here
+	// would turn a legitimate mini-program or media task into an Intent retry.
+	if task.NeedsResource || strings.TrimSpace(task.ResourceAction) != "" {
+		return subIntent == "clarify"
+	}
+	// Weather must use the real tool path. A weather label without the tool is
+	// not a valid interaction result and must be repaired by IntentDetect.
+	if subIntent == "weather_query" {
+		return true
+	}
+	// IntentDetect owns non-business interaction categories such as AI identity,
+	// social questions and frustration. Preserve those categories, but do not let
+	// a clear hotel request bypass retrieval merely because the model chose a
+	// non-clarify interaction subtype.
+	if subIntent != "clarify" {
+		if runtimeIntentProtocolIsExplicitAIIdentityQuestion(task) ||
+			runtimeIntentProtocolIsExplicitSocialQuestion(task) ||
+			runtimeIntentProtocolIsExplicitPureInteraction(task, task.Text) {
+			return false
+		}
+		return runtimeIntentProtocolInteractionHasClearHotelBusinessTarget(task, resolution)
+	}
+	if resolution == runtimeIntentResolutionResolvedFromContext {
+		return true
+	}
+	if semanticGateNormalizeObjective(task.Objective) == "action_request" && !runtimeIntentActionRequestHasTarget(task.Text) {
+		return false
+	}
+	if runtimeIntentProtocolOriginalIsIndependentQuestion(task.Text) ||
+		runtimeIntentProtocolOriginalIsIndependentQuestion(task.ResolvedText) {
+		return true
+	}
+	if runtimeIntentTaskHasSelfContainedBusinessRequest(task) {
+		return true
+	}
+	return resolution == runtimeIntentResolutionClear && runtimeIntentTaskHasExplicitBusinessInformationTarget(task)
+}
+
+func runtimeIntentProtocolIsExplicitWeatherQuestion(task runtimeIntentTaskJSON) bool {
+	if semanticGateNormalizeObjective(task.Objective) != "general_guidance" {
+		return false
+	}
+	text := normalizeRuntimeKnowledgeQuery(strings.Join([]string{task.Text, task.ResolvedText}, " "))
+	if runtimeIntentProtocolHasOperationalHotelTarget(task, text) {
+		return false
+	}
+	if containsAny(text, []string{
+		"天气", "气温", "温度", "下雨", "降雨", "雨雪", "晴天", "阴天", "多云", "台风", "刮风", "风力", "空气质量",
+	}) {
+		return true
+	}
+	indirectWeather := containsAny(text, []string{"热不热", "冷不冷", "热吗", "冷吗", "带伞", "雨伞"})
+	timeBound := containsAny(text, []string{"今天", "今日", "今晚", "明天", "明日", "后天", "这两天", "最近几天", "周末"})
+	return indirectWeather && (timeBound || runtimeIntentProtocolTaskHasEntityType(task, "location", "city", "place"))
+}
+
+func runtimeIntentProtocolIsExplicitAIIdentityQuestion(task runtimeIntentTaskJSON) bool {
+	if strings.ToLower(strings.TrimSpace(task.SubIntent)) != "ai_identity" ||
+		semanticGateNormalizeObjective(task.Objective) != "identity" {
+		return false
+	}
+	combined := strings.Trim(normalizeRuntimeKnowledgeQuery(strings.Join(runtimeIntentProtocolTaskTextVariants(task), " ")), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+	return containsAny(combined, []string{
+		"你是谁", "你叫什么", "你的名字", "你是机器人", "你是ai", "你是人工智能", "你是真人", "你是人工客服", "你是客服", "你能做什么", "你会什么",
+	}) && !containsAny(combined, []string{"酒店老板", "门店老板", "老板是谁", "董事长", "负责人是谁"})
+}
+
+func runtimeIntentProtocolIsExplicitSocialQuestion(task runtimeIntentTaskJSON) bool {
+	if strings.ToLower(strings.TrimSpace(task.SubIntent)) != "social" ||
+		!strings.EqualFold(strings.TrimSpace(task.Objective), "social") {
+		return false
+	}
+	if runtimeIntentTaskHasExplicitBusinessInformationTarget(task) {
+		return false
+	}
+	for _, text := range runtimeIntentProtocolTaskTextVariants(task) {
+		compact := strings.Trim(normalizeRuntimeKnowledgeQuery(text), "，,。.!！?？；;：:啊呀呢吧哈啦哦嘛么的了")
+		switch compact {
+		case "你好吗", "你最近好吗", "你怎么样", "你最近怎么样", "你在干嘛", "你在做什么", "你忙吗":
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeIntentProtocolTaskTextVariants(task runtimeIntentTaskJSON) []string {
+	ret := make([]string, 0, 2)
+	for _, text := range []string{task.Text, task.ResolvedText} {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		normalized := normalizeRuntimeKnowledgeQuery(text)
+		duplicate := false
+		for _, existing := range ret {
+			if normalizeRuntimeKnowledgeQuery(existing) == normalized {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			ret = append(ret, text)
+		}
+	}
+	return ret
+}
+
+func runtimeIntentProtocolHasOperationalHotelTarget(task runtimeIntentTaskJSON, text string) bool {
+	for _, entity := range task.Entities {
+		switch strings.ToLower(strings.TrimSpace(entity.Type)) {
+		case "facility", "supply", "room_type", "room", "service", "order", "person", "company":
+			return true
+		}
+	}
+	return containsAny(text, []string{
+		"房间", "房型", "客房", "入住", "退房", "续住", "开门", "房门", "房号", "门锁", "密码",
+		"早餐", "停车", "充电桩", "发票", "wifi", "无线网", "空调", "电视", "投屏", "遥控器", "拖鞋", "牙刷", "浴巾", "毛巾", "纸巾", "矿泉水",
+		"洗衣", "外卖", "机器人", "小程序", "老板", "董事长", "负责人", "前台", "同住人", "行李", "遗失", "噪音",
+	})
+}
+
+func runtimeIntentProtocolTextHasHotelBusinessAnchor(text string) bool {
+	text = normalizeRuntimeKnowledgeQuery(text)
+	return containsAny(text, []string{
+		"酒店", "门店", "房间", "房型", "客房", "入住", "退房", "续住", "开门", "房门", "房号", "门锁", "密码",
+		"早餐", "停车", "充电桩", "发票", "wifi", "无线网", "空调", "电视", "投屏", "遥控器", "拖鞋", "牙刷", "浴巾", "毛巾", "纸巾", "矿泉水",
+		"洗衣", "外卖", "机器人", "小程序", "老板", "董事长", "负责人", "前台", "同住人", "行李", "遗失", "噪音",
+		"附近餐饮", "附近小吃", "附近好玩", "周边餐饮", "周边小吃", "周边景点", "地铁站", "公交站", "高铁站", "机场",
+	})
+}
+
+func runtimeIntentProtocolInteractionHasClearHotelBusinessTarget(task runtimeIntentTaskJSON, resolution string) bool {
+	if resolution == runtimeIntentResolutionResolvedFromContext ||
+		runtimeIntentTaskHasExplicitBusinessInformationTarget(task) ||
+		runtimeIntentTaskHasSelfContainedBusinessRequest(task) {
+		return true
+	}
+	text := normalizeRuntimeKnowledgeQuery(strings.Join([]string{task.Text, task.ResolvedText}, " "))
+	if text == "" || !runtimeIntentProtocolTextHasHotelBusinessAnchor(text) {
+		return false
+	}
+	return runtimeIntentProtocolOriginalIsIndependentQuestion(task.Text) ||
+		runtimeIntentProtocolOriginalIsIndependentQuestion(task.ResolvedText) ||
+		runtimeIntentStandaloneTaskLabel(task.Text) ||
+		containsAny(text, []string{"我问的是", "我说的是", "帮我", "麻烦", "请问", "告诉我", "查一下", "查下"})
 }
 
 func runtimeIntentProfileExpectsResolvedText(profile *models.ReplyIntentProfile) bool {
