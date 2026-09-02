@@ -18,15 +18,56 @@ type runtimeIntentProtocolRepairContext struct {
 
 func repairRuntimeIntentDetectProtocol(parsed *runtimeIntentDetectJSON, currentText string, context runtimeIntentProtocolRepairContext, enforce bool) {
 	// IntentDetect owns semantic task boundaries and context resolution. Local
-	// code deliberately does not rewrite text/resolvedText or infer a competing
-	// task count from punctuation and keywords. The parameters remain in the
-	// signature for compatibility with legacy profiles and focused tests.
+	// code deliberately does not infer a competing task count from punctuation
+	// and keywords. It may only remove unnecessary context metadata when the
+	// model's resolved form is already fully grounded in the task's own text.
 	if parsed != nil {
 		parsed.IntentTasks = collapseExactRuntimeIntentTasks(parsed.IntentTasks)
+		if enforce {
+			repairRuntimeIntentSelfContainedTaskContext(parsed.IntentTasks, currentText)
+		}
 	}
-	_ = currentText
 	_ = context
-	_ = enforce
+}
+
+func repairRuntimeIntentSelfContainedTaskContext(tasks runtimeIntentTaskList, currentText string) int {
+	sourceTexts := currentTurnIntentSourceTexts(currentText)
+	if len(tasks) == 0 || len(sourceTexts) == 0 {
+		return 0
+	}
+	repaired := 0
+	for index := range tasks {
+		task := &tasks[index]
+		if semanticGateNormalizeResolution(task.ResolutionState) != runtimeIntentResolutionResolvedFromContext ||
+			len(task.SourceRefs) < 2 || !runtimeIntentProtocolTaskHasExecutableBusiness(*task) ||
+			!runtimeIntentProtocolOriginalIsIndependentQuestion(task.Text) {
+			continue
+		}
+		primaryIndex := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+		if primaryIndex < 0 || primaryIndex >= len(sourceTexts) {
+			continue
+		}
+		primaryRef := strings.ToUpper(strings.TrimSpace(task.SourceRefs[0]))
+		primaryText := strings.TrimSpace(task.Text)
+		if primaryText == "" ||
+			!runtimeIntentProtocolCandidateMatchesTaskSource(primaryText, runtimeIntentSourceRefList{primaryRef}, sourceTexts) {
+			continue
+		}
+		repairedTask := *task
+		repairedTask.RelationToPrevious = "independent"
+		repairedTask.ResolutionState = runtimeIntentResolutionClear
+		if !runtimeIntentProtocolTaskResolvedTextGroundedInCandidate(repairedTask, primaryText) ||
+			validateRuntimeIntentProtocolResolvedEntities(repairedTask, primaryText, primaryText) != nil {
+			repairedTask.ResolvedText = primaryText
+		}
+		if !runtimeIntentProtocolTaskResolvedTextGroundedInCandidate(repairedTask, primaryText) ||
+			validateRuntimeIntentProtocolResolvedEntities(repairedTask, primaryText, primaryText) != nil {
+			continue
+		}
+		*task = repairedTask
+		repaired++
+	}
+	return repaired
 }
 
 func collapseExactRuntimeIntentTasks(tasks runtimeIntentTaskList) runtimeIntentTaskList {

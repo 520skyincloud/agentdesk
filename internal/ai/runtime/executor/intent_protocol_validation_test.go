@@ -1722,6 +1722,81 @@ func TestNormalizeModelIntentTracePreservesV2PrimaryAndContextSourceOrder(t *tes
 	}
 }
 
+func TestRepairRuntimeIntentDetectProtocolDetachesSelfContainedTaskFromUnrelatedBurstContext(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] OK",
+		"2. [文字] 我好困呐",
+		"3. [文字] 有没有咖啡",
+	})
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		{
+			Intent: "interaction", SubIntent: "acknowledge", Objective: "social", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+			Text: "OK", ResolvedText: "OK", SourceRefs: runtimeIntentSourceRefList{"U1"},
+		},
+		{
+			Intent: "interaction", SubIntent: "small_talk", Objective: "social", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+			Text: "我好困呐", ResolvedText: "我好困呐", SourceRefs: runtimeIntentSourceRefList{"U2"},
+		},
+		{
+			Intent: "hotel_info", SubIntent: "coffee", Objective: "availability", RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+			Entities: runtimeIntentEntityList{{Text: "咖啡", Type: "facility"}}, Text: "有没有咖啡", ResolvedText: "酒店有没有咖啡",
+			SourceRefs: runtimeIntentSourceRefList{"U3", "U2"}, NeedsKnowledge: true,
+		},
+	}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, burst, runtimeIntentProtocolRepairContext{}, true)
+	coffee := parsed.IntentTasks[2]
+	if coffee.RelationToPrevious != "independent" || coffee.ResolutionState != runtimeIntentResolutionClear ||
+		len(coffee.SourceRefs) != 2 || coffee.SourceRefs[0] != "U3" || coffee.SourceRefs[1] != "U2" || coffee.ResolvedText != "酒店有没有咖啡" {
+		t.Fatalf("self-contained coffee task must stop depending on unrelated burst context: %#v", coffee)
+	}
+	if err := validateRuntimeIntentDetectProtocol(parsed, nil, burst); err != nil {
+		t.Fatalf("repaired burst must pass base protocol validation: %v", err)
+	}
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, burst, runtimeIntentProtocolRepairContext{}, true); err != nil {
+		t.Fatalf("repaired burst must not require unrelated context grounding: %v", err)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolFallsBackFromUngroundedResolvedText(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 我好困呐",
+		"2. [文字] 有没有咖啡",
+	})
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "coffee", Objective: "availability", RelationToPrevious: "reference_previous", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "咖啡", Type: "facility"}}, Text: "有没有咖啡", ResolvedText: "酒店停车怎么收费",
+		SourceRefs: runtimeIntentSourceRefList{"U2", "U1"}, NeedsKnowledge: true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, burst, runtimeIntentProtocolRepairContext{}, true)
+	task := parsed.IntentTasks[0]
+	if task.RelationToPrevious != "independent" || task.ResolutionState != runtimeIntentResolutionClear || task.ResolvedText != "有没有咖啡" {
+		t.Fatalf("ungrounded resolved text must fall back to the self-contained source text: %#v", task)
+	}
+	if len(task.SourceRefs) != 2 || task.SourceRefs[0] != "U2" || task.SourceRefs[1] != "U1" {
+		t.Fatalf("repair must preserve model-owned source provenance: %#v", task.SourceRefs)
+	}
+}
+
+func TestRepairRuntimeIntentDetectProtocolKeepsDependentCurrentTurnReference(t *testing.T) {
+	burst := utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [文字] 有早餐吗",
+		"2. [文字] 几点",
+	})
+	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{{
+		Intent: "hotel_info", SubIntent: "breakfast", Objective: "time", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionResolvedFromContext,
+		Entities: runtimeIntentEntityList{{Text: "早餐", Type: "service"}}, Text: "几点", ResolvedText: "早餐几点",
+		SourceRefs: runtimeIntentSourceRefList{"U2", "U1"}, NeedsKnowledge: true,
+	}}}
+
+	repairRuntimeIntentDetectProtocol(&parsed, burst, runtimeIntentProtocolRepairContext{}, true)
+	task := parsed.IntentTasks[0]
+	if task.ResolutionState != runtimeIntentResolutionResolvedFromContext || task.ResolvedText != "早餐几点" {
+		t.Fatalf("dependent follow-up must keep model context resolution: %#v", task)
+	}
+}
+
 func legacyTestValidateRuntimeIntentDetectProtocolRejectsInventedOrOmittedCoarseSpanTask(t *testing.T) {
 	currentText := "早餐几点 还有停车收费吗 然后发票咋开"
 	base := runtimeIntentTaskList{

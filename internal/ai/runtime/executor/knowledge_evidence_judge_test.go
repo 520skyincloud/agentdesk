@@ -3901,6 +3901,38 @@ func TestEntitylessSingleExistenceQuestionKeepsCandidateSubjectBound(t *testing.
 	}
 }
 
+func TestModelSelectedNearbyFAQIsNotRejectedByColloquialSubjectSpelling(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "hotel_info",
+		Query:     "酒店附近有没有好玩儿的地方",
+		SubIntent: "surrounding_facilities",
+		Objective: "recommendation",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "附近", Type: "location"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(
+				3,
+				101,
+				"附近有什么好玩的地方？",
+				"问题：附近有什么好玩的地方？\n答案：酒店周边有罍街、包公园和逍遥津公园。",
+				0.8918,
+			),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"酒店周边有罍街、包公园和逍遥津公园。","criticalValues":["罍街","包公园","逍遥津公园"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse nearby FAQ response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("model-selected nearby FAQ must survive local protocol validation: %#v", selection)
+	}
+}
+
 func TestGenericEntityDoesNotDisableConcreteExistenceSubjectGuard(t *testing.T) {
 	tests := []struct {
 		name              string

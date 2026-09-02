@@ -4864,7 +4864,8 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	if !asksPhoneValue && !strings.Contains(query, "怎么填") && knowledgeEvidenceQueryAsksMethod(query) {
 		appendAspect("method")
 	}
-	if knowledgeEvidenceQueryAsksExistence(task.Query) {
+	if knowledgeEvidenceQueryAsksExistence(task.Query) &&
+		!(semanticGateNormalizeObjective(task.Objective) == "recommendation" && knowledgeEvidenceSpatialRecommendationTopic(task.Query) != "") {
 		appendAspect("existence")
 	}
 	if containsAny(query, []string{"送到", "哪些", "全部", "范围"}) ||
