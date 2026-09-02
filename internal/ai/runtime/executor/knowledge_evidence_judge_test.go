@@ -2450,6 +2450,46 @@ func TestRepairHighConfidenceServiceSupplyFAQUsesGroundedSelfServicePath(t *test
 	}
 }
 
+func TestRepairStoreServiceSupplyInsufficientFAQSelection(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "service_request",
+		Query:     "拖鞋没了",
+		SubIntent: "supplies_self_help",
+		Objective: "action_request",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：如需额外拖鞋，可前往1313对面洗衣房领取。", 0.8834),
+		}},
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("expected one narrow store service rescue, repaired=%d selections=%#v", repaired, selections)
+	}
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "store_service_faq_rescue" {
+		t.Fatalf("unexpected narrow rescue selection: %#v", selection)
+	}
+	if missing := missingRequiredKnowledgeEvidenceAspects(task, selection.SupportedFacts); len(missing) != 0 {
+		t.Fatalf("rescued supply FAQ must cover the complete self-service path, missing=%#v facts=%#v", missing, selection.SupportedFacts)
+	}
+
+	selections["T1"][knowledgeEvidenceLayerStore] = knowledgeEvidenceLayerSelection{Decision: knowledgeEvidenceDecisionPartial}
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("partial Judge evidence remains model-owned, repaired=%d selections=%#v", repaired, selections)
+	}
+	task.Intent = "hotel_info"
+	selections["T1"][knowledgeEvidenceLayerStore] = insufficientKnowledgeEvidenceLayerSelection()
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("non-service tasks must not use the narrow rescue, repaired=%d selections=%#v", repaired, selections)
+	}
+}
+
 func TestHighConfidenceServiceSupplyFAQRejectsSameLayerConflict(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",
@@ -2465,6 +2505,18 @@ func TestHighConfidenceServiceSupplyFAQRejectsSameLayerConflict(t *testing.T) {
 	}
 	if selection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore); ok {
 		t.Fatalf("conflicting pickup locations must not be rescued: %#v", selection)
+	}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection()},
+	}
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("narrow production rescue must preserve same-layer conflicts: %#v", selections)
+	}
+	task.RawCandidates = append([]knowledgeEvidenceJudgeCandidate(nil), task.Candidates...)
+	task.Candidates = task.Candidates[:1]
+	selections["T1"][knowledgeEvidenceLayerStore] = insufficientKnowledgeEvidenceLayerSelection()
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("budget-excluded raw conflicts must also block the narrow production rescue: %#v", selections)
 	}
 }
 
@@ -3960,6 +4012,90 @@ func TestParseKnowledgeEvidenceJudgeResponseKeepsWalletRequestOutOfPrice(t *test
 	selection := parsed["T1"][knowledgeEvidenceLayerStore]
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
 		t.Fatalf("an exact grounded wallet FAQ must remain direct: %#v", selection)
+	}
+}
+
+func TestRequiredKnowledgeEvidenceAspectsDistinguishesPhoneValueFromContactAction(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		objective  string
+		wantMethod bool
+		wantPhone  bool
+	}{
+		{name: "phone value", query: "管家的联系电话是多少", objective: "general_guidance", wantMethod: false, wantPhone: true},
+		{name: "contact method", query: "怎么联系管家", objective: "method", wantMethod: true},
+		{name: "phone action", query: "请通过电话联系前台", objective: "action_request", wantMethod: true},
+		{name: "modify contact", query: "帮我修改联系电话", objective: "action_request", wantMethod: true},
+		{name: "ordinary service", query: "拖鞋没了", objective: "action_request", wantMethod: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{Intent: "service_request", Query: tt.query, Objective: tt.objective}
+			aspects := requiredKnowledgeEvidenceAspects(task)
+			gotMethod := knowledgeEvidenceContainsString(aspects, "method")
+			gotPhone := knowledgeEvidenceContainsString(aspects, "phone")
+			if gotMethod != tt.wantMethod || gotPhone != tt.wantPhone {
+				t.Fatalf("method=%v phone=%v wantMethod=%v wantPhone=%v aspects=%#v", gotMethod, gotPhone, tt.wantMethod, tt.wantPhone, aspects)
+			}
+		})
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseKeepsPhoneValueAnswerDirect(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "service_request", Query: "管家的联系电话是多少", Objective: "general_guidance",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "管家电话", "问题：管家的联系电话是多少\n答案：18256022128", 0.93),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"other","statement":"管家电话是18256022128。","criticalValues":["18256022128"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatalf("parse phone value answer: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("a grounded phone value must not be rejected as a missing contact method: %#v", selection)
+	}
+	incompleteTask := task
+	incompleteTask.Candidates = []knowledgeEvidenceJudgeCandidate{{
+		CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+		Hit: judgeTestHit(1, 101, "管家电话", "问题：管家的联系电话是多少\n答案：前台在一楼。", 0.93),
+	}}
+	raw = `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"other","statement":"前台在一楼。","criticalValues":[]}],"missingAspects":[]}]}]}`
+	parsed, err = parseKnowledgeEvidenceJudgeResponse(raw, []knowledgeEvidenceJudgeTask{incompleteTask})
+	if err != nil {
+		t.Fatalf("parse incomplete phone value answer: %v", err)
+	}
+	if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision == knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("a phone query without a phone value must remain incomplete: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidencePhoneValueValidationRejectsOrdinaryIdentifiers(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{text: "管家电话是18256022128", want: true},
+		{text: "客服电话是400-123-4567", want: true},
+		{text: "手机号是138 0013 8000", want: true},
+		{text: "座机是0551-12345678", want: true},
+		{text: "座机是(0551) 12345678", want: true},
+		{text: "请提供房号，管家电话是18256022128", want: true},
+		{text: "订单号是20260902", want: false},
+		{text: "工号是12345678", want: false},
+		{text: "房号是1313", want: false},
+		{text: "订单号是13800138000", want: false},
+		{text: "工号是13800138000", want: false},
+	}
+	for _, test := range tests {
+		fact := knowledgeEvidenceFact{Aspect: "other", Statement: test.text}
+		if got := knowledgeEvidenceFactHasPhoneValue(fact); got != test.want {
+			t.Fatalf("phone match for %q = %v, want %v", test.text, got, test.want)
+		}
 	}
 }
 

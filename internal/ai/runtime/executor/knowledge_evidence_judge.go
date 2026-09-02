@@ -272,14 +272,18 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
-	repaired := repairExactFAQFallbackSelections(tasks, selections)
+	exactRepaired := repairExactFAQFallbackSelections(tasks, selections)
+	serviceRepaired := repairStoreServiceSupplyInsufficientFAQSelections(tasks, selections)
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
 	if judgeDeadlineTrimmed {
 		trace.Reason += "; judge timeout was bounded by the parent reply deadline"
 	}
-	if repaired > 0 {
-		trace.Reason += fmt.Sprintf("; repaired %d strict exact-FAQ selection(s) without using retrieval scores or semantic similarity", repaired)
+	if exactRepaired > 0 {
+		trace.Reason += fmt.Sprintf("; repaired %d strict exact-FAQ selection(s) without using retrieval scores or semantic similarity", exactRepaired)
+	}
+	if serviceRepaired > 0 {
+		trace.Reason += fmt.Sprintf("; repaired %d complete store service FAQ selection(s) after Judge marked them insufficient", serviceRepaired)
 	}
 	return knowledgeEvidenceJudgeOutcome{
 		Applied:    true,
@@ -4786,11 +4790,15 @@ func filterKnowledgeEvidenceCriticalValuesForStatement(values []string, statemen
 
 func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string {
 	query := normalizeRuntimeKnowledgeQuery(task.Query)
+	asksPhoneValue := knowledgeEvidenceTaskAsksPhoneValue(task)
 	ret := make([]string, 0, 3)
 	appendAspect := func(aspect string) {
 		if aspect != "" && !knowledgeEvidenceContainsString(ret, aspect) {
 			ret = append(ret, aspect)
 		}
+	}
+	if asksPhoneValue {
+		appendAspect("phone")
 	}
 	switch semanticGateNormalizeObjective(task.Objective) {
 	case "availability":
@@ -4804,13 +4812,15 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	case "location":
 		appendAspect("location")
 	case "method":
-		if strings.Contains(query, "怎么填") {
+		if asksPhoneValue {
+			break
+		} else if strings.Contains(query, "怎么填") {
 			appendAspect("location")
 		} else {
 			appendAspect("method")
 		}
 	case "action_request":
-		if canonicalIntentCode(task.Intent) == "service_request" {
+		if canonicalIntentCode(task.Intent) == "service_request" && !asksPhoneValue {
 			appendAspect("method")
 		}
 	}
@@ -4831,7 +4841,7 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 	if containsAny(query, []string{"在哪", "哪里", "地址", "位置", "楼层", "怎么填"}) {
 		appendAspect("location")
 	}
-	if !strings.Contains(query, "怎么填") && knowledgeEvidenceQueryAsksMethod(query) {
+	if !asksPhoneValue && !strings.Contains(query, "怎么填") && knowledgeEvidenceQueryAsksMethod(query) {
 		appendAspect("method")
 	}
 	if knowledgeEvidenceQueryAsksExistence(task.Query) {
@@ -4841,10 +4851,49 @@ func requiredKnowledgeEvidenceAspects(task knowledgeEvidenceJudgeTask) []string 
 		(strings.Contains(query, "都有") && !knowledgeEvidenceTaskNamesFiniteSubjectSet(task)) {
 		appendAspect("scope")
 	}
-	if canonicalIntentCode(task.Intent) == "service_request" && len(ret) == 0 {
+	if canonicalIntentCode(task.Intent) == "service_request" && len(ret) == 0 && !asksPhoneValue {
 		appendAspect("method")
 	}
 	return ret
+}
+
+var knowledgeEvidencePhoneValuePattern = regexp.MustCompile(`(?:^|[^0-9])(?:(?:\+?86[- ]?)?(?:1[3-9][0-9]{9}|1[3-9][0-9][ -][0-9]{4}[ -][0-9]{4})|0[0-9]{2,3}[- ]?[0-9]{7,8}|\(0[0-9]{2,3}\)[- ]?[0-9]{7,8}|(?:400|800)[- ]?[0-9]{3}[- ]?[0-9]{4})(?:[^0-9]|$)`)
+
+func knowledgeEvidenceFactHasPhoneValue(fact knowledgeEvidenceFact) bool {
+	raw := fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	for _, clause := range splitKnowledgeEvidenceAnswerClauses(raw) {
+		if !knowledgeEvidencePhoneValuePattern.MatchString(clause) {
+			continue
+		}
+		compact := normalizeRuntimeKnowledgeQuery(clause)
+		phoneLabel := containsAny(compact, []string{"联系电话", "联系号码", "电话号码", "手机号", "座机", "电话", "联系方式"})
+		nonPhoneLabel := containsAny(compact, []string{
+			"订单号", "工号", "房号", "身份证", "验证码", "会员号", "流水号", "运单号", "单号", "编号",
+		})
+		if phoneLabel || !nonPhoneLabel {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceTaskAsksPhoneValue(task knowledgeEvidenceJudgeTask) bool {
+	query := normalizeRuntimeKnowledgeQuery(task.Query)
+	if containsAny(query, []string{
+		"怎么联系", "如何联系", "联系一下", "电话联系", "打电话", "拨打电话", "通过电话", "用电话",
+		"修改", "更改", "更新", "换成", "改成", "绑定", "解绑", "删除", "添加", "设置", "录入", "保存",
+	}) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(task.Objective)) {
+	case "phone", "contact_phone", "store_phone":
+		return true
+	}
+	if containsAny(query, []string{"联系电话", "联系号码", "电话号码", "手机号"}) {
+		return true
+	}
+	valueCue := containsAny(query, []string{"多少", "是什么", "是啥", "几号", "号码", "给我", "告诉我", "发我"})
+	return valueCue && containsAny(query, []string{"电话", "联系方式"})
 }
 
 func knowledgeEvidenceQueryAsksMethod(query string) bool {
@@ -4928,6 +4977,8 @@ func knowledgeEvidenceFactSupportsAspect(fact knowledgeEvidenceFact, aspect stri
 		return fact.Aspect == "scope" && containsAny(compact, []string{"范围", "送到", "全部", "所有", "都", "仅限", "适用", "包括", "包含", "分别是", "分别为"})
 	case "condition":
 		return fact.Aspect == "condition" && containsAny(compact, []string{"如果", "条件", "取决于", "为准", "而定", "具体情况"})
+	case "phone":
+		return fact.Aspect == "other" && knowledgeEvidenceFactHasPhoneValue(fact)
 	case "existence":
 		return fact.Aspect == "existence" && containsAny(compact, []string{
 			"有", "没有", "提供", "配备", "不提供", "无", "不含",
@@ -5991,6 +6042,8 @@ func knowledgeEvidenceAspectLabel(aspect string) string {
 		return "适用范围"
 	case "condition":
 		return "适用条件"
+	case "phone":
+		return "联系电话"
 	default:
 		return aspect
 	}
@@ -6108,9 +6161,9 @@ func knowledgeEvidenceFactIsMarketingFiller(statement string) bool {
 	return false
 }
 
-// Historical score-based rescue helpers below remain only for isolated legacy
-// tests. The production JudgeBatch/apply path must use
-// repairExactFAQFallbackSelections and must never call these helpers.
+// The broad score-based repair below remains legacy-only. Production may use
+// highConfidenceDirectFAQSelection only through the narrow store-supply
+// insufficient repair, after a successful Judge response.
 func repairHighConfidenceInsufficientKnowledgeSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
 	repaired := 0
 	for _, task := range tasks {
@@ -6167,6 +6220,39 @@ func repairExactFAQFallbackSelections(tasks []knowledgeEvidenceJudgeTask, select
 			taskSelections[layer] = repairedSelection
 			repaired++
 		}
+	}
+	return repaired
+}
+
+func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
+	repaired := 0
+	for _, task := range tasks {
+		if canonicalIntentCode(task.Intent) != "service_request" || !knowledgeEvidenceTaskHasSupplySubject(task) {
+			continue
+		}
+		taskSelections := selections[task.TaskID]
+		selection, ok := taskSelections[knowledgeEvidenceLayerStore]
+		if !ok || selection.Decision != knowledgeEvidenceDecisionInsufficient {
+			continue
+		}
+		repairedSelection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+		if !ok {
+			continue
+		}
+		if len(task.RawCandidates) > 0 {
+			fullTask := task
+			fullTask.Candidates = task.RawCandidates
+			fullTask.RawCandidates = nil
+			fullSelection, fullOK := highConfidenceDirectFAQSelection(fullTask, knowledgeEvidenceLayerStore)
+			if !fullOK || len(repairedSelection.SelectedCandidateIDs) != 1 || len(fullSelection.SelectedCandidateIDs) != 1 ||
+				repairedSelection.SelectedCandidateIDs[0] != fullSelection.SelectedCandidateIDs[0] {
+				continue
+			}
+			repairedSelection = fullSelection
+		}
+		repairedSelection.DecisionSource = "store_service_faq_rescue"
+		taskSelections[knowledgeEvidenceLayerStore] = repairedSelection
+		repaired++
 	}
 	return repaired
 }

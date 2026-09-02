@@ -1602,7 +1602,7 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 					ownerKeys[runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[0])] = struct{}{}
 					continue
 				}
-				if !disjointModelSpans && !runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidates[0]) {
+				if !disjointModelSpans {
 					return fmt.Errorf("current-turn source U%d atomic question 1 of 1 has duplicate task ownership", sourceIndex+1)
 				}
 				key := runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[0])
@@ -1618,6 +1618,7 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 		usedTasks := make([]bool, len(sourceTasks))
 		ownerKeys := make([]map[string]struct{}, len(candidates))
 		ownerCounts := make([]int, len(candidates))
+		ownerTasks := make([][]runtimeIntentTaskJSON, len(candidates))
 
 		for taskIndex, task := range sourceTasks {
 			if semanticGateNormalizeObjective(task.Objective) != "compound_information" {
@@ -1627,9 +1628,13 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 			if len(candidateIndexes) == 0 || !runtimeIntentProtocolCompoundCandidatesAreRelated(task, sourceText, candidates, candidateIndexes) {
 				continue
 			}
+			if len(candidateIndexes) > 1 && runtimeIntentProtocolTaskRequestsSeparateAnswers(task) {
+				continue
+			}
 			for _, candidateIndex := range candidateIndexes {
 				covered[candidateIndex] = true
 				ownerCounts[candidateIndex]++
+				ownerTasks[candidateIndex] = append(ownerTasks[candidateIndex], task)
 				if ownerKeys[candidateIndex] == nil {
 					ownerKeys[candidateIndex] = make(map[string]struct{}, 1)
 				}
@@ -1667,7 +1672,9 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 			}
 			key := runtimeIntentProtocolTaskCandidateOwnershipKey(task, candidates[matchedCandidate])
 			if ownerCounts[matchedCandidate] > 0 {
-				if !runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidates[matchedCandidate]) {
+				owners := append([]runtimeIntentTaskJSON(nil), ownerTasks[matchedCandidate]...)
+				owners = append(owners, task)
+				if !runtimeIntentProtocolTasksHaveDisjointSourceSpans(candidates[matchedCandidate], owners) {
 					return fmt.Errorf("current-turn source U%d atomic question %d of %d has duplicate task ownership", sourceIndex+1, matchedCandidate+1, len(candidates))
 				}
 				if _, exists := ownerKeys[matchedCandidate][key]; exists {
@@ -1679,6 +1686,7 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 			}
 			ownerKeys[matchedCandidate][key] = struct{}{}
 			ownerCounts[matchedCandidate]++
+			ownerTasks[matchedCandidate] = append(ownerTasks[matchedCandidate], task)
 			covered[matchedCandidate] = true
 			usedTasks[taskIndex] = true
 			lastCandidateIndex = matchedCandidate
@@ -1698,6 +1706,10 @@ func validateRuntimeIntentProtocolAtomicCoverageBySource(tasks []runtimeIntentTa
 	return nil
 }
 
+func runtimeIntentProtocolTaskRequestsSeparateAnswers(task runtimeIntentTaskJSON) bool {
+	return containsAny(normalizeRuntimeKnowledgeQuery(task.Text+" "+task.ResolvedText), []string{"分别", "各自", "逐项"})
+}
+
 func runtimeIntentProtocolTasksHaveDisjointSourceSpans(sourceText string, tasks []runtimeIntentTaskJSON) bool {
 	source := normalizeRuntimeKnowledgeQuery(sourceText)
 	if source == "" || len(tasks) <= 1 {
@@ -1706,7 +1718,7 @@ func runtimeIntentProtocolTasksHaveDisjointSourceSpans(sourceText string, tasks 
 	previousEnd := -1
 	for _, task := range tasks {
 		text := normalizeRuntimeIntentProtocolAtomicText(task.Text)
-		if text == "" {
+		if text == "" || isRuntimeIntentOutputConstraintClause(task.Text) {
 			return false
 		}
 		start := strings.Index(source, text)
@@ -1715,7 +1727,23 @@ func runtimeIntentProtocolTasksHaveDisjointSourceSpans(sourceText string, tasks 
 		}
 		previousEnd = start + len(text)
 	}
+	for index := 1; index < len(tasks); index++ {
+		left := tasks[index-1].Text
+		right := tasks[index].Text
+		if !runtimeIntentProtocolTaskHasExplicitRequestWording(tasks[index-1]) &&
+			runtimeIntentStandaloneTaskLabel(left) &&
+			!runtimeIntentClauseHasSelfContainedQuestion(compactRuntimeIntentClause(left)) &&
+			(len([]rune(runtimeIntentProtocolAtomicTopicCore(right))) < 2 || runtimeIntentProtocolDependentAspectCandidate(right)) {
+			return false
+		}
+	}
 	return true
+}
+
+func runtimeIntentProtocolTaskHasExplicitRequestWording(task runtimeIntentTaskJSON) bool {
+	compact := normalizeRuntimeKnowledgeQuery(task.Text)
+	return (semanticGateNormalizeObjective(task.Objective) == "action_request" && runtimeIntentActionRequestHasTarget(compact)) ||
+		runtimeIntentTaskHasExplicitRequestWording(compact)
 }
 
 func runtimeIntentProtocolSingleSourceTaskGroundedInCandidate(task runtimeIntentTaskJSON, candidate string, _ string) bool {
@@ -1727,6 +1755,9 @@ func runtimeIntentProtocolTaskCandidateGroundingScore(task runtimeIntentTaskJSON
 	actualObjective := semanticGateNormalizeObjective(task.Objective)
 	taskText := normalizeRuntimeIntentProtocolAtomicText(task.Text)
 	candidateText := normalizeRuntimeIntentProtocolAtomicText(candidate)
+	if taskText != "" && candidateText != "" && strings.Contains(candidateText, taskText) {
+		expectedObjective = runtimeIntentAtomicKnowledgeObjective(task.Text)
+	}
 	literalExact := taskText != "" && taskText == candidateText
 	if !(canonicalIntentCode(task.Intent) == "interaction" && literalExact) &&
 		!runtimeIntentProtocolAtomicObjectivesCompatible(expectedObjective, actualObjective) {
@@ -1806,7 +1837,11 @@ func runtimeIntentProtocolTaskResolvedTextGroundedInCandidate(task runtimeIntent
 	if runtimeIntentProtocolImpliedChargingQuestion(candidate, task.ResolvedText) {
 		return true
 	}
-	candidateAspect := runtimeIntentProtocolReferenceAspect(candidate)
+	aspectText := candidate
+	if taskText != "" && candidateText != "" && strings.Contains(candidateText, taskText) {
+		aspectText = task.Text
+	}
+	candidateAspect := runtimeIntentProtocolReferenceAspect(aspectText)
 	resolvedAspect := runtimeIntentProtocolReferenceAspect(task.ResolvedText)
 	if candidateAspect != "" && resolvedAspect != "" && candidateAspect != resolvedAspect {
 		return false
@@ -1864,13 +1899,6 @@ func runtimeIntentProtocolTopicCoresOverlap(left string, right string) bool {
 		}
 	}
 	return false
-}
-
-func runtimeIntentProtocolCandidateAllowsMultipleTaskOwners(candidate string) bool {
-	compact := normalizeRuntimeKnowledgeQuery(candidate)
-	return runtimeIntentAtomicKnowledgeObjective(candidate) == "compound_information" ||
-		runtimeIntentClauseHasSharedPredicate(candidate) ||
-		containsAny(compact, []string{"分别", "各自", "逐项"})
 }
 
 func runtimeIntentProtocolTaskCandidateOwnershipKey(task runtimeIntentTaskJSON, candidate string) string {
@@ -2312,11 +2340,15 @@ func runtimeIntentTaskHasSelfContainedBusinessRequest(task runtimeIntentTaskJSON
 	if objective == "action_request" {
 		return runtimeIntentActionRequestHasTarget(compact)
 	}
-	return len([]rune(compact)) >= 2 && (runtimeIntentStandaloneTaskLabel(text) || containsAny(compact, []string{
+	return len([]rune(compact)) >= 2 && (runtimeIntentStandaloneTaskLabel(text) || runtimeIntentTaskHasExplicitRequestWording(compact))
+}
+
+func runtimeIntentTaskHasExplicitRequestWording(compact string) bool {
+	return containsAny(compact, []string{
 		"告诉我", "跟我说", "说一下", "说下", "讲一下", "讲下", "说清楚",
 		"发给我", "发我", "给我发", "给我看", "给我查", "帮我查", "查一下", "查下",
 		"介绍一下", "介绍下", "推荐一下", "推荐下", "列一下", "列出", "说明一下", "说明下",
-	}))
+	})
 }
 
 func runtimeIntentActionRequestHasTarget(text string) bool {

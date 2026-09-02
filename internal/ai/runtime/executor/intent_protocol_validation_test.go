@@ -805,6 +805,75 @@ func TestValidateRuntimeIntentDetectProtocolUsesExactTextOwnershipForOverlapping
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolAllowsOnlyOrderedDisjointTasksInsideOneCoarseCandidate(t *testing.T) {
+	currentText := "矿泉水有几瓶矿泉水是不是免费？"
+	quantity := validRuntimeIntentProtocolTask("矿泉水有几瓶", "quantity")
+	price := validRuntimeIntentProtocolTask("矿泉水是不是免费", "price")
+
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{quantity, price}}, nil, currentText); err != nil {
+		t.Fatalf("ordered disjoint model-owned tasks inside one coarse candidate must pass: %v", err)
+	}
+
+	whole := validRuntimeIntentProtocolTask(currentText, "compound_information")
+	for name, tasks := range map[string]runtimeIntentTaskList{
+		"whole and nested": {whole, price},
+		"reverse order":    {price, quantity},
+		"question fragments": {
+			validRuntimeIntentProtocolTask("矿泉水", "quantity"),
+			validRuntimeIntentProtocolTask("有几瓶", "quantity"),
+		},
+		"output constraint": {
+			validRuntimeIntentProtocolTask("外卖地址是什么", "location"),
+			validRuntimeIntentProtocolTask("只要正确地址", "general_guidance"),
+		},
+		"overlapping": {
+			validRuntimeIntentProtocolTask("早餐几点", "time"),
+			validRuntimeIntentProtocolTask("早餐几点结束", "time"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			text := currentText
+			switch name {
+			case "question fragments":
+				text = "矿泉水有几瓶"
+			case "overlapping":
+				text = "早餐几点结束？"
+			case "output constraint":
+				text = "外卖地址是什么只要正确地址"
+			}
+			if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: tasks}, nil, text); err == nil {
+				t.Fatalf("%s spans must be rejected", name)
+			}
+		})
+	}
+
+	action := validRuntimeIntentProtocolTask("发票开一下", "action_request")
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		action,
+		validRuntimeIntentProtocolTask("几点退房", "time"),
+	}}, nil, "发票开一下几点退房"); err != nil {
+		t.Fatalf("complete action and question spans must remain valid: %v", err)
+	}
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{
+		validRuntimeIntentProtocolTask("外卖地址发我", "location"),
+		validRuntimeIntentProtocolTask("几点退房", "time"),
+	}}, nil, "外卖地址发我几点退房"); err != nil {
+		t.Fatalf("complete information command and question spans must remain valid: %v", err)
+	}
+}
+
+func TestRuntimeIntentProtocolScopesSeparateAnswerMarkersToTheirTask(t *testing.T) {
+	water := validRuntimeIntentProtocolTask("矿泉水有几瓶、矿泉水收费吗", "compound_information")
+	if runtimeIntentProtocolTaskRequestsSeparateAnswers(water) {
+		t.Fatal("an unrelated marker elsewhere in the source must not affect this task")
+	}
+	water.Text += "，分别回答"
+	water.ResolvedText = water.Text
+	if !runtimeIntentProtocolTaskRequestsSeparateAnswers(water) {
+		t.Fatal("a marker owned by the task must require separate answers")
+	}
+}
+
 func legacyTestRepairRuntimeIntentDetectProtocolDoesNotRewriteDuplicateGap(t *testing.T) {
 	currentText := "我一次问五个：WiFi账号密码是什么、怎么办入住、房门怎么开、发票怎么开、停车收费吗？"
 	parsed := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{

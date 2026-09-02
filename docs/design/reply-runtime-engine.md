@@ -247,8 +247,10 @@ FAQ 的问题与答案按一个完整语义单元理解；“问题中写两瓶�
 严格 exact FAQ 恢复按知识层独立执行，不读取向量分数，也不使用字符相似度或语义近似
 改判。只有 FAQ 问法或显式 alias 与当前 Task 在去除标点、礼貌前后缀后机械相等，
 同层所有相同问法答案不冲突，并且单条 FAQ 能机械重建完整事实时才允许恢复。另有一条
-`0.85` 高置信候选保留规则只服务于 Judge 前的预算选择，不会在 Judge 失败或判定
-`insufficient` 后直接改成客户答案。
+`0.85` 高置信候选保留规则主要服务于 Judge 前的预算选择。唯一窄例外是：Judge
+成功返回后，门店层用品补充/自取类 `service_request` 被判为 `insufficient`，且同一
+完整 FAQ 在预算内候选和全部 `RawCandidates` 中仍是同一个无冲突结果时，可以恢复为
+正文答案。该例外不处理 `partial`、Judge 超时、协议错误、通用库或非用品服务请求。
 答案仅为“转接/转人工”时只形成该层的确定性知识转接；不得把 FAQ 问题文字当作
 事实，也不得跨 FAQ、跨知识层拼接对象、范围或条件。同层 `RawCandidates` 中只要
 还存在一条可信、值得交给 Judge 复核的竞争正文 FAQ，精确转接就不能在
@@ -261,10 +263,10 @@ Judge 异常时自动恢复为转接；正文即使只存在于 `RawCandidates`�
 转接候选并把它包装成普通事实，或者让转接候选参与 `partial/direct_combined`，该
 知识层直接记为 `protocol_invalid`，候选正文不得进入 Generate。
 
-源码中仍保留一组只供历史隔离测试使用的 `highConfidence*` / score-rescue helper，
-当前 `JudgeBatch -> applyKnowledgeEvidenceJudgeOutcome` 生产路径没有调用它们。预算阶段
-的 `0.70` 只让满足主体、范围、条件和操作一致性的正文 FAQ 进入 Judge 复核；`0.85`
-只参与高置信候选保留。两者都不能绕过 Judge 直接产出客户答案。
+源码中宽泛的 `repairHighConfidenceInsufficientKnowledgeSelections` 仍只供历史隔离测试。
+生产路径只通过 `store_service_faq_rescue` 使用上面的用品类窄例外。预算阶段的 `0.70`
+只让满足主体、范围、条件和操作一致性的正文 FAQ 进入 Judge 复核；除该窄例外外，
+`0.85` 不能在 Judge 后改选答案。
 
 房型成员问题会把实体中的“房型/客房”后缀规范化后再与肯定枚举成员对齐。例如
 “部分房型配备办公桌，如合柴、麦田和艺林”可以确认“合柴房型有办公桌”，但仍不能
