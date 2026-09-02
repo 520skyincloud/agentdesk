@@ -211,7 +211,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 }
 
 func completeIntentDetectUnavailable(summary *RunResult, collector *callbacks.RuntimeTraceCollector) (*RunResult, error) {
-	const reply = "不好意思，刚才这段我没完整理解好。麻烦把几个问题分开再发一下，我会逐个回答。"
+	const reply = "不好意思，刚才没能处理好，麻烦再发一次。"
 	summary.Status = "completed"
 	summary.ReplyText = reply
 	summary.ModelName = collector.Data.Model.Name
@@ -219,7 +219,7 @@ func completeIntentDetectUnavailable(summary *RunResult, collector *callbacks.Ru
 	collector.Data.Output.ReplyText = reply
 	collector.Data.Output.FinishReason = "intent_detect_safe_fallback"
 	collector.Data.Pipeline.Generate.Status = "skipped"
-	collector.Data.Pipeline.Generate.Reason = "IntentDetect failed after protocol repair; blocked ungrounded hotel fact generation"
+	collector.Data.Pipeline.Generate.Reason = "IntentDetect unavailable after model request or protocol recovery; blocked ungrounded hotel fact generation"
 	collector.Data.Pipeline.Generate.FallbackMode = "intent_detect_safe_reply"
 	collector.Data.Pipeline.Validate.Status = "passed"
 	collector.Data.Pipeline.Validate.Reason = "local safe reply contains no ungrounded hotel facts"

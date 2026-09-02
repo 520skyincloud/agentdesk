@@ -43,6 +43,9 @@ func TestCompleteIntentDetectUnavailableBlocksUngroundedGenerate(t *testing.T) {
 	if collector.Data.Pipeline.Generate.Status != "skipped" || collector.Data.Pipeline.Generate.FallbackMode != "intent_detect_safe_reply" {
 		t.Fatalf("intent failure must never enter free Generate, got %#v", collector.Data.Pipeline.Generate)
 	}
+	if strings.Contains(summary.ReplyText, "几个问题") || !strings.Contains(summary.ReplyText, "再发一次") {
+		t.Fatalf("intent availability failure must not blame the customer or pretend a single message was multi-question: %q", summary.ReplyText)
+	}
 	for _, inventedFact := range []string{"家常菜", "老街", "门卡", "充电桩", "电子发票"} {
 		if strings.Contains(summary.ReplyText, inventedFact) {
 			t.Fatalf("safe fallback must not contain hotel facts, got %q", summary.ReplyText)

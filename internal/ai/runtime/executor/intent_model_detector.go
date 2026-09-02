@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +31,10 @@ type runtimeIntentModelDetector interface {
 type llmRuntimeIntentDetector struct{}
 
 const runtimeIntentDetectTimeout = 60 * time.Second
+
+const runtimeIntentModelRetryDelay = 250 * time.Millisecond
+
+var runtimeIntentModelServerStatusPattern = regexp.MustCompile(`status(?: code)?[: ]+5\d\d`)
 
 type runtimeIntentDetectJSON struct {
 	PrimaryIntent      string                  `json:"primaryIntent"`
@@ -250,11 +255,23 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 	firstStartedAt := time.Now()
 	firstReceiptOffset := len(usageCapture.Receipts())
 	result, err := chatModel.Generate(intentCtx, messages)
+	modelAttempt := 1
 	if err != nil {
 		recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
-		return callbacks.IntentTraceData{}, err
+		if !isRetryableRuntimeIntentModelError(err) || !sleepRuntimeIntentModelRetry(intentCtx, runtimeIntentModelRetryDelay) {
+			return callbacks.IntentTraceData{}, err
+		}
+		modelAttempt = 2
+		retryStartedAt := time.Now()
+		retryReceiptOffset := len(usageCapture.Receipts())
+		result, err = chatModel.Generate(intentCtx, messages)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, retryReceiptOffset), modelAttempt, time.Since(retryStartedAt).Milliseconds(), err)
+		if err != nil {
+			return callbacks.IntentTraceData{}, err
+		}
+	} else {
+		recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	}
-	recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err == nil {
 		applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
@@ -269,11 +286,12 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		retryReceiptOffset := len(usageCapture.Receipts())
 		repairInstruction := buildRuntimeIntentProtocolRepairInstruction(err)
 		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage(repairInstruction)))
+		protocolAttempt := modelAttempt + 1
 		if retryErr != nil {
-			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), retryErr)
+			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), protocolAttempt, time.Since(retryStartedAt).Milliseconds(), retryErr)
 			return callbacks.IntentTraceData{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
 		}
-		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), 2, time.Since(retryStartedAt).Milliseconds(), nil)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, retry, gatewayReceiptSince(usageCapture, retryReceiptOffset), protocolAttempt, time.Since(retryStartedAt).Milliseconds(), nil)
 		parsed, err = parseRuntimeIntentDetectJSON(retry.Content)
 		if err == nil {
 			applyLegacyRuntimeIntentProtocolDefaults(&parsed, profile)
@@ -313,6 +331,39 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		HumanRoutePolicy:         parsed.SubIntent,
 		Reason:                   strings.TrimSpace("model IntentDetect JSON: " + parsed.Reason),
 	}, nil
+}
+
+func isRetryableRuntimeIntentModelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{"context canceled", "unauthorized", "forbidden", "status 400", "status code: 400", "status 401", "status code: 401", "status 403", "status code: 403"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	for _, marker := range []string{
+		"server overloaded", "service unavailable", "temporarily unavailable", "temporary failure",
+		"status 429", "status code: 429", "too many requests", "rate limit",
+		"connection reset", "connection refused", "broken pipe", "unexpected eof", "timeout", "timed out",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return runtimeIntentModelServerStatusPattern.MatchString(lower)
+}
+
+func sleepRuntimeIntentModelRetry(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func buildRuntimeIntentProtocolRepairInstruction(protocolErr error) string {
