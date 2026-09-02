@@ -916,3 +916,18 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 执行一次本地完整 FAQ 恢复；`protocol_invalid` 不被分数规则覆盖。恢复仍校验预算内外候选
 一致、事实完整和同层无冲突。没有修改 Intent、Retriever、Generate、转人工、消息聚合、Outbox、数据库、知识库、
 模型配置、计费、外部 API、DTO、枚举或 WebSocket；也没有新增模型调用或 Migration。
+
+### 提交与生产部署结果
+
+- 修复提交：`cfa049eb203ef01c90b89a96bb944253c10b2553`，分支
+  `codex/reply-runtime-core-fix-20260902`，已推送到 `origin` 和 `weibao`。
+- Linux amd64 Server SHA-256：
+  `20c66f97659d2c1e80587d68fe5c2e4df2b0e5bce9d4910481f1e8c6d912032d`。
+- 生产 release：`/opt/agentdesk/releases/20260902-090246-judge-cfa049e`；原子切换前 release：
+  `/opt/agentdesk/releases/20260902-064841-intent-retry-b354b14`。
+- 当前配置实际连接数据库为 `cs_ai_agent_ai_billing_4db7993`。数据库、旧 release、配置、环境文件及
+  SHA-256 清单位于 `/opt/backups/agentdesk-20260902-085829-pre-judge-cfa049e`。
+- 聚焦四包测试、`go vet` 和 `git diff --check` 均通过。部署后 `agentdesk.service=active`、
+  `NRestarts=0`、`8083` 返回 HTTP 200；生产消息总数/最大消息 ID 保持 `4757/17193`，
+  没有新增 `pending/failed` Outbox。
+- 本轮未执行 50 轮或其他批量主动评测，也未修改生产 Intent Profile、知识库、模型配置或数据库结构。
