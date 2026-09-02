@@ -3872,6 +3872,14 @@ func TestEntitylessSingleExistenceQuestionKeepsCandidateSubjectBound(t *testing.
 		{name: "specific coupon cannot answer breakfast", query: "有早餐吗", candidateQuestion: "有早餐券吗", candidateAnswer: "有的。", want: false},
 		{name: "breakfast cannot answer specific coupon", query: "有早餐券吗", candidateQuestion: "有早餐吗", candidateAnswer: "有的。", want: false},
 		{name: "specific quiet room cannot answer air conditioner", query: "房间有空调吗", candidateQuestion: "有静音空调房吗", candidateAnswer: "有的。", want: false},
+		{name: "coupon action cannot answer breakfast", query: "有早餐吗", candidateQuestion: "早餐券能用吗", candidateAnswer: "可以。", want: false},
+		{name: "room booking action cannot answer air conditioner", query: "房间有空调吗", candidateQuestion: "静音空调房能订吗", candidateAnswer: "可以。", want: false},
+		{name: "affirmative subtype proves generic existence", query: "有拖鞋吗", candidateQuestion: "有一次性拖鞋吗", candidateAnswer: "有的。", want: true},
+		{name: "irrelevant negative clause keeps affirmative subtype", query: "有拖鞋吗", candidateQuestion: "有一次性拖鞋吗", candidateAnswer: "有一次性拖鞋，无需自带。", want: true},
+		{name: "negative subtype does not prove generic absence", query: "有拖鞋吗", candidateQuestion: "有洗澡用拖鞋吗", candidateAnswer: "没有。", want: false},
+		{name: "explicit negative provision does not prove generic existence", query: "有拖鞋吗", candidateQuestion: "有一次性拖鞋吗", candidateAnswer: "客房不配备一次性拖鞋。", want: false},
+		{name: "reverse qualifier is not a subtype", query: "有押金吗", candidateQuestion: "可以免押金吗", candidateAnswer: "可以。", want: false},
+		{name: "negative qualifier is not a subtype", query: "有吸烟房吗", candidateQuestion: "有非吸烟房吗", candidateAnswer: "有的。", want: false},
 		{name: "normalized synonym", query: "房间有书桌吗", candidateQuestion: "客房配备办公桌吗", candidateAnswer: "有的。", want: true},
 	}
 	for _, test := range tests {
@@ -9022,5 +9030,221 @@ func TestKnowledgeEvidenceGenericScheduleBindsConditionAndDetectsConflict(t *tes
 	conflict, comparable = knowledgeEvidenceTimeSlotAnswersConflict("工作日早餐时间是多少", "工作日早餐时间是7点。", "周末早餐时间是多少", "周末早餐时间是8点。")
 	if conflict || comparable {
 		t.Fatalf("different calendar conditions must remain incomparable: conflict=%v comparable=%v", conflict, comparable)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeResponseRepairsGenericExistenceFromAffirmativeSubtypeFAQ(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID:    "T1",
+		Intent:    "hotel_info",
+		Query:     "有拖鞋吗",
+		SubIntent: "availability",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(
+					1,
+					101,
+					"一次性拖鞋",
+					"问题：房间里有一次性拖鞋吗？\n答案：酒店房间内均配备一次性拖鞋，若有额外需求，可前往1313对面洗衣房领取。",
+					0.8462,
+				),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "洗澡用拖鞋", "问题：酒店提供洗澡用拖鞋吗？\n答案：酒店不提供洗澡用拖鞋。", 0.8442),
+			},
+		},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse selected subtype FAQ: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("an affirmative subtype must be able to prove generic existence: %#v", selection)
+	}
+	joined := ""
+	for _, fact := range selection.SupportedFacts {
+		joined += fact.Statement + " " + strings.Join(fact.CriticalValues, " ")
+	}
+	if !strings.Contains(joined, "一次性拖鞋") {
+		t.Fatalf("repaired evidence lost the selected subtype: %#v", selection.SupportedFacts)
+	}
+}
+
+func TestStoreSupplyInsufficientRecoversAffirmativeSubtypeFAQAtNarrowMinimum(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "hotel_info",
+		Query:     "有拖鞋吗",
+		SubIntent: "availability",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T1C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(
+					1,
+					101,
+					"一次性拖鞋",
+					"问题：房间里有一次性拖鞋吗？\n答案：酒店房间内均配备一次性拖鞋，若有额外需求，可前往1313对面洗衣房领取。",
+					0.72,
+				),
+			},
+			{
+				CandidateID: "T1C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 102, "洗澡用拖鞋", "问题：酒店提供洗澡用拖鞋吗？\n答案：酒店不提供洗澡用拖鞋。", 0.8442),
+			},
+			{
+				CandidateID: "T1C3",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 103, "塑料拖鞋", "问题：房间提供塑料拖鞋吗？\n答案：酒店不提供塑料拖鞋。", 0.8399),
+			},
+		},
+	}
+	task.RawCandidates = append([]knowledgeEvidenceJudgeCandidate(nil), task.Candidates...)
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"T1": {
+			knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection(),
+		},
+	}
+
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 1 {
+		t.Fatalf("insufficient store supply task should recover once, got %d: %#v", repaired, selections)
+	}
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("different negative subtypes must not block the affirmative matching FAQ: %#v", selection)
+	}
+
+	selections["T1"][knowledgeEvidenceLayerStore] = protocolInvalidKnowledgeEvidenceLayerSelection()
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("a real protocol error must not be hidden by score rescue: %#v", selections)
+	}
+
+	task.Candidates[0].Hit.Score = 0.69
+	task.RawCandidates = append([]knowledgeEvidenceJudgeCandidate(nil), task.Candidates...)
+	selections["T1"][knowledgeEvidenceLayerStore] = insufficientKnowledgeEvidenceLayerSelection()
+	if repaired := repairStoreServiceSupplyInsufficientFAQSelections([]knowledgeEvidenceJudgeTask{task}, selections); repaired != 0 {
+		t.Fatalf("the narrow recovery must keep 0.70 as a hard floor: %#v", selections)
+	}
+}
+
+func TestKnowledgeEvidenceExistenceSubtypeConflictComparison(t *testing.T) {
+	if knowledgeEvidenceExistenceFAQSubjectsComparable(
+		"房间里有一次性拖鞋吗？",
+		"酒店房间内均配备一次性拖鞋。",
+		"酒店提供洗澡用拖鞋吗？",
+		"酒店不提供洗澡用拖鞋。",
+	) {
+		t.Fatal("different explicit subtypes must not be treated as contradictory claims")
+	}
+	if !knowledgeEvidenceExistenceFAQSubjectsComparable(
+		"酒店有拖鞋吗？",
+		"酒店没有拖鞋。",
+		"房间里有一次性拖鞋吗？",
+		"酒店房间内均配备一次性拖鞋。",
+	) {
+		t.Fatal("a generic negative claim must conflict with a positive subtype claim")
+	}
+	if !knowledgeEvidenceExistenceFAQSubjectsComparable(
+		"房间里有一次性拖鞋吗？",
+		"酒店房间内均配备一次性拖鞋。",
+		"房间里有一次性拖鞋吗？",
+		"酒店房间内没有一次性拖鞋。",
+	) {
+		t.Fatal("opposite claims about the same subtype must remain comparable")
+	}
+	if !knowledgeEvidenceFAQClaimsComparableForConflict(
+		"房间有拖鞋吗？",
+		"房间有拖鞋，可到大堂领取。",
+		"房间有拖鞋吗？",
+		"房间不提供拖鞋。",
+	) {
+		t.Fatal("a pickup destination must not be mistaken for the fact's applicability scope")
+	}
+	if !knowledgeEvidenceFAQClaimsComparableForConflict(
+		"房间有拖鞋吗？",
+		"有的。",
+		"房间有哪些拖鞋？",
+		"房间没有拖鞋。",
+	) {
+		t.Fatal("existence and list questions about the same subject must remain comparable")
+	}
+	if knowledgeEvidenceFAQClaimsConflict(
+		"房间有一次性拖鞋吗？",
+		"房间配备一次性拖鞋。",
+		"房间有一次性拖鞋吗？",
+		"房间配备一次性拖鞋，无需自带。",
+	) {
+		t.Fatal("an unrelated negative clause must not turn two affirmative existence answers into a conflict")
+	}
+	if !knowledgeEvidenceFAQClaimsConflict(
+		"房间有一次性拖鞋吗？",
+		"有的。",
+		"客用品配置说明",
+		"客房不提供一次性拖鞋。",
+	) {
+		t.Fatal("an explicit same-subtype negative answer must conflict even when its FAQ question is a description")
+	}
+}
+
+func TestStoreSupplyNarrowRecoveryRejectsConditionAndSameSubtypeConflicts(t *testing.T) {
+	conditionTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Intent:    "hotel_info",
+		Query:     "工作日有毛巾吗",
+		SubIntent: "availability",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "毛巾", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         judgeTestHit(1, 101, "周末毛巾", "问题：周末有毛巾吗？\n答案：周末提供毛巾。", 0.72),
+		}},
+	}
+	if selection, ok := highConfidenceDirectFAQSelectionAtMinimum(conditionTask, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore); ok {
+		t.Fatalf("a candidate with a conflicting condition must not be rescued: %#v", selection)
+	}
+
+	conflictTask := knowledgeEvidenceJudgeTask{
+		TaskID:    "T2",
+		Intent:    "hotel_info",
+		Query:     "有拖鞋吗",
+		SubIntent: "availability",
+		Objective: "availability",
+		Entities:  []knowledgeEvidenceJudgeEntity{{Text: "拖鞋", Type: "supply"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{
+				CandidateID: "T2C1",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 201, "一次性拖鞋", "问题：房间有一次性拖鞋吗？\n答案：房间配备一次性拖鞋。", 0.72),
+			},
+			{
+				CandidateID: "T2C2",
+				Layer:       knowledgeEvidenceLayerStore,
+				Hit:         judgeTestHit(1, 202, "一次性拖鞋供应", "问题：客用品配置说明\n答案：客房不提供一次性拖鞋。", 0.73),
+			},
+		},
+	}
+	leftQuestion, leftAnswer := splitKnowledgeEvidenceFAQForQuery(conflictTask.Candidates[0].Hit, conflictTask.Query)
+	rightQuestion, rightAnswer := splitKnowledgeEvidenceFAQForQuery(conflictTask.Candidates[1].Hit, conflictTask.Query)
+	if !knowledgeEvidenceFAQClaimsComparableForConflict(leftQuestion, leftAnswer, rightQuestion, rightAnswer) {
+		t.Fatalf("same-subtype claims must be comparable: left=%q/%q right=%q/%q subjects=%q/%q", leftQuestion, leftAnswer, rightQuestion, rightAnswer, knowledgeEvidenceFAQExistenceSubject(leftQuestion, leftAnswer), knowledgeEvidenceFAQExistenceSubject(rightQuestion, rightAnswer))
+	}
+	if !knowledgeEvidenceFAQAnswersConflict(leftAnswer, rightAnswer) {
+		t.Fatalf("same-subtype positive and negative answers must conflict: %q / %q", leftAnswer, rightAnswer)
+	}
+	if selection, ok := highConfidenceDirectFAQSelectionAtMinimum(conflictTask, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore); ok {
+		t.Fatalf("opposite claims about the same subtype must block recovery: %#v", selection)
 	}
 }

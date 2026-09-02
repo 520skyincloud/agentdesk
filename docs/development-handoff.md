@@ -902,3 +902,17 @@ Linux amd64 Server / reply-runtime-eval 双产物构建
 本轮仍未修改数据库、知识库、模型配置、计费、Token 统计、人工状态机、Outbox、外部
 API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktree 重新运行全部验证
 并构建；此处不声明已经推送、部署或完成真实模型/企微出站验收。
+
+## 2026-09-02 Judge 存在性子类最小修复
+
+本轮只修改 `knowledge_evidence_judge.go`、对应测试和现行设计文档。针对“有拖鞋吗”已召回
+门店“一次性拖鞋”正文，却因其他候选是“洗澡用/塑料拖鞋不提供”而被 Judge 本地校验判成
+`protocol_invalid` 的问题，统一修正存在性主体关系：肯定的具体子类可以证明上位类别存在，
+否定具体子类不能证明整个类别不存在，不同子类的一正一负不再互相冲突；同一主体、房型、
+范围或条件下的真实冲突仍保留。
+
+普通确定性 FAQ 选择继续使用 `0.85`。只有门店用品类 `service_request`，以及
+`hotel_info + availability` 在 Judge 成功返回 `insufficient` 后，允许以 `0.70` 为最低分
+执行一次本地完整 FAQ 恢复；`protocol_invalid` 不被分数规则覆盖。恢复仍校验预算内外候选
+一致、事实完整和同层无冲突。没有修改 Intent、Retriever、Generate、转人工、消息聚合、Outbox、数据库、知识库、
+模型配置、计费、外部 API、DTO、枚举或 WebSocket；也没有新增模型调用或 Migration。

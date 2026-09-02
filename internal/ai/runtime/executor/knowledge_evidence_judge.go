@@ -37,6 +37,7 @@ const (
 
 	knowledgeEvidenceDirectFAQMinimumScore   = float32(0.85)
 	knowledgeEvidenceJudgeReviewMinimumScore = float32(0.70)
+	knowledgeEvidenceStoreSupplyRescueScore  = float32(0.70)
 
 	knowledgeEvidenceJudgeMinTimeout      = 10 * time.Second
 	knowledgeEvidenceJudgeMaxTimeout      = 28 * time.Second
@@ -831,6 +832,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 严禁跨 store/general 拼接证据，也不能把不同门店、不同房型对象、不同时间条件或互相矛盾的内容组合。检索分数和候选顺序不能替代语义判断。
 
 FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。rawContent 只用于核对原文。
+上位类别的存在性问题，可以由明确肯定的具体子类证明存在；但否定某个具体子类，不能证明整个上位类别不存在。不同具体子类的一正一负不是冲突，只有同一主体、同一适用范围和同一条件下互相矛盾的结论才是冲突。候选选择是首要任务；只要候选能够完整回答，supportedFacts 的提取困难不能成为判 insufficient 的理由。
 
 条件不能从事实中消失。若答案是“是的，仅限退房前办理”“可以，但仅适用于指定房型”等带硬限制的肯定，statement 必须同时写出肯定结论和限制条件；不得输出无条件的“可以办理”“所有房型都可以”。
 
@@ -4039,13 +4041,31 @@ func knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task knowledgeEvi
 	taskSignature := knowledgeEvidenceConflictQuestionSignature(task.Query)
 	for leftIndex := 0; leftIndex < len(selectedFAQs); leftIndex++ {
 		left := selectedFAQs[leftIndex]
-		if left.signature == "" || (taskSignature != "" && !knowledgeEvidenceConflictQuestionSignaturesCompatible(taskSignature, left.signature)) {
+		leftSubjectClaim := knowledgeEvidenceFAQHasExistenceClaim(left.question, left.answer)
+		if left.signature == "" && !leftSubjectClaim {
+			continue
+		}
+		if left.signature != "" && taskSignature != "" && !knowledgeEvidenceConflictQuestionSignaturesCompatible(taskSignature, left.signature) {
 			continue
 		}
 		for rightIndex := leftIndex + 1; rightIndex < len(selectedFAQs); rightIndex++ {
 			right := selectedFAQs[rightIndex]
-			if right.signature == "" || !knowledgeEvidenceConflictQuestionSignaturesCompatible(left.signature, right.signature) ||
+			rightSubjectClaim := knowledgeEvidenceFAQHasExistenceClaim(right.question, right.answer)
+			if left.signature == "" || right.signature == "" {
+				if left.signature != "" || right.signature != "" || !leftSubjectClaim || !rightSubjectClaim {
+					continue
+				}
+			} else if !knowledgeEvidenceConflictQuestionSignaturesCompatible(left.signature, right.signature) ||
 				(taskSignature != "" && !knowledgeEvidenceConflictQuestionSignaturesCompatible(taskSignature, right.signature)) {
+				continue
+			}
+			if !knowledgeEvidenceFAQClaimsComparableForConflict(left.question, left.answer, right.question, right.answer) {
+				continue
+			}
+			if left.signature == "" {
+				if knowledgeEvidenceFAQClaimsConflict(left.question, left.answer, right.question, right.answer) {
+					return true
+				}
 				continue
 			}
 			domain, role, _, ok := parseKnowledgeEvidenceConflictQuestionSignature(left.signature)
@@ -4066,11 +4086,11 @@ func knowledgeEvidenceSelectedCandidatesHaveConflictingAnswers(task knowledgeEvi
 					if knowledgeEvidenceDeliveryAddressAnswersConflict(left.answer, right.answer) {
 						return true
 					}
-				} else if knowledgeEvidenceFAQAnswersConflict(left.answer, right.answer) {
+				} else if knowledgeEvidenceFAQClaimsConflict(left.question, left.answer, right.question, right.answer) {
 					return true
 				}
 			default:
-				if knowledgeEvidenceFAQAnswersConflict(left.answer, right.answer) ||
+				if knowledgeEvidenceFAQClaimsConflict(left.question, left.answer, right.question, right.answer) ||
 					knowledgeEvidenceConfigurationValuesConflict(task.Query, left.answer, right.answer) {
 					return true
 				}
@@ -5758,10 +5778,10 @@ func knowledgeEvidenceFAQAnswerSupportsSingleSubject(question string, answer str
 		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(question, []string{"existence"})
 	}
 	if candidateSubject != "" {
-		if !knowledgeEvidenceSemanticSubjectsEquivalent(candidateSubject, subject) {
+		if !knowledgeEvidenceExistenceCandidateSupportsTaskSubject(subject, candidateSubject, answer) {
 			return false
 		}
-	} else if !strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), subject) {
+	} else if !knowledgeEvidenceQuestionDirectlyAsksExistenceOfSubject(question, subject) {
 		return false
 	}
 	if strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(answer), subject) {
@@ -6227,7 +6247,7 @@ func repairExactFAQFallbackSelections(tasks []knowledgeEvidenceJudgeTask, select
 func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
 	repaired := 0
 	for _, task := range tasks {
-		if canonicalIntentCode(task.Intent) != "service_request" || !knowledgeEvidenceTaskHasSupplySubject(task) {
+		if !knowledgeEvidenceTaskAllowsStoreSupplyFAQRescue(task) {
 			continue
 		}
 		taskSelections := selections[task.TaskID]
@@ -6235,7 +6255,7 @@ func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidence
 		if !ok || selection.Decision != knowledgeEvidenceDecisionInsufficient {
 			continue
 		}
-		repairedSelection, ok := highConfidenceDirectFAQSelection(task, knowledgeEvidenceLayerStore)
+		repairedSelection, ok := highConfidenceDirectFAQSelectionAtMinimum(task, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore)
 		if !ok {
 			continue
 		}
@@ -6243,7 +6263,7 @@ func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidence
 			fullTask := task
 			fullTask.Candidates = task.RawCandidates
 			fullTask.RawCandidates = nil
-			fullSelection, fullOK := highConfidenceDirectFAQSelection(fullTask, knowledgeEvidenceLayerStore)
+			fullSelection, fullOK := highConfidenceDirectFAQSelectionAtMinimum(fullTask, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore)
 			if !fullOK || len(repairedSelection.SelectedCandidateIDs) != 1 || len(fullSelection.SelectedCandidateIDs) != 1 ||
 				repairedSelection.SelectedCandidateIDs[0] != fullSelection.SelectedCandidateIDs[0] {
 				continue
@@ -6255,6 +6275,20 @@ func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidence
 		repaired++
 	}
 	return repaired
+}
+
+func knowledgeEvidenceTaskAllowsStoreSupplyFAQRescue(task knowledgeEvidenceJudgeTask) bool {
+	if !knowledgeEvidenceTaskHasSupplySubject(task) {
+		return false
+	}
+	switch canonicalIntentCode(task.Intent) {
+	case "service_request":
+		return true
+	case "hotel_info":
+		return semanticGateNormalizeObjective(task.Objective) == "availability"
+	default:
+		return false
+	}
 }
 
 func knowledgeEvidenceDecisionAllowsExactFAQFallback(decision string) bool {
@@ -6463,7 +6497,10 @@ func knowledgeEvidenceLayerHasConflictingCompleteAnswer(task knowledgeEvidenceJu
 			}
 			continue
 		}
-		if knowledgeEvidenceFAQAnswersConflict(selectedAnswer, answer) ||
+		if !knowledgeEvidenceFAQClaimsComparableForConflict(selectedQuestion, selectedAnswer, question, answer) {
+			continue
+		}
+		if knowledgeEvidenceFAQClaimsConflict(selectedQuestion, selectedAnswer, question, answer) ||
 			knowledgeEvidenceConfigurationValuesConflict(task.Query, selectedAnswer, answer) {
 			return true
 		}
@@ -6474,8 +6511,8 @@ func knowledgeEvidenceLayerHasConflictingCompleteAnswer(task knowledgeEvidenceJu
 func knowledgeEvidenceStrictExactConflictPeer(
 	task knowledgeEvidenceJudgeTask,
 	candidate knowledgeEvidenceJudgeCandidate,
-	_ string,
-	_ string,
+	selectedQuestion string,
+	selectedAnswer string,
 	question string,
 	answer string,
 ) bool {
@@ -6483,6 +6520,9 @@ func knowledgeEvidenceStrictExactConflictPeer(
 		return true
 	}
 	if knowledgeEvidenceCandidateHasExplicitTaskConflict(task, candidate, question, answer) {
+		return false
+	}
+	if !knowledgeEvidenceFAQClaimsComparableForConflict(selectedQuestion, selectedAnswer, question, answer) {
 		return false
 	}
 	taskSignature := knowledgeEvidenceConflictQuestionSignature(task.Query)
@@ -6534,7 +6574,7 @@ func knowledgeEvidenceReviewQuestionShape(text string) string {
 		return "time"
 	case containsAny(compact, []string{"在哪", "哪里", "地址", "位置", "楼层"}):
 		return "location"
-	case containsAny(compact, []string{"有没有", "是否有", "是不是有", "配备", "提供吗"}) ||
+	case containsAny(compact, []string{"有没有", "是否有", "是不是有", "配备", "配有", "设有", "提供吗", "供应吗", "是否供应"}) ||
 		(strings.Contains(compact, "有") && strings.Contains(compact, "吗")):
 		return "existence"
 	default:
@@ -7495,6 +7535,10 @@ func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeT
 }
 
 func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
+	return highConfidenceDirectFAQSelectionAtMinimum(task, layer, knowledgeEvidenceDirectFAQMinimumScore)
+}
+
+func highConfidenceDirectFAQSelectionAtMinimum(task knowledgeEvidenceJudgeTask, layer string, minimumScore float32) (knowledgeEvidenceLayerSelection, bool) {
 	if knowledgeEvidenceConfigurationLayerHasAmbiguousScope(task, layer) {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
@@ -7509,7 +7553,7 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		question, answer, questionMatch, _, ok := knowledgeEvidenceDirectFAQCandidateEligibility(task, candidate)
+		question, answer, questionMatch, _, ok := knowledgeEvidenceDirectFAQCandidateEligibilityAtMinimum(task, candidate, minimumScore)
 		if !ok {
 			continue
 		}
@@ -7524,7 +7568,7 @@ func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer str
 			best = match
 		}
 	}
-	if knowledgeEvidenceDirectFAQHasConflict(task, layer, best.candidate.CandidateID, best.question, best.answer, best.match) {
+	if knowledgeEvidenceDirectFAQHasConflict(task, layer, best.candidate.CandidateID, best.question, best.answer, best.match, minimumScore) {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, best.answer)
@@ -7612,6 +7656,14 @@ func knowledgeEvidenceDirectFAQCandidateEligibility(
 	task knowledgeEvidenceJudgeTask,
 	candidate knowledgeEvidenceJudgeCandidate,
 ) (string, string, float64, []knowledgeEvidenceFact, bool) {
+	return knowledgeEvidenceDirectFAQCandidateEligibilityAtMinimum(task, candidate, knowledgeEvidenceDirectFAQMinimumScore)
+}
+
+func knowledgeEvidenceDirectFAQCandidateEligibilityAtMinimum(
+	task knowledgeEvidenceJudgeTask,
+	candidate knowledgeEvidenceJudgeCandidate,
+	minimumScore float32,
+) (string, string, float64, []knowledgeEvidenceFact, bool) {
 	const (
 		minimumRescueScore         = float32(0.65)
 		minimumRescueQuestionMatch = 0.94
@@ -7620,9 +7672,13 @@ func knowledgeEvidenceDirectFAQCandidateEligibility(
 	questionMatch, matched := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
 	configurationTask := knowledgeEvidenceConfigurationTopic(task.Query) != ""
 	strictConfigurationMatch := configurationTask && knowledgeEvidenceStrictConfigurationCandidateMatches(task, candidate, question, answer)
-	rescuedByQuestion := !configurationTask && candidate.Hit.Score >= minimumRescueScore && questionMatch >= minimumRescueQuestionMatch
-	storeSemanticMatch := knowledgeEvidenceStoreServiceSemanticFAQMatches(task, candidate, question, answer)
-	if (candidate.Hit.Score < knowledgeEvidenceDirectFAQMinimumScore && !rescuedByQuestion) ||
+	questionRescueMinimumScore := minimumRescueScore
+	if minimumScore < knowledgeEvidenceDirectFAQMinimumScore {
+		questionRescueMinimumScore = minimumScore
+	}
+	rescuedByQuestion := !configurationTask && candidate.Hit.Score >= questionRescueMinimumScore && questionMatch >= minimumRescueQuestionMatch
+	storeSemanticMatch := knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(task, candidate, question, answer, minimumScore)
+	if (candidate.Hit.Score < minimumScore && !rescuedByQuestion) ||
 		question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) ||
 		(!matched && !strictConfigurationMatch && !storeSemanticMatch) {
 		return question, answer, questionMatch, nil, false
@@ -7630,6 +7686,9 @@ func knowledgeEvidenceDirectFAQCandidateEligibility(
 	if configurationTask &&
 		(!knowledgeEvidenceConfigurationAnswerCoversQuery(task.Query, question, answer) ||
 			!knowledgeEvidenceConfigurationScopeMatches(task.Query, strings.Join([]string{question, answer, candidate.Hit.Title}, " "))) {
+		return question, answer, questionMatch, nil, false
+	}
+	if minimumScore < knowledgeEvidenceDirectFAQMinimumScore && knowledgeEvidenceCandidateHasExplicitTaskConflict(task, candidate, question, answer) {
 		return question, answer, questionMatch, nil, false
 	}
 	if !knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) {
@@ -7683,6 +7742,9 @@ func knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(
 	if !knowledgeEvidenceFAQSharesTaskSubject(task.Query, candidateText) {
 		return false
 	}
+	if semanticGateNormalizeObjective(task.Objective) == "availability" {
+		return len(requiredEntities) == 1 && knowledgeEvidenceFAQAnswerSupportsSingleSubject(question, answer, requiredEntities[0])
+	}
 	return knowledgeEvidenceServiceOperationTargetsCompatible(
 		knowledgeEvidenceServiceOperationTarget(task.Query),
 		knowledgeEvidenceServiceOperationTarget(candidateText),
@@ -7697,7 +7759,7 @@ func knowledgeEvidenceTaskAllowsStoreServiceSemanticFAQ(task knowledgeEvidenceJu
 		return false
 	}
 	switch semanticGateNormalizeObjective(task.Objective) {
-	case "location", "method", "action_request":
+	case "availability", "location", "method", "action_request":
 		return knowledgeEvidenceTaskHasSupplySubject(task)
 	default:
 		return false
@@ -7714,9 +7776,13 @@ func knowledgeEvidenceTaskHasSupplySubject(task knowledgeEvidenceJudgeTask) bool
 	return subIntent == "supplies_self_help" || strings.HasPrefix(subIntent, "supplies_") || strings.HasPrefix(subIntent, "supply_")
 }
 
-func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateID string, selectedQuestion string, selectedAnswer string, selectedQuestionMatch float64) bool {
+func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateID string, selectedQuestion string, selectedAnswer string, selectedQuestionMatch float64, selectionMinimumScore float32) bool {
 	configurationTopic := knowledgeEvidenceConfigurationTopic(task.Query)
 	selectedConfigurationScope := knowledgeEvidenceConfigurationScope(selectedQuestion + " " + selectedAnswer)
+	conflictMinimumScore := knowledgeEvidenceJudgeReviewMinimumScore
+	if selectionMinimumScore < conflictMinimumScore {
+		conflictMinimumScore = selectionMinimumScore
+	}
 	for _, candidate := range task.Candidates {
 		if candidate.CandidateID == selectedCandidateID || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
@@ -7732,16 +7798,21 @@ func knowledgeEvidenceDirectFAQHasConflict(task knowledgeEvidenceJudgeTask, laye
 				return true
 			}
 		}
-		if candidate.Hit.Score < 0.7 {
+		if candidate.Hit.Score < conflictMinimumScore {
 			continue
 		}
-		semanticPeer := knowledgeEvidenceStoreServiceSemanticFAQMatches(task, candidate, question, answer)
+		semanticPeer := knowledgeEvidenceStoreServiceSemanticFAQMatchesAtMinimum(task, candidate, question, answer, conflictMinimumScore)
 		sameFAQQuestionPeer := knowledgeEvidenceFAQQuestionMatchScore(question, selectedQuestion) >= 0.82 &&
 			knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer)
-		if !semanticPeer && !sameFAQQuestionPeer && (questionMatch < 0.78 || questionMatch+0.08 < selectedQuestionMatch) {
+		existenceClaimPair := knowledgeEvidenceFAQPairUsesExistenceSubject(selectedQuestion, selectedAnswer, question, answer)
+		existencePeer := existenceClaimPair && knowledgeEvidenceFAQClaimsComparableForConflict(selectedQuestion, selectedAnswer, question, answer)
+		if !semanticPeer && !sameFAQQuestionPeer && !existencePeer && (questionMatch < 0.78 || questionMatch+0.08 < selectedQuestionMatch) {
 			continue
 		}
-		if isKnowledgeHandoffDirectiveContent(answer) || knowledgeEvidenceFAQAnswersConflict(selectedAnswer, answer) {
+		if existenceClaimPair && !existencePeer {
+			continue
+		}
+		if isKnowledgeHandoffDirectiveContent(answer) || knowledgeEvidenceFAQClaimsConflict(selectedQuestion, selectedAnswer, question, answer) {
 			return true
 		}
 	}
@@ -7815,6 +7886,24 @@ func knowledgeEvidenceFAQAnswersConflict(left string, right string) bool {
 	if knowledgeEvidenceTextHasNegativeBoundary(left) != knowledgeEvidenceTextHasNegativeBoundary(right) {
 		return true
 	}
+	return knowledgeEvidenceFAQAnswersConflictWithoutPolarity(left, right)
+}
+
+func knowledgeEvidenceFAQClaimsConflict(leftQuestion string, leftAnswer string, rightQuestion string, rightAnswer string) bool {
+	if knowledgeEvidenceFAQPairUsesExistenceSubject(leftQuestion, leftAnswer, rightQuestion, rightAnswer) &&
+		knowledgeEvidenceFAQClaimsComparableForConflict(leftQuestion, leftAnswer, rightQuestion, rightAnswer) {
+		leftSubject := knowledgeEvidenceFAQExistenceSubject(leftQuestion, leftAnswer)
+		rightSubject := knowledgeEvidenceFAQExistenceSubject(rightQuestion, rightAnswer)
+		if leftSubject != "" && rightSubject != "" &&
+			knowledgeEvidenceFAQAnswerNegatesSubject(leftAnswer, leftSubject) != knowledgeEvidenceFAQAnswerNegatesSubject(rightAnswer, rightSubject) {
+			return true
+		}
+		return knowledgeEvidenceFAQAnswersConflictWithoutPolarity(leftAnswer, rightAnswer)
+	}
+	return knowledgeEvidenceFAQAnswersConflict(leftAnswer, rightAnswer)
+}
+
+func knowledgeEvidenceFAQAnswersConflictWithoutPolarity(left string, right string) bool {
 	leftNumbers := knowledgeEvidenceAnswerNumberPattern.FindAllString(normalizeRuntimeKnowledgeQuery(left), -1)
 	rightNumbers := knowledgeEvidenceAnswerNumberPattern.FindAllString(normalizeRuntimeKnowledgeQuery(right), -1)
 	if len(leftNumbers) > 0 && len(rightNumbers) > 0 && strings.Join(leftNumbers, "|") != strings.Join(rightNumbers, "|") {
@@ -8115,6 +8204,136 @@ func knowledgeEvidenceSemanticSubjectsEquivalent(left string, right string) bool
 	return left != "" && right != "" && left == right
 }
 
+func knowledgeEvidenceExistenceSubjectIsNarrower(specific string, generic string) bool {
+	specific = canonicalKnowledgeEvidenceSemanticSubject(specific)
+	generic = canonicalKnowledgeEvidenceSemanticSubject(generic)
+	if specific == "" || generic == "" || specific == generic || len([]rune(generic)) < 2 {
+		return false
+	}
+	prefix := strings.TrimSuffix(specific, generic)
+	if prefix == specific || prefix == "" {
+		return false
+	}
+	for _, negativePrefix := range []string{
+		"免", "无", "零", "非", "不含", "无需", "没有", "取消", "免收", "不收", "未收",
+		"未配", "未提供", "未供应", "不配", "不带", "不提供", "不供应",
+	} {
+		if strings.HasSuffix(prefix, negativePrefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func knowledgeEvidenceExistenceCandidateSupportsTaskSubject(taskSubject string, candidateSubject string, answer string) bool {
+	if knowledgeEvidenceSemanticSubjectsEquivalent(taskSubject, candidateSubject) {
+		return true
+	}
+	return knowledgeEvidenceExistenceSubjectIsNarrower(candidateSubject, taskSubject) &&
+		!knowledgeEvidenceFAQAnswerNegatesSubject(answer, candidateSubject) &&
+		!isKnowledgeHandoffDirectiveContent(answer)
+}
+
+func knowledgeEvidenceFAQAnswerNegatesSubject(answer string, subject string) bool {
+	subject = canonicalKnowledgeEvidenceSemanticSubject(subject)
+	if answer == "" || subject == "" {
+		return false
+	}
+	if _, negative, ok := knowledgeEvidenceFAQAnswerPolarity(answer); ok && negative {
+		return true
+	}
+	clauses := splitKnowledgeEvidenceAnswerClauses(answer)
+	if len(clauses) == 0 {
+		clauses = []string{answer}
+	}
+	for _, clause := range clauses {
+		if !knowledgeEvidenceTextHasNegativeBoundary(clause) {
+			continue
+		}
+		anchor := canonicalKnowledgeEvidenceSemanticSubject(knowledgeEvidenceNegativeBoundaryAnchor(clause))
+		if anchor != "" && (strings.Contains(anchor, subject) || strings.Contains(subject, anchor)) {
+			return true
+		}
+	}
+	return false
+}
+
+func knowledgeEvidenceQuestionDirectlyAsksExistenceOfSubject(question string, subject string) bool {
+	candidateSubject := knowledgeEvidenceSingleCompanionSubject(question, []string{
+		"是否配备", "是否配有", "是否设有", "是否提供", "是否供应", "是不是有", "有没有", "是否有", "有无",
+		"可不可以", "能不能", "是否可以", "不可以", "能否", "不能", "可以", "支持", "配备", "配有", "设有", "提供", "供应", "没有", "有", "能", "吗",
+	})
+	return knowledgeEvidenceSemanticSubjectsEquivalent(candidateSubject, subject)
+}
+
+func knowledgeEvidenceFAQExistenceSubject(question string, answer string) string {
+	subject := knowledgeEvidenceRoomTypePredicateSubject(question, knowledgeEvidenceConflictRoomTypes(question))
+	if subject == "" {
+		subject = knowledgeEvidenceSingleSubjectForAspects(question, []string{"existence"})
+	}
+	if subject == "" {
+		subject = knowledgeEvidenceSingleSubjectForAspects(answer, []string{"existence"})
+	}
+	return canonicalKnowledgeEvidenceSemanticSubject(subject)
+}
+
+func knowledgeEvidenceExistenceFAQSubjectsComparable(leftQuestion string, leftAnswer string, rightQuestion string, rightAnswer string) bool {
+	leftSubject := knowledgeEvidenceFAQExistenceSubject(leftQuestion, leftAnswer)
+	rightSubject := knowledgeEvidenceFAQExistenceSubject(rightQuestion, rightAnswer)
+	if leftSubject == "" || rightSubject == "" || knowledgeEvidenceSemanticSubjectsEquivalent(leftSubject, rightSubject) {
+		return true
+	}
+
+	leftNarrower := knowledgeEvidenceExistenceSubjectIsNarrower(leftSubject, rightSubject)
+	rightNarrower := knowledgeEvidenceExistenceSubjectIsNarrower(rightSubject, leftSubject)
+	if !leftNarrower && !rightNarrower {
+		return false
+	}
+
+	leftNegative := knowledgeEvidenceFAQAnswerNegatesSubject(leftAnswer, leftSubject)
+	rightNegative := knowledgeEvidenceFAQAnswerNegatesSubject(rightAnswer, rightSubject)
+	if leftNarrower {
+		if isKnowledgeHandoffDirectiveContent(rightAnswer) {
+			return true
+		}
+		return !leftNegative && rightNegative
+	}
+	if isKnowledgeHandoffDirectiveContent(leftAnswer) {
+		return true
+	}
+	return leftNegative && !rightNegative
+}
+
+func knowledgeEvidenceFAQClaimsComparableForConflict(leftQuestion string, leftAnswer string, rightQuestion string, rightAnswer string) bool {
+	leftSubjectClaim := knowledgeEvidenceFAQHasExistenceClaim(leftQuestion, leftAnswer)
+	rightSubjectClaim := knowledgeEvidenceFAQHasExistenceClaim(rightQuestion, rightAnswer)
+	if leftSubjectClaim || rightSubjectClaim {
+		return leftSubjectClaim && rightSubjectClaim &&
+			knowledgeEvidenceExistenceFAQSubjectsComparable(leftQuestion, leftAnswer, rightQuestion, rightAnswer)
+	}
+	return true
+}
+
+func knowledgeEvidenceFAQPairUsesExistenceSubject(leftQuestion string, leftAnswer string, rightQuestion string, rightAnswer string) bool {
+	return knowledgeEvidenceFAQHasExistenceClaim(leftQuestion, leftAnswer) ||
+		knowledgeEvidenceFAQHasExistenceClaim(rightQuestion, rightAnswer)
+}
+
+func knowledgeEvidenceFAQHasExistenceClaim(question string, answer string) bool {
+	if knowledgeEvidenceQuestionShapeHasExistenceSubject(question, knowledgeEvidenceReviewQuestionShape(question)) {
+		return true
+	}
+	subject := knowledgeEvidenceFAQExistenceSubject(question, answer)
+	return subject != "" && knowledgeEvidenceFAQAnswerNegatesSubject(answer, subject)
+}
+
+func knowledgeEvidenceQuestionShapeHasExistenceSubject(question string, shape string) bool {
+	if shape == "existence" {
+		return true
+	}
+	return shape == "list" && knowledgeEvidenceSpatialRecommendationTopic(question) == "" && knowledgeEvidenceFAQExistenceSubject(question, "") != ""
+}
+
 func knowledgeEvidenceSingleSubjectForAspects(text string, aspects []string) string {
 	clauses := splitKnowledgeEvidenceAnswerClauses(text)
 	if len(clauses) == 0 {
@@ -8272,7 +8491,7 @@ func knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(
 	if candidateSubject == "" {
 		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(question, requiredKnowledgeEvidenceAspects(task))
 	}
-	if candidateSubject == "" && strings.Contains(normalizeKnowledgeEvidenceSubjectForMatch(question), canonicalKnowledgeEvidenceSemanticSubject(taskSubject)) {
+	if candidateSubject == "" && knowledgeEvidenceQuestionDirectlyAsksExistenceOfSubject(question, taskSubject) {
 		return true
 	}
 	if candidateSubject == "" {
@@ -8281,7 +8500,7 @@ func knowledgeEvidenceCandidateMatchesImplicitSingleExistenceSubject(
 	if candidateSubject == "" {
 		candidateSubject = knowledgeEvidenceSingleSubjectForAspects(answer, requiredKnowledgeEvidenceAspects(task))
 	}
-	return knowledgeEvidenceSemanticSubjectsEquivalent(taskSubject, candidateSubject)
+	return knowledgeEvidenceExistenceCandidateSupportsTaskSubject(taskSubject, candidateSubject, answer)
 }
 
 func knowledgeEvidenceImplicitSingleExistenceSubject(task knowledgeEvidenceJudgeTask) (string, bool) {
@@ -10027,12 +10246,16 @@ func knowledgeEvidenceTextHasNegativeBoundary(text string) bool {
 	compact := normalizeRuntimeKnowledgeQuery(text)
 	return containsAny(compact, []string{
 		"不免费", "并非免费", "并不是免费", "不是免费",
-		"并不是", "并非", "没有", "不是", "不能", "不会", "无法", "不可", "不含", "不提供", "不支持", "不需要", "无需", "不用", "未配备", "暂不",
+		"并不是", "并非", "没有", "不是", "不能", "不会", "无法", "不可", "不含", "不提供", "未提供", "不供应", "未供应",
+		"不配备", "不配有", "未配备", "未配有", "不支持", "不需要", "无需", "不用", "暂不",
 	})
 }
 
 func knowledgeEvidenceNegativeBoundaryAnchor(clause string) string {
-	for _, marker := range []string{"并不是", "不提供", "不支持", "不需要", "未配备", "没有", "并非", "不是", "不能", "不会", "无法", "不可", "不含", "无需", "暂不"} {
+	for _, marker := range []string{
+		"并不是", "不提供", "未提供", "不供应", "未供应", "不配备", "不配有", "未配备", "未配有",
+		"不支持", "不需要", "没有", "并非", "不是", "不能", "不会", "无法", "不可", "不含", "无需", "暂不",
+	} {
 		index := strings.Index(clause, marker)
 		if index < 0 {
 			continue
