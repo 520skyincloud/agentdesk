@@ -931,3 +931,21 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   `NRestarts=0`、`8083` 返回 HTTP 200；生产消息总数/最大消息 ID 保持 `4757/17193`，
   没有新增 `pending/failed` Outbox。
 - 本轮未执行 50 轮或其他批量主动评测，也未修改生产 Intent Profile、知识库、模型配置或数据库结构。
+
+## 2026-09-02 本地协议校验收口修复
+
+- 修复提交：`d61a8e1d9ba6c0253dba940873a91d5dcc5a5612`。只修改 Intent/Judge
+  协议校验及对应测试，没有新增模型调用、状态或业务入口。
+- Judge 仅在 Intent 已判定为周边推荐时，不再把口语中的“有没有”追加为单主体
+  `existence` 要求；早餐/晚餐、停车/早餐价格、房型和配置范围等明确冲突保护保持不变。
+- Intent 仅修正连续消息中被模型错误标成 `resolved_from_context` 的自包含业务问题；保留
+  Task 数量、顺序、原文和全部 `sourceRefs`，不安全的 `resolvedText` 回退到当前问题原文。
+- `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`
+  与 `git diff --check` 通过。`customer-audit`、`ai-billing` 未修改相同文件，无 Migration、
+  DTO、枚举、WebSocket、数据库结构、知识库、模型配置、计费、Outbox 或转人工变化。
+- 生产 release：`/opt/agentdesk/releases/20260902-141410-local-validation-d61a8e1`；Server
+  SHA-256：`dd6148ff13352ad64753e7095916e6dfdee2ec702ada8104132fcd8bd1b39557`。
+- 回滚点：`/opt/agentdesk/releases/20260902-090246-judge-cfa049e`；部署前完整备份：
+  `/opt/backups/agentdesk-20260902-141301-pre-local-validation-d61a8e1`。
+- 隔离生产冒烟会话 `2065` 验证“附近好玩儿 + 停车”，会话 `2066` 验证
+  `OK → 我好困呐 → 有没有咖啡`，均真实完成并收到回复；未执行 50 轮测试。
