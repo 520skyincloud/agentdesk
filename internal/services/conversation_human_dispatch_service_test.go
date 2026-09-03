@@ -208,6 +208,9 @@ func TestConversationHumanDispatchStoreRoomNoticeSummarizesRelevantCustomerConte
 }
 
 func TestConversationHandoffDirectDispatchWithoutRoomUsesExactSuccessMessage(t *testing.T) {
+	if services.DirectHandoffSuccessMessage != "帮您转接到同事了" {
+		t.Fatalf("unexpected direct handoff success copy: %q", services.DirectHandoffSuccessMessage)
+	}
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
 	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)

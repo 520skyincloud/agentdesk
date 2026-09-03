@@ -32,7 +32,7 @@ const (
 	HandoffWaitingMessage       = "已经帮您通知同事了，我会继续关注。"
 	HandoffOffHoursMessage      = "现在暂时不在人工服务时间内，您可以先把问题发我，我先帮您看着；同事上班后也会继续跟进。"
 	HandoffStoreManualMessage   = "已经帮您通知门店同事了，我会继续关注。"
-	DirectHandoffSuccessMessage = "帮您转接同事啦～"
+	DirectHandoffSuccessMessage = "帮您转接到同事了"
 	manualHandoffCooldown       = 2 * time.Minute
 )
 
