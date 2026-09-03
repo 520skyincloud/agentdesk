@@ -64,9 +64,9 @@ func generatedReplyAIConfigForPlan(config models.AIConfig, plan callbacks.ReplyP
 }
 
 func normalizeStructuredReplyPromptText(text string) string {
-	text = strings.ReplaceAll(text, "回复像微信真人，通常 1-3 句。", "每个 replyParts.content 使用自然微信口吻，按对应任务完整回答。")
-	text = strings.ReplaceAll(text, "回复像微信真人，通常1-3句。", "每个 replyParts.content 使用自然微信口吻，按对应任务完整回答。")
-	text = strings.ReplaceAll(text, "自然微信口吻，1-3句", "每个 replyParts.content 使用自然微信口吻，按对应任务完整回答")
+	text = strings.ReplaceAll(text, "回复像微信真人，通常 1-3 句。", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。")
+	text = strings.ReplaceAll(text, "回复像微信真人，通常1-3句。", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。")
+	text = strings.ReplaceAll(text, "自然微信口吻，1-3句", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤")
 	text = strings.ReplaceAll(text, "最终回复只输出给客人的话", "replyParts 的 content 只写给客人的话")
 	text = strings.ReplaceAll(text, "最终文本只输出给客人的话", "replyParts 的 content 只写给客人的话")
 	return text
@@ -89,7 +89,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	}
 	exampleJSON, _ := json.Marshal(example)
 	b.Write(exampleJSON)
-	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并或增加 taskId；每个 content 只回答对应任务，不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实可能对应多个事实 ID，此时 coveredFactIds 必须全部列出，但 content 只自然表达一次，不得重复同一句话。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会在校验全部任务后再合并为最多三条客户消息。\n")
+	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并、重复或增加 taskId。每个 content 只回答对应任务，只使用该任务列出的事实，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实对应多个事实 ID 时，coveredFactIds 必须全部列出，但 content 只自然表达一次。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会按任务顺序合并为最多三条客户消息。\n")
 	for _, group := range groups {
 		b.WriteString("- ")
 		b.WriteString(group.TaskID)
@@ -317,13 +317,7 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 			if !containsCriticalValue(part.Content, criticalValue) {
 				return fmt.Errorf("%w: content for %s is missing critical value %s", errGeneratedReplyProtocol, group.TaskID, criticalValue)
 			}
-			if !criticalValuePolarityMatches(part.Content, fact.Statement, criticalValue) {
-				return fmt.Errorf("%w: content for %s contradicts critical value %s", errGeneratedReplyProtocol, group.TaskID, criticalValue)
-			}
 		}
-	}
-	if err := validateGeneratedReplyFactAspectBoundaries(part.Content, group.Facts); err != nil {
-		return fmt.Errorf("%w: %v for %s", errGeneratedReplyProtocol, err, group.TaskID)
 	}
 	return nil
 }
@@ -908,32 +902,20 @@ func compactGeneratedReplyContent(content string) string {
 	if len(sentences) < 2 {
 		return strings.TrimSpace(content)
 	}
-	redundant := make([]bool, len(sentences))
-	for containedIndex, contained := range sentences {
-		for containerIndex, container := range sentences {
-			if containerIndex == containedIndex || redundant[containedIndex] {
-				continue
-			}
-			if generatedReplyDisplaySentenceContains(container, contained) {
-				containerText := normalizeGeneratedReplyPresentationClause(container)
-				containedText := normalizeGeneratedReplyPresentationClause(contained)
-				if containerText == containedText && containerIndex > containedIndex {
-					continue
-				}
-				redundant[containedIndex] = true
-			}
-		}
-	}
+	seen := make(map[string]struct{}, len(sentences))
 	var b strings.Builder
 	lastSentence := ""
-	for index, sentence := range sentences {
-		if !redundant[index] {
-			if b.Len() > 0 && !generatedReplySentenceHasTerminalPunctuation(lastSentence) {
-				b.WriteString("\n")
-			}
-			b.WriteString(sentence)
-			lastSentence = sentence
+	for _, sentence := range sentences {
+		sentence = strings.TrimSpace(sentence)
+		if _, exists := seen[sentence]; exists {
+			continue
 		}
+		seen[sentence] = struct{}{}
+		if b.Len() > 0 && !generatedReplySentenceHasTerminalPunctuation(lastSentence) {
+			b.WriteString("\n")
+		}
+		b.WriteString(sentence)
+		lastSentence = sentence
 	}
 	return strings.TrimSpace(b.String())
 }

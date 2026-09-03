@@ -265,7 +265,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
 
-	selections, parseErr := parseKnowledgeEvidenceJudgeResponse(result.Content, tasks)
+	selections, parseErr := parseKnowledgeEvidenceJudgeRuntimeResponse(result.Content, tasks)
 	if parseErr != nil {
 		failureDecision := knowledgeEvidenceJudgeParseFailureDecision(parseErr)
 		trace.Status = failureDecision
@@ -273,18 +273,10 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
-	exactRepaired := repairExactFAQFallbackSelections(tasks, selections)
-	serviceRepaired := repairStoreServiceSupplyInsufficientFAQSelections(tasks, selections)
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
 	if judgeDeadlineTrimmed {
 		trace.Reason += "; judge timeout was bounded by the parent reply deadline"
-	}
-	if exactRepaired > 0 {
-		trace.Reason += fmt.Sprintf("; repaired %d strict exact-FAQ selection(s) without using retrieval scores or semantic similarity", exactRepaired)
-	}
-	if serviceRepaired > 0 {
-		trace.Reason += fmt.Sprintf("; repaired %d complete store service FAQ selection(s) after Judge marked them insufficient", serviceRepaired)
 	}
 	return knowledgeEvidenceJudgeOutcome{
 		Applied:    true,
@@ -843,6 +835,7 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
 
 最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
+严禁把一条长候选知识逐句全部拆成 supportedFacts。只输出当前问题真正需要的最小事实；一个完整 statement 已覆盖多个维度时可以复用该 statement，不再输出它所包含的摘要句或无关细节。
 
 检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
 
@@ -861,6 +854,15 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
+	return parseKnowledgeEvidenceJudgeResponseWithValidation(raw, tasks, false)
+}
+
+// Runtime trusts the Judge's semantic decision and only validates its wire contract.
+func parseKnowledgeEvidenceJudgeRuntimeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
+	return parseKnowledgeEvidenceJudgeResponseWithValidation(raw, tasks, true)
+}
+
+func parseKnowledgeEvidenceJudgeResponseWithValidation(raw string, tasks []knowledgeEvidenceJudgeTask, protocolOnly bool) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
 	normalized, err := normalizeKnowledgeEvidenceJudgeResponseJSON(raw)
 	if err != nil {
 		return nil, knowledgeEvidenceJudgeResponseError(knowledgeEvidenceDecisionMalformed, err)
@@ -946,15 +948,27 @@ func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJu
 				continue
 			}
 			decodedLayer, factsMalformed, missingAspectsMalformed := decodeKnowledgeEvidenceJudgeRawLayer(layerResult)
-			selections[layer] = normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
-				taskID,
-				layer,
-				decodedLayer,
-				expectedCandidates,
-				expectedTasks[taskID],
-				factsMalformed,
-				missingAspectsMalformed,
-			)
+			if protocolOnly {
+				selections[layer] = normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
+					taskID,
+					layer,
+					decodedLayer,
+					expectedCandidates,
+					expectedTasks[taskID],
+					factsMalformed,
+					missingAspectsMalformed,
+				)
+			} else {
+				selections[layer] = normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
+					taskID,
+					layer,
+					decodedLayer,
+					expectedCandidates,
+					expectedTasks[taskID],
+					factsMalformed,
+					missingAspectsMalformed,
+				)
+			}
 		}
 		ret[taskID] = selections
 	}
@@ -1208,6 +1222,79 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionWithMalformedFields(
 		MissingAspects:       missingAspects,
 	}
 	return selection
+}
+
+func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
+	taskID string,
+	layer string,
+	layerResult knowledgeEvidenceJudgeResponseLayer,
+	expectedCandidates map[string]struct{},
+	expectedTask knowledgeEvidenceJudgeTask,
+	supportedFactsMalformed bool,
+	missingAspectsMalformed bool,
+) knowledgeEvidenceLayerSelection {
+	protocolInvalid := protocolInvalidKnowledgeEvidenceLayerSelection()
+	decision := strings.TrimSpace(layerResult.Decision)
+	switch decision {
+	case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined, knowledgeEvidenceDecisionPartial, knowledgeEvidenceDecisionInsufficient:
+	default:
+		return protocolInvalid
+	}
+
+	selectedIDs := make([]string, 0, len(layerResult.SelectedCandidateIDs))
+	seenSelected := make(map[string]struct{}, len(layerResult.SelectedCandidateIDs))
+	for _, rawCandidateID := range layerResult.SelectedCandidateIDs {
+		candidateID := strings.TrimSpace(rawCandidateID)
+		if _, ok := expectedCandidates[candidateID]; !ok {
+			return protocolInvalid
+		}
+		if _, exists := seenSelected[candidateID]; exists {
+			return protocolInvalid
+		}
+		seenSelected[candidateID] = struct{}{}
+		selectedIDs = append(selectedIDs, candidateID)
+	}
+	selectedContainsHandoff := selectedKnowledgeEvidenceContainsHandoffDirective(expectedTask, layer, selectedIDs)
+	selectedHandoff := selectedKnowledgeEvidenceIsHandoffDirective(expectedTask, layer, selectedIDs)
+	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
+		return protocolInvalid
+	}
+	if supportedFactsMalformed || missingAspectsMalformed {
+		return protocolInvalid
+	}
+	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
+	if err != nil {
+		return protocolInvalid
+	}
+	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
+	if err != nil {
+		return protocolInvalid
+	}
+	switch decision {
+	case knowledgeEvidenceDecisionInsufficient:
+		if len(selectedIDs) != 0 || len(supportedFacts) != 0 {
+			return protocolInvalid
+		}
+	case knowledgeEvidenceDecisionDirectSingle:
+		if len(selectedIDs) != 1 || len(missingAspects) != 0 || (!selectedHandoff && len(supportedFacts) == 0) || (selectedHandoff && len(supportedFacts) != 0) {
+			return protocolInvalid
+		}
+	case knowledgeEvidenceDecisionDirectCombined:
+		if len(selectedIDs) < 2 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) != 0 {
+			return protocolInvalid
+		}
+	case knowledgeEvidenceDecisionPartial:
+		if len(selectedIDs) == 0 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) == 0 {
+			return protocolInvalid
+		}
+	}
+	return knowledgeEvidenceLayerSelection{
+		Decision:             decision,
+		DecisionSource:       "model",
+		SelectedCandidateIDs: selectedIDs,
+		SupportedFacts:       supportedFacts,
+		MissingAspects:       missingAspects,
+	}
 }
 
 func repairModelSelectedKnowledgeEvidenceLayer(
@@ -6182,9 +6269,8 @@ func knowledgeEvidenceFactIsMarketingFiller(statement string) bool {
 	return false
 }
 
-// The broad score-based repair below remains legacy-only. Production may use
-// highConfidenceDirectFAQSelection only through the narrow store-supply
-// insufficient repair, after a successful Judge response.
+// The broad score-based repair below remains legacy-only. Runtime model
+// decisions are authoritative and must not be reclassified locally.
 func repairHighConfidenceInsufficientKnowledgeSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
 	repaired := 0
 	for _, task := range tasks {
@@ -6231,7 +6317,7 @@ func repairExactFAQFallbackSelections(tasks []knowledgeEvidenceJudgeTask, select
 		}
 		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
 			selection, ok := taskSelections[layer]
-			if !ok || !knowledgeEvidenceDecisionAllowsExactFAQFallback(selection.Decision) {
+			if !ok || strings.TrimSpace(selection.DecisionSource) == "model" || !knowledgeEvidenceDecisionAllowsExactFAQFallback(selection.Decision) {
 				continue
 			}
 			repairedSelection, ok := strictExactKnowledgeEvidenceFAQSelection(task, layer)
@@ -9814,6 +9900,9 @@ func reconcileSelectedFAQGuidanceFactsForTask(
 	selection knowledgeEvidenceLayerSelection,
 	candidates map[string]knowledgeEvidenceJudgeCandidate,
 ) knowledgeEvidenceLayerSelection {
+	if strings.TrimSpace(selection.DecisionSource) == "model" {
+		return selection
+	}
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle && selection.Decision != knowledgeEvidenceDecisionDirectCombined {
 		return selection
 	}

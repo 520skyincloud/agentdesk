@@ -176,6 +176,50 @@ func TestKnowledgeEvidenceJudgeFailureUsesStrictExactFAQWithoutScoreThreshold(t 
 	}
 }
 
+func TestKnowledgeEvidenceJudgeModelInsufficientDoesNotUseStrictExactFAQFallback(t *testing.T) {
+	storeHit := judgeTestHit(1, 101, "门店早餐", "问题：早餐几点\n答案：南七店早餐时间为7:00-9:30。", 0.99)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		"早餐几点": {
+			KnowledgeBaseIDs: []int64{1},
+			RawHits:          []rag.RetrieveResult{storeHit},
+			Hits:             []rag.RetrieveResult{storeHit},
+			ContextResults:   []rag.RetrieveResult{storeHit},
+			ContextText:      storeHit.Content,
+		},
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return knowledgeEvidenceJudgeOutcome{
+			Applied: true,
+			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				"T1": {
+					knowledgeEvidenceLayerStore: insufficientKnowledgeEvidenceLayerSelection(),
+				},
+			},
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+				SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+				Status:        "completed",
+			},
+		}
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("早餐几点", "1"),
+		Summary:   &RunResult{},
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 1 || len(state.RetrieveResult.EffectiveHits) != 0 || len(state.RetrieveResult.Hits) != 0 {
+		t.Fatalf("a completed model insufficient decision must not be promoted by exact FAQ fallback: %#v", state.RetrieveResult)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Decision != knowledgeEvidenceDecisionInsufficient || trace.Tasks[0].DecisionSource != "model" || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("the completed model decision must remain authoritative: %#v", trace)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeFailureDoesNotUseLegacySemanticScoreRescue(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "拖鞋自取", "问题：需要额外拖鞋怎么办\n答案：可前往1313对面洗衣房领取拖鞋。", 0.93)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -4730,6 +4774,63 @@ func TestParseKnowledgeEvidenceJudgeResponseDoesNotTreatAnswerConditionAsCandida
 	}
 }
 
+func TestParseKnowledgeEvidenceJudgeRuntimeResponsePreservesModelSelectedFacts(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{
+		{
+			TaskID: "T1", Query: "停车场有充电桩吗", SubIntent: "parking", Objective: "availability",
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(1, 101, "停车场充电桩", "问题：停车场有没有充电桩\n答案：地下车库提供充电桩，进入地下车库后右拐可以找到。", 0.8572),
+			}},
+		},
+		{
+			TaskID: "T2", Query: "发票怎么开，多久能下载", SubIntent: "invoice", Objective: "compound_information",
+			Candidates: []knowledgeEvidenceJudgeCandidate{{
+				CandidateID: "T2C1", Layer: knowledgeEvidenceLayerStore,
+				Hit: judgeTestHit(1, 102, "发票申请", "问题：发票怎么开，多久能下载\n答案：退房后在自由家安心宿小程序申请，申请后1至3个工作日上传。", 0.8828),
+			}},
+		},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"location","statement":"地下车库提供充电桩，进入地下车库后右拐可以找到。","criticalValues":["充电桩"]}],"missingAspects":[]}]},{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T2C1"],"supportedFacts":[{"factId":"T2F1","aspect":"method","statement":"退房后在自由家安心宿小程序申请发票。","criticalValues":["退房后","自由家安心宿小程序"]},{"factId":"T2F2","aspect":"time","statement":"发票会在申请后1至3个工作日上传。","criticalValues":["1至3个工作日"]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse runtime Judge response: %v", err)
+	}
+	charging := parsed["T1"][knowledgeEvidenceLayerStore]
+	if charging.Decision != knowledgeEvidenceDecisionDirectSingle || charging.DecisionSource != "model" || len(charging.SupportedFacts) != 1 || charging.SupportedFacts[0].Statement != "地下车库提供充电桩，进入地下车库后右拐可以找到。" {
+		t.Fatalf("runtime parser must preserve the Judge-selected charging fact: %#v", charging)
+	}
+	invoice := parsed["T2"][knowledgeEvidenceLayerStore]
+	if invoice.Decision != knowledgeEvidenceDecisionDirectSingle || invoice.DecisionSource != "model" || len(invoice.SupportedFacts) != 2 || !strings.Contains(invoice.SupportedFacts[0].Statement, "小程序申请发票") || !strings.Contains(invoice.SupportedFacts[1].Statement, "1至3个工作日") {
+		t.Fatalf("runtime parser must preserve the complete Judge-selected invoice facts: %#v", invoice)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeRuntimeResponseStillRejectsMechanicalProtocolErrors(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Query: "停车场有充电桩吗",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "停车场充电桩", "问题：停车场有没有充电桩\n答案：地下车库提供充电桩。", 0.9),
+		}},
+	}
+	for name, raw := range map[string]string{
+		"unknown candidate":           `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"地下车库提供充电桩。","criticalValues":[]}],"missingAspects":[]}]}]}`,
+		"combined with one candidate": `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"地下车库提供充电桩。","criticalValues":[]}],"missingAspects":[]}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatalf("parse runtime Judge response: %v", err)
+			}
+			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+				t.Fatalf("mechanically invalid Judge output must fail: %#v", selection)
+			}
+		})
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeResponseRejectsUnrelatedTopicInsideCombinedSelection(t *testing.T) {
 	tasks := []knowledgeEvidenceJudgeTask{{
 		TaskID:    "T1",
@@ -4852,7 +4953,7 @@ func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *tes
 	task.Candidates = []knowledgeEvidenceJudgeCandidate{candidates["T1C1"], candidates["T1C2"]}
 	selection := knowledgeEvidenceLayerSelection{
 		Decision:             knowledgeEvidenceDecisionDirectCombined,
-		DecisionSource:       "model",
+		DecisionSource:       "exact_faq_fallback",
 		SelectedCandidateIDs: []string{"T1C1", "T1C2"},
 	}
 	got := reconcileSelectedFAQGuidanceFactsForTask(task, knowledgeEvidenceLayerStore, selection, candidates)
@@ -4866,8 +4967,67 @@ func TestReconcileSelectedFAQFactsComputesCompleteEnumerationIntersection(t *tes
 	if len(fact.CriticalValues) != 2 || fact.CriticalValues[0] != "合柴" || fact.CriticalValues[1] != "艺林" {
 		t.Fatalf("only intersection members may remain mandatory: %#v", fact.CriticalValues)
 	}
-	if got.DecisionSource != "model" {
-		t.Fatalf("reconciliation must preserve the model decision source, got %q", got.DecisionSource)
+	if got.DecisionSource != "exact_faq_fallback" {
+		t.Fatalf("reconciliation must preserve the fallback decision source, got %q", got.DecisionSource)
+	}
+}
+
+func TestApplyKnowledgeEvidenceJudgeOutcomePreservesModelSelectionVerbatim(t *testing.T) {
+	hit := judgeTestHit(1, 101, "发票申请", "问题：发票怎么开，多久能下载\n答案：退房后在小程序申请，申请后1至3个工作日上传。", 0.95)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID:    "T1",
+		Query:     "发票怎么开，多久能下载",
+		SubIntent: "invoice",
+		Objective: "compound_information",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1",
+			Layer:       knowledgeEvidenceLayerStore,
+			Hit:         hit,
+		}},
+	}
+	want := knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		DecisionSource:       "model",
+		SelectedCandidateIDs: []string{"T1C1"},
+		SupportedFacts: []knowledgeEvidenceFact{{
+			FactID:         "T1F1",
+			Aspect:         "method",
+			Statement:      "退房后在小程序申请发票。",
+			CriticalValues: []string{"退房后", "小程序"},
+		}},
+	}
+	result := &retrievers.KnowledgeRetrieveResult{
+		KnowledgeBaseIDs: []int64{1},
+		RawHits:          []rag.RetrieveResult{hit},
+		Hits:             []rag.RetrieveResult{hit},
+		ContextResults:   []rag.RetrieveResult{hit},
+		ContextText:      hit.Content,
+	}
+	batch := &runtimeKnowledgeRetrieveBatch{
+		Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: task.Query, Result: result}},
+	}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, result.Options, task.Query, batch.Questions)
+	outcome := knowledgeEvidenceJudgeOutcome{
+		Applied: true,
+		Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+			"T1": {knowledgeEvidenceLayerStore: want},
+		},
+		Trace: callbacks.KnowledgeEvidenceJudgeTraceData{SchemaVersion: knowledgeEvidenceJudgeSchemaVersion, Status: "completed"},
+	}
+
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, outcome)
+	got := outcome.Selections["T1"][knowledgeEvidenceLayerStore]
+	if got.Decision != want.Decision || got.DecisionSource != want.DecisionSource || len(got.SelectedCandidateIDs) != 1 || got.SelectedCandidateIDs[0] != "T1C1" {
+		t.Fatalf("model selection metadata changed during apply: %#v", got)
+	}
+	if len(got.SupportedFacts) != 1 || got.SupportedFacts[0].FactID != "T1F1" || got.SupportedFacts[0].Aspect != "method" || got.SupportedFacts[0].Statement != "退房后在小程序申请发票。" {
+		t.Fatalf("model facts must pass through apply verbatim: %#v", got.SupportedFacts)
+	}
+	if len(got.SupportedFacts[0].CriticalValues) != 2 || got.SupportedFacts[0].CriticalValues[0] != "退房后" || got.SupportedFacts[0].CriticalValues[1] != "小程序" {
+		t.Fatalf("model critical values must not be expanded or rewritten: %#v", got.SupportedFacts[0].CriticalValues)
+	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].DecisionSource != "model" || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || len(result.EffectiveHits) != 1 {
+		t.Fatalf("the preserved model selection must remain the applied answer: trace=%#v result=%#v", trace, result)
 	}
 }
 

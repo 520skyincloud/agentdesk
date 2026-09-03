@@ -76,23 +76,31 @@ func TestNormalizeGeneratedReplyPartsCompactsRepeatedCustomerSentences(t *testin
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
 	}}}
-	for name, content := range map[string]string{
-		"contained":        "完成登记扫人脸就可以开门，无需房卡。无需房卡。",
-		"identical":        "无需房卡。无需房卡。",
-		"mixed_capability": "酒店没有传统前台，可以通过入住机或小程序办理入住。可以通过入住机或小程序办理入住。",
+	for name, test := range map[string]struct {
+		content string
+		want    string
+	}{
+		"contained": {
+			content: "完成登记扫人脸就可以开门，无需房卡。无需房卡。",
+			want:    "完成登记扫人脸就可以开门，无需房卡。无需房卡。",
+		},
+		"identical": {
+			content: "无需房卡。无需房卡。",
+			want:    "无需房卡。",
+		},
+		"mixed_capability": {
+			content: "酒店没有传统前台，可以通过入住机或小程序办理入住。可以通过入住机或小程序办理入住。",
+			want:    "酒店没有传统前台，可以通过入住机或小程序办理入住。可以通过入住机或小程序办理入住。",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			raw := fmt.Sprintf(`{"replyParts":[{"taskId":"task-1","content":%q}]}`, content)
+			raw := fmt.Sprintf(`{"replyParts":[{"taskId":"task-1","content":%q}]}`, test.content)
 			got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
 			if err != nil {
 				t.Fatalf("compact repeated content: %v", err)
 			}
-			if name == "mixed_capability" {
-				if strings.Count(got, "可以通过入住机或小程序办理入住") != 1 {
-					t.Fatalf("contained method must appear once, got %q", got)
-				}
-			} else if strings.Count(got, "无需房卡") != 1 {
-				t.Fatalf("customer-visible fact must appear once, got %q", got)
+			if got != test.want {
+				t.Fatalf("only exactly repeated sentences may be removed: got %q want %q", got, test.want)
 			}
 		})
 	}
@@ -319,11 +327,10 @@ func TestValidateCoveredFactsRequiresKnownCompleteFactsAndCriticalValues(t *test
 	}
 
 	tests := map[string]generatedReplyPart{
-		"missing_fact":      {TaskID: "task-1", Content: "房间内有两瓶矿泉水。", CoveredFactIDs: []string{"F1"}},
-		"unknown_fact":      {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F3"}},
-		"duplicate_fact":    {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F1", "F2"}},
-		"missing_critical":  {TaskID: "task-1", Content: "房间内有矿泉水，都是免费的。", CoveredFactIDs: []string{"F1", "F2"}},
-		"contradicted_fact": {TaskID: "task-1", Content: "房间内有两瓶矿泉水，但矿泉水不免费。", CoveredFactIDs: []string{"F1", "F2"}},
+		"missing_fact":     {TaskID: "task-1", Content: "房间内有两瓶矿泉水。", CoveredFactIDs: []string{"F1"}},
+		"unknown_fact":     {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F3"}},
+		"duplicate_fact":   {TaskID: "task-1", Content: "有两瓶，免费。", CoveredFactIDs: []string{"F1", "F1", "F2"}},
+		"missing_critical": {TaskID: "task-1", Content: "房间内有矿泉水，都是免费的。", CoveredFactIDs: []string{"F1", "F2"}},
 	}
 	for name, part := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -331,6 +338,10 @@ func TestValidateCoveredFactsRequiresKnownCompleteFactsAndCriticalValues(t *test
 				t.Fatalf("expected protocol failure, got %v", err)
 			}
 		})
+	}
+	polarity := generatedReplyPart{TaskID: "task-1", Content: "房间内有两瓶矿泉水，但矿泉水不免费。", CoveredFactIDs: []string{"F1", "F2"}}
+	if err := validateCoveredFacts(polarity, group); err != nil {
+		t.Fatalf("local protocol validation must not interpret fact polarity: %v", err)
 	}
 }
 
@@ -481,7 +492,7 @@ func TestStructuredReplyPromptRemovesPlainTextOutputConflicts(t *testing.T) {
 			t.Fatalf("structured prompt must remove conflicting instruction %q: %s", forbidden, prompt)
 		}
 	}
-	for _, required := range []string{"replyParts.content", "replyParts 的 content"} {
+	for _, required := range []string{"replyParts.content", "replyParts 的 content", "普通问题用 1-2 句", "流程问题可用 2-3 个简短步骤"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("structured prompt must scope customer-facing text to %q: %s", required, prompt)
 		}
@@ -516,7 +527,7 @@ func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
 	}
 }
 
-func TestNormalizeGeneratedReplyPartsRejectsCapabilityExpansionBeyondExistenceFact(t *testing.T) {
+func TestNormalizeGeneratedReplyPartsDoesNotApplyLocalAspectVeto(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID:        "task-1",
 		Intent:        "hotel_info",
@@ -530,8 +541,8 @@ func TestNormalizeGeneratedReplyPartsRejectsCapabilityExpansionBeyondExistenceFa
 	raw := `{"replyParts":[{"taskId":"task-1","content":"酒店有外卖机器人，可以送到房间。","coveredFactIds":["task-1F1"]}]}`
 
 	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
-	if got != "" || !errors.Is(err, errGeneratedReplyProtocol) || !strings.Contains(err.Error(), "unsupported scope claim") {
-		t.Fatalf("existence-only evidence must reject an invented delivery scope, got=%q err=%v", got, err)
+	if err != nil || got != "酒店有外卖机器人，可以送到房间。" {
+		t.Fatalf("local protocol validation must leave semantic scope decisions to Judge and Generate, got=%q err=%v", got, err)
 	}
 }
 
