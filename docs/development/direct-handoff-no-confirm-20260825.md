@@ -42,6 +42,15 @@ go test -p=1 \
 
 本次修改的回复引擎文件与 `origin/codex/ai-billing`、`origin/codex/customer-audit` 存在同文件演进，后续合并应以本次提交为独立补丁逐文件处理，不建议整分支直接覆盖。无 model、migration 或对外契约冲突。
 
+## 2026-09-03 转接成功话术调整
+
+- 运行提交：`45d5e4c11340d3cf5201a7cdcd8fd06fb40cd84f`。仅修改转接成功常量、精确文案测试及本文档；房号收集、真实转接、人工状态和恢复逻辑未变。
+- 无数据库、Migration、权限、配置、DTO、枚举、HTTP、WebSocket、模型、知识库或计费变化。
+- 聚焦测试通过：`go test -p=1 ./internal/services ./internal/ai/runtime ./internal/ai/runtime/executor -count=1`。
+- 生产 release：`/opt/agentdesk/releases/20260903-055023-handoff-copy-45d5e4c`；Server SHA-256：`727426614a5b85f5f98330999a872d2db799d917f311f2f01d8a4b175da7184d`。
+- 回滚点：`/opt/agentdesk/releases/20260903-031918-judge-thin-7336d13`。本次无数据变更，异常时只需原子切回旧 release。
+- `origin/codex/ai-billing` 未修改目标 service；`origin/codex/customer-audit` 有该 service 的历史演进，合并时只带入本次常量补丁，不覆盖其租户路由修改。
+
 ## 回滚
 
 本次无数据变更。生产异常时只需把 `/opt/agentdesk/current` 原子切回：
