@@ -858,13 +858,18 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		if len(rawHits) == 0 {
 			rawHits = question.Result.Hits
 		}
+		retrievalQuery := strings.TrimSpace(question.EvidenceQuery)
+		if retrievalQuery == "" {
+			retrievalQuery = strings.TrimSpace(question.Query)
+		}
 		item := knowledgeEvidenceJudgeTask{
-			TaskID:        question.TaskID,
-			Intent:        canonicalIntentCode(question.Intent),
-			Query:         strings.TrimSpace(question.Query),
-			SubIntent:     strings.TrimSpace(question.SubIntent),
-			Objective:     semanticGateNormalizeObjective(question.Objective),
-			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question),
+			TaskID:         question.TaskID,
+			Intent:         canonicalIntentCode(question.Intent),
+			Query:          strings.TrimSpace(question.Query),
+			RetrievalQuery: retrievalQuery,
+			SubIntent:      strings.TrimSpace(question.SubIntent),
+			Objective:      semanticGateNormalizeObjective(question.Objective),
+			SourceContext:  buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question),
 		}
 		item.Entities = make([]knowledgeEvidenceJudgeEntity, 0, len(question.Entities))
 		for _, entity := range question.Entities {
@@ -1643,6 +1648,11 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		selectedSelection := knowledgeEvidenceLayerSelection{}
 		if selectedLayer != "" {
 			selection := selections[selectedLayer]
+			externalProxyPartial := selection.Decision == knowledgeEvidenceDecisionPartial &&
+				isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
+			if externalProxyPartial {
+				selection.MissingAspects = nil
+			}
 			selectedSelection = selection
 			taskTrace.Decision = selection.Decision
 			taskTrace.DecisionSource = selection.DecisionSource
@@ -1659,6 +1669,8 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			switch {
 			case selectionHasHandoffDirective(selection, selectedLayer, candidateByID, task.Query):
 				disposition = runtimeKnowledgeDispositionDirectHandoff
+			case externalProxyPartial:
+				disposition = runtimeKnowledgeDispositionAnswer
 			case selection.Decision == knowledgeEvidenceDecisionPartial:
 				disposition = runtimeKnowledgeDispositionAnswerThenHandoff
 			default:
@@ -2760,23 +2772,8 @@ func routeExternalProxyNoEvidenceAsCapabilityBoundary(
 	taskIDs := make([]string, 0)
 	for index := range batch.Questions {
 		question := &batch.Questions[index]
-		if !isExternalProxyActionClassification(question.Intent, question.SubIntent, question.Objective) {
-			continue
-		}
-		switch question.Disposition {
-		case runtimeKnowledgeDispositionAnswerThenHandoff:
-			question.Disposition = runtimeKnowledgeDispositionAnswer
-			if trace != nil {
-				for traceIndex := range trace.Tasks {
-					if strings.TrimSpace(trace.Tasks[traceIndex].TaskID) == strings.TrimSpace(question.TaskID) {
-						trace.Tasks[traceIndex].Disposition = runtimeKnowledgeDispositionAnswer
-						break
-					}
-				}
-			}
-			continue
-		case runtimeKnowledgeDispositionNoEvidenceHandoff:
-		default:
+		if question.Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+			!isExternalProxyActionClassification(question.Intent, question.SubIntent, question.Objective) {
 			continue
 		}
 		taskID := strings.TrimSpace(question.TaskID)

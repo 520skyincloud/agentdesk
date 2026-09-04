@@ -86,8 +86,9 @@ Intent V2 的每个任务同时保留：
   轻量实体，不建立第二套持久化 Task Memory。
 - `text` / `OriginalText`：当前 Task 在 `sourceRefs[0]` 对应客户消息中的连续原话；
   指代补全和语义改写只能写入 `resolvedText`。
-- `resolvedText`：补全明确回指、比较或省略后的自包含问题，用于检索、Judge
-  和 Generate。
+- `resolvedText`：补全明确回指、比较或省略后的自包含语义问题，供 Judge 和 Generate
+  使用。检索可从它派生仅用于召回的 `EvidenceQuery`，但该改写不得反向替换 Judge 的
+  语义问题。
 - `sourceRefs`：按 `U1`、`U2` 等引用当前短消息组；首项是主要问题来源，其余
   是该任务共同消化的上下文来源。
 

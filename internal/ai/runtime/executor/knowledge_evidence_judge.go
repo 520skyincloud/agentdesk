@@ -50,15 +50,16 @@ type knowledgeEvidenceJudge interface {
 }
 
 type knowledgeEvidenceJudgeTask struct {
-	TaskID        string
-	Intent        string
-	Query         string
-	SubIntent     string
-	Objective     string
-	Entities      []knowledgeEvidenceJudgeEntity
-	SourceContext []knowledgeEvidenceJudgeSourceMessage
-	Candidates    []knowledgeEvidenceJudgeCandidate
-	RawCandidates []knowledgeEvidenceJudgeCandidate
+	TaskID         string
+	Intent         string
+	Query          string
+	RetrievalQuery string
+	SubIntent      string
+	Objective      string
+	Entities       []knowledgeEvidenceJudgeEntity
+	SourceContext  []knowledgeEvidenceJudgeSourceMessage
+	Candidates     []knowledgeEvidenceJudgeCandidate
+	RawCandidates  []knowledgeEvidenceJudgeCandidate
 }
 
 type knowledgeEvidenceJudgeEntity struct {
@@ -6406,12 +6407,16 @@ func strictExactKnowledgeEvidenceFAQSelection(task knowledgeEvidenceJudgeTask, l
 		question  string
 		answer    string
 	}
+	exactQuery := strings.TrimSpace(task.RetrievalQuery)
+	if exactQuery == "" {
+		exactQuery = strings.TrimSpace(task.Query)
+	}
 	matches := make([]exactMatch, 0, 2)
 	for _, candidate := range task.Candidates {
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		question, answer, ok := exactKnowledgeEvidenceFAQMatch(candidate.Hit, task.Query)
+		question, answer, ok := exactKnowledgeEvidenceFAQMatch(candidate.Hit, exactQuery)
 		if !ok || strings.TrimSpace(answer) == "" {
 			continue
 		}
@@ -6430,7 +6435,7 @@ func strictExactKnowledgeEvidenceFAQSelection(task knowledgeEvidenceJudgeTask, l
 		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
 			continue
 		}
-		_, answer, ok := exactKnowledgeEvidenceFAQMatch(candidate.Hit, task.Query)
+		_, answer, ok := exactKnowledgeEvidenceFAQMatch(candidate.Hit, exactQuery)
 		if !ok || strings.TrimSpace(answer) == "" {
 			continue
 		}

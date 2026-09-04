@@ -378,33 +378,33 @@ func TestExternalProxyCapabilityBoundaryDoesNotOverrideOtherServiceRoutes(t *tes
 }
 
 func TestExternalProxyPartialKeepsSelectedEvidenceWithoutHandoff(t *testing.T) {
-	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
-		TaskID:         "external",
-		Intent:         "service_request",
-		SubIntent:      "external_proxy_action",
-		Objective:      "action_request",
-		Disposition:    runtimeKnowledgeDispositionAnswerThenHandoff,
-		MissingAspects: []string{"酒店不能代执行外部下单"},
-	}}}
-	trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
-		TaskID:      "external",
-		Decision:    knowledgeEvidenceDecisionPartial,
-		Disposition: runtimeKnowledgeDispositionAnswerThenHandoff,
-		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
-			FactID: "externalF1", Aspect: "method", Statement: "可以自行下单。",
+	hit := judgeTestHit(1, 101, "外卖下单", "问题：怎么点外卖？\n答案：可以自行在美团下单。", 0.9)
+	result := &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{hit}}
+	batch := &runtimeKnowledgeRetrieveBatch{
+		Questions: []runtimeKnowledgeQuestionResult{{TaskID: "external", Result: result}},
+		Merged:    &retrievers.KnowledgeRetrieveResult{},
+	}
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "external", Intent: "service_request", Query: "帮我点个外卖", SubIntent: "external_proxy_action", Objective: "action_request",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "externalC1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
+	}
+	outcome := knowledgeEvidenceJudgeOutcome{Applied: true, Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+		"external": {knowledgeEvidenceLayerStore: {
+			Decision: knowledgeEvidenceDecisionPartial, DecisionSource: "model", SelectedCandidateIDs: []string{"externalC1"},
+			SupportedFacts: []knowledgeEvidenceFact{{FactID: "externalF1", Aspect: "method", Statement: "可以自行在美团下单。"}},
+			MissingAspects: []string{"酒店不能代执行外部下单"},
 		}},
-		MissingAspects: []string{"酒店不能代执行外部下单"},
-	}}}
+	}}
 
-	if taskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &trace); len(taskIDs) != 0 {
-		t.Fatalf("partial evidence must not be converted into a no-evidence task: %#v", taskIDs)
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, outcome)
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].MissingAspects) != 0 {
+		t.Fatalf("external proxy partial evidence must answer without active missing aspects: %#v", batch.Questions[0])
 	}
-	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].MissingAspects) != 1 {
-		t.Fatalf("external proxy partial evidence must remain selected without handoff: %#v", batch.Questions[0])
+	if strings.Contains(result.ContextText, "尚未确认方面") || strings.Contains(result.ContextText, "酒店不能代执行外部下单") {
+		t.Fatalf("external proxy capability boundary must not leak into the fact boundary: %q", result.ContextText)
 	}
-	if trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.Tasks[0].Decision != knowledgeEvidenceDecisionPartial ||
-		len(trace.Tasks[0].SupportedFacts) != 1 || len(trace.Tasks[0].MissingAspects) != 1 {
-		t.Fatalf("trace must preserve the Judge decision and facts while removing handoff: %#v", trace.Tasks[0])
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || len(trace.Tasks[0].MissingAspects) != 0 || len(trace.Tasks[0].SupportedFacts) != 1 {
+		t.Fatalf("execution trace must keep facts and clear active handoff gaps: %#v", trace.Tasks)
 	}
 }
 
@@ -743,7 +743,15 @@ func TestResolvedIntentTaskTextReplacesEllipticalBurstQuery(t *testing.T) {
 }
 
 func TestRuntimeKnowledgeRetrievalTrimsConversationalLeadButKeepsLogicalQuery(t *testing.T) {
-	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{{
+			KnowledgeBaseID: 1,
+			ChunkID:         101,
+			Content:         "问题：怎么办理入住\n答案：请按入住指引办理。",
+			Score:           0.95,
+		}}},
+	}
 	batch, err := retrieveContextForRuntimeQuestionList(
 		context.Background(),
 		retriever,
@@ -762,6 +770,13 @@ func TestRuntimeKnowledgeRetrievalTrimsConversationalLeadButKeepsLogicalQuery(t 
 	}
 	if batch.Questions[0].EvidenceQuery != "怎么办理入住" {
 		t.Fatalf("retrieval query must keep the cleaned question, got %#v", batch.Questions[0])
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "还有怎么办理入住")
+	if len(tasks) != 1 || tasks[0].Query != "还有怎么办理入住" || tasks[0].RetrievalQuery != "怎么办理入住" {
+		t.Fatalf("Judge semantic and exact-recovery queries must stay separate: %#v", tasks)
+	}
+	if selection, ok := strictExactKnowledgeEvidenceFAQSelection(tasks[0], knowledgeEvidenceLayerStore); !ok || selection.DecisionSource != "exact_faq_fallback" {
+		t.Fatalf("strict failure recovery must still use the cleaned retrieval query: ok=%v selection=%#v", ok, selection)
 	}
 }
 
