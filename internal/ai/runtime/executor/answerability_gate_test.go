@@ -258,6 +258,125 @@ func TestKnowledgePolicyPersistsExplicitNoEvidenceForZeroCandidateSibling(t *tes
 	}
 }
 
+func TestKnowledgePolicyKeepsExternalProxyNoEvidenceInGenerateWithoutHandoff(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		Text: "帮我点个外卖", OriginalText: "帮我点个外卖", ResolvedText: "帮我点个外卖",
+		NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+	}}})
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", SubIntent: "external_proxy_action", NeedsKnowledge: true, ShouldReply: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+			Text: "帮我点个外卖", ResolvedText: "帮我点个外卖", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+		}},
+	}
+	summary := &RunResult{}
+
+	state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("帮我点个外卖", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("external proxy capability boundary must not request handoff: %#v", summary)
+	}
+	if state.AnswerabilityStatus != answerabilityStatusNoContext ||
+		!messagesContainContent(state.Decision.Instructions, "当前没有选中可用的自助知识事实") {
+		t.Fatalf("external proxy no-evidence path must continue to Generate with a boundary instruction: %#v", state)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.DeferredHandoff {
+		t.Fatalf("external proxy no-evidence trace must be answerable without deferred handoff: %#v", trace)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 {
+		t.Fatalf("expected one preserved task, got %#v", plan.TaskPlans)
+	}
+	task := plan.TaskPlans[0]
+	if task.Output != "text_reply" || task.OutputKind != "text" || !task.ReplyRequired || task.NeedsKnowledge ||
+		task.SelectedLayer != "" || len(task.SupportedFacts) != 0 {
+		t.Fatalf("external proxy no-evidence task must become a plain text capability reply: %#v", task)
+	}
+}
+
+func TestKnowledgePolicyKeepsExternalProxySourceUnavailableOutOfHandoff(t *testing.T) {
+	setupRuntimeIntentConfigTestDB(t)
+	tests := []struct {
+		name         string
+		knowledgeIDs string
+		retriever    knowledgeContextRetriever
+	}{
+		{name: "no configured knowledge", knowledgeIDs: ""},
+		{name: "retriever unavailable", knowledgeIDs: "1"},
+		{name: "retriever has no knowledge", knowledgeIDs: "1", retriever: &fakeKnowledgeContextRetriever{}},
+		{name: "retrieval failed", knowledgeIDs: "1", retriever: &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}, err: errors.New("retrieve failed")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			summary := &RunResult{}
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent: "service_request", SubIntent: "external_proxy_action", NeedsKnowledge: true, ShouldReply: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+					Text: "帮我点个外卖", ResolvedText: "帮我点个外卖", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+				}},
+			}
+			gate := newTestKnowledgePolicyGate(tt.retriever)
+			state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+				Request:   newKnowledgePolicyRunInput("帮我点个外卖", tt.knowledgeIDs),
+				Summary:   summary,
+				Collector: collector,
+				Intent:    intent,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate returned error: %v", err)
+			}
+			if summary.handoffDirective {
+				t.Fatalf("source-unavailable external proxy must not request handoff: %#v", summary)
+			}
+			if !messagesContainContent(state.Decision.Instructions, "外部代执行能力边界") {
+				t.Fatalf("missing capability boundary instruction: %#v", state.Decision.Instructions)
+			}
+			plan := collector.Data.Pipeline.ReplyPlan
+			if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != "text_reply" || plan.TaskPlans[0].NeedsKnowledge {
+				t.Fatalf("external proxy must remain a plain text task: %#v", plan.TaskPlans)
+			}
+			for _, action := range collector.Data.ActionLedger.RequestedActions {
+				if action.Action == "human_route" {
+					t.Fatalf("external proxy source failure must not request human_route: %#v", collector.Data.ActionLedger)
+				}
+			}
+		})
+	}
+}
+
+func TestExternalProxyCapabilityBoundaryDoesNotOverrideOtherServiceRoutes(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{
+		{TaskID: "external", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request", Disposition: runtimeKnowledgeDispositionDirectHandoff},
+		{TaskID: "internal", Intent: "service_request", SubIntent: "room_supplies", Objective: "action_request", Disposition: runtimeKnowledgeDispositionNoEvidenceHandoff},
+	}}
+	trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+		{TaskID: "external", Disposition: runtimeKnowledgeDispositionDirectHandoff},
+		{TaskID: "internal", Disposition: runtimeKnowledgeDispositionNoEvidenceHandoff},
+	}}
+	if taskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &trace); len(taskIDs) != 0 {
+		t.Fatalf("direct handoff and internal service routes must remain unchanged: %#v", taskIDs)
+	}
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionDirectHandoff ||
+		batch.Questions[1].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff {
+		t.Fatalf("unrelated dispositions changed: %#v", batch.Questions)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *testing.T) {
 	batch := &runtimeKnowledgeRetrieveBatch{Questions: make([]runtimeKnowledgeQuestionResult, 0, knowledgeEvidenceJudgeBatchCandidateBudget+1)}
 	for index := 0; index < knowledgeEvidenceJudgeBatchCandidateBudget+1; index++ {

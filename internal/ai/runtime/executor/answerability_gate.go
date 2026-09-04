@@ -2516,33 +2516,36 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	configuredKnowledgeIDs := utils.SplitInt64s(req.AIAgent.KnowledgeIDs)
 	if len(configuredKnowledgeIDs) == 0 {
-		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题没有配置可用知识库") {
+		if shouldMarkUnavailableKnowledgeHandoff(state, "当前酒店业务问题没有配置可用知识库") {
 			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有配置可用知识库")
 		}
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendUnavailableExternalProxyInstruction(state)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but no knowledge configured", nil)
 		return state, nil
 	}
 	retriever := gate.newRetriever(req.AIAgent)
 	state.KnowledgeIDs = append([]int64(nil), configuredKnowledgeIDs...)
 	if retriever == nil {
-		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索器不可用") {
+		if shouldMarkUnavailableKnowledgeHandoff(state, "当前酒店业务问题知识检索器不可用") {
 			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索器不可用")
 		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendUnavailableExternalProxyInstruction(state)
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retriever unavailable", nil)
 		return state, nil
 	}
 	knowledgeIDs := retriever.KnowledgeBaseIDs()
 	state.KnowledgeIDs = append([]int64(nil), knowledgeIDs...)
 	if len(knowledgeIDs) == 0 {
-		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题没有可用知识库") {
+		if shouldMarkUnavailableKnowledgeHandoff(state, "当前酒店业务问题没有可用知识库") {
 			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题没有可用知识库")
 		}
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, configuredKnowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendUnavailableExternalProxyInstruction(state)
 		state.recordAnswerability(answerabilityStatusNoContext, "intent requires knowledge but retriever has no knowledge", nil)
 		return state, nil
 	}
@@ -2561,21 +2564,23 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	batch, err := retrieveContextForRuntimeQuestions(ctx, retriever, retrieveOptions, query, intent, replyPlans...)
 	if err != nil {
-		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索失败") {
+		if shouldMarkUnavailableKnowledgeHandoff(state, "当前酒店业务问题知识检索失败") {
 			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索失败")
 		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendUnavailableExternalProxyInstruction(state)
 		state.ErrorMessage = err.Error()
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", err)
 		return state, nil
 	}
 	if retrieveErr, allFailed := runtimeKnowledgeRetrieveBatchCompleteFailure(batch); allFailed {
-		if !deferUnavailableKnowledgeForIndependentWork(state, "当前酒店业务问题知识检索失败") {
+		if shouldMarkUnavailableKnowledgeHandoff(state, "当前酒店业务问题知识检索失败") {
 			markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识检索失败")
 		}
 		state.Decision = buildKnowledgeRetrievalErrorDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendUnavailableExternalProxyInstruction(state)
 		state.ErrorMessage = retrieveErr.Error()
 		state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge retrieval failed", retrieveErr)
 		return state, nil
@@ -2618,6 +2623,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		result = batch.Merged
 	}
 	judgeTrace = appendRuntimeKnowledgeUnjudgedTaskTrace(judgeTrace, batch)
+	externalProxyBoundaryTaskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &judgeTrace)
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 	result = batch.Merged
@@ -2683,6 +2689,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			willRequestHandoff,
 		)
 		activePlan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(activePlan, judgeTrace, batch.Questions)
+		activePlan = convertExternalProxyCapabilityBoundaryTasks(activePlan, externalProxyBoundaryTaskIDs)
 		state.Input.Collector.SetReplyPlan(activePlan)
 	}
 	if len(pendingQuestions) > 0 {
@@ -2716,6 +2723,16 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge evidence judge protocol failure was isolated to affected task(s)", nil)
 			return state, nil
 		}
+		if len(externalProxyBoundaryTaskIDs) > 0 {
+			state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
+			state.prependDecisionInstruction(knowledgeActionInstruction)
+			state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(buildExternalProxyCapabilityBoundaryInstruction(externalProxyBoundaryTaskIDs)))
+			if deferredInstruction != "" {
+				state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(deferredInstruction))
+			}
+			state.recordAnswerability(answerabilityStatusNoContext, "external proxy action has no self-service evidence; capability boundary reply preserved", nil)
+			return state, nil
+		}
 		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识库没有可用答案")
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
@@ -2724,11 +2741,82 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	state.Decision = buildKnowledgeGuardDecision(req.AIAgent, result)
 	state.prependDecisionInstruction(knowledgeActionInstruction)
+	if len(externalProxyBoundaryTaskIDs) > 0 {
+		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(buildExternalProxyCapabilityBoundaryInstruction(externalProxyBoundaryTaskIDs)))
+	}
 	if deferredInstruction != "" {
 		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(deferredInstruction))
 	}
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func routeExternalProxyNoEvidenceAsCapabilityBoundary(
+	batch *runtimeKnowledgeRetrieveBatch,
+	trace *callbacks.KnowledgeEvidenceJudgeTraceData,
+) []string {
+	if batch == nil {
+		return nil
+	}
+	taskIDs := make([]string, 0)
+	for index := range batch.Questions {
+		question := &batch.Questions[index]
+		if question.Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+			!isExternalProxyActionClassification(question.Intent, question.SubIntent, question.Objective) {
+			continue
+		}
+		taskID := strings.TrimSpace(question.TaskID)
+		if taskID == "" {
+			continue
+		}
+		question.Disposition = runtimeKnowledgeDispositionAnswer
+		question.MissingAspects = nil
+		taskIDs = appendIfMissing(taskIDs, taskID)
+		if trace == nil {
+			continue
+		}
+		for traceIndex := range trace.Tasks {
+			if strings.TrimSpace(trace.Tasks[traceIndex].TaskID) == taskID {
+				trace.Tasks[traceIndex].Disposition = runtimeKnowledgeDispositionAnswer
+				break
+			}
+		}
+	}
+	return taskIDs
+}
+
+func convertExternalProxyCapabilityBoundaryTasks(plan callbacks.ReplyPlanTraceData, taskIDs []string) callbacks.ReplyPlanTraceData {
+	if len(taskIDs) == 0 {
+		return plan
+	}
+	taskSet := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		if taskID = strings.TrimSpace(taskID); taskID != "" {
+			taskSet[taskID] = struct{}{}
+		}
+	}
+	for index := range plan.TaskPlans {
+		task := &plan.TaskPlans[index]
+		if _, ok := taskSet[strings.TrimSpace(task.TaskID)]; !ok ||
+			!isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			continue
+		}
+		task.Output = "text_reply"
+		task.OutputKind = "text"
+		task.ReplyRequired = true
+		task.NeedsKnowledge = false
+		task.SelectedLayer = ""
+		task.SelectedCandidateIDs = nil
+		task.SupportedFacts = nil
+		task.MissingAspects = nil
+	}
+	plan.ActiveTaskCount = len(plan.TaskPlans)
+	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
+	return plan
+}
+
+func buildExternalProxyCapabilityBoundaryInstruction(taskIDs []string) string {
+	return "【外部代执行能力边界】仅适用于任务 " + strings.Join(taskIDs, "、") + "：当前没有选中可用的自助知识事实，只需礼貌说明无法直接替客户完成外部下单、叫车、代买、代订或联系商家的操作；不得承诺已经执行或稍后执行，也不得仅因此转人工。不要把这条规则用于酒店内部送物、维修、开门等服务。"
 }
 
 func appendRuntimeKnowledgeUnjudgedTaskTrace(
@@ -2839,6 +2927,51 @@ func runtimeReplyPlanHasIndependentNonKnowledgeWork(plan callbacks.ReplyPlanTrac
 	return false
 }
 
+func shouldMarkUnavailableKnowledgeHandoff(state *answerabilityGateState, reason string) bool {
+	if deferUnavailableKnowledgeForIndependentWork(state, reason) {
+		return false
+	}
+	if state == nil {
+		return true
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: buildReplyTaskPlans(state.Input.Intent)}
+	for _, task := range plan.TaskPlans {
+		if runtimeReplyTaskUsesKnowledge(task) &&
+			!isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			return true
+		}
+	}
+	return len(externalProxyCapabilityBoundaryTaskIDs(plan)) == 0
+}
+
+func appendUnavailableExternalProxyInstruction(state *answerabilityGateState) {
+	if state == nil {
+		return
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: buildReplyTaskPlans(state.Input.Intent)}
+	if state.Input.Collector != nil && len(state.Input.Collector.Data.Pipeline.ReplyPlan.TaskPlans) > 0 {
+		plan = state.Input.Collector.Data.Pipeline.ReplyPlan
+	}
+	if taskIDs := externalProxyCapabilityBoundaryTaskIDs(plan); len(taskIDs) > 0 {
+		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(buildExternalProxyCapabilityBoundaryInstruction(taskIDs)))
+	}
+}
+
+func externalProxyCapabilityBoundaryTaskIDs(plan callbacks.ReplyPlanTraceData) []string {
+	taskIDs := make([]string, 0)
+	for index, task := range plan.TaskPlans {
+		if !isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			continue
+		}
+		taskID := strings.TrimSpace(task.TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		taskIDs = appendIfMissing(taskIDs, taskID)
+	}
+	return taskIDs
+}
+
 func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, reason string) bool {
 	if state == nil || state.Input.Collector == nil {
 		return false
@@ -2850,9 +2983,8 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 		plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
 		state.Input.Collector.SetReplyPlan(plan)
 	}
-	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
-
 	pending := make([]runtimeKnowledgeQuestionDisposition, 0)
+	externalProxyTaskIDs := make([]string, 0)
 	for index, task := range plan.TaskPlans {
 		if !runtimeReplyTaskUsesKnowledge(task) {
 			continue
@@ -2860,6 +2992,10 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 		taskID := strings.TrimSpace(task.TaskID)
 		if taskID == "" {
 			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		if isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			externalProxyTaskIDs = appendIfMissing(externalProxyTaskIDs, taskID)
+			continue
 		}
 		query := strings.TrimSpace(task.ResolvedText)
 		if query == "" {
@@ -2874,12 +3010,14 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 			NeedsHandoff: true,
 		})
 	}
-	if len(pending) == 0 {
-		return false
+	if len(externalProxyTaskIDs) > 0 {
+		plan = convertExternalProxyCapabilityBoundaryTasks(plan, externalProxyTaskIDs)
+		state.Input.Collector.SetReplyPlan(plan)
 	}
+	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
 
 	autoHandoffEnabled := services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(state.Input.Request.Conversation.ID)
-	if autoHandoffEnabled {
+	if autoHandoffEnabled && len(pending) > 0 {
 		activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
 		state.Input.Collector.SetReplyPlan(activePlan)
 	}
@@ -2893,12 +3031,20 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 	if strings.TrimSpace(judgeTrace.Reason) == "" {
 		judgeTrace.Reason = "knowledge source unavailable before evidence judging"
 	}
-	if autoHandoffEnabled {
+	if autoHandoffEnabled && len(pending) > 0 {
 		judgeTrace.DeferredHandoff = true
 		judgeTrace.DeferredHandoffReason = deferredRuntimeKnowledgeHandoffReason(pending)
 		if strings.TrimSpace(reason) != "" {
 			judgeTrace.DeferredHandoffReason = strings.TrimSpace(reason) + "；" + judgeTrace.DeferredHandoffReason
 		}
+	}
+	for _, taskID := range externalProxyTaskIDs {
+		judgeTrace.Tasks = append(judgeTrace.Tasks, callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			TaskID:         taskID,
+			Decision:       knowledgeEvidenceDecisionInsufficient,
+			DecisionSource: "source_unavailable",
+			Disposition:    runtimeKnowledgeDispositionAnswer,
+		})
 	}
 	for _, item := range pending {
 		if autoHandoffEnabled {

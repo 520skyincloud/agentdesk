@@ -949,3 +949,22 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   `/opt/backups/agentdesk-20260902-141301-pre-local-validation-d61a8e1`。
 - 隔离生产冒烟会话 `2065` 验证“附近好玩儿 + 停车”，会话 `2066` 验证
   `OK → 我好困呐 → 有没有咖啡`，均真实完成并收到回复；未执行 50 轮测试。
+
+## 2026-09-04 Intent 本地校验瘦身与外部代办边界
+
+- Intent 模型继续唯一负责拆题、意图分类和 `resolvedText`。本地仅保留 JSON 字段、枚举、
+  `sourceRefs` 范围与顺序、`text` 原文归属、上下文指针和精确重复 Task 合并；删除 90 个
+  已不可达的旧中文语义判断函数，不再用关键词、字符重叠或本地候选重新做一遍 NLU。
+- 同轮上下文补全只能引用更早 URef，且 `relationToPrevious=independent`；跨轮回指继续要求
+  previous 关系和紧邻客户/客服问答。`conversation_recap` 只要求存在实际可供生成阶段使用的
+  有界历史，不再误要求完整紧邻问答对。
+- 新增精确子类 `service_request/external_proxy_action + action_request`：代点外卖、叫车、
+  代买、代订等外部操作，Judge 只选择地址、电话、入口或步骤等自助信息；有知识时回答
+  真实能力边界和自助方案，知识源不可用或无证据时只说明不能代操作，不因此转人工。
+  酒店内部送物、补用品、维修、开门、换房、清洁，以及明确人工请求和知识库明确“转接”
+  均保持原路径。
+- 未修改数据库、Migration、知识库、模型配置、计费、Outbox、人工状态机、API、DTO、枚举
+  或 WebSocket。`customer-audit`、`ai-billing` 未发现同文件改动。
+- 验证通过：
+  `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`
+  和 `git diff --check`。提交、推送、构建、部署及生产冒烟结果在完成后补记。

@@ -125,7 +125,30 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 	default:
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")
 	}
-	return appendSpatialFactInstruction(callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}, intent)
+	prompt := appendSpatialFactInstruction(callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}, intent)
+	if hasExternalProxyActionTask(intent) {
+		prompt.Instructions = append(prompt.Instructions, externalProxyActionGenerationInstruction())
+	}
+	return prompt
+}
+
+func isExternalProxyActionClassification(intent string, subIntent string, objective string) bool {
+	return canonicalIntentCode(intent) == "service_request" &&
+		strings.TrimSpace(subIntent) == "external_proxy_action" &&
+		semanticGateNormalizeObjective(objective) == "action_request"
+}
+
+func hasExternalProxyActionTask(intent callbacks.IntentTraceData) bool {
+	for _, task := range intent.IntentTasks {
+		if isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			return true
+		}
+	}
+	return false
+}
+
+func externalProxyActionGenerationInstruction() string {
+	return "【仅适用于本轮外部代执行任务】客户请求代点外卖、叫车、代买、代订或联系外部商家时，先礼貌说明无法直接替客户完成该外部操作；如果知识证据提供了与同一目标直接相关的地址、电话、入口或步骤，紧接着给出这些自助信息；没有这类证据时只说明真实能力边界。不得声称已经代点、叫车、购买、预订或联系，也不得仅因无法代办而转人工。酒店内部送物、维修、开门等必须由门店处理的动作不适用本规则。"
 }
 
 func appendSpatialFactInstruction(prompt callbacks.IntentPromptTraceData, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {

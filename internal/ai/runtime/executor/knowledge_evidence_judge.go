@@ -806,6 +806,12 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 3. 不同候选分别补齐不同事实维度，且属于同一门店、同一对象和同一适用范围时，必须判 direct_combined，并选中所有补齐答案所必需的同层候选。
 4. 只有检查完当前 layer 的全部候选，仍有清单维度没有任何候选能够补齐时，才允许判 partial，并且 missingAspects 只能写这些真实缺失的维度。只要同层还有候选能补齐 missingAspects，就不得判 partial。
 
+外部代执行任务只在 intent=service_request、subIntent=external_proxy_action、objective=action_request 时适用：
+- “酒店能否替客户点外卖、叫车、代买、代订或联系外部商家”不是知识库需要证明的酒店事实维度；你只裁决候选中是否存在能帮助客户自行完成同一目标的地址、电话、入口或操作步骤。
+- 如果候选明确提供了上述自助信息，可以按证据完整性判 direct_single/direct_combined，并且 supportedFacts 只能保留知识原文明确写出的事实。
+- 不得输出或暗示酒店已经代点、叫车、购买、预订、联系或稍后会执行；仅有“有外卖机器人”等旁支存在性事实，不能证明机器人能配送、酒店能代下单或其他执行能力。
+- 酒店内部送物、维修、开门等必须由门店处理的动作不属于 external_proxy_action，仍按原有服务证据规则裁决。
+
 必须分别裁决 store 和 general 两层，每层只能输出一种 decision：
 - direct_single：单条候选的完整语义足以回答当前问题，只选择这一条。
 - direct_combined：同一层内至少两条候选指向同一门店、同一实体和同一适用范围，合在一起足以回答当前问题，只选择必要的候选。

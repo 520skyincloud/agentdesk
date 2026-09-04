@@ -29,6 +29,20 @@ type fakeKnowledgeEvidenceJudge struct {
 	outcome func([]knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome
 }
 
+func TestKnowledgeEvidenceJudgePromptDefinesExternalProxyEvidenceBoundary(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, expected := range []string{
+		"subIntent=external_proxy_action",
+		"地址、电话、入口或操作步骤",
+		"不得输出或暗示酒店已经代点",
+		"酒店内部送物、维修、开门",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("Judge prompt missing external proxy boundary %q", expected)
+		}
+	}
+}
+
 func (j *fakeKnowledgeEvidenceJudge) JudgeBatch(_ context.Context, _ RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
 	j.calls++
 	j.tasks = append([]knowledgeEvidenceJudgeTask(nil), tasks...)

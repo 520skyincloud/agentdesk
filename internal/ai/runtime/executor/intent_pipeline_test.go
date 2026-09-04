@@ -39,6 +39,49 @@ type recordingRuntimeIntentModelDetector struct {
 	err    error
 }
 
+func TestSelectIntentPromptPackScopesExternalProxyActionInstruction(t *testing.T) {
+	external := callbacks.IntentTraceData{
+		PrimaryIntent: "service_request",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		}},
+	}
+	externalPrompt := strings.Join(selectIntentPromptPack(external).Instructions, "\n")
+	if !strings.Contains(externalPrompt, "无法直接替客户完成该外部操作") ||
+		!strings.Contains(externalPrompt, "地址、电话、入口或步骤") ||
+		!strings.Contains(externalPrompt, "酒店内部送物、维修、开门") {
+		t.Fatalf("external proxy task must receive the scoped capability instruction: %q", externalPrompt)
+	}
+
+	internal := callbacks.IntentTraceData{
+		PrimaryIntent: "service_request",
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "room_supplies", Objective: "action_request",
+		}},
+	}
+	internalPrompt := strings.Join(selectIntentPromptPack(internal).Instructions, "\n")
+	if strings.Contains(internalPrompt, "仅适用于本轮外部代执行任务") {
+		t.Fatalf("internal hotel service must not receive external proxy rules: %q", internalPrompt)
+	}
+}
+
+func TestRuntimeIntentPromptClassifiesExternalProxyActionsWithoutChangingInternalService(t *testing.T) {
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		Content: "帮我点个外卖，再送双拖鞋",
+	}}, adapter.HistoryBuildResult{}, nil)
+	for _, expected := range []string{
+		"service_request/external_proxy_action",
+		"objective=action_request",
+		"needsKnowledge=true",
+		"酒店内部送物、补用品、维修、开门、换房、打扫",
+		"禁止归入 external_proxy_action",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("Intent prompt missing external proxy classification boundary %q: %s", expected, prompt)
+		}
+	}
+}
+
 func (s *recordingRuntimeIntentModelDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
 	s.called = true
 	return s.intent, s.err
@@ -1551,14 +1594,15 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 	}
 }
 
-func TestRuntimeIntentRepairInstructionRequiresPrimaryOwnership(t *testing.T) {
+func TestRuntimeIntentRepairInstructionPreservesModelSemantics(t *testing.T) {
 	instruction := buildRuntimeIntentProtocolRepairInstruction(fmt.Errorf("missing source U1"))
 	for _, expected := range []string{
-		"每个包含自包含业务问题的 URef 都必须有对应 intentTask 以该 URef 作为 sourceRefs[0]",
-		"context sourceRefs 不能算覆盖",
+		"保持已识别的任务边界、意图和上下文含义",
+		"text 必须来自 sourceRefs[0]",
+		"不要重新拆题、合题",
 	} {
 		if !strings.Contains(instruction, expected) {
-			t.Fatalf("repair instruction missing primary ownership rule %q: %s", expected, instruction)
+			t.Fatalf("repair instruction missing minimal protocol rule %q: %s", expected, instruction)
 		}
 	}
 }
