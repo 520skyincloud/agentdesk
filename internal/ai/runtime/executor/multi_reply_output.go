@@ -23,10 +23,11 @@ type generatedReplyPart struct {
 }
 
 type textReplyTaskGroup struct {
-	TaskID             string
-	Texts              []string
-	Facts              []replyFactRequirement
-	StructuredRequired bool
+	TaskID              string
+	Texts               []string
+	Facts               []replyFactRequirement
+	StructuredRequired  bool
+	ExternalProxyAction bool
 }
 
 type replyFactRequirement struct {
@@ -43,6 +44,8 @@ var ErrGeneratedReplyProtocol = errors.New("generated reply protocol validation 
 var errGeneratedReplyProtocol = ErrGeneratedReplyProtocol
 
 const generatedReplySingleTaskMaxOutputTokens = 512
+
+const externalProxyActionCapabilityBoundaryReply = "不好意思，这类外部操作我们没法直接替您完成。"
 
 func IsGeneratedReplyProtocolError(err error) bool {
 	return errors.Is(err, ErrGeneratedReplyProtocol)
@@ -80,16 +83,27 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	var b strings.Builder
 	b.WriteString("【任务输出契约】本轮只允许回答下面列出的文本任务。只输出一个 JSON 对象，不要输出 Markdown 代码块或 JSON 之外的文字。格式为：")
 	example := generatedReplyPartsEnvelope{ReplyParts: make([]generatedReplyPart, 0, len(groups))}
+	hasExternalProxyAction := false
 	for _, group := range groups {
-		part := generatedReplyPart{TaskID: group.TaskID, Content: "给客户的自然回复"}
-		for _, fact := range group.Facts {
-			part.CoveredFactIDs = append(part.CoveredFactIDs, fact.FactID)
+		content := "给客户的自然回复"
+		if group.ExternalProxyAction {
+			hasExternalProxyAction = true
+			content = ""
+		}
+		part := generatedReplyPart{TaskID: group.TaskID, Content: content}
+		if !group.ExternalProxyAction {
+			for _, fact := range group.Facts {
+				part.CoveredFactIDs = append(part.CoveredFactIDs, fact.FactID)
+			}
 		}
 		example.ReplyParts = append(example.ReplyParts, part)
 	}
 	exampleJSON, _ := json.Marshal(example)
 	b.Write(exampleJSON)
 	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并、重复或增加 taskId。每个 content 只回答对应任务，只使用该任务列出的事实，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实对应多个事实 ID 时，coveredFactIds 必须全部列出，但 content 只自然表达一次。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会按任务顺序合并为最多三条客户消息。\n")
+	if hasExternalProxyAction {
+		b.WriteString("外部代执行任务由程序直接使用固定能力边界和 Judge 选中的自助事实合成；该任务的 content 留空且省略 coveredFactIds，不要自行补充能否代办、地址、电话、入口或步骤。\n")
+	}
 	for _, group := range groups {
 		b.WriteString("- ")
 		b.WriteString(group.TaskID)
@@ -241,17 +255,21 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		if _, exists := contentByTaskID[taskID]; exists {
 			return "", fmt.Errorf("%w: duplicate taskId %s", errGeneratedReplyProtocol, taskID)
 		}
-		if content == "" {
+		group := groupByTaskID(groups, taskID)
+		if content == "" && !group.ExternalProxyAction {
 			return "", fmt.Errorf("%w: missing content for %s", errGeneratedReplyProtocol, taskID)
 		}
-		if containsReplyMessageMarker(content) {
+		if !group.ExternalProxyAction && containsReplyMessageMarker(content) {
 			return "", fmt.Errorf("%w: content for %s contains an internal message marker", errGeneratedReplyProtocol, taskID)
 		}
-		group := groupByTaskID(groups, taskID)
-		if err := validateCoveredFacts(part, group); err != nil {
-			return "", err
+		if group.ExternalProxyAction {
+			content = applyExternalProxyActionCapabilityBoundary(group, "")
+		} else {
+			if err := validateCoveredFacts(part, group); err != nil {
+				return "", err
+			}
+			content = compactGeneratedReplyContent(content)
 		}
-		content = compactGeneratedReplyContent(content)
 		if content == "" {
 			return "", fmt.Errorf("%w: content for %s became empty after duplicate removal", errGeneratedReplyProtocol, taskID)
 		}
@@ -266,6 +284,21 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		parts = append(parts, content)
 	}
 	return composeGeneratedReplyContents(parts, 3), nil
+}
+
+func applyExternalProxyActionCapabilityBoundary(group textReplyTaskGroup, content string) string {
+	content = strings.TrimSpace(content)
+	if !group.ExternalProxyAction {
+		return content
+	}
+	facts := compactGeneratedReplyFallbackFacts(group.Facts)
+	statements := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		if statement := strings.TrimSpace(fact.Statement); statement != "" {
+			statements = append(statements, statement)
+		}
+	}
+	return externalProxyActionCapabilityBoundaryReply + joinGeneratedReplyFactStatements(statements)
 }
 
 func requiresStructuredReplyParts(groups []textReplyTaskGroup, explicitlyRequired bool) bool {
@@ -851,10 +884,11 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 		usedTaskIDs[taskID] = struct{}{}
 		text := firstNonEmptyReplyTaskText(task.ResolvedText, task.Text, task.SubIntent, task.Intent)
 		groups = append(groups, textReplyTaskGroup{
-			TaskID:             taskID,
-			Texts:              []string{text},
-			Facts:              replyFactRequirements(task.SupportedFacts),
-			StructuredRequired: task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
+			TaskID:              taskID,
+			Texts:               []string{text},
+			Facts:               replyFactRequirements(task.SupportedFacts),
+			StructuredRequired:  task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
+			ExternalProxyAction: isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective),
 		})
 	}
 	return groups

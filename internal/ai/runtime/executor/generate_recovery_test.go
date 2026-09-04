@@ -139,6 +139,32 @@ func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackAddsExternalProxyBoundaryAndFacts(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		OutputKind: "text", ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "F1", Aspect: "location", Statement: "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。",
+		}},
+	}}})
+	want := externalProxyActionCapabilityBoundaryReply + "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。"
+	if got := deterministicGeneratedReplyFallback(collector); got != want {
+		t.Fatalf("external proxy fallback must preserve the boundary and selected fact, got %q", got)
+	}
+}
+
+func TestDeterministicGeneratedReplyFallbackUsesOnlyBoundaryWithoutExternalProxyFacts(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		OutputKind: "text", ReplyRequired: true,
+	}}})
+	if got := deterministicGeneratedReplyFallback(collector); got != externalProxyActionCapabilityBoundaryReply {
+		t.Fatalf("factless external proxy fallback must use the fixed boundary, got %q", got)
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackCompactsContainedComplementaryFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{

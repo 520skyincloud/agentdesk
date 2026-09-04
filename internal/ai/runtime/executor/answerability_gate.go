@@ -292,6 +292,7 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 			RelationToPrevious: semanticGateNormalizeRelation(task.RelationToPrevious),
 			ResolutionState:    semanticGateNormalizeResolution(task.ResolutionState),
 			SourceRefs:         append([]string(nil), task.SourceRefs...),
+			Entities:           append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, query); intentTask != nil {
 			if spec.OriginalText == "" {
@@ -312,7 +313,9 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 			if len(spec.SourceRefs) == 0 {
 				spec.SourceRefs = append([]string(nil), intentTask.SourceRefs...)
 			}
-			spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
+			if len(spec.Entities) == 0 {
+				spec.Entities = append([]callbacks.IntentEntityTraceData(nil), intentTask.Entities...)
+			}
 		}
 		questions = append(questions, spec)
 	}
@@ -636,7 +639,10 @@ func runtimeKnowledgeRetrieveBatchCompleteFailure(batch *runtimeKnowledgeRetriev
 func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	query := runtimeIntentRetrievalQuery(spec.Query)
 	if query != "" && isExternalProxyActionClassification(spec.Intent, spec.SubIntent, spec.Objective) {
-		return query + "；同一目标可用的酒店地址、联系电话、下单入口或自助步骤"
+		if subject := runtimeExternalProxyEvidenceSubject(query, spec.Entities); subject != "" {
+			return subject + "办理时酒店地址怎么填写；" + subject + "如何自行办理"
+		}
+		return query + "；办理时酒店地址怎么填写；如何自行办理"
 	}
 	if query == "" || !runtimeIntentShortKnowledgeLabel(query) {
 		return query
@@ -706,6 +712,29 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	default:
 		return query
 	}
+}
+
+func runtimeExternalProxyEvidenceSubject(query string, entities []callbacks.IntentEntityTraceData) string {
+	normalizedQuery := normalizeRuntimeKnowledgeQuery(query)
+	for _, entityType := range []string{"order", "service", "supply", "resource", "company", "location", "facility", "person", "other"} {
+		fallback := ""
+		for _, entity := range entities {
+			text := strings.TrimSpace(entity.Text)
+			if text == "" || runtimeIntentEvidenceGenericEntity(text) || strings.TrimSpace(entity.Type) != entityType {
+				continue
+			}
+			if fallback == "" {
+				fallback = text
+			}
+			if strings.Contains(normalizedQuery, normalizeRuntimeKnowledgeQuery(text)) {
+				return text
+			}
+		}
+		if fallback != "" {
+			return fallback
+		}
+	}
+	return ""
 }
 
 func runtimeIntentShortKnowledgeLabel(query string) bool {
@@ -2827,7 +2856,7 @@ func convertExternalProxyCapabilityBoundaryTasks(plan callbacks.ReplyPlanTraceDa
 }
 
 func buildExternalProxyCapabilityBoundaryInstruction(taskIDs []string) string {
-	return "【外部代执行能力边界】仅适用于任务 " + strings.Join(taskIDs, "、") + "：当前没有选中可用的自助知识事实，只需礼貌说明无法直接替客户完成外部下单、叫车、代买、代订或联系商家的操作；不得承诺已经执行或稍后执行，也不得仅因此转人工。不要把这条规则用于酒店内部送物、维修、开门等服务。"
+	return "【外部代执行能力边界】仅适用于任务 " + strings.Join(taskIDs, "、") + "：当前没有选中可用的自助知识事实，程序会直接使用固定能力边界合成回复；该任务的 replyParts.content 留空并省略 coveredFactIds。不得承诺已经执行或稍后执行，也不得仅因此转人工。不要把这条规则用于酒店内部送物、维修、开门等服务。"
 }
 
 func appendRuntimeKnowledgeUnjudgedTaskTrace(

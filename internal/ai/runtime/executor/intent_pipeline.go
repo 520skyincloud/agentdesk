@@ -148,7 +148,7 @@ func hasExternalProxyActionTask(intent callbacks.IntentTraceData) bool {
 }
 
 func externalProxyActionGenerationInstruction() string {
-	return "【仅适用于本轮外部代执行任务】客户请求代点外卖、叫车、代买、代订或联系外部商家时，先礼貌说明无法直接替客户完成该外部操作；如果知识证据提供了与同一目标直接相关的地址、电话、入口或步骤，紧接着给出这些自助信息；没有这类证据时只说明真实能力边界。不得声称已经代点、叫车、购买、预订或联系，也不得仅因无法代办而转人工。酒店内部送物、维修、开门等必须由门店处理的动作不适用本规则。"
+	return "【仅适用于本轮外部代执行任务】程序会在最终合成时直接使用固定的“无法直接替客户完成该外部操作”真实能力边界和 Judge 选中的地址、电话、入口或步骤；Generate 将该任务的 replyParts.content 留空并省略 coveredFactIds，不要自行补充、改写或承诺已经代点、叫车、购买、预订或联系，也不得仅因无法代办而转人工。酒店内部送物、维修、开门等必须由门店处理的动作不适用本规则。"
 }
 
 func appendSpatialFactInstruction(prompt callbacks.IntentPromptTraceData, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {

@@ -825,10 +825,10 @@ func TestRuntimeKnowledgeShortLabelUsesOneEnrichedQueryAndCarriesMetadata(t *tes
 func TestRuntimeIntentEvidenceQueryEnrichesExternalProxyOnlyForRetrieval(t *testing.T) {
 	spec := runtimeKnowledgeQuestionSpec{
 		Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
-		Query: "帮我点个外卖",
+		Query: "帮我点个外卖", Entities: []callbacks.IntentEntityTraceData{{Text: "外卖", Type: "order"}},
 	}
 	got := runtimeIntentEvidenceQuery(spec)
-	if got != "帮我点个外卖；同一目标可用的酒店地址、联系电话、下单入口或自助步骤" {
+	if got != "外卖办理时酒店地址怎么填写；外卖如何自行办理" {
 		t.Fatalf("external proxy retrieval query was not enriched: %q", got)
 	}
 
@@ -836,6 +836,79 @@ func TestRuntimeIntentEvidenceQueryEnrichesExternalProxyOnlyForRetrieval(t *test
 	internal.SubIntent = "room_supplies"
 	if got := runtimeIntentEvidenceQuery(internal); got != "帮我点个外卖" {
 		t.Fatalf("hotel-internal service retrieval must not receive external proxy enrichment: %q", got)
+	}
+
+	withoutEntity := spec
+	withoutEntity.Entities = nil
+	if got := runtimeIntentEvidenceQuery(withoutEntity); got != "帮我点个外卖；办理时酒店地址怎么填写；如何自行办理" {
+		t.Fatalf("external proxy retrieval must keep a focused fallback without guessing a target: %q", got)
+	}
+
+	ride := spec
+	ride.Query = "帮我叫辆网约车"
+	ride.Entities = []callbacks.IntentEntityTraceData{{Text: "网约车", Type: "service"}}
+	if got := runtimeIntentEvidenceQuery(ride); got != "网约车办理时酒店地址怎么填写；网约车如何自行办理" {
+		t.Fatalf("external proxy enrichment must apply by structured entity, got %q", got)
+	}
+
+	multiEntity := spec
+	multiEntity.Entities = []callbacks.IntentEntityTraceData{
+		{Text: "美团", Type: "company"},
+		{Text: "外卖", Type: "order"},
+	}
+	if got := runtimeIntentEvidenceQuery(multiEntity); got != "外卖办理时酒店地址怎么填写；外卖如何自行办理" {
+		t.Fatalf("external action entity must win over the platform entity, got %q", got)
+	}
+}
+
+func TestRuntimeKnowledgeQuestionsKeepReplyPlanEntitiesForExternalProxyRetrieval(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		Text: "帮我点个外卖", ResolvedText: "帮我点个外卖", NeedsKnowledge: true,
+		OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+		Entities: []callbacks.IntentEntityTraceData{{Text: "外卖", Type: "order"}},
+	}}}
+	questions, ok := runtimeKnowledgeQuestionsFromReplyPlan(plan)
+	if !ok || len(questions) != 1 || len(questions[0].Entities) != 1 || questions[0].Entities[0].Text != "外卖" {
+		t.Fatalf("reply plan entities must reach retrieval directly: ok=%v questions=%#v", ok, questions)
+	}
+	if got := runtimeIntentEvidenceQuery(questions[0]); got != "外卖办理时酒店地址怎么填写；外卖如何自行办理" {
+		t.Fatalf("external proxy retrieval did not use the preserved entity: %q", got)
+	}
+}
+
+func TestExternalProxyUsesOneFocusedRetrievalAndKeepsOriginalJudgeQuestion(t *testing.T) {
+	const evidenceQuery = "外卖办理时酒店地址怎么填写；外卖如何自行办理"
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			evidenceQuery: {RawHits: []rag.RetrieveResult{{
+				KnowledgeBaseID: 1, ChunkID: 101, Title: "外卖地址",
+				Content: "问题：外卖地址怎么填写？\n答案：填写丽斯未来酒店合肥南七店加楼层房间号。", Score: 0.95,
+			}}},
+		},
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		Text: "帮我点个外卖", ResolvedText: "帮我点个外卖", NeedsKnowledge: true,
+		OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+		Entities: []callbacks.IntentEntityTraceData{{Text: "外卖", Type: "order"}},
+	}}}
+	batch, err := retrieveContextForRuntimeQuestions(
+		context.Background(), retriever, retrievers.KnowledgeRetrieveOptions{}, "帮我点个外卖", callbacks.IntentTraceData{}, plan,
+	)
+	if err != nil {
+		t.Fatalf("retrieveContextForRuntimeQuestions returned error: %v", err)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0] != evidenceQuery {
+		t.Fatalf("external proxy must use exactly one focused retrieval, got %#v", retriever.queries)
+	}
+	if batch == nil || len(batch.Questions) != 1 || batch.Questions[0].Query != "帮我点个外卖" || batch.Questions[0].EvidenceQuery != evidenceQuery {
+		t.Fatalf("semantic and retrieval questions were not kept separate: %#v", batch)
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "帮我点个外卖")
+	if len(tasks) != 1 || tasks[0].Query != "帮我点个外卖" || tasks[0].RetrievalQuery != evidenceQuery {
+		t.Fatalf("Judge must receive the original question plus the focused retrieval query: %#v", tasks)
 	}
 }
 

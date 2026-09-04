@@ -527,6 +527,56 @@ func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
 	}
 }
 
+func TestNormalizeGeneratedReplyPartsAddsExternalProxyBoundaryBeforeSelectedSelfServiceFacts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		ResolvedText: "帮我点个外卖", OutputKind: "text", ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "task-1F1", Aspect: "location",
+			Statement:      "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。",
+			CriticalValues: []string{"丽斯未来酒店合肥南七店", "房间号"},
+		}},
+	}}}
+	want := externalProxyActionCapabilityBoundaryReply + "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。"
+	for _, raw := range []string{
+		`{"replyParts":[{"taskId":"task-1","content":"","coveredFactIds":[]}]}`,
+		`{"replyParts":[{"taskId":"task-1","content":"可以帮您下单，稍后会送到房间。"}]}`,
+	} {
+		got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+		if err != nil || got != want {
+			t.Fatalf("external proxy reply must use only the fixed boundary and Judge facts, raw=%s got=%q err=%v", raw, got, err)
+		}
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsReplacesFactlessExternalProxyContentWithBoundary(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		ResolvedText: "帮我叫辆车", OutputKind: "text", ReplyRequired: true,
+	}}}
+	for _, raw := range []string{
+		`{"replyParts":[{"taskId":"task-1","content":"已经帮您叫车了。"}]}`,
+		`{"replyParts":[{"taskId":"task-1","content":""}]}`,
+	} {
+		got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+		if err != nil || got != externalProxyActionCapabilityBoundaryReply {
+			t.Fatalf("factless external proxy output must be deterministic, raw=%s got=%q err=%v", raw, got, err)
+		}
+	}
+}
+
+func TestNormalizeGeneratedReplyPartsDoesNotAddExternalBoundaryToInternalService(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "room_supplies", Objective: "action_request",
+		ResolvedText: "送双拖鞋", OutputKind: "text", ReplyRequired: true,
+	}}}
+	raw := `{"replyParts":[{"taskId":"task-1","content":"方便说下是哪个房间吗？"}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, false)
+	if err != nil || got != "方便说下是哪个房间吗？" {
+		t.Fatalf("internal hotel service must keep its original reply, got=%q err=%v", got, err)
+	}
+}
+
 func TestNormalizeGeneratedReplyPartsDoesNotApplyLocalAspectVeto(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID:        "task-1",

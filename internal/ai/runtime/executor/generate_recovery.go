@@ -450,6 +450,10 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 	for _, group := range groups {
 		fallbackFacts := compactGeneratedReplyFallbackFacts(group.Facts)
 		if len(fallbackFacts) == 0 {
+			if group.ExternalProxyAction {
+				parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, ""))
+				continue
+			}
 			if text := deterministicInteractionFallback(plan, group.TaskID); text != "" {
 				parts = append(parts, text)
 				continue
@@ -465,7 +469,7 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 		for _, fact := range fallbackFacts {
 			statements = append(statements, strings.TrimSpace(fact.Statement))
 		}
-		parts = append(parts, joinGeneratedReplyFactStatements(statements))
+		parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, joinGeneratedReplyFactStatements(statements)))
 	}
 	return composeGeneratedReplyContents(parts, 3)
 }
