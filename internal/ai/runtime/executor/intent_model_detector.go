@@ -367,13 +367,16 @@ func sleepRuntimeIntentModelRetry(ctx context.Context, duration time.Duration) b
 }
 
 func buildRuntimeIntentProtocolRepairInstruction(protocolErr error) string {
-	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请严格按照当前系统消息声明的字段重新输出完整 JSON；intentTasks 必须从头到尾覆盖当前轮每个业务问题，且是唯一事实来源。明确的酒店业务信息目标或自包含执行目标不能输出 interaction/clarify；纯互动动作应使用 interaction 的非 clarify 子意图，只有请求框架或数量量词而没有具体对象时才使用 clarify。回指、比较、复述和省略追问要结合紧邻业务上下文还原为对应业务 Task。每个包含自包含业务问题的 URef 都必须有对应 intentTask 以该 URef 作为 sourceRefs[0]；把该 URef 仅放进其他 Task 的 context sourceRefs 不能算覆盖。纯礼貌、互动或背景可以由 interaction Task 主认领，或作为相关业务 Task 的 context sourceRef。每个任务都必须输出 text、resolvedText、sourceRefs、objective、relationToPrevious、resolutionState 和 entities；顶层字段只能汇总 intentTasks。clarification_answer 只用于回答紧邻客服追问的字段、条件、偏好或选项；对紧邻已完成业务答复的追问、比较、复述或重新回答，必须使用 follow_up/reference_previous 并重新进入原业务任务，不能降成 interaction/clarify。不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请保持已识别的任务边界、意图和上下文含义，只修复协议字段后重新输出完整 JSON：intentTasks 不能为空；每个任务必须包含合法的 intent、objective、relationToPrevious、resolutionState、entities、text、resolvedText 和 sourceRefs；text 必须来自 sourceRefs[0] 对应的当前客户原话，主 sourceRef 顺序不得倒置。同轮 sourceRefs 补全必须引用更早的 URef 且保持 relationToPrevious=independent；跨轮 resolved_from_context 必须使用 previous 关系并有紧邻客户问题和客服答复，conversation_recap 例外，只要求存在可回顾的有界历史。answer_rejected 的 intent/subIntent 与 relationToPrevious 必须一致，并且只能用于紧邻 AI 答复。顶层字段只能汇总 intentTasks。不要重新拆题、合题或按本地错误文案改变语义；不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
 }
 
 func buildRuntimeIntentProtocolRepairContext(history adapter.HistoryBuildResult) runtimeIntentProtocolRepairContext {
 	previousCustomerText, adjacentServiceReply, _, hasServicePair := immediatelyPreviousServiceReplyPair(history)
 	adjacentAIReply, _ := immediatelyPreviousAIReply(history)
-	context := runtimeIntentProtocolRepairContext{AdjacentAIReply: adjacentAIReply}
+	context := runtimeIntentProtocolRepairContext{
+		AdjacentAIReply:   adjacentAIReply,
+		HasBoundedHistory: len(boundedGenerationHistoryEntries(history)) > 0,
+	}
 	if hasServicePair {
 		context.AdjacentServiceReply = adjacentServiceReply
 		context.PreviousCustomerText = previousCustomerText
@@ -598,6 +601,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("如果当前消息已经有独立的新主题，禁止沿用上一轮早餐、停车、投诉、安全、转人工等历史主题。")
 	b.WriteString("clarification_answer 只用于回答紧邻客服正在追问的必要字段、条件、偏好、范围或选项；此时必须继承该业务 intent/subIntent，intentTasks[].text 保留客户当前原表达，intentTasks[].resolvedText 写成包含上一轮业务主题和当前补充内容的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应输出 hotel_info/surrounding_facilities 且 needsKnowledge=true，text 写‘麻辣口味的’，resolvedText 写‘附近餐饮推荐，偏好麻辣口味’。紧邻的‘客户业务问题 + 客服已完成答复’同样构成可承接的业务上下文：‘那麦田呢’、‘外卖地址再说一遍’等追问、比较、复述或重新回答必须使用 follow_up/reference_previous，重新进入原业务 Task，并在 resolvedText 中补全对象和所问方面；即使上一答复说没有资料、无法确认或需要同事处理，也不能降成 interaction/clarify。没有紧邻业务上下文时，独立短语不得从更早历史强行继承旧主题。")
+	b.WriteString("客户要求酒店代点外卖、叫车、代买、代订或联系外部商家时，统一输出 service_request/external_proxy_action，objective=action_request，needsKnowledge=true，以便查询地址、电话、入口或步骤等自助方案。酒店内部送物、补用品、维修、开门、换房、打扫等仍使用原有 service_request 子意图，禁止归入 external_proxy_action。")
 	b.WriteString("客户明确问‘刚刚都问了什么’‘刚才聊了什么’‘你刚才回答了哪些’等会话回顾时，只建立一个 interaction/conversation_recap 文本任务，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 写明回顾最近当前会话；不能当作新闲聊或 unresolved，也不能重新执行历史业务任务。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
 	if instruction := buildAdjacentAIReplyRelationInstruction(history); instruction != "" {

@@ -587,8 +587,24 @@ func TestBuildRuntimeIntentDetectUserPromptUsesHumanServiceSlotQuestion(t *testi
 	err := validateRuntimeIntentResolvedReferenceContext(
 		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, currentText, context, true,
 	)
-	if err == nil || !strings.Contains(err.Error(), "adjacent service clarification") {
-		t.Fatalf("human-service slot answer must trigger the existing Intent repair attempt: %v", err)
+	if err != nil {
+		t.Fatalf("slot-answer semantics belong to IntentDetect and must not be locally reclassified: %v", err)
+	}
+}
+
+func TestBuildRuntimeIntentProtocolRepairContextTracksBoundedHistory(t *testing.T) {
+	history := adapter.HistoryBuildResult{
+		Messages: []*schema.Message{schema.UserMessage("早餐几点？")},
+	}
+	if context := buildRuntimeIntentProtocolRepairContext(history); !context.HasBoundedHistory {
+		t.Fatalf("renderable bounded history must reach protocol pointer validation: %#v", context)
+	}
+
+	history = adapter.HistoryBuildResult{
+		RawItems: []models.Message{{SenderType: enums.IMSenderTypeCustomer, Content: "只有 raw history"}},
+	}
+	if context := buildRuntimeIntentProtocolRepairContext(history); context.HasBoundedHistory {
+		t.Fatalf("raw history without renderable bounded messages must not authorize recap: %#v", context)
 	}
 }
 
