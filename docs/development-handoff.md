@@ -970,4 +970,19 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   或 WebSocket。`customer-audit`、`ai-billing` 未发现同文件改动。
 - 验证通过：
   `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`
-  和 `git diff --check`。提交、推送、构建、部署及生产冒烟结果在完成后补记。
+  和 `git diff --check`。
+
+### 提交、部署与生产冒烟
+
+- 最终修复提交：`4e35ee4`，已推送到 `origin` 和 `weibao`；生产 release 为
+  `/opt/agentdesk/releases/20260904-065600-external-proxy-4e35ee4`，Server SHA-256 为
+  `1d6369d177c18508a435b36009466f5657f50d4dbe6add0bc6822afd46882e0d`。回滚点保留为
+  `/opt/agentdesk/releases/20260904-055152-reply-core-9c58cf0`。
+- 部署后 `agentdesk.service=active`、`NRestarts=0`、`8083` 正常。隔离生产会话 `2084`
+  通过线上服务真实发送“帮我点个外卖”，7.806 秒完成，最终回复为：
+  `不好意思，这类外部操作我们没法直接替您完成。外卖地址可填写：丽斯未来酒店合肥南七店+对应楼层房间号。`
+- Trace 确认 Intent 为 `service_request/external_proxy_action`、`objective=action_request`；本轮只请求
+  一次 `knowledge_lookup`，检索 Query 为“外卖办理时酒店地址怎么填写；外卖如何自行办理”。Judge
+  使用 `deepseek-v4-pro`，门店层裁决为 `direct_single`，选中南七店外卖地址；最终保持
+  `AI_SERVING`，未转人工、未产生虚假代下单承诺，Generate 仅执行一次。
+- 本轮未运行 50 轮或批量测试，未新增任何代码修改、数据库结构变更、知识库变更或配置变更。
