@@ -1261,9 +1261,16 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 		selectedIDs = append(selectedIDs, candidateID)
 	}
 	selectedContainsHandoff := selectedKnowledgeEvidenceContainsHandoffDirective(expectedTask, layer, selectedIDs)
-	selectedHandoff := selectedKnowledgeEvidenceIsHandoffDirective(expectedTask, layer, selectedIDs)
+	selectedHandoff := selectedModelKnowledgeEvidenceIsHandoffDirective(expectedTask, layer, selectedIDs)
 	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
 		return protocolInvalid
+	}
+	if selectedHandoff {
+		return knowledgeEvidenceLayerSelection{
+			Decision:             knowledgeEvidenceDecisionDirectSingle,
+			DecisionSource:       "model",
+			SelectedCandidateIDs: selectedIDs,
+		}
 	}
 	if supportedFactsMalformed || missingAspectsMalformed {
 		return protocolInvalid
@@ -10570,6 +10577,45 @@ func selectedKnowledgeEvidenceIsHandoffDirective(task knowledgeEvidenceJudgeTask
 		return !knowledgeEvidenceLayerHasCompetingReviewBodyOutsideJudge(task, layer, selectedCandidateIDs, question, answer)
 	}
 	return false
+}
+
+func selectedModelKnowledgeEvidenceIsHandoffDirective(task knowledgeEvidenceJudgeTask, layer string, selectedCandidateIDs []string) bool {
+	if len(selectedCandidateIDs) != 1 {
+		return false
+	}
+	visibleCandidates := make(map[string]knowledgeEvidenceJudgeCandidate, len(task.Candidates))
+	for _, candidate := range task.Candidates {
+		visibleCandidates[candidate.CandidateID] = candidate
+	}
+	if !selectedKnowledgeEvidenceHandoffCandidateMatches(task.Query, layer, selectedCandidateIDs, visibleCandidates) {
+		return false
+	}
+	selectedID := strings.TrimSpace(selectedCandidateIDs[0])
+	for _, candidate := range task.Candidates {
+		if strings.TrimSpace(candidate.CandidateID) != selectedID || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+		return !knowledgeEvidenceLayerHasCompetingReviewBodyOutsideJudge(task, layer, selectedCandidateIDs, question, answer)
+	}
+	return false
+}
+
+func selectedKnowledgeEvidenceHandoffCandidateMatches(
+	query string,
+	layer string,
+	selectedCandidateIDs []string,
+	candidates map[string]knowledgeEvidenceJudgeCandidate,
+) bool {
+	if len(selectedCandidateIDs) != 1 {
+		return false
+	}
+	candidate, ok := candidates[strings.TrimSpace(selectedCandidateIDs[0])]
+	if !ok || strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) {
+		return false
+	}
+	_, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, query)
+	return isKnowledgeHandoffDirectiveContent(answer)
 }
 
 func selectedExactKnowledgeEvidenceHandoffCandidateMatches(

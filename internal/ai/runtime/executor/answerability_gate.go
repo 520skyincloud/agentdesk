@@ -635,6 +635,9 @@ func runtimeKnowledgeRetrieveBatchCompleteFailure(batch *runtimeKnowledgeRetriev
 
 func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	query := runtimeIntentRetrievalQuery(spec.Query)
+	if query != "" && isExternalProxyActionClassification(spec.Intent, spec.SubIntent, spec.Objective) {
+		return query + "；同一目标可用的酒店地址、联系电话、下单入口或自助步骤"
+	}
 	if query == "" || !runtimeIntentShortKnowledgeLabel(query) {
 		return query
 	}
@@ -855,14 +858,10 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		if len(rawHits) == 0 {
 			rawHits = question.Result.Hits
 		}
-		evidenceQuery := strings.TrimSpace(question.EvidenceQuery)
-		if evidenceQuery == "" {
-			evidenceQuery = strings.TrimSpace(question.Query)
-		}
 		item := knowledgeEvidenceJudgeTask{
 			TaskID:        question.TaskID,
 			Intent:        canonicalIntentCode(question.Intent),
-			Query:         evidenceQuery,
+			Query:         strings.TrimSpace(question.Query),
 			SubIntent:     strings.TrimSpace(question.SubIntent),
 			Objective:     semanticGateNormalizeObjective(question.Objective),
 			SourceContext: buildKnowledgeEvidenceJudgeSourceContext(messages, currentText, question),
@@ -1812,7 +1811,7 @@ func selectionHasHandoffDirective(selection knowledgeEvidenceLayerSelection, lay
 	if !selectionHasCompleteEvidence(selection) {
 		return false
 	}
-	return selectedExactKnowledgeEvidenceHandoffCandidateMatches(query, layer, selection.SelectedCandidateIDs, candidates)
+	return selectedKnowledgeEvidenceHandoffCandidateMatches(query, layer, selection.SelectedCandidateIDs, candidates)
 }
 
 func selectionHasCompleteEvidence(selection knowledgeEvidenceLayerSelection) bool {
@@ -2761,8 +2760,23 @@ func routeExternalProxyNoEvidenceAsCapabilityBoundary(
 	taskIDs := make([]string, 0)
 	for index := range batch.Questions {
 		question := &batch.Questions[index]
-		if question.Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
-			!isExternalProxyActionClassification(question.Intent, question.SubIntent, question.Objective) {
+		if !isExternalProxyActionClassification(question.Intent, question.SubIntent, question.Objective) {
+			continue
+		}
+		switch question.Disposition {
+		case runtimeKnowledgeDispositionAnswerThenHandoff:
+			question.Disposition = runtimeKnowledgeDispositionAnswer
+			if trace != nil {
+				for traceIndex := range trace.Tasks {
+					if strings.TrimSpace(trace.Tasks[traceIndex].TaskID) == strings.TrimSpace(question.TaskID) {
+						trace.Tasks[traceIndex].Disposition = runtimeKnowledgeDispositionAnswer
+						break
+					}
+				}
+			}
+			continue
+		case runtimeKnowledgeDispositionNoEvidenceHandoff:
+		default:
 			continue
 		}
 		taskID := strings.TrimSpace(question.TaskID)

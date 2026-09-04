@@ -377,6 +377,37 @@ func TestExternalProxyCapabilityBoundaryDoesNotOverrideOtherServiceRoutes(t *tes
 	}
 }
 
+func TestExternalProxyPartialKeepsSelectedEvidenceWithoutHandoff(t *testing.T) {
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
+		TaskID:         "external",
+		Intent:         "service_request",
+		SubIntent:      "external_proxy_action",
+		Objective:      "action_request",
+		Disposition:    runtimeKnowledgeDispositionAnswerThenHandoff,
+		MissingAspects: []string{"酒店不能代执行外部下单"},
+	}}}
+	trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+		TaskID:      "external",
+		Decision:    knowledgeEvidenceDecisionPartial,
+		Disposition: runtimeKnowledgeDispositionAnswerThenHandoff,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "externalF1", Aspect: "method", Statement: "可以自行下单。",
+		}},
+		MissingAspects: []string{"酒店不能代执行外部下单"},
+	}}}
+
+	if taskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &trace); len(taskIDs) != 0 {
+		t.Fatalf("partial evidence must not be converted into a no-evidence task: %#v", taskIDs)
+	}
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].MissingAspects) != 1 {
+		t.Fatalf("external proxy partial evidence must remain selected without handoff: %#v", batch.Questions[0])
+	}
+	if trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.Tasks[0].Decision != knowledgeEvidenceDecisionPartial ||
+		len(trace.Tasks[0].SupportedFacts) != 1 || len(trace.Tasks[0].MissingAspects) != 1 {
+		t.Fatalf("trace must preserve the Judge decision and facts while removing handoff: %#v", trace.Tasks[0])
+	}
+}
+
 func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *testing.T) {
 	batch := &runtimeKnowledgeRetrieveBatch{Questions: make([]runtimeKnowledgeQuestionResult, 0, knowledgeEvidenceJudgeBatchCandidateBudget+1)}
 	for index := 0; index < knowledgeEvidenceJudgeBatchCandidateBudget+1; index++ {
@@ -730,7 +761,7 @@ func TestRuntimeKnowledgeRetrievalTrimsConversationalLeadButKeepsLogicalQuery(t 
 		t.Fatalf("logical task query must remain unchanged for Judge mapping, got %#v", batch)
 	}
 	if batch.Questions[0].EvidenceQuery != "怎么办理入住" {
-		t.Fatalf("Judge must use the same cleaned question as retrieval, got %#v", batch.Questions[0])
+		t.Fatalf("retrieval query must keep the cleaned question, got %#v", batch.Questions[0])
 	}
 }
 
@@ -771,8 +802,25 @@ func TestRuntimeKnowledgeShortLabelUsesOneEnrichedQueryAndCarriesMetadata(t *tes
 		t.Fatalf("question metadata was not preserved: %#v", question)
 	}
 	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "矿泉水数量和费用")
-	if len(tasks) != 1 || tasks[0].Objective != "compound_information" || len(tasks[0].Entities) != 1 || tasks[0].Entities[0].Text != "矿泉水" {
+	if len(tasks) != 1 || tasks[0].Query != "矿泉水数量和费用" || tasks[0].Objective != "compound_information" || len(tasks[0].Entities) != 1 || tasks[0].Entities[0].Text != "矿泉水" {
 		t.Fatalf("Judge task did not receive objective/entities from question metadata: %#v", tasks)
+	}
+}
+
+func TestRuntimeIntentEvidenceQueryEnrichesExternalProxyOnlyForRetrieval(t *testing.T) {
+	spec := runtimeKnowledgeQuestionSpec{
+		Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		Query: "帮我点个外卖",
+	}
+	got := runtimeIntentEvidenceQuery(spec)
+	if got != "帮我点个外卖；同一目标可用的酒店地址、联系电话、下单入口或自助步骤" {
+		t.Fatalf("external proxy retrieval query was not enriched: %q", got)
+	}
+
+	internal := spec
+	internal.SubIntent = "room_supplies"
+	if got := runtimeIntentEvidenceQuery(internal); got != "帮我点个外卖" {
+		t.Fatalf("hotel-internal service retrieval must not receive external proxy enrichment: %q", got)
 	}
 }
 

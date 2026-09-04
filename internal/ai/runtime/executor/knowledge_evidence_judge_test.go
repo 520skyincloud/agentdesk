@@ -4821,6 +4821,58 @@ func TestParseKnowledgeEvidenceJudgeRuntimeResponsePreservesModelSelectedFacts(t
 	}
 }
 
+func TestParseKnowledgeEvidenceJudgeRuntimeResponseAcceptsSelectedPureHandoffWithoutExactQuestionText(t *testing.T) {
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "T1", Intent: "service_request", Query: "马桶堵了", SubIntent: "toilet_repair", Objective: "action_request",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+			Hit: judgeTestHit(1, 101, "马桶故障", "问题：马桶堵住了，怎么办？\n答案：转接", 0.8023),
+		}},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"需要转接人工处理。","criticalValues":[]}],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse runtime Judge response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model" ||
+		len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" ||
+		len(selection.SupportedFacts) != 0 || len(selection.MissingAspects) != 0 {
+		t.Fatalf("a Judge-selected pure handoff candidate must remain executable: %#v", selection)
+	}
+	candidates := map[string]knowledgeEvidenceJudgeCandidate{"T1C1": tasks[0].Candidates[0]}
+	if !selectionHasHandoffDirective(selection, knowledgeEvidenceLayerStore, candidates, tasks[0].Query) {
+		t.Fatalf("selected pure handoff must reach the existing handoff route: %#v", selection)
+	}
+}
+
+func TestParseKnowledgeEvidenceJudgeRuntimeResponseRejectsNonExactHandoffWithCompetingBodyOutsideBudget(t *testing.T) {
+	handoff := knowledgeEvidenceJudgeCandidate{
+		CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+		Hit: judgeTestHit(1, 101, "马桶故障", "问题：马桶堵住了，怎么办？\n答案：转接", 0.8023),
+	}
+	body := knowledgeEvidenceJudgeCandidate{
+		CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore,
+		Hit: judgeTestHit(1, 102, "马桶处理", "问题：马桶堵了如何处理？\n答案：可以先使用马桶吸处理。", 0.78),
+	}
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "T1", Intent: "service_request", Query: "马桶堵了", SubIntent: "toilet_repair", Objective: "action_request",
+		Candidates:    []knowledgeEvidenceJudgeCandidate{handoff},
+		RawCandidates: []knowledgeEvidenceJudgeCandidate{handoff, body},
+	}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[],"missingAspects":[]}]}]}`
+
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+	if err != nil {
+		t.Fatalf("parse runtime Judge response: %v", err)
+	}
+	selection := parsed["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
+		t.Fatalf("a competing same-layer body answer must still block non-exact handoff: %#v", selection)
+	}
+}
+
 func TestParseKnowledgeEvidenceJudgeRuntimeResponseStillRejectsMechanicalProtocolErrors(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1", Query: "停车场有充电桩吗",
