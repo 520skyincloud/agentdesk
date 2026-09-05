@@ -21,7 +21,7 @@ import (
 
 var ConversationHandoffConfirmationService = newConversationHandoffConfirmationService()
 
-const handoffConfirmationModelTimeout = 2 * time.Second
+const handoffConfirmationModelTimeout = 5 * time.Second
 const handoffRoomContextBurstWindow = 8 * time.Second
 
 type conversationHandoffConfirmationService struct{}
@@ -423,10 +423,20 @@ func (s *conversationHandoffConfirmationService) HandleWaitingCustomerResolution
 		return false, nil
 	}
 	payload := handoffConfirmationPayload{Reason: state.HandoffReason}
-	classifyCtx, cancel := context.WithTimeout(context.Background(), handoffConfirmationModelTimeout)
-	result := classifyHumanHandoffConfirmation(classifyCtx, conversation, message, payload, text)
-	cancel()
+	result := handoffConfirmationClassifyResult{Decision: humanHandoffConfirmationCancel, Confidence: 1, Source: "explicit_cancel"}
+	if !isExplicitHandoffContextCancel(text) {
+		classifyCtx, cancel := context.WithTimeout(context.Background(), handoffConfirmationModelTimeout)
+		result = classifyHumanHandoffConfirmation(classifyCtx, conversation, message, payload, text)
+		cancel()
+	}
 	if result.Decision != humanHandoffConfirmationCancel || result.Confidence < 0.55 {
+		if result.Decision == humanHandoffConfirmationUnknown && strings.HasPrefix(result.Source, "fallback:") {
+			_, err := MessageService.SendAIServiceNoticeWithClientMsgIDAndRequestID(conversation.ID, conversation.AIAgentID,
+				fmt.Sprintf("ai_manual_wait_cancel_help_%d_%d", conversation.ID, message.ID),
+				"抱歉，没能确认您是否要取消人工接待，目前仍由同事接待。如需取消，请回复“取消”。",
+				"", message.RequestID)
+			return true, err
+		}
 		return false, nil
 	}
 	now := time.Now()
@@ -598,11 +608,12 @@ func isUsableHandoffConfirmationAIConfig(config *models.AIConfig) bool {
 }
 
 func handoffConfirmationClassifySystemPrompt() string {
-	return strings.TrimSpace(`你是酒店客服系统的“转人工二次确认”判别器，只输出 JSON，不回复客户。
-当前系统刚询问客人是否要通知/转接人工。你的任务只判断客人最新一句话的语义：
+	return strings.TrimSpace(`你是酒店客服系统的人工接待意愿判别器，只输出 JSON，不回复客户。
+当前客人已进入人工接待或正在回答旧版接待确认。结合转人工原因判断最新一句话，而不是要求固定口令或短句：
 - confirm：客人同意、授权、要求现在通知人工或门店同事介入。
-- cancel：客人拒绝、取消、表示先不用/别转人工。
+- cancel：客人明确取消人工接待、表示该问题已经解决或自己处理且不再需要同事；可以是完整长句。
 - unknown：客人在说新问题、继续描述问题、信息不明确、或不是在回答是否转人工。
+取消外卖订单、预约或其他业务不是取消人工接待；否定取消、只是转述他人的话，也不是 cancel。
 不要根据酒店业务内容做回复，不要重新判断主意图。只返回字段：decision, confidence, reason。`)
 }
 
@@ -660,18 +671,14 @@ func normalizeHandoffConfirmationDecision(value string) humanHandoffConfirmation
 func parseHumanHandoffConfirmationFallback(value string) humanHandoffConfirmationDecision {
 	text := strings.ToLower(strings.TrimSpace(value))
 	text = strings.Trim(text, " ，。,.!！?？~～\n\t")
-	if text == "" || len([]rune(text)) > 16 {
-		return humanHandoffConfirmationUnknown
+	if isExplicitHandoffContextCancel(text) {
+		return humanHandoffConfirmationCancel
 	}
-	for _, keyword := range []string{"不确认", "先不", "不用", "不要", "取消", "算了", "别转", "不转"} {
-		if strings.Contains(text, keyword) {
-			return humanHandoffConfirmationCancel
-		}
-	}
-	for _, keyword := range []string{"确认", "确定", "可以", "可以的", "好", "好的", "行", "行的", "嗯", "嗯嗯", "对", "对的", "是", "是的", "ok", "okay", "yes", "转", "转人工"} {
-		if text == keyword || strings.Contains(text, keyword) {
-			return humanHandoffConfirmationConfirm
-		}
+	switch text {
+	case "不确认", "先不", "不用", "不要", "别转", "不转", "别转人工", "不转人工", "已解决", "已经解决了":
+		return humanHandoffConfirmationCancel
+	case "确认", "确定", "可以", "可以的", "好", "好的", "行", "行的", "嗯", "嗯嗯", "对", "对的", "是", "是的", "ok", "okay", "yes", "转", "转人工":
+		return humanHandoffConfirmationConfirm
 	}
 	return humanHandoffConfirmationUnknown
 }

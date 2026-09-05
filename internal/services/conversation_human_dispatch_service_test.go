@@ -1146,6 +1146,63 @@ func TestConversationHandoffRoomDecisionUsesVoiceTranscript(t *testing.T) {
 	}
 }
 
+func TestWaitingCustomerExplicitCancellationDoesNotNeedModel(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	restore := services.SetHumanHandoffConfirmationClassifierForTest(func(context.Context, *models.Conversation, *models.Message, string, string) (string, float64, string) {
+		t.Fatal("explicit cancellation must not depend on model availability")
+		return "", 0, ""
+	})
+	t.Cleanup(restore)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "找人工")
+	if _, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(conversation.ID, aiAgent, "客户找人工", "explicit-cancel-test", origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	message := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "取消")
+	handled, err := services.ConversationHandoffConfirmationService.HandleWaitingCustomerResolution(&conversation, &message, state)
+	if err != nil || !handled {
+		t.Fatalf("cancellation was not handled: %v, %v", handled, err)
+	}
+	state = services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if state.RouteStatus != enums.ConversationRouteStatusAIServing || state.NeedHumanFollowUp {
+		t.Fatalf("explicit cancellation did not restore AI: %+v", state)
+	}
+}
+
+func TestWaitingCustomerClassifierUnavailableKeepsRouteAndRespondsOnce(t *testing.T) {
+	db := setupConversationHumanDispatchTestDB(t)
+	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")
+	conversation := createHumanDispatchConversation(t, db, aiAgent.ID, enums.IMConversationStatusAIServing)
+	createHumanDispatchStoreRoomRuntime(t, db, conversation.ID, constants.StoreManagedModeSemi, "00:00-23:59")
+	origin := createHumanDispatchMessage(t, db, conversation.ID, 10, enums.IMSenderTypeCustomer, "找人工")
+	if _, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(conversation.ID, aiAgent, "客户找人工", "cancel-unavailable-test", origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	state := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	message := createHumanDispatchMessage(t, db, conversation.ID, 20, enums.IMSenderTypeCustomer, "不用了，这件事我已经处理好了，不需要同事过来了。")
+	for attempt := 0; attempt < 2; attempt++ {
+		handled, err := services.ConversationHandoffConfirmationService.HandleWaitingCustomerResolution(&conversation, &message, state)
+		if err != nil || !handled {
+			t.Fatalf("unavailable classifier must provide honest feedback: %v, %v", handled, err)
+		}
+	}
+	after := services.ConversationRouteService.GetByConversationID(conversation.ID)
+	if after.RouteStatus != state.RouteStatus || !after.NeedHumanFollowUp {
+		t.Fatalf("failed classification must not silently restore AI: %+v", after)
+	}
+	var notices []models.Message
+	if err := db.Where("conversation_id = ? AND client_msg_id = ?", conversation.ID,
+		fmt.Sprintf("ai_manual_wait_cancel_help_%d_%d", conversation.ID, message.ID)).Find(&notices).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0].Content, "目前仍由同事接待") {
+		t.Fatalf("expected one truthful cancellation help notice: %+v", notices)
+	}
+}
+
 func TestConversationHandoffConfirmationClearsOnNewTopic(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	restore := services.SetHumanHandoffConfirmationClassifierForTest(func(ctx context.Context, conversation *models.Conversation, message *models.Message, reason string, text string) (string, float64, string) {

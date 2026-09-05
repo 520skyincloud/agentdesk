@@ -9,6 +9,7 @@ import (
 	"time"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
+	runtimeexecutor "agent-desk/internal/ai/runtime/executor"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
@@ -551,13 +552,16 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 		return err
 	}
 	var lastErr error
+	applyRoomNumberPolicy, roomNumberText := runtimeexecutor.HandoffRoomNumberPolicyFromTrace(summary.TraceData)
 	for attempt := 1; attempt <= deferredKnowledgeHandoffMaxAttempts; attempt++ {
-		_, lastErr = svc.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+		_, lastErr = svc.ConversationHandoffConfirmationService.DispatchByAIWithRoomNumberPolicy(
 			replyCtx.Conversation.ID,
 			replyCtx.AIAgent,
 			reason,
 			strings.TrimSpace(replyCtx.Message.RequestID),
 			replyCtx.Message.ID,
+			applyRoomNumberPolicy,
+			roomNumberText,
 		)
 		if lastErr == nil {
 			return nil

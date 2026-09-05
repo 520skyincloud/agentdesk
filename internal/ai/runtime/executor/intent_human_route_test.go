@@ -239,6 +239,10 @@ func TestRuntimeHandoffRoomNumberPolicyUsesOnlyPendingTaskSemantics(t *testing.T
 			if got != tt.want || text != tt.text {
 				t.Fatalf("room policy must use only pending action tasks: got=(%v,%q), want=(%v,%q)", got, text, tt.want, tt.text)
 			}
+			deferred, deferredText := HandoffRoomNumberPolicyFromTrace(collector.Marshal())
+			if deferred != got || deferredText != text {
+				t.Fatalf("deferred and direct policy differ: direct=(%v,%q), deferred=(%v,%q)", got, text, deferred, deferredText)
+			}
 		})
 	}
 }

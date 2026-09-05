@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -211,6 +212,16 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+// HandoffRoomNumberPolicyFromTrace keeps post-commit handoffs on the same policy
+// as handoffs executed inside the runtime.
+func HandoffRoomNumberPolicyFromTrace(raw string) (bool, string) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	if err := json.Unmarshal([]byte(raw), &collector.Data); err != nil {
+		return true, ""
+	}
+	return runtimeHandoffRoomNumberPolicy(collector)
 }
 
 func runtimeHandoffRoomNumberPolicy(collector *callbacks.RuntimeTraceCollector) (bool, string) {
