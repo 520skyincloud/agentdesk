@@ -98,3 +98,12 @@ go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/ser
 回退点为上述65b19f7 release，数据库始终保留现状。
 无新增数据、权限、接口、模型配置或迁移；已fetch并检查并行分支，收尾的Executor
 文件无同文件修改，无需为本轮rebase；独立提交可cherry-pick。
+
+收尾代码 `23b6a3b` 已推送两个远端并部署：
+`/opt/agentdesk/releases/20260905-173535-bounded-reply-23b6a3b`。
+备份：`/opt/backups/agentdesk-20260905-173535-pre-bounded-reply`。
+SHA-256：`ea359feafe2ecac1ad7342c5015e4b8f779a0b88845f5c2cdcd35f05bbd41dd8`。
+切换后复核active/running、HTTP 200、NRestarts=0，启动后的warning级日志为空。
+部署静默查询已使用与应用TZ=Asia/Shanghai一致的MySQL会话时区，
+避免UTC的NOW将本地时间消息误判为新消息；未修改数据库全局时区、数据或程序配置。
+此发布之后没有追加真实对话，模型效果和上述覆盖缺口仍未验收。
