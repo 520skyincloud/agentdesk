@@ -235,8 +235,13 @@ func TestValidateRuntimeIntentResolvedReferenceContextUsesAdjacentServicePair(t 
 
 	context.PreviousCustomerText = ""
 	err := validateRuntimeIntentResolvedReferenceContext(parsed, task.Text, context, true)
-	if err == nil || !strings.Contains(err.Error(), "adjacent customer and service reply pair") {
-		t.Fatalf("missing adjacent customer question must fail mechanically, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires bounded conversation history") {
+		t.Fatalf("missing all usable context must fail mechanically, got %v", err)
+	}
+	context.HasBoundedHistory = true
+	context.AdjacentServiceReply = ""
+	if err := validateRuntimeIntentResolvedReferenceContext(parsed, task.Text, context, true); err != nil {
+		t.Fatalf("an explicit reference may use bounded history without an adjacent reply pair: %v", err)
 	}
 }
 

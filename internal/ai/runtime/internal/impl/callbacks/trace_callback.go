@@ -280,6 +280,7 @@ type IntentTaskTraceData struct {
 	Entities           []IntentEntityTraceData `json:"entities,omitempty"`
 	Text               string                  `json:"text,omitempty"`
 	ResolvedText       string                  `json:"resolvedText,omitempty"`
+	EvidenceQuery      string                  `json:"evidenceQuery,omitempty"`
 	SourceRefs         []string                `json:"sourceRefs,omitempty"`
 	NeedsKnowledge     bool                    `json:"needsKnowledge,omitempty"`
 	NeedsResource      bool                    `json:"needsResource,omitempty"`

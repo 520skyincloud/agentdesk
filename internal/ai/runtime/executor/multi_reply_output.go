@@ -28,6 +28,8 @@ type textReplyTaskGroup struct {
 	Facts               []replyFactRequirement
 	StructuredRequired  bool
 	ExternalProxyAction bool
+	EvidenceLocked      bool
+	SelectedLayer       string
 }
 
 type replyFactRequirement struct {
@@ -90,6 +92,9 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 			hasExternalProxyAction = true
 			content = ""
 		}
+		if group.EvidenceLocked {
+			content = ""
+		}
 		part := generatedReplyPart{TaskID: group.TaskID, Content: content}
 		if !group.ExternalProxyAction {
 			for _, fact := range group.Facts {
@@ -102,6 +107,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	b.Write(exampleJSON)
 	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并、重复或增加 taskId。每个 content 只回答对应任务，只使用该任务列出的事实，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实对应多个事实 ID 时，coveredFactIds 必须全部列出，但 content 只自然表达一次。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会按任务顺序合并为最多三条客户消息。\n")
 	b.WriteString("自然改写必须保留原事实的主体、条件、范围和确定程度：权益不同不等于价格不同，需要或建议驾车不等于不能步行，已确认包括某些房型不等于只有这些房型。不得把未知属性写成肯定或否定结论；不要用‘因此、所以’补出证据没有确认的能力或限制。\n")
+	b.WriteString("标注‘已锁定证据’的知识任务由程序原义组装 Judge 的事实，content 留空，coveredFactIds 列出该任务全部 FactID，不再重新改写事实。未锁定证据的互动和澄清任务仍由你自然回答。\n")
 	if hasExternalProxyAction {
 		b.WriteString("外部代执行任务由程序直接使用固定能力边界和 Judge 选中的自助事实合成；该任务的 content 留空且省略 coveredFactIds，不要自行补充能否代办、地址、电话、入口或步骤。\n")
 	}
@@ -110,6 +116,9 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 		b.WriteString(group.TaskID)
 		b.WriteString("：")
 		b.WriteString(strings.Join(group.Texts, "；"))
+		if group.EvidenceLocked {
+			b.WriteString("（已锁定证据，content 留空）")
+		}
 		b.WriteString("\n")
 		for _, fact := range groupReplyFactRequirementsForInstruction(group.Facts) {
 			b.WriteString("  - 必答事实 ")
@@ -257,7 +266,7 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 			return "", fmt.Errorf("%w: duplicate taskId %s", errGeneratedReplyProtocol, taskID)
 		}
 		group := groupByTaskID(groups, taskID)
-		if content == "" && !group.ExternalProxyAction {
+		if content == "" && !group.ExternalProxyAction && !group.EvidenceLocked {
 			return "", fmt.Errorf("%w: missing content for %s", errGeneratedReplyProtocol, taskID)
 		}
 		if !group.ExternalProxyAction && containsReplyMessageMarker(content) {
@@ -266,10 +275,17 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		if group.ExternalProxyAction {
 			content = applyExternalProxyActionCapabilityBoundary(group, "")
 		} else {
+			if group.EvidenceLocked {
+				content = renderLockedReplyFacts(group.Facts)
+				part.Content = content
+			}
 			if err := validateCoveredFacts(part, group); err != nil {
 				return "", err
 			}
 			content = compactGeneratedReplyContent(content)
+		}
+		if containsReplyMessageMarker(content) || looksLikeGeneratedReplyPartsProtocol(content) {
+			return "", fmt.Errorf("%w: assembled content for %s contains internal protocol", errGeneratedReplyProtocol, taskID)
 		}
 		if content == "" {
 			return "", fmt.Errorf("%w: content for %s became empty after duplicate removal", errGeneratedReplyProtocol, taskID)
@@ -292,14 +308,19 @@ func applyExternalProxyActionCapabilityBoundary(group textReplyTaskGroup, conten
 	if !group.ExternalProxyAction {
 		return content
 	}
-	facts := compactGeneratedReplyFallbackFacts(group.Facts)
+	return externalProxyActionCapabilityBoundaryReply + renderLockedReplyFacts(group.Facts)
+}
+
+func renderLockedReplyFacts(facts []replyFactRequirement) string {
 	statements := make([]string, 0, len(facts))
+	seen := make(map[string]bool, len(facts))
 	for _, fact := range facts {
-		if statement := strings.TrimSpace(fact.Statement); statement != "" {
+		if statement := strings.TrimSpace(fact.Statement); statement != "" && !seen[statement] {
 			statements = append(statements, statement)
+			seen[statement] = true
 		}
 	}
-	return externalProxyActionCapabilityBoundaryReply + joinGeneratedReplyFactStatements(statements)
+	return joinGeneratedReplyFactStatements(statements)
 }
 
 func requiresStructuredReplyParts(groups []textReplyTaskGroup, explicitlyRequired bool) bool {
@@ -890,7 +911,34 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 			Facts:               replyFactRequirements(task.SupportedFacts),
 			StructuredRequired:  task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
 			ExternalProxyAction: isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective),
+			EvidenceLocked:      task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0,
+			SelectedLayer:       task.SelectedLayer,
 		})
+	}
+	// Optional proxy self-help must not repeat facts owned by explicit questions.
+	for index := range groups {
+		if !groups[index].ExternalProxyAction {
+			continue
+		}
+		kept := make([]replyFactRequirement, 0, len(groups[index].Facts))
+		for _, fact := range groups[index].Facts {
+			owned := false
+			for _, sibling := range groups {
+				if sibling.ExternalProxyAction || !sibling.EvidenceLocked || sibling.SelectedLayer != groups[index].SelectedLayer {
+					continue
+				}
+				for _, siblingFact := range sibling.Facts {
+					if strings.TrimSpace(siblingFact.Statement) == strings.TrimSpace(fact.Statement) {
+						owned = true
+						break
+					}
+				}
+			}
+			if !owned {
+				kept = append(kept, fact)
+			}
+		}
+		groups[index].Facts = kept
 	}
 	return groups
 }

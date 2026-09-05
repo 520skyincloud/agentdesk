@@ -621,9 +621,9 @@ func TestBuildRuntimeIntentDetectUserPromptSeparatesClarificationFromCompletedAn
 	}}, history, nil)
 	for _, expected := range []string{
 		"clarification_answer 只用于回答紧邻客服正在追问的必要字段",
-		"客户业务问题 + 客服已完成答复",
-		"必须使用 follow_up/reference_previous",
-		"没有紧邻业务上下文时",
+		"从已提供的有界历史中选择最近仍相关且唯一的业务对象",
+		"不要求它必须在紧邻一问一答里出现",
+		"旧问题即使已回答也能供本轮回指",
 		"承接已完成业务答复继续问细节用 follow_up",
 		"比较其他对象、复述或重新回答用 reference_previous",
 	} {
@@ -649,7 +649,7 @@ func TestBuildRuntimeIntentDetectUserPromptKeepsRepeatBusinessTaskAfterNoDataAns
 	}}, history, nil)
 	for _, expected := range []string{
 		"即使上一答复说没有资料、无法确认或需要同事处理",
-		"不能降成 interaction/clarify",
+		"不能按普通闲聊或 interaction/clarify 处理",
 		"紧邻已完成的业务答复仍然是合法上下文",
 		"客户明确表示同一问题仍未解决",
 	} {

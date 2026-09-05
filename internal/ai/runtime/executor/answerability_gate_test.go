@@ -935,6 +935,27 @@ func TestRuntimeIntentEvidenceQueryEnrichesKnownShortLabels(t *testing.T) {
 	}
 }
 
+func TestModelEvidenceQueryDoesNotReplaceFullJudgeQuestion(t *testing.T) {
+	resolved := "合柴和艺林这两种房型有免费停车吗"
+	tasks := convertRuntimeIntentTasks([]runtimeIntentTaskJSON{{
+		Intent: "hotel_info", SubIntent: "parking", Objective: "price",
+		Text: "这两种房型有免费停车吗", ResolvedText: resolved,
+		EvidenceQuery: "酒店停车收费政策", NeedsKnowledge: true, SourceRefs: []string{"U1"},
+	}})
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "parking", Objective: "price",
+		Text: tasks[0].Text, ResolvedText: resolved, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true,
+	}}}
+	specs, ok := runtimeKnowledgeQuestionsFromReplyPlan(plan, callbacks.IntentTraceData{IntentTasks: tasks})
+	if !ok || len(specs) != 1 || runtimeIntentEvidenceQuery(specs[0]) != "酒店停车收费政策" || specs[0].Query != resolved {
+		t.Fatalf("retrieval target and Judge conditions must remain separate: %+v", specs)
+	}
+	tasks[0].EvidenceQuery = ""
+	specs, ok = runtimeKnowledgeQuestionsFromReplyPlan(plan, callbacks.IntentTraceData{IntentTasks: tasks})
+	if !ok || runtimeIntentEvidenceQuery(specs[0]) != resolved {
+		t.Fatalf("old profiles must retain the original full-question query: %+v", specs)
+	}
+}
 func TestMergeRuntimeKnowledgeQueriesDoesNotInventKnowledgeBesideResourceTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})

@@ -82,6 +82,7 @@ type runtimeKnowledgeQuestionSpec struct {
 	TaskID             string
 	Intent             string
 	Query              string
+	EvidenceQuery      string
 	OriginalText       string
 	SubIntent          string
 	Objective          string
@@ -240,6 +241,7 @@ func retrieveContextForRuntimeQuestions(ctx context.Context, retriever knowledge
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, item); intentTask != nil {
 			spec.Intent = canonicalIntentCode(intentTask.Intent)
+			spec.EvidenceQuery = strings.TrimSpace(intentTask.EvidenceQuery)
 			spec.OriginalText = strings.TrimSpace(intentTask.Text)
 			spec.SubIntent = strings.TrimSpace(intentTask.SubIntent)
 			spec.Objective = semanticGateNormalizeObjective(intentTask.Objective)
@@ -295,6 +297,7 @@ func runtimeKnowledgeQuestionsFromReplyPlan(plan callbacks.ReplyPlanTraceData, i
 			Entities:           append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, query); intentTask != nil {
+			spec.EvidenceQuery = strings.TrimSpace(intentTask.EvidenceQuery)
 			if spec.OriginalText == "" {
 				spec.OriginalText = strings.TrimSpace(intentTask.Text)
 			}
@@ -643,6 +646,9 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 			return subject + "办理时酒店地址怎么填写；" + subject + "如何自行办理"
 		}
 		return query + "；办理时酒店地址怎么填写；如何自行办理"
+	}
+	if evidenceQuery := strings.TrimSpace(spec.EvidenceQuery); evidenceQuery != "" {
+		return evidenceQuery
 	}
 	if query == "" || !runtimeIntentShortKnowledgeLabel(query) {
 		return query

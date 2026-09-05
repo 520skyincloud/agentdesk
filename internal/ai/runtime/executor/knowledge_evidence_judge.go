@@ -85,6 +85,7 @@ type knowledgeEvidenceJudgeOutcome struct {
 }
 
 type knowledgeEvidenceLayerSelection struct {
+	ProtocolError        string
 	Decision             string
 	DecisionSource       string
 	SelectedCandidateIDs []string
@@ -138,6 +139,7 @@ type knowledgeEvidenceJudgeResponseTask struct {
 }
 
 type knowledgeEvidenceJudgeResponseLayer struct {
+	ProtocolError        string                  `json:"-"`
 	Layer                string                  `json:"layer"`
 	Decision             string                  `json:"decision"`
 	SelectedCandidateIDs []string                `json:"selectedCandidateIds"`
@@ -276,6 +278,13 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
+	for taskID, layers := range selections {
+		for layer, selection := range layers {
+			if selection.ProtocolError != "" {
+				trace.ErrorMessage = strings.TrimSpace(trace.ErrorMessage + " " + taskID + "/" + layer + ": " + preview(selection.ProtocolError, 160))
+			}
+		}
+	}
 	if judgeDeadlineTrimmed {
 		trace.Reason += "; judge timeout was bounded by the parent reply deadline"
 	}
@@ -821,6 +830,11 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - partial：同一层内已确认一部分有用事实，但仍缺少当前问题要求的一个或多个事实维度。只选择支持已确认事实的必要候选。
 - insufficient：该层没有足够证据，selectedCandidateIds 必须为空。
 
+先确定当前仍有效的要求：客户明确说“不要求、不用考虑、只要”等时，已放弃的条件不是缺失事实，不得加入 missingAspects。当前问题优先于 sourceContext 中的旧要求。
+同门店、同对象、同条件下，分别确认属性A和属性B的证据已经共同证明同时具备A和B；不能再要求第三条“同时具备”的重复证明。完整性必须覆盖当前任务的每个对象和仍有效的条件，不能用其中一个对象的答案冒充整题可答。
+对账号、密码等配置值，必须按每个字段标签边界提取；重复的“Wi-Fi”等标签不是前一字段值的一部分。未标明区域的配置不能推导大堂与客房通用，存在多套配置或边界确实歧义时保留未知，不猜参数。
+外部代操作任务与独立自助信息任务同轮出现时，自助地址、电话、入口只归属对应独立任务；外部代操作任务无需重复该信息，不能因此把独立任务判为不足。
+
 每层还必须输出 supportedFacts 和 missingAspects：
 - supportedFacts 只能写 selectedCandidateIds 原文明示或完整 FAQ 问答明确确认的原子事实。每条必须包含 factId、aspect、statement、criticalValues。
 - factId 在同一个 task 的同一知识层内必须唯一；aspect 只能是 existence、quantity、price、time、location、method、scope、condition、other。
@@ -846,6 +860,7 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 
 最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
 严禁把一条长候选知识逐句全部拆成 supportedFacts。只输出当前问题真正需要的最小事实；一个完整 statement 已覆盖多个维度时可以复用该 statement，不再输出它所包含的摘要句或无关细节。
+statement 会原义发送给客户，使用简短、自然、完整的微信答复，不写裁决分析或内部术语；普通问题1至2句，流程问题保留必要的2至3个简短步骤。不知道的方面放在 missingAspects，不能写进事实冒充肯否结论；不承诺稍后确认、通知或代办。
 
 检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
 
@@ -991,8 +1006,14 @@ func decodeKnowledgeEvidenceJudgeRawLayer(raw knowledgeEvidenceJudgeRawResponseL
 		Decision:             raw.Decision,
 		SelectedCandidateIDs: append([]string(nil), raw.SelectedCandidateIDs...),
 	}
-	factsMalformed := decodeKnowledgeEvidenceJudgeFacts(raw.SupportedFacts, &layer.SupportedFacts) != nil
-	missingAspectsMalformed := decodeKnowledgeEvidenceJudgeMissingAspects(raw.MissingAspects, &layer.MissingAspects) != nil
+	factsErr := decodeKnowledgeEvidenceJudgeFacts(raw.SupportedFacts, &layer.SupportedFacts)
+	missingErr := decodeKnowledgeEvidenceJudgeMissingAspects(raw.MissingAspects, &layer.MissingAspects)
+	factsMalformed, missingAspectsMalformed := factsErr != nil, missingErr != nil
+	if factsErr != nil {
+		layer.ProtocolError = "supportedFacts: " + factsErr.Error()
+	} else if missingErr != nil {
+		layer.ProtocolError = "missingAspects: " + missingErr.Error()
+	}
 	if strings.TrimSpace(raw.Decision) == knowledgeEvidenceDecisionInsufficient && len(raw.SelectedCandidateIDs) == 0 {
 		if knowledgeEvidenceJudgeRawArrayIsMissingOrNull(raw.SupportedFacts) {
 			layer.SupportedFacts = nil
@@ -1040,7 +1061,12 @@ func decodeKnowledgeEvidenceJudgeMissingAspects(raw json.RawMessage, target *[]s
 }
 
 func defaultKnowledgeEvidenceLayerSelections(expectedLayers map[string]map[string]struct{}) map[string]knowledgeEvidenceLayerSelection {
-	return failedKnowledgeEvidenceLayerSelectionsForExpected(expectedLayers, knowledgeEvidenceDecisionProtocolInvalid)
+	selections := failedKnowledgeEvidenceLayerSelectionsForExpected(expectedLayers, knowledgeEvidenceDecisionProtocolInvalid)
+	for layer, selection := range selections {
+		selection.ProtocolError = "missing_layer"
+		selections[layer] = selection
+	}
+	return selections
 }
 
 func failedKnowledgeEvidenceLayerSelectionsForExpected(expectedLayers map[string]map[string]struct{}, decision string) map[string]knowledgeEvidenceLayerSelection {
@@ -1243,12 +1269,16 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	supportedFactsMalformed bool,
 	missingAspectsMalformed bool,
 ) knowledgeEvidenceLayerSelection {
-	protocolInvalid := protocolInvalidKnowledgeEvidenceLayerSelection()
+	reject := func(reason string) knowledgeEvidenceLayerSelection {
+		result := protocolInvalidKnowledgeEvidenceLayerSelection()
+		result.ProtocolError = reason
+		return result
+	}
 	decision := strings.TrimSpace(layerResult.Decision)
 	switch decision {
 	case knowledgeEvidenceDecisionDirectSingle, knowledgeEvidenceDecisionDirectCombined, knowledgeEvidenceDecisionPartial, knowledgeEvidenceDecisionInsufficient:
 	default:
-		return protocolInvalid
+		return reject("unknown_decision")
 	}
 
 	selectedIDs := make([]string, 0, len(layerResult.SelectedCandidateIDs))
@@ -1256,10 +1286,10 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	for _, rawCandidateID := range layerResult.SelectedCandidateIDs {
 		candidateID := strings.TrimSpace(rawCandidateID)
 		if _, ok := expectedCandidates[candidateID]; !ok {
-			return protocolInvalid
+			return reject("unknown_or_cross_layer_candidate_id")
 		}
 		if _, exists := seenSelected[candidateID]; exists {
-			return protocolInvalid
+			return reject("duplicate_candidate_id")
 		}
 		seenSelected[candidateID] = struct{}{}
 		selectedIDs = append(selectedIDs, candidateID)
@@ -1267,7 +1297,7 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	selectedContainsHandoff := selectedKnowledgeEvidenceContainsHandoffDirective(expectedTask, layer, selectedIDs)
 	selectedHandoff := selectedModelKnowledgeEvidenceIsHandoffDirective(expectedTask, layer, selectedIDs)
 	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
-		return protocolInvalid
+		return reject("handoff_mixed_with_facts_or_combined_candidates")
 	}
 	if selectedHandoff {
 		return knowledgeEvidenceLayerSelection{
@@ -1277,32 +1307,32 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 		}
 	}
 	if supportedFactsMalformed || missingAspectsMalformed {
-		return protocolInvalid
+		return reject("malformed_fact_fields: " + layerResult.ProtocolError)
 	}
 	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
 	if err != nil {
-		return protocolInvalid
+		return reject("invalid_supported_fact: " + err.Error())
 	}
 	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
 	if err != nil {
-		return protocolInvalid
+		return reject("invalid_missing_aspects: " + err.Error())
 	}
 	switch decision {
 	case knowledgeEvidenceDecisionInsufficient:
 		if len(selectedIDs) != 0 || len(supportedFacts) != 0 {
-			return protocolInvalid
+			return reject("insufficient_with_selected_candidates_or_facts")
 		}
 	case knowledgeEvidenceDecisionDirectSingle:
 		if len(selectedIDs) != 1 || len(missingAspects) != 0 || (!selectedHandoff && len(supportedFacts) == 0) || (selectedHandoff && len(supportedFacts) != 0) {
-			return protocolInvalid
+			return reject(fmt.Sprintf("direct_single_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	case knowledgeEvidenceDecisionDirectCombined:
 		if len(selectedIDs) < 2 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) != 0 {
-			return protocolInvalid
+			return reject(fmt.Sprintf("direct_combined_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	case knowledgeEvidenceDecisionPartial:
 		if len(selectedIDs) == 0 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) == 0 {
-			return protocolInvalid
+			return reject(fmt.Sprintf("partial_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	}
 	return knowledgeEvidenceLayerSelection{

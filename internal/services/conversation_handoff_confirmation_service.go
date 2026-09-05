@@ -430,7 +430,13 @@ func (s *conversationHandoffConfirmationService) HandleWaitingCustomerResolution
 		cancel()
 	}
 	if result.Decision != humanHandoffConfirmationCancel || result.Confidence < 0.55 {
-		if result.Decision == humanHandoffConfirmationUnknown && strings.HasPrefix(result.Source, "fallback:") {
+		// A model outage must not make the AI interject into ordinary human chat.
+		// An explicit cancellation clause can request help, but cannot change route.
+		firstClause := text
+		if index := strings.IndexAny(text, "，,。.!！?？\n"); index >= 0 {
+			firstClause = strings.TrimSpace(text[:index])
+		}
+		if result.Decision == humanHandoffConfirmationUnknown && strings.HasPrefix(result.Source, "fallback:") && isExplicitHandoffContextCancel(firstClause) {
 			_, err := MessageService.SendAIServiceNoticeWithClientMsgIDAndRequestID(conversation.ID, conversation.AIAgentID,
 				fmt.Sprintf("ai_manual_wait_cancel_help_%d_%d", conversation.ID, message.ID),
 				"抱歉，没能确认您是否要取消人工接待，目前仍由同事接待。如需取消，请回复“取消”。",

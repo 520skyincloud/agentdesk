@@ -1,5 +1,16 @@
 # Reply Runtime Engine
 
+## 2026-09-06 有界修复说明
+
+本节覆盖下文历史描述中冲突的旧限制，代码与
+`docs/development/reply-runtime-bounded-fixes-20260906.md`记录为准：
+跨轮回指可使用已提供的有界历史，不要求紧邻完整问答对，answer_rejected的紧邻AI条件不变。
+仅明确会话回顾按预算加载当前session更早消息，不增加持久化已答状态。
+Intent可输出内部可选evidenceQuery用于召回，resolvedText仍保留完整裁决条件。
+Judge负责语义与事实选择，本地记录具体协议错误，不做第二次语义裁决；
+已有选中证据的知识任务原义组装Statement，Generate保留任务输出但不再自由改写事实，
+无选中证据的互动回复行为不变。直接和延迟接待共用房号策略。
+
 本文只描述原始修复基线 `40cc24be3972ab341af7f0ef83a4732e9630ad87`
 之上的现行回复链路和截至 2026-08-31 的当前工作区实现。此前 A+B 运行记录中的
 `39e8656a4e8d9bf25cd2df5e8619592af2ad5c67` 与

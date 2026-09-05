@@ -357,9 +357,9 @@ func TestBuildGenerateStageMessagesDoesNotInjectOldHistoryForCurrentTurnSourceCo
 	}
 }
 
-func TestBuildGenerateStageMessagesConversationRecapUsesAtMostEightRecentMessages(t *testing.T) {
-	historyMessages := make([]*schema.Message, 0, 10)
-	for index := 1; index <= 10; index++ {
+func TestBuildGenerateStageMessagesConversationRecapUsesBoundedOlderMessages(t *testing.T) {
+	historyMessages := make([]*schema.Message, 0, 80)
+	for index := 1; index <= 80; index++ {
 		content := "[历史消息][客户] 历史问题" + fmt.Sprint(index)
 		if index%2 == 0 {
 			historyMessages = append(historyMessages, schema.AssistantMessage(strings.Replace(content, "[客户]", "[AI客服]", 1), nil))
@@ -383,10 +383,10 @@ func TestBuildGenerateStageMessagesConversationRecapUsesAtMostEightRecentMessage
 	joined := joinSchemaMessageContents(got)
 	for _, forbidden := range []string{"客户：历史问题1\n", "AI客服：历史问题2\n"} {
 		if strings.Contains(joined, forbidden) {
-			t.Fatalf("conversation recap must be bounded to the latest eight messages; found %q in %q", forbidden, joined)
+			t.Fatalf("conversation recap must be bounded to the latest 64 messages; found %q in %q", forbidden, joined)
 		}
 	}
-	for index := 3; index <= 10; index++ {
+	for index := 17; index <= 80; index++ {
 		if expected := "历史问题" + fmt.Sprint(index); !strings.Contains(joined, expected) {
 			t.Fatalf("conversation recap missing recent message %q in %q", expected, joined)
 		}
@@ -429,7 +429,7 @@ func TestFollowUpReceivesAdjacentBoundedConversationContext(t *testing.T) {
 	}
 }
 
-func TestFollowUpDoesNotTreatTwoWaitingCustomerMessagesAsAdjacentServiceContext(t *testing.T) {
+func TestFollowUpMayUseCustomerHistoryWithoutInventingServiceAnswers(t *testing.T) {
 	task := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "breakfast", RelationToPrevious: "follow_up", ResolutionState: "resolved_from_context",
 		Text: "几点结束", ResolvedText: "早餐几点结束", OutputKind: "text", ReplyRequired: true,
@@ -438,8 +438,21 @@ func TestFollowUpDoesNotTreatTwoWaitingCustomerMessagesAsAdjacentServiceContext(
 		schema.UserMessage("停车免费吗？"),
 		schema.UserMessage("有没有充电桩？"),
 	}}, []callbacks.ReplyTaskPlanTraceData{task})
-	if contextMessage != nil {
-		t.Fatalf("waiting customer messages are current work, not an adjacent customer/service answer pair: %q", contextMessage.Content)
+	if contextMessage == nil || !strings.Contains(contextMessage.Content, "客户：停车免费吗") || strings.Contains(contextMessage.Content, "AI客服：") {
+		t.Fatalf("history must preserve the true speakers without requiring an answered pair: %#v", contextMessage)
+	}
+}
+
+func TestConversationRecapHistoryHasTotalTextBudget(t *testing.T) {
+	history := adapter.HistoryBuildResult{}
+	for i := 0; i < 64; i++ {
+		history.Messages = append(history.Messages, schema.UserMessage(strings.Repeat("长", 1000)))
+	}
+	message := buildBoundedGenerationConversationContext(history, []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "interaction", SubIntent: "conversation_recap",
+	}})
+	if message == nil || len([]rune(message.Content)) > 6500 || !strings.Contains(message.Content, "超出本次回顾预算") {
+		t.Fatalf("recap text budget was not enforced: %#v", message)
 	}
 }
 

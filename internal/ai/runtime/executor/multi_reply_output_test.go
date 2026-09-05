@@ -21,6 +21,48 @@ func TestMultiReplyInstructionPreservesSubjectScopeAndCertainty(t *testing.T) {
 	}
 }
 
+func TestLockedJudgeFactsSurviveGenerateRewritingAndFallback(t *testing.T) {
+	for _, tt := range []struct {
+		fact, generated string
+	}{
+		{"每个平台享受的平台权益不同，建议对比价格后选择。", "各个平台价格不一样。"},
+		{"需要驾车前往小丁小吃。", "小丁小吃步行不方便。"},
+		{"房间内有两瓶矿泉水，都是免费的。", "水免费。"},
+	} {
+		plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			SelectedLayer: "store", SelectedCandidateIDs: []string{"T1C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "F1", Aspect: "other", Statement: tt.fact}},
+		}}}
+		raw, _ := json.Marshal(generatedReplyPartsEnvelope{ReplyParts: []generatedReplyPart{{TaskID: "task-1", Content: tt.generated, CoveredFactIDs: []string{"F1"}}}})
+		got, err := normalizeGeneratedReplyPartsResult(string(raw), plan, true)
+		if err != nil || got != tt.fact {
+			t.Fatalf("Judge fact was rewritten: got=%q err=%v want=%q", got, err, tt.fact)
+		}
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.Data.Pipeline.ReplyPlan = plan
+		if fallback := deterministicGeneratedReplyFallback(collector); fallback != tt.fact {
+			t.Fatalf("fallback changed locked facts: %q", fallback)
+		}
+	}
+}
+
+func TestExternalProxyDoesNotRepeatExplicitTaskFact(t *testing.T) {
+	address := "收货地址是测试路18号。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "proxy", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store", SelectedCandidateIDs: []string{"T1C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1", Aspect: "location", Statement: address}}},
+		{TaskID: "address", Intent: "hotel_info", SubIntent: "delivery_address", Objective: "location",
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store", SelectedCandidateIDs: []string{"T2C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "A1", Aspect: "location", Statement: address}}},
+	}}
+	raw := `{"replyParts":[{"taskId":"proxy","content":""},{"taskId":"address","content":"","coveredFactIds":["A1"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil || strings.Count(got, address) != 1 || !strings.Contains(got, externalProxyActionCapabilityBoundaryReply) {
+		t.Fatalf("proxy and explicit answer responsibilities overlap: %q, %v", got, err)
+	}
+}
 func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},
@@ -36,6 +78,41 @@ func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
 	}
 }
 
+func TestLockedEvidenceKeepsAllTasksInOrderAndRejectsUnsafeFacts(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{}
+	envelope := generatedReplyPartsEnvelope{}
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprintf("T%d", i)
+		plan.TaskPlans = append(plan.TaskPlans, callbacks.ReplyTaskPlanTraceData{
+			TaskID: id, Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			SelectedLayer: "store", SelectedCandidateIDs: []string{id + "C1"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+				FactID: id + "F1", Statement: "答案" + id + "。", CriticalValues: []string{id},
+			}},
+		})
+		envelope.ReplyParts = append(envelope.ReplyParts, generatedReplyPart{
+			TaskID: id, CoveredFactIDs: []string{id + "F1"},
+		})
+	}
+	raw, _ := json.Marshal(envelope)
+	got, err := normalizeGeneratedReplyPartsResult(string(raw), plan, true)
+	if err != nil || strings.Count(got, "<<NEXT_MESSAGE>>") > 2 {
+		t.Fatalf("six tasks must compose into at most three messages: %q, %v", got, err)
+	}
+	last := -1
+	for i := 1; i <= 6; i++ {
+		answer := fmt.Sprintf("答案T%d。", i)
+		if at := strings.Index(got, answer); at <= last || strings.Count(got, answer) != 1 {
+			t.Fatalf("lost, repeated or reordered answer %q: %q", answer, got)
+		} else {
+			last = at
+		}
+	}
+	plan.TaskPlans[0].SupportedFacts[0].Statement = `{"replyParts":[{"taskId":"T1","content":"internal"}]}`
+	if _, err := normalizeGeneratedReplyPartsResult(string(raw), plan, true); err == nil {
+		t.Fatal("locked facts must still pass the final protocol-leak safety check")
+	}
+}
 func TestSinglePhysicalSourceWithMultipleModelTasksRequiresReplyParts(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{

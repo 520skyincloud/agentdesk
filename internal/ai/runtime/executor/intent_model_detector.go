@@ -63,6 +63,7 @@ type runtimeIntentTaskJSON struct {
 	Entities           runtimeIntentEntityList    `json:"entities"`
 	Text               string                     `json:"text"`
 	ResolvedText       string                     `json:"resolvedText"`
+	EvidenceQuery      string                     `json:"evidenceQuery,omitempty"`
 	SourceRefs         runtimeIntentSourceRefList `json:"sourceRefs"`
 	NeedsKnowledge     bool                       `json:"needsKnowledge"`
 	NeedsResource      bool                       `json:"needsResource"`
@@ -367,7 +368,7 @@ func sleepRuntimeIntentModelRetry(ctx context.Context, duration time.Duration) b
 }
 
 func buildRuntimeIntentProtocolRepairInstruction(protocolErr error) string {
-	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请保持已识别的任务边界、意图和上下文含义，只修复协议字段后重新输出完整 JSON：intentTasks 不能为空；每个任务必须包含合法的 intent、objective、relationToPrevious、resolutionState、entities、text、resolvedText 和 sourceRefs；text 必须来自 sourceRefs[0] 对应的当前客户原话，主 sourceRef 顺序不得倒置。同轮 sourceRefs 补全必须引用更早的 URef 且保持 relationToPrevious=independent；跨轮 resolved_from_context 必须使用 previous 关系并有紧邻客户问题和客服答复，conversation_recap 例外，只要求存在可回顾的有界历史。answer_rejected 的 intent/subIntent 与 relationToPrevious 必须一致，并且只能用于紧邻 AI 答复。顶层字段只能汇总 intentTasks。不要重新拆题、合题或按本地错误文案改变语义；不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请保持已识别的任务边界、意图和上下文含义，只修复协议字段后重新输出完整 JSON：intentTasks 不能为空；每个任务必须包含合法的 intent、objective、relationToPrevious、resolutionState、entities、text、resolvedText 和 sourceRefs；text 必须来自 sourceRefs[0] 对应的当前客户原话，主 sourceRef 顺序不得倒置。同轮 sourceRefs 补全必须引用更早的 URef 且保持 relationToPrevious=independent；跨轮 resolved_from_context 必须使用 previous 关系且存在已提供的有界会话历史，不要求业务对象只在紧邻一问一答中出现。answer_rejected 的 intent/subIntent 与 relationToPrevious 必须一致，并且只能用于紧邻 AI 答复。顶层字段只能汇总 intentTasks。不要重新拆题、合题或按本地错误文案改变语义；不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
 }
 
 func buildRuntimeIntentProtocolRepairContext(history adapter.HistoryBuildResult) runtimeIntentProtocolRepairContext {
@@ -458,6 +459,7 @@ func convertRuntimeIntentTasks(tasks []runtimeIntentTaskJSON) []callbacks.Intent
 			Entities:           convertRuntimeIntentEntities(task.Entities),
 			Text:               strings.TrimSpace(task.Text),
 			ResolvedText:       resolvedText,
+			EvidenceQuery:      strings.TrimSpace(task.EvidenceQuery),
 			SourceRefs:         normalizeRuntimeIntentSourceRefs([]string(task.SourceRefs)),
 			NeedsKnowledge:     task.NeedsKnowledge || intent == "hotel_info" || intent == "service_request",
 			NeedsResource:      task.NeedsResource || intent == "hotel_variable",
@@ -534,18 +536,18 @@ func runtimeIntentDetectSystemPrompt() string {
 }
 
 func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfile) string {
-	if profile == nil {
-		return replyintent.DefaultHotelIntentDetectSystemPrompt()
+	prompt, schemaText := "", ""
+	if profile != nil {
+		prompt = strings.TrimSpace(profile.IntentDetectPrompt)
+		schemaText = strings.TrimSpace(profile.IntentJSONSchema)
 	}
-	prompt := strings.TrimSpace(profile.IntentDetectPrompt)
-	schemaText := strings.TrimSpace(profile.IntentJSONSchema)
 	if prompt == "" {
 		prompt = replyintent.DefaultHotelIntentDetectPrompt()
 	}
 	if schemaText == "" {
 		schemaText = replyintent.DefaultHotelIntentJSONSchema()
 	}
-	return strings.TrimSpace(prompt + "\n\n" + schemaText)
+	return strings.TrimSpace(prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。")
 }
 
 func runtimeIntentProfileExpectsTaskSemantics(profile *models.ReplyIntentProfile) bool {
@@ -600,7 +602,8 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("\n\n判别纪律：只给“当前消息”分类；最近原始消息、媒体理解和长期记忆只用于解释“这个/刚才/还/继续/那”等指代。")
 	b.WriteString("如果当前消息已经有独立的新主题，禁止沿用上一轮早餐、停车、投诉、安全、转人工等历史主题。")
 	b.WriteString("clarification_answer 只用于回答紧邻客服正在追问的必要字段、条件、偏好、范围或选项；此时必须继承该业务 intent/subIntent，intentTasks[].text 保留客户当前原表达，intentTasks[].resolvedText 写成包含上一轮业务主题和当前补充内容的完整检索问题。")
-	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应输出 hotel_info/surrounding_facilities 且 needsKnowledge=true，text 写‘麻辣口味的’，resolvedText 写‘附近餐饮推荐，偏好麻辣口味’。紧邻的‘客户业务问题 + 客服已完成答复’同样构成可承接的业务上下文：‘那麦田呢’、‘外卖地址再说一遍’等追问、比较、复述或重新回答必须使用 follow_up/reference_previous，重新进入原业务 Task，并在 resolvedText 中补全对象和所问方面；即使上一答复说没有资料、无法确认或需要同事处理，也不能降成 interaction/clarify。没有紧邻业务上下文时，独立短语不得从更早历史强行继承旧主题。")
+	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应继承餐饮业务并补全偏好。对追问、比较、复述或省略问法，从已提供的有界历史中选择最近仍相关且唯一的业务对象，不要求它必须在紧邻一问一答里出现；中间的感谢、单独重发某个字段、房号补充或系统通知不自动切断业务上下文。明确切换主题时更新对象；有多个同等合理对象且无法确定时才澄清。旧问题即使已回答也能供本轮回指，但不能重新变成待答任务。客户已撤回的动作和放弃的条件不得带入新任务，例如客户改为自己操作后只问地址，就只保留地址问题。")
+	b.WriteString("拆题按答案目标而非共同场景：同在房间里的不同物品不是同一对象；空调存在性与矿泉水数量费用应分别建 Task，三种用品分别去哪拿应分别建 Task。同一批矿泉水数量和费用可合并。evidenceQuery 只负责召回目标，resolvedText 保留全部裁决条件，例如选好两种房型后问停车收费，检索目标是酒店停车收费政策，不是再次检索房型设施；具体两种房型仍留在 resolvedText 中，不能丢掉适用范围。")
 	b.WriteString("客户要求酒店代点外卖、叫车、代买、代订或联系外部商家时，统一输出 service_request/external_proxy_action，objective=action_request，needsKnowledge=true，以便查询地址、电话、入口或步骤等自助方案。酒店内部送物、补用品、维修、开门、换房、打扫等仍使用原有 service_request 子意图，禁止归入 external_proxy_action。")
 	b.WriteString("客户明确问‘刚刚都问了什么’‘刚才聊了什么’‘你刚才回答了哪些’等会话回顾时，只建立一个 interaction/conversation_recap 文本任务，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 写明回顾最近当前会话；不能当作新闲聊或 unresolved，也不能重新执行历史业务任务。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
@@ -622,7 +625,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 		b.WriteString("\n媒体解析结果只是上下文，不要输出单独的媒体类意图；是否使用它解释当前问题，由你根据当前消息语义判断。")
 	}
 	if len(history.RawItems) > 0 {
-		start := len(history.RawItems) - 8
+		start := len(history.RawItems) - 15
 		if start < 0 {
 			start = 0
 		}

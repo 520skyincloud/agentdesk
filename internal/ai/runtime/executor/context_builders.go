@@ -155,7 +155,16 @@ func buildGenerateStageMessages(req RunInput, history adapter.HistoryBuildResult
 		}
 		ret = append(ret, message)
 	}
-	if contextMessage := buildBoundedGenerationConversationContext(history, activeGenerationTaskPlans(intent, plan)); contextMessage != nil {
+	taskPlans := activeGenerationTaskPlans(intent, plan)
+	contextHistory := history
+	for _, task := range taskPlans {
+		if task.Intent == "interaction" && task.SubIntent == "conversation_recap" && req.Conversation.ID > 0 && req.UserMessage.ID > 0 {
+			contextHistory = adapter.ExcludeCurrentTurnSources(
+				adapter.BuildHistoryMessages(req.Conversation.ID, req.UserMessage.ID, 64), req.UserMessage)
+			break
+		}
+	}
+	if contextMessage := buildBoundedGenerationConversationContext(contextHistory, taskPlans); contextMessage != nil {
 		ret = append(ret, contextMessage)
 	}
 	if contextMessage := buildActiveGenerationTaskContext(req, intent, plan); contextMessage != nil {
@@ -195,8 +204,8 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 	if len(entries) == 0 {
 		return nil
 	}
-	adjacentEntries := adjacentGenerationHistoryEntries(entries)
-	recapEntries := lastBoundedGenerationHistoryEntries(entries, 8)
+	adjacentEntries := lastBoundedGenerationHistoryEntries(entries, 8)
+	recapEntries := lastBoundedGenerationHistoryEntries(entries, 64)
 	if len(adjacentTaskIDs) > 0 && len(adjacentEntries) == 0 && len(recapTaskIDs) == 0 {
 		return nil
 	}
@@ -206,14 +215,27 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 	if len(adjacentTaskIDs) > 0 {
 		b.WriteString("相邻上下文适用任务：")
 		b.WriteString(strings.Join(adjacentTaskIDs, "、"))
-		b.WriteString("。只用下面一条客户问题和最多三条连续客服答复理解当前短答、指代、纠正或槽位答案，最终仍只回答当前活跃任务。\n")
+		b.WriteString("。使用下面有界历史理解当前指代、纠正或槽位答案，以当前任务的 resolvedText 和客户最新要求为准；旧动作被撤回后不得继续解释或执行，旧问题不得重复回答。\n")
 		appendBoundedGenerationHistoryEntries(&b, adjacentEntries)
 	}
 	if len(recapTaskIDs) > 0 {
 		b.WriteString("会话回顾上下文适用任务：")
 		b.WriteString(strings.Join(recapTaskIDs, "、"))
-		b.WriteString("。可以按时间顺序概括下面最多八条最近消息；不要声称客户此前没有提问，也不要带出未列出的更早内容。\n")
-		appendBoundedGenerationHistoryEntries(&b, recapEntries)
+		b.WriteString("。仅回顾当前任务指定的主题和阶段，客户要求与客服建议分开表述；不要把最近主题误当作更早要求。下面最多64条消息且有总字符预算，未出现的历史只能说当前看不到，不能断言没有发生。\n")
+		remaining := 6000
+		for _, entry := range recapEntries {
+			text := []rune(entry.text)
+			if len(text) > 300 {
+				entry.text = string(text[:300]) + "…"
+			}
+			size := len([]rune(entry.text))
+			if size > remaining {
+				b.WriteString("（后续历史超出本次回顾预算，未展示。）\n")
+				break
+			}
+			appendBoundedGenerationHistoryEntries(&b, []boundedGenerationHistoryEntry{entry})
+			remaining -= size
+		}
 	}
 	return schema.SystemMessage(strings.TrimSpace(b.String()))
 }

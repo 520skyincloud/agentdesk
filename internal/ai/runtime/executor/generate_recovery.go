@@ -448,6 +448,10 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 	}
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
+		if group.EvidenceLocked || group.ExternalProxyAction {
+			parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, renderLockedReplyFacts(group.Facts)))
+			continue
+		}
 		fallbackFacts := compactGeneratedReplyFallbackFacts(group.Facts)
 		if len(fallbackFacts) == 0 {
 			if group.ExternalProxyAction {

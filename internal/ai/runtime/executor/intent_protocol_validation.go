@@ -124,8 +124,8 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 			}
 			continue
 		}
-		if strings.TrimSpace(context.PreviousCustomerText) == "" || runtimeIntentProtocolAdjacentServiceReply(context) == "" {
-			return fmt.Errorf("intentTasks[%d] resolved_from_context requires an adjacent customer and service reply pair", taskIndex)
+		if !context.HasBoundedHistory && (strings.TrimSpace(context.PreviousCustomerText) == "" || runtimeIntentProtocolAdjacentServiceReply(context) == "") {
+			return fmt.Errorf("intentTasks[%d] resolved_from_context requires bounded conversation history", taskIndex)
 		}
 	}
 	return nil

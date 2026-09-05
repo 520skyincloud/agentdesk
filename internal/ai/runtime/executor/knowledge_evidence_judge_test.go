@@ -58,6 +58,10 @@ func TestKnowledgeEvidenceJudgePromptDefinesApplicableAspectsAndPolicyAnswers(t 
 		"不能为了消除冲突而把未知改成已知",
 		"不能写“只有、全部、房型就是……”或排除未列出的成员",
 		"只有客户明确要求全部、仅有或完整名单而证据不全时",
+		"已放弃的条件不是缺失事实",
+		"不能再要求第三条“同时具备”的重复证明",
+		"完整性必须覆盖当前任务的每个对象和仍有效的条件",
+		"必须按每个字段标签边界提取",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("Judge prompt missing applicability or policy boundary %q", expected)
@@ -4950,6 +4954,9 @@ func TestParseKnowledgeEvidenceJudgeRuntimeResponseStillRejectsMechanicalProtoco
 			}
 			if selection := parsed["T1"][knowledgeEvidenceLayerStore]; selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
 				t.Fatalf("mechanically invalid Judge output must fail: %#v", selection)
+			}
+			if parsed["T1"][knowledgeEvidenceLayerStore].ProtocolError == "" {
+				t.Fatal("a rejected layer must record its actual protocol failure")
 			}
 		})
 	}
