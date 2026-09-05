@@ -603,8 +603,9 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	b.WriteString("如果当前消息已经有独立的新主题，禁止沿用上一轮早餐、停车、投诉、安全、转人工等历史主题。")
 	b.WriteString("clarification_answer 只用于回答紧邻客服正在追问的必要字段、条件、偏好、范围或选项；此时必须继承该业务 intent/subIntent，intentTasks[].text 保留客户当前原表达，intentTasks[].resolvedText 写成包含上一轮业务主题和当前补充内容的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应继承餐饮业务并补全偏好。对追问、比较、复述或省略问法，从已提供的有界历史中选择最近仍相关且唯一的业务对象，不要求它必须在紧邻一问一答里出现；中间的感谢、单独重发某个字段、房号补充或系统通知不自动切断业务上下文。明确切换主题时更新对象；有多个同等合理对象且无法确定时才澄清。旧问题即使已回答也能供本轮回指，但不能重新变成待答任务。客户已撤回的动作和放弃的条件不得带入新任务，例如客户改为自己操作后只问地址，就只保留地址问题。")
-	b.WriteString("拆题按答案目标而非共同场景：同在房间里的不同物品不是同一对象；空调存在性与矿泉水数量费用应分别建 Task，三种用品分别去哪拿应分别建 Task。同一批矿泉水数量和费用可合并。evidenceQuery 只负责召回目标，resolvedText 保留全部裁决条件，例如选好两种房型后问停车收费，检索目标是酒店停车收费政策，不是再次检索房型设施；具体两种房型仍留在 resolvedText 中，不能丢掉适用范围。")
-	b.WriteString("客户要求酒店代点外卖、叫车、代买、代订或联系外部商家时，统一输出 service_request/external_proxy_action，objective=action_request，needsKnowledge=true，以便查询地址、电话、入口或步骤等自助方案。酒店内部送物、补用品、维修、开门、换房、打扫等仍使用原有 service_request 子意图，禁止归入 external_proxy_action。")
+	b.WriteString("拆题按答案目标而非共同场景：同在房间里的不同物品不是同一对象；空调存在性与矿泉水数量费用应分别建 Task，三种用品分别去哪拿应分别建 Task。同一批矿泉水数量和费用可合并。evidenceQuery 用当前所问服务或设施作主语，不是缩短 resolvedText；resolvedText 保留全部裁决条件。询问酒店公共服务政策时，房型、入住背景只留在 resolvedText，不写入 evidenceQuery，例如‘合柴和艺林有免费停车吗’输出 evidenceQuery='酒店停车是否免费'；仍须保留费用、时间、条件等当前请求方面。询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉，例如‘麦田有办公桌吗’或‘大堂WiFi密码’仍保留麦田或大堂。")
+	b.WriteString("先区分当前请求的执行主体与目的，再选类别；不能因话题包含外卖、订单或上一轮的动作就继续代操作。只有当前明确委托酒店替客户在第三方平台下单、购买、预订、叫车或联系外部商家时，输出 service_request/external_proxy_action，objective=action_request，needsKnowledge=true，以便查询地址、电话、入口或步骤等自助方案。询问酒店自身设备或服务的存在性、能力、范围、规则属于 hotel_info，先检索知识；例如客户自己下单后询问酒店机器人配送范围，不是委托下单，resolvedText 不得添加原文未指定的酒店工作人员。酒店内部送物、补用品、维修、开门、换房、打扫等实际执行请求仍使用原有 service_request 子意图，禁止归入 external_proxy_action。")
+	b.WriteString("撤回人工接待意愿属于 interaction/acknowledgement，objective=cancel，不是再次要求转接；取消订单、预订等业务动作仍按其业务类别处理，不能仅因包含取消就降为互动。当前已经由AI接待时只接住撤回，不得声称取消了未经执行的订单或服务。")
 	b.WriteString("客户明确问‘刚刚都问了什么’‘刚才聊了什么’‘你刚才回答了哪些’等会话回顾时，只建立一个 interaction/conversation_recap 文本任务，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 写明回顾最近当前会话；不能当作新闲聊或 unresolved，也不能重新执行历史业务任务。")
 	b.WriteString("历史消息使用[历史消息][说话人][时间]格式，必须分清客户、AI客服、人工客服分别说了什么。")
 	if instruction := buildAdjacentAIReplyRelationInstruction(history); instruction != "" {
@@ -1650,6 +1651,16 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 		task.Reason = strings.TrimSpace(task.Reason)
 		if task.Intent == "" {
 			continue
+		}
+		// A model-classified cancellation cannot authorize a new handoff.
+		if task.Intent == "human_complaint_risk" && task.SubIntent == "explicit_handoff" && task.Objective == "cancel" {
+			task.Intent = "interaction"
+			task.SubIntent = "acknowledgement"
+			task.NeedsKnowledge = false
+			task.NeedsResource = false
+			task.NeedsTool = false
+			task.NeedsHumanRoute = false
+			task.ResourceAction = ""
 		}
 		if task.Intent == "hotel_info" || task.Intent == "service_request" {
 			task.NeedsKnowledge = true

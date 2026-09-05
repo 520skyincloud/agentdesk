@@ -82,6 +82,110 @@ func TestRuntimeIntentPromptClassifiesExternalProxyActionsWithoutChangingInterna
 	}
 }
 
+func TestRuntimeIntentPromptKeepsActorAndEvidenceGoalDistinct(t *testing.T) {
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		Content: "那我自己点，你们机器人能把外卖送到房间门口吗？",
+	}}, adapter.HistoryBuildResult{}, nil)
+	for _, expected := range []string{
+		"只有当前明确委托酒店替客户在第三方平台",
+		"询问酒店自身设备或服务的存在性、能力、范围、规则属于 hotel_info",
+		"resolvedText 不得添加原文未指定的酒店工作人员",
+		"房型、入住背景只留在 resolvedText，不写入 evidenceQuery",
+		"询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉",
+		"撤回人工接待意愿属于 interaction/acknowledgement，objective=cancel",
+		"取消订单、预订等业务动作仍按其业务类别处理",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("missing actor/action/query boundary %q", expected)
+		}
+	}
+}
+
+func TestNormalizeModelIntentHandoffCancellationCannotStartHandoff(t *testing.T) {
+	for _, semanticContract := range []bool{false, true} {
+		for _, withSibling := range []bool{false, true} {
+			t.Run(fmt.Sprintf("contract=%t/sibling=%t", semanticContract, withSibling), func(t *testing.T) {
+				cancelText := "不用了，这件事我自己处理，不需要同事再帮忙了，取消这次人工接待吧。"
+				tasks := []callbacks.IntentTaskTraceData{{
+					Intent: "human_complaint_risk", SubIntent: "explicit_handoff",
+					Objective: "cancel", RelationToPrevious: "cancel_previous", ResolutionState: "resolved_from_context",
+					Text: cancelText, ResolvedText: "取消这次人工接待，不需要同事再帮忙了，客户自己处理。",
+					SourceRefs: []string{"U1"}, NeedsHumanRoute: true,
+				}}
+				if withSibling {
+					tasks = append(tasks, callbacks.IntentTaskTraceData{
+						Intent: "hotel_info", SubIntent: "parking", Objective: "price",
+						RelationToPrevious: "independent", ResolutionState: "clear",
+						Text: "停车收费吗？", ResolvedText: "停车收费吗？", SourceRefs: []string{"U2"}, NeedsKnowledge: true,
+					})
+				}
+				history := adapter.HistoryBuildResult{RawItems: []models.Message{
+					{ID: 1, SenderType: enums.IMSenderTypeCustomer, Content: "请同事处理"},
+					{ID: 2, SenderType: enums.IMSenderTypeAI, Content: "您可以先自行处理。"},
+				}}
+				intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+					PrimaryIntent: "human_complaint_risk", SubIntent: "explicit_handoff",
+					IntentConfidence: .95, NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode",
+					SemanticContractExpected: semanticContract, SourceRefsValidated: semanticContract, IntentTasks: tasks,
+				}, RunInput{UserMessage: models.Message{ID: 3, Content: cancelText}}, history, nil)
+				if intent.NeedsHumanRoute || intent.HumanRoutePolicy != "" || isHandoffIntentCategory(intent) {
+					t.Fatalf("cancellation must not start a new handoff: %#v", intent)
+				}
+				cancel := intent.IntentTasks[0]
+				if len(intent.IntentTasks) != len(tasks) || cancel.Intent != "interaction" || cancel.SubIntent != "acknowledgement" ||
+					cancel.NeedsHumanRoute || cancel.NeedsKnowledge || cancel.NeedsResource || cancel.NeedsTool ||
+					cancel.Text != cancelText || cancel.Objective != "cancel" || !reflect.DeepEqual(cancel.SourceRefs, []string{"U1"}) {
+					t.Fatalf("cancellation must keep its original task and source without actions: %#v", intent)
+				}
+				plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+				for _, task := range plan.TaskPlans {
+					if task.OutputKind == "handoff" || task.OutputKind == "resource" {
+						t.Fatalf("cancel must not reappear as an executable action: %#v", plan)
+					}
+				}
+				if !withSibling && (len(plan.TaskPlans) != 1 || !plan.TaskPlans[0].ReplyRequired) {
+					t.Fatalf("standalone cancellation must still receive a reply: %#v", plan)
+				}
+				if withSibling && (!intent.IntentTasks[1].NeedsKnowledge || intent.IntentTasks[1].Text != "停车收费吗？") {
+					t.Fatalf("cancellation must not suppress an independent business question: %#v", intent)
+				}
+			})
+		}
+	}
+}
+
+func TestNormalizeRuntimeIntentTasksPreservesOtherActions(t *testing.T) {
+	for _, task := range []callbacks.IntentTaskTraceData{
+		{Intent: "human_complaint_risk", SubIntent: "explicit_handoff", Objective: "action_request", NeedsHumanRoute: true},
+		{Intent: "human_complaint_risk", SubIntent: "explicit_handoff", NeedsHumanRoute: true},
+		{Intent: "human_complaint_risk", SubIntent: "emergency_safety", Objective: "complaint", NeedsHumanRoute: true},
+		{Intent: "human_complaint_risk", SubIntent: "answer_rejected", Objective: "complaint", NeedsHumanRoute: true},
+		{Intent: "service_request", SubIntent: "booking", Objective: "cancel", NeedsKnowledge: true},
+		{Intent: "service_request", SubIntent: "room_supplies", Objective: "action_request", NeedsKnowledge: true},
+		{Intent: "hotel_variable", SubIntent: "phone", Objective: "action_request", ResourceAction: "provide_phone", NeedsResource: true},
+	} {
+		t.Run(task.SubIntent+"/"+task.Objective, func(t *testing.T) {
+			task.Entities = []callbacks.IntentEntityTraceData{}
+			task.SourceRefs = []string{}
+			got := normalizeRuntimeIntentTasks([]callbacks.IntentTaskTraceData{task})
+			if len(got) != 1 || !reflect.DeepEqual(got[0], task) {
+				t.Fatalf("unrelated action changed: want %#v, got %#v", task, got)
+			}
+		})
+	}
+}
+
+func TestCancelHandoffDoesNotSuppressSeparateHumanTask(t *testing.T) {
+	tasks := normalizeRuntimeIntentTasks([]callbacks.IntentTaskTraceData{
+		{Intent: "human_complaint_risk", SubIntent: "explicit_handoff", Objective: "cancel", Text: "不用安排刚才的同事了"},
+		{Intent: "human_complaint_risk", SubIntent: "emergency_safety", Objective: "complaint", Text: "另外有人受伤，需要人来"},
+	})
+	intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{IntentTasks: tasks})
+	if !intent.NeedsHumanRoute || intent.SubIntent != "emergency_safety" || !intent.IntentTasks[1].NeedsHumanRoute {
+		t.Fatalf("cancellation must not suppress a separate actionable human task: %#v", intent)
+	}
+}
+
 func (s *recordingRuntimeIntentModelDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
 	s.called = true
 	return s.intent, s.err
