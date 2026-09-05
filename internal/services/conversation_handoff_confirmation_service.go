@@ -107,11 +107,15 @@ func (s *conversationHandoffConfirmationService) DispatchByAIWithOriginMessage(c
 	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true)
 }
 
+func (s *conversationHandoffConfirmationService) DispatchByAIWithRoomNumberPolicy(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string) (*HandoffDispatchResult, error) {
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, applyRoomNumberPolicy, roomNumberText)
+}
+
 func (s *conversationHandoffConfirmationService) DispatchEmergencyByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
 	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false)
 }
 
-func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool) (*HandoffDispatchResult, error) {
+func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText ...string) (*HandoffDispatchResult, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, fmt.Errorf("会话不存在")
@@ -163,6 +167,9 @@ func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(c
 	}
 	cleanedReason := cleanHumanHandoffReason(reason)
 	originCustomerText := resolveHandoffOriginCustomerText(conversationID, originMessageID, reason)
+	if len(roomNumberText) > 0 && strings.TrimSpace(roomNumberText[0]) != "" {
+		originCustomerText = roomNumberText[0]
+	}
 	payloadValue := handoffConfirmationPayload{
 		Reason:          cleanedReason,
 		AIAgentID:       aiAgent.ID,

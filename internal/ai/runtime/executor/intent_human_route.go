@@ -166,20 +166,24 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 		reason = "当前问题需要门店同事接手"
 	}
 	started := time.Now()
-	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage(
+	applyRoomNumberPolicy, roomNumberText := runtimeHandoffRoomNumberPolicy(collector)
+	result, err := services.ConversationHandoffConfirmationService.DispatchByAIWithRoomNumberPolicy(
 		req.Conversation.ID,
 		req.AIAgent,
 		reason,
 		strings.TrimSpace(req.UserMessage.RequestID),
 		req.UserMessage.ID,
+		applyRoomNumberPolicy,
+		roomNumberText,
 	)
 	item := callbacks.GraphToolTraceItem{
 		ToolCode: toolx.GraphHandoffConversation.Code,
 		ToolName: toolx.GraphHandoffConversation.Name,
 		Arguments: map[string]any{
-			"reason":         reason,
-			"source":         summary.handoffDirectiveSource,
-			"conversationId": req.Conversation.ID,
+			"reason":                reason,
+			"source":                summary.handoffDirectiveSource,
+			"conversationId":        req.Conversation.ID,
+			"applyRoomNumberPolicy": applyRoomNumberPolicy,
 		},
 		LatencyMs: time.Since(started).Milliseconds(),
 	}
@@ -207,6 +211,41 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+func runtimeHandoffRoomNumberPolicy(collector *callbacks.RuntimeTraceCollector) (bool, string) {
+	if collector == nil {
+		return true, ""
+	}
+	pending := collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs
+	if len(pending) == 0 {
+		return true, ""
+	}
+	roomTasks := make([]string, 0, len(pending))
+	for _, taskID := range pending {
+		matched := false
+		for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
+			if task.TaskID != taskID {
+				continue
+			}
+			matched = true
+			if task.Intent == "hotel_info" {
+				switch task.Objective {
+				case "availability", "quantity", "price", "time", "location", "method", "policy", "recommendation", "compound_information":
+					continue
+				}
+			}
+			text := activeGenerationTaskText(task)
+			if strings.TrimSpace(text) == "" {
+				return true, ""
+			}
+			roomTasks = append(roomTasks, text)
+		}
+		if !matched {
+			return true, ""
+		}
+	}
+	return len(roomTasks) > 0, strings.Join(roomTasks, "；")
 }
 
 func applyHandoffDispatchResult(summary *RunResult, item *callbacks.GraphToolTraceItem, result *services.HandoffDispatchResult, emergency bool) error {

@@ -825,6 +825,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - supportedFacts 只能写 selectedCandidateIds 原文明示或完整 FAQ 问答明确确认的原子事实。每条必须包含 factId、aspect、statement、criticalValues。
 - factId 在同一个 task 的同一知识层内必须唯一；aspect 只能是 existence、quantity、price、time、location、method、scope、condition、other。
 - statement 必须是可直接给后续回复使用的完整事实句，不要写推理过程。criticalValues 只列不能自然改写的精确值，例如数量、金额、时间、电话、地址、房型名、账号密码、免费/收费或固定选项；“建议、选择、联系、回复、比较、办理”等普通动作词不得放入 criticalValues，没有精确值则输出空数组。
+- 返回前在本次裁决内检查一致性：同一对象、同一条件下，missingAspects 列为未知的属性，不得又在 supportedFacts 中作肯定或否定判断；删除的是无证据的推断，不是已经确认的事实。例如“需要驾车前往”只保留原交通说明，不得追加“因此不能步行/不满足步行条件”；如果步行可行性没有证据，就保留该未知项。只有原文明确“不能步行”时，才可将步行时长视为不适用。不能为了消除冲突而把未知改成已知。
 - missingAspects 只写客户当前问题仍然缺失的事实维度或条件，使用简短中文短语。
 - direct_single/direct_combined 必须至少有一条 supportedFacts，且 missingAspects 为空；唯一例外是选中单条“转接/转人工”流程指令时，supportedFacts 和 missingAspects 都必须为空。
 - partial 必须同时包含至少一条 supportedFacts 和一条 missingAspects。
@@ -854,7 +855,7 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 
 事实维度必须严格隔离：确认“有外卖机器人”只支持 existence，不能生成“能送到房间”的 scope 或 method；确认地点名称只支持 existence/location，不能生成距离、步行时间或路线；确认有充电桩不能推导所有车位都能充电。客户询问了这些仍然适用但未被证据确认的维度时，应判 partial 并把对应维度写入 missingAspects。
 
-同层组合示例：客户问“既有沙发又有办公桌的房型有哪些”，一条候选完整列出有沙发的房型，另一条候选完整列出有办公桌的房型，两条属于同一门店和房型范围时，必须判 direct_combined，并由 Judge 直接计算交集。supportedFacts 只输出交集结论及交集房型 criticalValues，禁止把两组源集合原样交给后续生成阶段。只知道沙发或只知道办公桌时应判 partial，保留已确认事实，同时明确缺少另一项设施事实。
+同层组合示例：客户问“既有沙发又有办公桌的房型有哪些”，一条候选完整列出有沙发的房型，另一条候选完整列出有办公桌的房型，两条属于同一门店和房型范围时，必须判 direct_combined，并由 Judge 直接计算交集。supportedFacts 只输出交集结论及交集房型 criticalValues，禁止把两组源集合原样交给后续生成阶段。原文出现“部分、如、例如、等”时不是完整名单，但明确列出的成员仍是证据；普通列举或推荐可以回答“能确认同时具备的包括……”，不能写“只有、全部、房型就是……”或排除未列出的成员。只有客户明确要求全部、仅有或完整名单而证据不全时，才把完整范围列入 missingAspects。只知道沙发或只知道办公桌时应判 partial，保留已确认事实，同时明确缺少另一项设施事实。
 
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 

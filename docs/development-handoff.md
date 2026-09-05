@@ -1009,3 +1009,20 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 两题运行耗时分别 9882ms、9983ms。完整 Trace 在服务器
   `/tmp/agentdesk-judge-policy-c22d479-smoke.jsonl`。测试完成后仅将隔离会话 2087 恢复 AI，取消其
   恢复任务 104，保留全部测试消息；真实客户会话未修改。当前保留新 release，不宣称两类问题已全部解决。
+
+## 2026-09-05 连续30轮后限定修复
+
+- 仅修改五个运行文件：`intent_model_detector.go`、`intent_human_route.go`、
+  `knowledge_evidence_judge.go`、`multi_reply_output.go` 和 `conversation_handoff_confirmation_service.go`，
+  以及对应回归测试。Intent 只允许缺少 Markdown 闭合标记但正文为完整唯一 JSON 对象的本地拆包，
+  截断、尾随输出、未知字段仍拒绝；不新增重试。
+- 转接仅对 DeferredTaskIDs 中明确的 hotel_info 咨询关闭房号收集；实际服务及旧调用保留原策略。
+  混合任务只把待转接服务 Task 文本传给既有房号判断，不使用已回答任务或咨询文本触发房号。
+  新入口是向后兼容的内部服务方法，无外部 API、DTO、数据库、Migration、权限或状态变化。
+- Judge 同次裁决检查事实与未知项一致性，部分枚举不冒充穷尽名单；Generate 保留主体、范围及确定程度。
+  未修改检索、知识库、模型、计费、Outbox、人设或上下文。完整 JSON 模拟测试不代表所有截断输出可恢复。
+- gofmt、`git diff --check`、`go test -p=1 ./internal/ai/runtime/executor ./internal/services -count=1` 通过。
+  customer-audit 在转接服务有租户隔离修改，本次不覆盖其函数；合并时保留双方改动，内部服务入口与调用方
+  应同一提交合并。ai-billing 无同文件修改，无字段/状态语义冲突。部署回滚点为
+  `/opt/agentdesk/releases/20260905-050232-judge-policy-c22d479`；不需要数据库或配置回滚。
+  真实验证限定不超过12轮，不运行30/50轮；结果在部署后补记。

@@ -54,6 +54,10 @@ func TestKnowledgeEvidenceJudgePromptDefinesApplicableAspectsAndPolicyAnswers(t 
 		"不能改成“价格不一样”",
 		"没有覆盖客户新增具体要求的政策不适用此规则",
 		"supportedFacts 不得混入“无法证明、证据不足”等裁决分析",
+		"missingAspects 列为未知的属性，不得又在 supportedFacts 中作肯定或否定判断",
+		"不能为了消除冲突而把未知改成已知",
+		"不能写“只有、全部、房型就是……”或排除未列出的成员",
+		"只有客户明确要求全部、仅有或完整名单而证据不全时",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Errorf("Judge prompt missing applicability or policy boundary %q", expected)

@@ -11,6 +11,16 @@ import (
 	"agent-desk/internal/models"
 )
 
+func TestMultiReplyInstructionPreservesSubjectScopeAndCertainty(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{TaskID: "task-1", Text: "能步行吗", OutputKind: "text", ReplyRequired: true}}}
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	for _, expected := range []string{"权益不同不等于价格不同", "需要或建议驾车不等于不能步行", "已确认包括某些房型不等于只有这些房型", "不得把未知属性写成肯定或否定结论"} {
+		if !strings.Contains(instruction, expected) {
+			t.Errorf("missing generation boundary %q", expected)
+		}
+	}
+}
+
 func TestBuildMultiReplyOutputInstructionUsesTextTasksOnly(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{Intent: "hotel_info", Text: "停车在哪里", Output: "knowledge_text_reply"},

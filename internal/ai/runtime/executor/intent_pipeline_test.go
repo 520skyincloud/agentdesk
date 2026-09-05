@@ -1305,6 +1305,24 @@ func TestParseRuntimeIntentDetectJSONUnwrapsSingleCompleteMarkdownFence(t *testi
 	}
 }
 
+func TestParseRuntimeIntentDetectJSONRecoversOnlyCompleteObjectWithoutClosingFence(t *testing.T) {
+	valid := `{"primaryIntent":"hotel_info","reason":"大堂WiFi咨询"}`
+	for _, payload := range []string{"```json\n" + valid, "```\n" + valid + "\n", "```JSON\r\n" + valid} {
+		parsed, err := parseRuntimeIntentDetectJSON(payload)
+		if err != nil || parsed.PrimaryIntent != "hotel_info" {
+			t.Fatalf("valid object must survive a missing closing fence: parsed=%#v err=%v", parsed, err)
+		}
+	}
+	for _, body := range []string{
+		`{"primaryIntent":"hotel_info"`, valid + `{}`, valid + "解释", `[]`, `null`,
+		`{"primaryIntent":"hotel_info","unexpected":true}`, valid + "\n``", valid + "\n```\n```json\n{}\n```",
+	} {
+		if _, err := parseRuntimeIntentDetectJSON("```json\n" + body); err == nil {
+			t.Errorf("must not repair incomplete, multiple, unknown-field or trailing output: %s", body)
+		}
+	}
+}
+
 func TestParseRuntimeIntentDetectJSONToleratesLooseEntityForms(t *testing.T) {
 	parsed, err := parseRuntimeIntentDetectJSON(`{
 		"primaryIntent":"hotel_info",

@@ -87,9 +87,11 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 		name      string
 		subIntent string
 		message   string
+		inquiry   bool
 	}{
 		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工"},
 		{name: "answer rejected", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理"},
+		{name: "knowledge inquiry skips room collection", message: "外卖机器人能送到房间门口吗？", inquiry: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -169,11 +171,24 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 				NeedsHumanRoute: true,
 			}
 			summary := &RunResult{}
-			handled, err := executeIntentHumanRoute(t.Context(), RunInput{
+			req := RunInput{
 				Conversation: conversation,
 				UserMessage:  message,
 				AIAgent:      aiAgent,
-			}, summary, collector)
+			}
+			var handled bool
+			var err error
+			if tt.inquiry {
+				collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs = []string{"task-1"}
+				collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+					TaskID: "task-1", Intent: "hotel_info", Objective: "policy", ResolvedText: tt.message,
+				}}
+				summary.handoffDirective = true
+				summary.handoffDirectiveReason = "完整待处理问题：" + tt.message
+				handled, err = executeRuntimeHandoffDirective(req, summary, collector)
+			} else {
+				handled, err = executeIntentHumanRoute(t.Context(), req, summary, collector)
+			}
 			if err != nil || !handled {
 				t.Fatalf("expected direct handoff, handled=%v err=%v", handled, err)
 			}
@@ -195,6 +210,35 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 				t.Fatalf("expected direct dispatch trace, got %+v", collector.Data.GraphTools.Items)
 			}
 			assertNoHandoffConfirmationProtocol(t, replies[0].Content+"\n"+collector.Marshal())
+		})
+	}
+}
+
+func TestRuntimeHandoffRoomNumberPolicyUsesOnlyPendingTaskSemantics(t *testing.T) {
+	inquiry := callbacks.ReplyTaskPlanTraceData{TaskID: "inquiry", Intent: "hotel_info", Objective: "policy", ResolvedText: "机器人能送到房间吗"}
+	service := callbacks.ReplyTaskPlanTraceData{TaskID: "service", Intent: "service_request", Objective: "action_request", ResolvedText: "帮我处理马桶堵塞"}
+	unknown := callbacks.ReplyTaskPlanTraceData{TaskID: "unknown", Intent: "hotel_info", ResolvedText: "房间问题"}
+	for _, tt := range []struct {
+		name    string
+		pending []string
+		want    bool
+		text    string
+	}{
+		{"inquiry only", []string{"inquiry"}, false, ""},
+		{"service only", []string{"service"}, true, service.ResolvedText},
+		{"mixed pending tasks", []string{"inquiry", "service"}, true, service.ResolvedText},
+		{"legacy", nil, true, ""},
+		{"missing task metadata", []string{"missing"}, true, ""},
+		{"unknown objective", []string{"unknown"}, true, unknown.ResolvedText},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{inquiry, service, unknown}
+			collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs = tt.pending
+			got, text := runtimeHandoffRoomNumberPolicy(collector)
+			if got != tt.want || text != tt.text {
+				t.Fatalf("room policy must use only pending action tasks: got=(%v,%q), want=(%v,%q)", got, text, tt.want, tt.text)
+			}
 		})
 	}
 }

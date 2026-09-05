@@ -867,18 +867,19 @@ func unwrapRuntimeIntentJSONFence(content string) (string, error) {
 		return content, nil
 	}
 	lines := strings.Split(content, "\n")
-	if len(lines) < 3 {
+	if len(lines) < 2 {
 		return "", fmt.Errorf("incomplete Markdown JSON fence")
 	}
 	opening := strings.ToLower(strings.TrimSpace(lines[0]))
 	if opening != "```" && opening != "```json" {
 		return "", fmt.Errorf("unsupported Markdown fence %q", lines[0])
 	}
-	if strings.TrimSpace(lines[len(lines)-1]) != "```" {
-		return "", fmt.Errorf("incomplete Markdown JSON fence")
+	end := len(lines)
+	if strings.TrimSpace(lines[end-1]) == "```" {
+		end--
 	}
-	body := strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
-	if body == "" || strings.Contains(body, "```") {
+	body := strings.TrimSpace(strings.Join(lines[1:end], "\n"))
+	if !strings.HasPrefix(body, "{") || !json.Valid([]byte(body)) || strings.Contains(body, "```") {
 		return "", fmt.Errorf("Markdown JSON fence must contain exactly one JSON object")
 	}
 	return body, nil
