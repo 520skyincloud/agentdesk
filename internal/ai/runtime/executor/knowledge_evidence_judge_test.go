@@ -43,6 +43,60 @@ func TestKnowledgeEvidenceJudgePromptDefinesExternalProxyEvidenceBoundary(t *tes
 	}
 }
 
+func TestKnowledgeEvidenceJudgePromptDefinesApplicableAspectsAndPolicyAnswers(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, expected := range []string{
+		"只有证据明确否定前提时",
+		"步行分钟数不再适用",
+		"仅“建议驾车”不能推导“不能步行”",
+		"独立问题或客户明确追问的其他交通方式、时间仍须检查",
+		"候选 FAQ 与客户问题语义一致",
+		"不能改成“价格不一样”",
+		"没有覆盖客户新增具体要求的政策不适用此规则",
+		"supportedFacts 不得混入“无法证明、证据不足”等裁决分析",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("Judge prompt missing applicability or policy boundary %q", expected)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeRuntimePreservesApplicableAspectAndPolicyDecisions(t *testing.T) {
+	for _, test := range []struct {
+		name, question, answer, decision, aspect string
+		missing                                  []string
+	}{
+		{"inapplicable walking duration", "能步行过去吗，大概几分钟？", "不能步行到达，需要驾车前往。", "direct_single", "method", nil},
+		{"driving recommendation leaves walking unknown", "能步行过去吗，大概几分钟？", "建议驾车前往。", "partial", "method", []string{"是否可以步行", "步行时长"}},
+		{"independent driving duration remains required", "能步行吗，开车几分钟？", "不能步行到达，需要驾车前往。", "partial", "method", []string{"驾车时长"}},
+		{"complete platform policy", "携程、抖音、美团的价格一样吗？", "每个客户在不同平台享受的平台权益是不一样的，建议您可以对比价格后选择合适您的。", "direct_single", "condition", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Query: test.question,
+				Candidates: []knowledgeEvidenceJudgeCandidate{{
+					CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
+					Hit: judgeTestHit(3, 101, test.question, "问题："+test.question+"\n答案："+test.answer, 0.95),
+				}},
+			}
+			missing, _ := json.Marshal(test.missing)
+			if test.missing == nil {
+				missing = []byte("[]")
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":%q,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":%q,"statement":%q,"criticalValues":[]}],"missingAspects":%s}]}]}`,
+				test.decision, test.aspect, test.answer, missing)
+			parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection := parsed["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != test.decision || len(selection.MissingAspects) != len(test.missing) || len(selection.SupportedFacts) != 1 || selection.SupportedFacts[0].Statement != test.answer {
+				t.Fatalf("runtime must preserve the Judge decision and qualified answer: %#v", selection)
+			}
+		})
+	}
+}
+
 func (j *fakeKnowledgeEvidenceJudge) JudgeBatch(_ context.Context, _ RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
 	j.calls++
 	j.tasks = append([]knowledgeEvidenceJudgeTask(nil), tasks...)
