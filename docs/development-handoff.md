@@ -986,3 +986,26 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   使用 `deepseek-v4-pro`，门店层裁决为 `direct_single`，选中南七店外卖地址；最终保持
   `AI_SERVING`，未转人工、未产生虚假代下单承诺，Generate 仅执行一次。
 - 本轮未运行 50 轮或批量测试，未新增任何代码修改、数据库结构变更、知识库变更或配置变更。
+
+## 2026-09-05 Judge 适用前提与业务政策最小修复
+
+- 代码提交 `c22d479`：仅修改 `knowledge_evidence_judge.go` 的提示词和对应测试。明确否定前提后，
+  依赖该前提的问题不再列为缺失；同题完整业务政策可以直接回答，不能强改成肯否或价格结论。
+- 未修改 Intent、检索、阈值、Generate、本地校验、知识库、模型配置、计费、转人工、Outbox、
+  数据库结构、DTO、接口、WebSocket 或权限，无 Migration。隔离测试仅新增测试会话与消息。
+- `go test -p=1 ./internal/ai/runtime/executor -count=1`、gofmt 和 `git diff --check` 通过。
+  提示词约束与模拟 Judge 协议测试不能替代模型效果验证。
+- 已推送 origin/weibao；fetch 后两个并行分支未修改相同 Judge 文件，无须为本改动 rebase，
+  修复提交可独立 cherry-pick。customer-audit 对本交接文档有追加内容，合并时保留双方记录。
+- 生产 release：`/opt/agentdesk/releases/20260905-050232-judge-policy-c22d479`；SHA-256：
+  `06a7d25576e04c14db651929b99b5bccc65c805e9163c1e329cc1a433f380392`。
+  回滚点：`/opt/agentdesk/releases/20260904-065600-external-proxy-4e35ee4`；配置及旧二进制校验备份：
+  `/opt/backups/agentdesk-20260905-050232-pre-judge-policy-c22d479`。无需数据库或配置回滚。
+- 仅执行两个真实模型隔离轮次，均为 1 Intent + 1 Judge + 1 Generate，服务 active、NRestarts=0。
+  会话 2086 / runlog 7646：平台价格 Judge 为 direct_single，保留权益差异与比价建议，不再转接；
+  但 Generate 输出“不同平台价格和权益可能不一样”，扩大了 Judge 只确认权益的措辞，不能算完整通过。
+  会话 2087 / runlog 7647：步行题仍为 partial 并转接，目标尚未解决。检索日志原文只有“需要驾车前往”，
+  没有“不能步行”；此前根据旧 Judge 输出推定知识库明确禁止步行不准确。未继续扩大修改或增加模型测试。
+- 两题运行耗时分别 9882ms、9983ms。完整 Trace 在服务器
+  `/tmp/agentdesk-judge-policy-c22d479-smoke.jsonl`。测试完成后仅将隔离会话 2087 恢复 AI，取消其
+  恢复任务 104，保留全部测试消息；真实客户会话未修改。当前保留新 release，不宣称两类问题已全部解决。
