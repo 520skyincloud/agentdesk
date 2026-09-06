@@ -146,3 +146,31 @@ SHA-256：`ea359feafe2ecac1ad7342c5015e4b8f779a0b88845f5c2cdcd35f05bbd41dd8`。
 自动验证已通过：
 `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services ./internal/ai/runtime/internal/impl/callbacks -count=1`。
 此处仅记录自动测试，不代表后续服务器真实模型验证已通过。
+
+## 6. 本轮发布与10轮验证
+
+请求边界提交`a30ed40`、表达提交`c42cb84`已推送origin/weibao，
+再次fetch后与customer-audit/ai-billing无相关同文件差异，不需要为本轮rebase。
+
+- Release：`/opt/agentdesk/releases/20260906-101045-bounded-reply-c42cb84`
+- 备份：`/opt/backups/agentdesk-20260906-101045-pre-bounded-reply`
+- SHA：`a98e578dbdb18e66032e94b7b730c862dfff829ffa98177424da6d8b4ad50c74`
+- 原子切换前校验旧release及消息静默，保留23b6a3b回退点，未恢复或修改运行配置。
+- 发布及验证后active/running、8083可用、NRestarts=0，warning日志为空。
+
+隔离会话2102在同一窗口完成10轮，客户17862至17885，末条回复17886。10轮均有回复，
+9个AgentRun/Generate均只执行一次，另1轮是服务直接取消接待；无协议泄漏、无Generate
+重试或事实兜底。机器人存在性未误转，范围未知正常解释并转接、不问房号，取消恢复AI。
+房型条件切换、办公桌/停车分答、水数量费用、拖鞋和发票等4Task/3消息均保留；
+景点只列名称。第4轮账号复述由互动上下文完成，没有调用Judge；第6轮代操作和地址
+被模型合为1个Task，因此两Task地址归属只算自动测试覆盖，不算本次真实覆盖。
+
+未解决项：人物身份答复仍偏长；复杂多问运行耗时20.672秒（Judge8.356秒、
+Generate1.759秒），不能宣称性能达标。没有为这两点继续扩大代码或追加模型测试。
+ChannelID=0，不代表企微最终投递/员工self echo验收。实际送物房号保留自动回归，
+本轮真实测试不重复上轮30轮已覆盖的送物/故障路径。
+
+完整记录：本机`客服测试记录/2026-09-06-请求边界10轮`；
+服务器`/tmp/agentdesk-scope-answer-live10-20260906.jsonl`。
+测试后仅清理该隔离会话路由和恢复任务，历史全部保留，AI_SERVING、pending_action为空。
+本轮到此停止，没有第11轮或新的30轮测试。
