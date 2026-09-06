@@ -218,6 +218,7 @@ func TestRuntimeHandoffRoomNumberPolicyUsesOnlyPendingTaskSemantics(t *testing.T
 	inquiry := callbacks.ReplyTaskPlanTraceData{TaskID: "inquiry", Intent: "hotel_info", Objective: "policy", ResolvedText: "机器人能送到房间吗"}
 	service := callbacks.ReplyTaskPlanTraceData{TaskID: "service", Intent: "service_request", Objective: "action_request", ResolvedText: "帮我处理马桶堵塞"}
 	unknown := callbacks.ReplyTaskPlanTraceData{TaskID: "unknown", Intent: "hotel_info", ResolvedText: "房间问题"}
+	explanation := callbacks.ReplyTaskPlanTraceData{TaskID: "explanation", Intent: "hotel_info", Objective: "explanation", ResolvedText: "机器人能把外卖送到房间门口吗"}
 	for _, tt := range []struct {
 		name    string
 		pending []string
@@ -229,11 +230,13 @@ func TestRuntimeHandoffRoomNumberPolicyUsesOnlyPendingTaskSemantics(t *testing.T
 		{"mixed pending tasks", []string{"inquiry", "service"}, true, service.ResolvedText},
 		{"legacy", nil, true, ""},
 		{"missing task metadata", []string{"missing"}, true, ""},
-		{"unknown objective", []string{"unknown"}, true, unknown.ResolvedText},
+		{"information without objective", []string{"unknown"}, false, ""},
+		{"capability explanation", []string{"explanation"}, false, ""},
+		{"explanation and actual service", []string{"explanation", "service"}, true, service.ResolvedText},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			collector := callbacks.NewRuntimeTraceCollector()
-			collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{inquiry, service, unknown}
+			collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{inquiry, service, unknown, explanation}
 			collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs = tt.pending
 			got, text := runtimeHandoffRoomNumberPolicy(collector)
 			if got != tt.want || text != tt.text {

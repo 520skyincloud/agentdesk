@@ -93,6 +93,9 @@ func TestRuntimeIntentPromptKeepsActorAndEvidenceGoalDistinct(t *testing.T) {
 		"房型、入住背景只留在 resolvedText，不写入 evidenceQuery",
 		"询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉",
 		"撤回人工接待意愿属于 interaction/acknowledgement，objective=cancel",
+		"客户原话决定本轮请求范围",
+		"不能把询问存在改为询问能力、范围或请求执行",
+		"回答范围限制必须保留在 resolvedText",
 		"取消订单、预订等业务动作仍按其业务类别处理",
 	} {
 		if !strings.Contains(prompt, expected) {

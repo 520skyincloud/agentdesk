@@ -52,6 +52,7 @@ type knowledgeEvidenceJudge interface {
 type knowledgeEvidenceJudgeTask struct {
 	TaskID         string
 	Intent         string
+	OriginalText   string
 	Query          string
 	RetrievalQuery string
 	SubIntent      string
@@ -108,14 +109,15 @@ type knowledgeEvidenceJudgePrompt struct {
 }
 
 type knowledgeEvidenceJudgePromptTask struct {
-	TaskID        string                                  `json:"taskId"`
-	Intent        string                                  `json:"intent,omitempty"`
-	Question      string                                  `json:"question"`
-	SubIntent     string                                  `json:"subIntent,omitempty"`
-	Objective     string                                  `json:"objective,omitempty"`
-	Entities      []knowledgeEvidenceJudgeEntity          `json:"entities,omitempty"`
-	SourceContext []knowledgeEvidenceJudgeSourceMessage   `json:"sourceContext,omitempty"`
-	Candidates    []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
+	TaskID           string                                  `json:"taskId"`
+	Intent           string                                  `json:"intent,omitempty"`
+	Question         string                                  `json:"question"`
+	ResolvedQuestion string                                  `json:"resolvedQuestion"`
+	SubIntent        string                                  `json:"subIntent,omitempty"`
+	Objective        string                                  `json:"objective,omitempty"`
+	Entities         []knowledgeEvidenceJudgeEntity          `json:"entities,omitempty"`
+	SourceContext    []knowledgeEvidenceJudgeSourceMessage   `json:"sourceContext,omitempty"`
+	Candidates       []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
 }
 
 type knowledgeEvidenceJudgePromptCandidate struct {
@@ -344,13 +346,14 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 	prompt.Tasks = make([]knowledgeEvidenceJudgePromptTask, 0, len(tasks))
 	for _, task := range tasks {
 		item := knowledgeEvidenceJudgePromptTask{
-			TaskID:        strings.TrimSpace(task.TaskID),
-			Intent:        canonicalIntentCode(task.Intent),
-			Question:      strings.TrimSpace(task.Query),
-			SubIntent:     strings.TrimSpace(task.SubIntent),
-			Objective:     strings.TrimSpace(task.Objective),
-			Entities:      append([]knowledgeEvidenceJudgeEntity(nil), task.Entities...),
-			SourceContext: append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
+			TaskID:           strings.TrimSpace(task.TaskID),
+			Intent:           canonicalIntentCode(task.Intent),
+			Question:         firstNonEmptyReplyTaskText(task.OriginalText, task.Query),
+			ResolvedQuestion: strings.TrimSpace(task.Query),
+			SubIntent:        strings.TrimSpace(task.SubIntent),
+			Objective:        strings.TrimSpace(task.Objective),
+			Entities:         append([]knowledgeEvidenceJudgeEntity(nil), task.Entities...),
+			SourceContext:    append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
 		}
 		item.Candidates = make([]knowledgeEvidenceJudgePromptCandidate, 0, len(task.Candidates))
 		for _, candidate := range task.Candidates {
@@ -806,7 +809,7 @@ func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
 func knowledgeEvidenceJudgeSystemPrompt() string {
 	return strings.TrimSpace(`你是酒店客服知识证据裁判。你不回答客户，不决定是否转人工，只为每个客户任务在每个知识层选择足以回答的证据。
 
-每个 task 会提供当前原子问题、subIntent、objective、entities、紧邻会话 sourceContext，以及带 layer 的候选。sourceContext 只用于理解“这几个、上面那种、都”等指代，不能当作酒店事实来源。
+每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、subIntent、objective、entities、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion、objective、entities 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
 
 主体一致性是选择证据的硬约束：候选 FAQ 的问题和答案必须与 task.question、subIntent、objective、entities 指向同一业务主体。客户明确提到早餐时不能选择退房 FAQ，明确提到房型或设施时不能换成其他房型或设施。task.entities 有多个明确实体时，单条候选必须覆盖它声称回答的实体；direct_combined 的全部候选合起来必须逐一覆盖所有明确实体，任何与当前主体无关的候选都不得混入。
 

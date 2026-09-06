@@ -900,6 +900,7 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 		item := knowledgeEvidenceJudgeTask{
 			TaskID:         question.TaskID,
 			Intent:         canonicalIntentCode(question.Intent),
+			OriginalText:   strings.TrimSpace(question.OriginalText),
 			Query:          strings.TrimSpace(question.Query),
 			RetrievalQuery: retrievalQuery,
 			SubIntent:      strings.TrimSpace(question.SubIntent),
@@ -911,6 +912,9 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 			item.Entities = append(item.Entities, knowledgeEvidenceJudgeEntity{Text: entity.Text, Type: entity.Type})
 		}
 		if intentTask := runtimeKnowledgeIntentTaskForQuery(intent, question.Query); intentTask != nil {
+			if item.OriginalText == "" {
+				item.OriginalText = strings.TrimSpace(intentTask.Text)
+			}
 			if item.Intent == "" {
 				item.Intent = canonicalIntentCode(intentTask.Intent)
 			}
@@ -1553,7 +1557,7 @@ func knowledgeEvidenceTextNGrams(text string) map[string]struct{} {
 }
 
 func buildKnowledgeEvidenceJudgeSourceContext(messages []*schema.Message, currentText string, question runtimeKnowledgeQuestionResult) []knowledgeEvidenceJudgeSourceMessage {
-	primary := strings.TrimSpace(question.Query)
+	primary := firstNonEmptyReplyTaskText(question.OriginalText, question.Query)
 	if primary == "" {
 		primary = strings.TrimSpace(currentText)
 	}

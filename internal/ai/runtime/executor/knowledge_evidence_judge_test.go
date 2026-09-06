@@ -4783,6 +4783,35 @@ func TestBuildKnowledgeEvidenceJudgePromptIncludesTaskSemantics(t *testing.T) {
 	}
 }
 
+func TestJudgeKeepsOriginalRequestSeparateFromResolution(t *testing.T) {
+	for _, tt := range []struct{ original, resolved string }{
+		{"那我自己点，你们有外卖机器人吗？", "酒店有外卖机器人可以配送外卖吗？"},
+		{"附近有哪些好玩的地方，只说名称就行。", "酒店附近有什么景点"},
+		{"账号呢？", "酒店WiFi账号是什么"},
+	} {
+		task := knowledgeEvidenceJudgeTask{TaskID: "T1", OriginalText: tt.original, Query: tt.resolved}
+		prompt := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task})
+		if prompt.Tasks[0].Question != tt.original || prompt.Tasks[0].ResolvedQuestion != tt.resolved {
+			t.Fatalf("request boundary lost: %+v", prompt.Tasks[0])
+		}
+		source := buildKnowledgeEvidenceJudgeSourceContext(nil, "", runtimeKnowledgeQuestionResult{
+			OriginalText: tt.original, Query: tt.resolved,
+		})
+		if len(source) != 1 || source[0].Content != tt.original {
+			t.Fatalf("resolved text must not impersonate customer source: %+v", source)
+		}
+	}
+	legacy := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{{TaskID: "T1", Query: "早餐几点"}})
+	if legacy.Tasks[0].Question != "早餐几点" {
+		t.Fatal("old tasks must retain their question")
+	}
+	for _, rule := range []string{"question 是当前请求范围的依据", "不能扩大原话中的要求", "只说名称、只发账号、不用密码"} {
+		if !strings.Contains(knowledgeEvidenceJudgeSystemPrompt(), rule) {
+			t.Fatalf("missing Judge boundary %q", rule)
+		}
+	}
+}
+
 func TestHighConfidenceDirectFAQSelectionRescuesExactQuestionAtMediumVectorScore(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",

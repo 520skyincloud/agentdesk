@@ -241,10 +241,8 @@ func runtimeHandoffRoomNumberPolicy(collector *callbacks.RuntimeTraceCollector) 
 			}
 			matched = true
 			if task.Intent == "hotel_info" {
-				switch task.Objective {
-				case "availability", "quantity", "price", "time", "location", "method", "policy", "recommendation", "compound_information":
-					continue
-				}
+				// An information request does not authorize an in-room service.
+				continue
 			}
 			text := activeGenerationTaskText(task)
 			if strings.TrimSpace(text) == "" {
