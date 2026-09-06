@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -413,6 +414,9 @@ func isRetryableGeneratedReplyError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, errLockedReplyEvidence) {
+		return false
+	}
 	if IsGeneratedReplyProtocolError(err) {
 		return true
 	}
@@ -449,7 +453,18 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
 		if group.EvidenceLocked || group.ExternalProxyAction {
-			parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, renderLockedReplyFacts(group.Facts)))
+			content, err := renderLockedReplyContent(group)
+			if err != nil && group.AnswerText != nil {
+				group.AnswerText = nil
+				content, err = renderLockedReplyContent(group)
+			}
+			if err != nil {
+				content = deterministicKnowledgeFallback(plan, group.TaskID)
+				if group.ExternalProxyAction {
+					content = externalProxyActionCapabilityBoundaryReply
+				}
+			}
+			parts = append(parts, content)
 			continue
 		}
 		fallbackFacts := compactGeneratedReplyFallbackFacts(group.Facts)

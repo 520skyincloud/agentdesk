@@ -1681,6 +1681,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 				SelectedCandidateIDs: append([]string(nil), selection.SelectedCandidateIDs...),
 				SupportedFacts:       knowledgeEvidenceFactsToTrace(selection.SupportedFacts),
 				MissingAspects:       append([]string(nil), selection.MissingAspects...),
+				AnswerText:           selection.AnswerText,
 			})
 		}
 		selectedHits := make([]rag.RetrieveResult, 0)
@@ -1697,6 +1698,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			taskTrace.DecisionSource = selection.DecisionSource
 			taskTrace.SupportedFacts = knowledgeEvidenceFactsToTrace(selection.SupportedFacts)
 			taskTrace.MissingAspects = append([]string(nil), selection.MissingAspects...)
+			taskTrace.AnswerText = selection.AnswerText
 			for _, candidateID := range selection.SelectedCandidateIDs {
 				candidate, ok := candidateByID[candidateID]
 				if !ok || candidate.Layer != selectedLayer {
@@ -1767,6 +1769,7 @@ func normalizeAppliedKnowledgeEvidenceSelections(task knowledgeEvidenceJudgeTask
 		if decision == knowledgeEvidenceDecisionProtocolInvalid || decision == knowledgeEvidenceDecisionTimeout || decision == knowledgeEvidenceDecisionMalformed {
 			selection.SelectedCandidateIDs = nil
 			selection.SupportedFacts = nil
+			selection.AnswerText = nil
 			selection.MissingAspects = nil
 			if strings.TrimSpace(selection.DecisionSource) == "" {
 				selection.DecisionSource = decision
@@ -2037,6 +2040,7 @@ func rebuildRuntimeKnowledgeReplyPlan(
 			task.SelectedLayer = ""
 			task.SelectedCandidateIDs = nil
 			task.SupportedFacts = nil
+			task.AnswerText = nil
 			task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
 			rebuilt = append(rebuilt, task)
 			continue
@@ -2166,6 +2170,7 @@ func rebuildLegacyRuntimeKnowledgeReplyPlan(
 			task.SelectedLayer = ""
 			task.SelectedCandidateIDs = nil
 			task.SupportedFacts = nil
+			task.AnswerText = nil
 			task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
 		} else {
 			task.Output = "knowledge_text_reply"
@@ -2233,6 +2238,7 @@ func rebuildLegacyRuntimeKnowledgeReplyPlan(
 		task.SelectedLayer = ""
 		task.SelectedCandidateIDs = nil
 		task.SupportedFacts = nil
+		task.AnswerText = nil
 		task.MissingAspects = append([]string(nil), pendingTask.MissingAspects...)
 		activeKnowledgeTasks = append(activeKnowledgeTasks, task)
 		if taskID != "" {
@@ -2299,6 +2305,7 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 			planTask.SupportedFacts[factIndex].CriticalValues = append([]string(nil), matched.SupportedFacts[factIndex].CriticalValues...)
 		}
 		planTask.MissingAspects = append([]string(nil), matched.MissingAspects...)
+		planTask.AnswerText = matched.AnswerText
 	}
 	return plan
 }
@@ -2858,6 +2865,7 @@ func convertExternalProxyCapabilityBoundaryTasks(plan callbacks.ReplyPlanTraceDa
 		task.SelectedLayer = ""
 		task.SelectedCandidateIDs = nil
 		task.SupportedFacts = nil
+		task.AnswerText = nil
 		task.MissingAspects = nil
 	}
 	plan.ActiveTaskCount = len(plan.TaskPlans)

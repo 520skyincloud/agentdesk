@@ -92,6 +92,7 @@ type knowledgeEvidenceLayerSelection struct {
 	SelectedCandidateIDs []string
 	SupportedFacts       []knowledgeEvidenceFact
 	MissingAspects       []string
+	AnswerText           *string
 }
 
 type knowledgeEvidenceFact struct {
@@ -147,6 +148,7 @@ type knowledgeEvidenceJudgeResponseLayer struct {
 	SelectedCandidateIDs []string                `json:"selectedCandidateIds"`
 	SupportedFacts       []knowledgeEvidenceFact `json:"supportedFacts"`
 	MissingAspects       []string                `json:"missingAspects"`
+	AnswerText           *string                 `json:"answerText,omitempty"`
 }
 
 type knowledgeEvidenceJudgeRawResponse struct {
@@ -165,6 +167,7 @@ type knowledgeEvidenceJudgeRawResponseLayer struct {
 	SelectedCandidateIDs []string        `json:"selectedCandidateIds"`
 	SupportedFacts       json.RawMessage `json:"supportedFacts"`
 	MissingAspects       json.RawMessage `json:"missingAspects"`
+	AnswerText           *string         `json:"answerText,omitempty"`
 }
 
 type knowledgeEvidenceJudgeParseError struct {
@@ -807,7 +810,7 @@ func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
 }
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
-	return strings.TrimSpace(`你是酒店客服知识证据裁判。你不回答客户，不决定是否转人工，只为每个客户任务在每个知识层选择足以回答的证据。
+	return strings.TrimSpace(`你是酒店客服知识证据裁判。你为每个客户任务在每个知识层选择证据，并给出基于该层证据的简短答复answerText；不执行动作、不决定转人工、不声称接待已完成。
 
 每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、subIntent、objective、entities、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion、objective、entities 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
 
@@ -836,12 +839,12 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 先确定当前仍有效的要求：客户明确说“不要求、不用考虑、只要”等时，已放弃的条件不是缺失事实，不得加入 missingAspects。当前问题优先于 sourceContext 中的旧要求。
 同门店、同对象、同条件下，分别确认属性A和属性B的证据已经共同证明同时具备A和B；不能再要求第三条“同时具备”的重复证明。完整性必须覆盖当前任务的每个对象和仍有效的条件，不能用其中一个对象的答案冒充整题可答。
 对账号、密码等配置值，必须按每个字段标签边界提取；重复的“Wi-Fi”等标签不是前一字段值的一部分。未标明区域的配置不能推导大堂与客房通用，存在多套配置或边界确实歧义时保留未知，不猜参数。
-外部代操作任务与独立自助信息任务同轮出现时，自助地址、电话、入口只归属对应独立任务；外部代操作任务无需重复该信息，不能因此把独立任务判为不足。
+外部代操作任务与独立自助信息任务同轮出现时，自助地址、电话、入口只归属对应独立任务；外部代操作任务无需重复该信息，其answerText输出空字符串，程序单独添加真实能力边界。仍正常选择证据，不能因此把独立任务判为不足。没有独立任务时，代操作任务answerText只写相关自助方案，程序添加能力边界。
 
 每层还必须输出 supportedFacts 和 missingAspects：
 - supportedFacts 只能写 selectedCandidateIds 原文明示或完整 FAQ 问答明确确认的原子事实。每条必须包含 factId、aspect、statement、criticalValues。
 - factId 在同一个 task 的同一知识层内必须唯一；aspect 只能是 existence、quantity、price、time、location、method、scope、condition、other。
-- statement 必须是可直接给后续回复使用的完整事实句，不要写推理过程。criticalValues 只列不能自然改写的精确值，例如数量、金额、时间、电话、地址、房型名、账号密码、免费/收费或固定选项；“建议、选择、联系、回复、比较、办理”等普通动作词不得放入 criticalValues，没有精确值则输出空数组。
+- statement 是当前答复所需的完整事实句，不是整条知识原文或推理过程。criticalValues 只列不能自然改写的精确值，例如数量、金额、时间、电话、地址、房型名、账号密码、免费/收费或固定选项；每个值必须是statement及answerText中的原样连续子串，包括引号和标点。头衔、解释性长句和普通动作词不得放入 criticalValues；没有精确值则输出空数组。
 - 返回前在本次裁决内检查一致性：同一对象、同一条件下，missingAspects 列为未知的属性，不得又在 supportedFacts 中作肯定或否定判断；删除的是无证据的推断，不是已经确认的事实。例如“需要驾车前往”只保留原交通说明，不得追加“因此不能步行/不满足步行条件”；如果步行可行性没有证据，就保留该未知项。只有原文明确“不能步行”时，才可将步行时长视为不适用。不能为了消除冲突而把未知改成已知。
 - missingAspects 只写客户当前问题仍然缺失的事实维度或条件，使用简短中文短语。
 - direct_single/direct_combined 必须至少有一条 supportedFacts，且 missingAspects 为空；唯一例外是选中单条“转接/转人工”流程指令时，supportedFacts 和 missingAspects 都必须为空。
@@ -863,7 +866,8 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 
 最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
 严禁把一条长候选知识逐句全部拆成 supportedFacts。只输出当前问题真正需要的最小事实；一个完整 statement 已覆盖多个维度时可以复用该 statement，不再输出它所包含的摘要句或无关细节。
-statement 会原义发送给客户，使用简短、自然、完整的微信答复，不写裁决分析或内部术语；普通问题1至2句，流程问题保留必要的2至3个简短步骤。不知道的方面放在 missingAspects，不能写进事实冒充肯否结论；不承诺稍后确认、通知或代办。
+证据与客户答复分开：supportedFacts用于追踪必要事实，不能把它们逐条堆成答复。每层输出answerText，直接、礼貌、自然地回答question，只回答该Task当前所问，普通问题1至2句，流程保留必要的2至3个简短步骤。多个事实合成一次完整答复，不重复同一数量、费用、地址或总结。按原话保留“只说名称/只问账号”等范围限制，不能加原话没问的使用说明、其他房型名单、餐饮菜名或推荐背景。
+partial的answerText保留有用的已知答案，并自然说明当前所问的哪个方面还不能确认，例如“不好意思，能否送到房门口还不能确定”，不能只复述相关事实让客户猜为何转接；不得将未知写成肯定或否定，也不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
 
 检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
 
@@ -878,7 +882,7 @@ statement 会原义发送给客户，使用简短、自然、完整的微信答�
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
 严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。输出格式：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水，都是免费的。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内有两瓶矿泉水，都是免费的。","criticalValues":["免费"]}],"missingAspects":[]},{"layer":"general","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":["没有可用于回答当前问题的通用知识证据"]}]}]}`)
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[],"answerText":"房间内有两瓶矿泉水，都是免费的。"},{"layer":"general","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
@@ -1008,6 +1012,7 @@ func decodeKnowledgeEvidenceJudgeRawLayer(raw knowledgeEvidenceJudgeRawResponseL
 		Layer:                raw.Layer,
 		Decision:             raw.Decision,
 		SelectedCandidateIDs: append([]string(nil), raw.SelectedCandidateIDs...),
+		AnswerText:           raw.AnswerText,
 	}
 	factsErr := decodeKnowledgeEvidenceJudgeFacts(raw.SupportedFacts, &layer.SupportedFacts)
 	missingErr := decodeKnowledgeEvidenceJudgeMissingAspects(raw.MissingAspects, &layer.MissingAspects)
@@ -1338,12 +1343,23 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 			return reject(fmt.Sprintf("partial_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	}
+	if layerResult.AnswerText != nil {
+		answer := strings.TrimSpace(*layerResult.AnswerText)
+		if decision == knowledgeEvidenceDecisionInsufficient && answer != "" {
+			return reject("insufficient_with_answer")
+		}
+		if decision != knowledgeEvidenceDecisionInsufficient && answer == "" &&
+			!isExternalProxyActionClassification(expectedTask.Intent, expectedTask.SubIntent, expectedTask.Objective) {
+			return reject("answer_text_empty")
+		}
+	}
 	return knowledgeEvidenceLayerSelection{
 		Decision:             decision,
 		DecisionSource:       "model",
 		SelectedCandidateIDs: selectedIDs,
 		SupportedFacts:       supportedFacts,
 		MissingAspects:       missingAspects,
+		AnswerText:           layerResult.AnswerText,
 	}
 }
 

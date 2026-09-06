@@ -124,3 +124,25 @@ SHA-256：`ea359feafe2ecac1ad7342c5015e4b8f779a0b88845f5c2cdcd35f05bbd41dd8`。
   本步骤可单独cherry-pick或回退，先合请求边界再合表达改动。
 - 验证先执行Executor相关自动回归；本轮真实新增验证最多10个客户轮次，
   不能把提示词断言当作真实模型验收。
+
+## 5. 证据与答复分开
+
+- 仍由同一次Judge返回每层的supportedFacts、missingAspects以及可选answerText。
+  AnswerText经内部Trace传至当前Task；失效、转接和外部代操作无证据转换时一起清空，
+  禁止旧层或旧任务的答复残留。不加数据库列或外部DTO。
+- 普通知识直接使用选中层的简短答复，证据仍保留用于机械关键值检查；旧结果无该字段时
+  继续原有Statement组装。partial答复自然说明缺失方面，不擅自肯否或承诺已通知。
+- 代操作任务的空answerText表示自助信息由同轮独立Task回答，仅输出固定能力边界；
+  旧结果仍使用原精确重复检查，不新增中文语义去重器。
+- 锁定输入错误使用独立内部错误标识，Generate不无效重试；先尝试已知事实安全兜底，
+  真正缺失的关键值或内部协议不能跳过。Generate自身漏Task/FactID的既有重试保留。
+- 新字段涉及`callbacks/trace_callback.go`，只向后兼容新增内部JSON字段，不影响
+  API、WebSocket、DB、权限、计费或模型参数。生成阶段、检索量和历史窗口不变。
+- 自动回归覆盖新旧Judge协议、胜出层传递、原话限制、咨询/服务房号、三任务有序输出、
+  数量费用完整、代操作地址归属、partial解释、锁定输入不重试、协议泄漏及密码标点。
+- 并行分支检查无Executor/callback同文件差异；表达步骤独立提交，依赖上一请求边界提交。
+  回滚仅切回23b6a3b程序；不恢复数据库、模型配置或知识库。
+
+自动验证已通过：
+`go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services ./internal/ai/runtime/internal/impl/callbacks -count=1`。
+此处仅记录自动测试，不代表后续服务器真实模型验证已通过。

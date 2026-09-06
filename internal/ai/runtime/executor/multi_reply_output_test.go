@@ -47,6 +47,88 @@ func TestLockedJudgeFactsSurviveGenerateRewritingAndFallback(t *testing.T) {
 	}
 }
 
+func TestJudgeAnswerTextReplacesFactDumpWithoutLosingCriticalValues(t *testing.T) {
+	answer := "房间有两瓶矿泉水，都是免费的。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+		SelectedLayer: "store", SelectedCandidateIDs: []string{"T1C1"}, AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "F1", Aspect: "quantity", Statement: "房间有两瓶矿泉水。", CriticalValues: []string{"两瓶"}},
+			{FactID: "F2", Aspect: "price", Statement: "房间有两瓶矿泉水，都是免费的。", CriticalValues: []string{"免费"}},
+		},
+	}}}
+	raw := `{"replyParts":[{"taskId":"T1","content":"","coveredFactIds":["F1","F2"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil || got != answer || strings.Count(got, "两瓶") != 1 {
+		t.Fatalf("answer must not append underlying facts: %q %v", got, err)
+	}
+	instruction := buildMultiReplyOutputInstruction(plan, true)
+	if !strings.Contains(instruction, "已裁决答复："+answer) || strings.Contains(instruction, "  - 必答事实") {
+		t.Fatalf("locked answer should not prompt another fact expansion: %q", instruction)
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = plan
+	if deterministicGeneratedReplyFallback(collector) != answer {
+		t.Fatal("fallback must preserve validated answerText")
+	}
+	answer = "矿泉水免费。"
+	_, err = normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if !errors.Is(err, errLockedReplyEvidence) || isRetryableGeneratedReplyError(err) {
+		t.Fatalf("missing fixed quantity is not a Generate error: %v", err)
+	}
+	if got := deterministicGeneratedReplyFallback(collector); !strings.Contains(got, "两瓶") || !strings.Contains(got, "免费") {
+		t.Fatalf("fallback must retain quantity and price: %q", got)
+	}
+	answer = `{"replyParts":[{"taskId":"T1","content":"bad"}]}`
+	if _, err = normalizeGeneratedReplyPartsResult(raw, plan, true); !errors.Is(err, errLockedReplyEvidence) {
+		t.Fatalf("locked internal protocol must be rejected: %v", err)
+	}
+	if got := deterministicGeneratedReplyFallback(collector); looksLikeGeneratedReplyPartsProtocol(got) {
+		t.Fatalf("fallback leaked internal protocol: %q", got)
+	}
+}
+
+func TestJudgeOwnsProxySelfHelpAndPartialExplanation(t *testing.T) {
+	empty, address := "", "收货地址填写南七店加楼层房间号。"
+	partial := "酒店有外卖机器人。不好意思，能否送到房门口还不能确认。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "P", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store", SelectedCandidateIDs: []string{"PC1"}, AnswerText: &empty,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "PF1", Statement: "外卖地址填写南七店加对应楼层房间号。"}}},
+		{TaskID: "A", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			SelectedLayer: "store", SelectedCandidateIDs: []string{"AC1"}, AnswerText: &address,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "AF1", Statement: address, CriticalValues: []string{"南七店", "房间号"}}}},
+		{TaskID: "R", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true,
+			SelectedLayer: "store", SelectedCandidateIDs: []string{"RC1"}, AnswerText: &partial,
+			MissingAspects: []string{"配送范围"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "RF1", Statement: "酒店有外卖机器人。"}}},
+	}}
+	raw := `{"replyParts":[{"taskId":"P","content":""},{"taskId":"A","content":"","coveredFactIds":["AF1"]},{"taskId":"R","content":"","coveredFactIds":["RF1"]}]}`
+	got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil || strings.Count(got, "南七店") != 1 || !strings.Contains(got, partial) ||
+		!strings.HasPrefix(got, externalProxyActionCapabilityBoundaryReply) {
+		t.Fatalf("proxy ownership/partial explanation lost: %q %v", got, err)
+	}
+}
+
+func TestCriticalValueDisplayQuotesDoNotChangeCredentialPunctuation(t *testing.T) {
+	for _, tt := range []struct {
+		content, value string
+		want           bool
+	}{
+		{"“一支百合”民宿酒店品牌创始人", "一支百合民宿酒店品牌创始人", true},
+		{"密码是ab“12”。", "ab12", false},
+		{"密码是ab12。", "ab“12”", false},
+		{"密码是ab!12。", "ab!12", true},
+		{"密码是ab12。", "ab!12", false},
+		{"矿泉水免费。", "两瓶", false},
+	} {
+		if got := containsReplyCriticalValue(tt.content, tt.value); got != tt.want {
+			t.Errorf("critical value match(%q, %q) = %v", tt.content, tt.value, got)
+		}
+	}
+}
+
 func TestExternalProxyDoesNotRepeatExplicitTaskFact(t *testing.T) {
 	address := "收货地址是测试路18号。"
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{

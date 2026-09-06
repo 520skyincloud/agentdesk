@@ -4812,6 +4812,41 @@ func TestJudgeKeepsOriginalRequestSeparateFromResolution(t *testing.T) {
 	}
 }
 
+func TestJudgeRuntimeAnswerTextContract(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Intent: "hotel_info", Query: "矿泉水几瓶",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: "store",
+			Hit: judgeTestHit(1, 101, "矿泉水", "问题：矿泉水几瓶\n答案：两瓶，免费。", .9),
+		}},
+	}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"F1","aspect":"quantity","statement":"矿泉水两瓶。","criticalValues":["两瓶"]}],"missingAspects":[],"answerText":"房间内有两瓶矿泉水。"}]}]}`
+	for _, tt := range []struct{ name, raw, decision string }{
+		{"new", raw, knowledgeEvidenceDecisionDirectSingle},
+		{"legacy", strings.Replace(raw, `,"answerText":"房间内有两瓶矿泉水。"`, "", 1), knowledgeEvidenceDecisionDirectSingle},
+		{"empty answer", strings.Replace(raw, `"answerText":"房间内有两瓶矿泉水。"`, `"answerText":""`, 1), knowledgeEvidenceDecisionProtocolInvalid},
+		{"wrong candidate", strings.Replace(raw, `["T1C1"]`, `["T2C1"]`, 1), knowledgeEvidenceDecisionProtocolInvalid},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(tt.raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil || selections["T1"]["store"].Decision != tt.decision {
+				t.Fatalf("unexpected runtime contract result: %+v, %v", selections, err)
+			}
+			if tt.name == "new" {
+				answer := selections["T1"]["store"].AnswerText
+				if answer == nil || *answer != "房间内有两瓶矿泉水。" {
+					t.Fatalf("Judge answer was lost: %+v", answer)
+				}
+			}
+		})
+	}
+	task.Intent, task.SubIntent, task.Objective = "service_request", "external_proxy_action", "action_request"
+	selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(
+		strings.Replace(raw, `"answerText":"房间内有两瓶矿泉水。"`, `"answerText":""`, 1), []knowledgeEvidenceJudgeTask{task})
+	if err != nil || selections["T1"]["store"].AnswerText == nil || selections["T1"]["store"].Decision != knowledgeEvidenceDecisionDirectSingle {
+		t.Fatalf("deliberately omitted optional proxy self-help must be preserved: %+v %v", selections, err)
+	}
+}
+
 func TestHighConfidenceDirectFAQSelectionRescuesExactQuestionAtMediumVectorScore(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID:    "T1",
@@ -5489,6 +5524,7 @@ func TestKnowledgeEvidenceJudgeGeneralCompleteWinsStorePartial(t *testing.T) {
 }
 
 func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *testing.T) {
+	answer := "门店有外卖机器人。不好意思，是否能送到房门口还不能确认。"
 	storePartial := judgeTestHit(1, 101, "外卖机器人", "问题：有外卖机器人吗\n答案：有外卖机器人的。", 0.93)
 	generalPartial := judgeTestHit(2, 201, "通用机器人", "问题：酒店会配机器人吗\n答案：部分酒店会配。", 0.88)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -5501,6 +5537,8 @@ func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *tes
 				"T1": {
 					knowledgeEvidenceLayerStore: {
 						Decision:             knowledgeEvidenceDecisionPartial,
+						DecisionSource:       "model",
+						AnswerText:           &answer,
 						SelectedCandidateIDs: []string{"T1C1"},
 						SupportedFacts: []knowledgeEvidenceFact{{
 							FactID: "T1F1", Aspect: "existence", Statement: "门店有外卖机器人。", CriticalValues: []string{"有外卖机器人"},
@@ -5546,6 +5584,10 @@ func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *tes
 		t.Fatalf("selected facts were not recorded in Judge trace: %#v", traceTask)
 	}
 	planTask := collector.Data.Pipeline.ReplyPlan.TaskPlans[0]
+	if planTask.AnswerText == nil || *planTask.AnswerText != answer ||
+		traceTask.AnswerText == nil || *traceTask.AnswerText != answer {
+		t.Fatalf("selected-layer answer must reach trace and reply plan: %+v %+v", traceTask, planTask)
+	}
 	if planTask.SelectedLayer != knowledgeEvidenceLayerStore || len(planTask.SupportedFacts) != 1 || planTask.SupportedFacts[0].FactID != "T1F1" || len(planTask.MissingAspects) != 1 {
 		t.Fatalf("selected facts were not propagated to ReplyPlan: %#v", planTask)
 	}

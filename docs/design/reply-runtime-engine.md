@@ -8,8 +8,14 @@
 仅明确会话回顾按预算加载当前session更早消息，不增加持久化已答状态。
 Intent可输出内部可选evidenceQuery用于召回，resolvedText仍保留完整裁决条件。
 Judge负责语义与事实选择，本地记录具体协议错误，不做第二次语义裁决；
-已有选中证据的知识任务原义组装Statement，Generate保留任务输出但不再自由改写事实，
+Judge输入区分客户原话question与resolvedQuestion，原话决定请求及回答范围，补全不能新增要求。
+选中层携带内部可选answerText，程序使用该简短答复而非逐条拼接Statement；
+旧结果未携带answerText时兼容原事实组装。Generate保留任务输出但不再自由改写事实，
 无选中证据的互动回复行为不变。直接和延迟接待共用房号策略。
+hotel_info咨询不授权房号收集，实际服务和缺少Task元数据的旧路径不变。
+锁定答复的关键值或协议安全错误不重试Generate，沿用安全事实兜底；
+Generate自己漏Task/FactID仍只重试Generate。数量、条件、账号密码等内容不得为通过检查而删除。
+纯汉字名称中的中文展示引号只作比较兼容，不改写原文；含数字、字母或标点的关键值不走该兼容。
 撤回人工意愿的`explicit_handoff + objective=cancel`不授权新的转接；
 取消订单等业务动作和同轮独立风险任务不受影响。酒店能力询问与第三方代操作、
 检索目标与完整裁决条件仍由现有Intent区分，不新增本地语义判断。

@@ -105,6 +105,7 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 	SelectedCandidateIDs []string                               `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData       `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                               `json:"missingAspects,omitempty"`
+	AnswerText           *string                                `json:"answerText,omitempty"`
 	Decision             string                                 `json:"decision,omitempty"`
 	Layers               []KnowledgeEvidenceJudgeLayerTraceData `json:"layers,omitempty"`
 }
@@ -117,6 +118,7 @@ type KnowledgeEvidenceJudgeLayerTraceData struct {
 	SelectedCandidateIDs []string                         `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                         `json:"missingAspects,omitempty"`
+	AnswerText           *string                          `json:"answerText,omitempty"`
 }
 
 type KnowledgeEvidenceFactTraceData struct {
@@ -385,6 +387,7 @@ type ReplyTaskPlanTraceData struct {
 	SelectedCandidateIDs []string                         `json:"selectedCandidateIds,omitempty"`
 	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                         `json:"missingAspects,omitempty"`
+	AnswerText           *string                          `json:"answerText,omitempty"`
 }
 
 func (d ReplyPlanTraceData) HasMultipleTasks() bool {
