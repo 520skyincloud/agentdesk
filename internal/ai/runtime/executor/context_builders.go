@@ -59,6 +59,10 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		return messages
 	}
 	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
+	if collector != nil {
+		plan.Intent = collector.Data.Pipeline.Intent
+		plan.PromptSelect = collector.Data.Pipeline.PromptSelect
+	}
 	activeReplyPlan := plan.ReplyPlan
 	hasDeferredKnowledge := false
 	if collector != nil {

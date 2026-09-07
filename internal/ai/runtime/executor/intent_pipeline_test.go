@@ -1707,10 +1707,10 @@ func TestRuntimeIntentPromptRequiresEveryBurstQuestionToBecomeTask(t *testing.T)
 		Content:     "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 早餐有吗\n2. [消息] 停车免费吗\n3. [消息] 剃须刀在哪",
 	}}
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	if !strings.Contains(prompt, "每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask") ||
-		!strings.Contains(prompt, "每个包含自包含业务问题的 URef 都必须由以它为 sourceRefs[0] 的 Task 主认领") ||
+	if !strings.Contains(prompt, "按每个独立答案目标输出 Task，不按意图类别归组") ||
+		!strings.Contains(prompt, "任何包含自包含业务问题的 URef，都必须有对应 Task 以该 URef 作为 sourceRefs[0]") ||
 		!strings.Contains(prompt, "context sourceRef 只负责补全，不能替代前一个 URef 自己的独立业务 Task") ||
-		!strings.Contains(prompt, "不能只处理最后一句或最后一个问题") {
+		!strings.Contains(prompt, "保持 URef 顺序和同一来源内的问题顺序") {
 		t.Fatalf("expected burst task coverage contract in Intent prompt, got %q", prompt)
 	}
 	for _, expected := range []string{"[CURRENT_TURN_SOURCE_REFS]", "U1: 早餐有吗", "U2: 停车免费吗", "resolvedText", "sourceRefs[0]"} {

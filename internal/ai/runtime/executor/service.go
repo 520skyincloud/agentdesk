@@ -46,6 +46,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
 	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
+	if collector.Data.Error.Stage == "question_coverage" {
+		return completeGeneratedReplyProtocolFailure(summary, collector, fmt.Errorf("question coverage failed: %s", collector.Data.Error.Message), "question_coverage")
+	}
 	if collector.Data.Pipeline.Intent.DetectedIntent == "intent_detect_unavailable" {
 		return completeIntentDetectUnavailable(summary, collector)
 	}

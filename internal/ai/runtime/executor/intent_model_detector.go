@@ -253,12 +253,22 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		schema.SystemMessage(runtimeIntentDetectSystemPromptForProfile(profile)),
 		schema.UserMessage(buildRuntimeIntentDetectUserPrompt(req, history, configs)),
 	}
+	coverageRepair := runtimeQuestionRepairRequestFromContext(ctx)
+	firstAttempt := 1
+	if coverageRepair != nil {
+		messages = append(messages, schema.SystemMessage(runtimeQuestionRepairInstruction(coverageRepair)))
+		// Attempts 1-3 belong to initial detection and its existing retries.
+		firstAttempt = 4
+	}
 	firstStartedAt := time.Now()
 	firstReceiptOffset := len(usageCapture.Receipts())
 	result, err := chatModel.Generate(intentCtx, messages)
-	modelAttempt := 1
+	modelAttempt := firstAttempt
 	if err != nil {
-		recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), err)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, firstReceiptOffset), firstAttempt, time.Since(firstStartedAt).Milliseconds(), err)
+		if coverageRepair != nil {
+			return callbacks.IntentTraceData{}, err
+		}
 		if !isRetryableRuntimeIntentModelError(err) || !sleepRuntimeIntentModelRetry(intentCtx, runtimeIntentModelRetryDelay) {
 			return callbacks.IntentTraceData{}, err
 		}
@@ -271,7 +281,7 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 			return callbacks.IntentTraceData{}, err
 		}
 	} else {
-		recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), 1, time.Since(firstStartedAt).Milliseconds(), nil)
+		recordIntentModelUsage(req, intentConfig, credentialRevision, result, gatewayReceiptSince(usageCapture, firstReceiptOffset), firstAttempt, time.Since(firstStartedAt).Milliseconds(), nil)
 	}
 	parsed, err := parseRuntimeIntentDetectJSON(result.Content)
 	if err == nil {
@@ -283,6 +293,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		}
 	}
 	if err != nil {
+		if coverageRepair != nil {
+			return callbacks.IntentTraceData{}, err
+		}
 		original := parsed
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
@@ -558,7 +571,7 @@ func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfil
 	if schemaText == "" {
 		schemaText = replyintent.DefaultHotelIntentJSONSchema()
 	}
-	return strings.TrimSpace(prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。同一个 URef 内也可以包含多个问题及其承接上下文，此时允许 independent + resolved_from_context，sourceRefs 只写该 URef 一次，不必虚构更早的消息或 previous 关系。问号、标点或表情也是客户原文，text 原样保留；与业务问题合并输入时可作为 context_only 的互动或真实上下文，不能代替业务 Task 的主要来源。")
+	return strings.TrimSpace(runtimeQuestionFirstIntentInstruction() + "\n\n" + prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。同一个 URef 内也可以包含多个问题及其承接上下文，此时允许 independent + resolved_from_context，sourceRefs 只写该 URef 一次，不必虚构更早的消息或 previous 关系。问号、标点或表情也是客户原文，text 原样保留；与业务问题合并输入时可作为 context_only 的互动或真实上下文，不能代替业务 Task 的主要来源。")
 }
 
 func runtimeIntentProfileExpectsTaskSemantics(profile *models.ReplyIntentProfile) bool {
@@ -602,7 +615,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
 	}
-	b.WriteString("\n\n【当前轮逐题识别】你必须自己逐条扫描 U1 到 Un；每条消息可能包含 0 个、1 个或多个独立业务任务。任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词，因为口语和语音转写可能完全没有标点。每个能够独立检索、回答、发送资源或执行动作的问题都建立一个 intentTask，并保持 URef 顺序以及同一 URef 内的原文顺序；每个包含自包含业务问题的 URef 都必须由以它为 sourceRefs[0] 的 Task 主认领。不同对象、不同知识主题或需要不同答案结果的问题必须拆开；即使 subIntent 相同也不能合并不同答案目标。客户要求“分别、各自、逐项”回答时，每个独立答案结果都必须有自己的 Task，例如“哪些房型有办公桌？哪些房型有沙发？请分别说清楚”必须拆成办公桌房型和沙发房型两个 Task，不能合并成两项设施的交集；“有啥吃的推荐没，以及附近哪里好玩”必须拆成餐饮推荐和游玩推荐两个 Task。只有同一个明确对象、且客户表达的是一个紧密答案目标时才可合成 compound_information，例如同一批房间矿泉水的数量和费用。纯背景、情绪或补充条件并入相关任务，不要凭空新增业务任务。intentTasks[].text 必须保留主要 URef 中连续的客户原话；任何指代补全、语义改写只能写入 resolvedText。输出前从头到尾核对，确保每个自包含业务问题都有自己的 primary Task，不能只处理最后一句或最后一个问题。")
+	b.WriteString("\n\n【当前轮逐题识别】逐条扫描 U1 到 Un，按每个独立答案目标输出 Task，不按意图类别归组。任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词。保持 URef 顺序和同一来源内的问题顺序；text 保留连续原话，resolvedText 补全对象，evidenceQuery 独立检索。背景、情绪和回答格式要求绑定相关任务。")
 	b.WriteString("同一当前轮中，若后一个 URef 需要前一个 URef 才能补全，就把前一个 URef 加入 sourceRefs，并保持 relationToPrevious=independent；context sourceRef 只负责补全，不能替代前一个 URef 自己的独立业务 Task。follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，必须建立停车 Task（text=U1原话、sourceRefs=[U1]）和充电 Task（text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context）。")
 	b.WriteString("先读完本轮全部 URef，再决定哪些问题仍需要澄清。前面的催问、符号、情绪或不完整表达，若已经被本轮后续完整问题解释，只作为该问题的 context sourceRef，不再建立 interaction/clarify，也不再问客户想问什么。独立且仍有歧义的业务问题必须保留澄清，不能因为旁边有明确问题就吞掉；单独互动、真实否定上一答复和跨轮追问仍按原语义识别。")
 	b.WriteString("\n\n当前消息类型: ")

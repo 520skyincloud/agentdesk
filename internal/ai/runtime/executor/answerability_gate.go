@@ -55,8 +55,10 @@ type knowledgeContextRetriever interface {
 type answerabilityRetrieverFactory func(aiAgent models.AIAgent) knowledgeContextRetriever
 
 type KnowledgeAnswerabilityGate struct {
-	newRetriever answerabilityRetrieverFactory
-	judge        knowledgeEvidenceJudge
+	newRetriever    answerabilityRetrieverFactory
+	judge           knowledgeEvidenceJudge
+	coverageEnabled bool
+	repairIntent    func(context.Context, RunInput, callbacks.IntentTraceData, *runtimeQuestionCoverageInput, []runtimeQuestionCoverageIssue) (callbacks.IntentTraceData, error)
 }
 
 type runtimeKnowledgeQuestionResult struct {
@@ -132,7 +134,9 @@ func NewKnowledgeAnswerabilityGate() *KnowledgeAnswerabilityGate {
 		newRetriever: func(aiAgent models.AIAgent) knowledgeContextRetriever {
 			return retrievers.NewKnowledgeRetriever(aiAgent)
 		},
-		judge: modelKnowledgeEvidenceJudge{},
+		judge:           modelKnowledgeEvidenceJudge{},
+		coverageEnabled: true,
+		repairIntent:    repairRuntimeQuestionIntent,
 	}
 }
 
@@ -147,6 +151,9 @@ func (g *KnowledgeAnswerabilityGate) withDefaults() *KnowledgeAnswerabilityGate 
 	}
 	if ret.judge == nil {
 		ret.judge = defaults.judge
+	}
+	if ret.repairIntent == nil {
+		ret.repairIntent = defaults.repairIntent
 	}
 	return &ret
 }
@@ -2686,8 +2693,30 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		Status:        "skipped",
 		Reason:        "no retrieved candidates required evidence judging",
 	}
+	checkCoverage := gate.coverageEnabled && intent.SemanticContractExpected &&
+		state.Input.Collector != nil && !strings.HasPrefix(req.UserMessage.RequestID, "manual_resume_")
+	if checkCoverage {
+		judgeTasks = appendRuntimeCoverageOnlyJudgeTasks(judgeTasks, state.Input.Collector.Data.Pipeline.ReplyPlan, nil)
+		if len(judgeTasks) > 0 {
+			judgeTasks[0].Coverage = buildRuntimeQuestionCoverageInput(req, state.Input.Collector.Data.Pipeline.ReplyPlan)
+		}
+	}
 	if len(judgeTasks) > 0 {
 		judgeOutcome := gate.judge.JudgeBatch(ctx, req, judgeTasks)
+		if checkCoverage {
+			batch, judgeTasks, judgeOutcome, err = gate.repairQuestionCoverageOnce(
+				ctx, state, retriever, retrieveOptions, batch, judgeTasks, judgeOutcome, storeKnowledgeBaseIDs, knowledgeIDs)
+			if err != nil {
+				judgeOutcome.Trace.Status = "coverage_failed"
+				judgeOutcome.Trace.Reason = "question coverage was not completed; no knowledge handoff or partial completion authorized"
+				judgeOutcome.Trace.ErrorMessage = preview(err.Error(), 200)
+				state.Input.Collector.SetKnowledgeEvidenceJudge(judgeOutcome.Trace)
+				state.Input.Collector.Data.Error.Stage = "question_coverage"
+				state.Input.Collector.Data.Error.Message = err.Error()
+				return state, err
+			}
+			rawCandidateCount = runtimeRetrieverRawCandidateCount(batch.Merged)
+		}
 		judgeTrace = applyKnowledgeEvidenceJudgeOutcome(batch, judgeTasks, judgeOutcome)
 		result = batch.Merged
 	}

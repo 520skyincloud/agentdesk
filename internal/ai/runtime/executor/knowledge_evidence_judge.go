@@ -51,6 +51,7 @@ type knowledgeEvidenceJudge interface {
 }
 
 type knowledgeEvidenceJudgeTask struct {
+	Coverage       *runtimeQuestionCoverageInput
 	TaskID         string
 	Intent         string
 	OriginalText   string
@@ -81,6 +82,7 @@ type knowledgeEvidenceJudgeCandidate struct {
 }
 
 type knowledgeEvidenceJudgeOutcome struct {
+	Coverage   *runtimeQuestionCoverage
 	Applied    bool
 	Selections map[string]map[string]knowledgeEvidenceLayerSelection
 	Trace      callbacks.KnowledgeEvidenceJudgeTraceData
@@ -108,6 +110,7 @@ type modelKnowledgeEvidenceJudge struct{}
 
 type knowledgeEvidenceJudgePrompt struct {
 	SchemaVersion string                             `json:"schemaVersion"`
+	Coverage      *runtimeQuestionCoverageInput      `json:"coverageInput,omitempty"`
 	Tasks         []knowledgeEvidenceJudgePromptTask `json:"tasks"`
 }
 
@@ -116,6 +119,7 @@ type knowledgeEvidenceJudgePromptTask struct {
 	Intent           string                                  `json:"intent,omitempty"`
 	Question         string                                  `json:"question"`
 	ResolvedQuestion string                                  `json:"resolvedQuestion"`
+	RetrievalQuery   string                                  `json:"retrievalQuery,omitempty"`
 	SubIntent        string                                  `json:"subIntent,omitempty"`
 	Objective        string                                  `json:"objective,omitempty"`
 	Entities         []knowledgeEvidenceJudgeEntity          `json:"entities,omitempty"`
@@ -156,6 +160,7 @@ type knowledgeEvidenceJudgeResponseLayer struct {
 
 type knowledgeEvidenceJudgeRawResponse struct {
 	SchemaVersion string                                  `json:"schemaVersion"`
+	Coverage      *runtimeQuestionCoverage                `json:"coverage,omitempty"`
 	Tasks         []knowledgeEvidenceJudgeRawResponseTask `json:"tasks"`
 }
 
@@ -250,6 +255,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 
 	systemPrompt := knowledgeEvidenceJudgeSystemPrompt()
+	if prompt.Coverage != nil {
+		systemPrompt += "\n\n" + runtimeQuestionCoverageInstruction()
+	}
 	userPrompt, err := json.Marshal(prompt)
 	if err != nil {
 		trace.Status = knowledgeEvidenceDecisionMalformed
@@ -285,6 +293,12 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
+	coverage, coverageErr := parseRuntimeQuestionCoverage(result.Content, prompt.Coverage)
+	if coverageErr != nil {
+		trace.Status = knowledgeEvidenceDecisionProtocolInvalid
+		trace.ErrorMessage = coverageErr.Error()
+		return knowledgeEvidenceJudgeOutcome{Applied: true, Selections: selections, Trace: trace}
+	}
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
 	for taskID, layers := range selections {
@@ -298,6 +312,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.Reason += "; judge timeout was bounded by the parent reply deadline"
 	}
 	return knowledgeEvidenceJudgeOutcome{
+		Coverage:   coverage,
 		Applied:    true,
 		Selections: selections,
 		Trace:      trace,
@@ -352,11 +367,15 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 	prompt := knowledgeEvidenceJudgePrompt{SchemaVersion: knowledgeEvidenceJudgeSchemaVersion}
 	prompt.Tasks = make([]knowledgeEvidenceJudgePromptTask, 0, len(tasks))
 	for _, task := range tasks {
+		if task.Coverage != nil {
+			prompt.Coverage = task.Coverage
+		}
 		item := knowledgeEvidenceJudgePromptTask{
 			TaskID:           strings.TrimSpace(task.TaskID),
 			Intent:           canonicalIntentCode(task.Intent),
 			Question:         firstNonEmptyReplyTaskText(task.OriginalText, task.Query),
 			ResolvedQuestion: strings.TrimSpace(task.Query),
+			RetrievalQuery:   strings.TrimSpace(task.RetrievalQuery),
 			SubIntent:        strings.TrimSpace(task.SubIntent),
 			Objective:        strings.TrimSpace(task.Objective),
 			Entities:         append([]knowledgeEvidenceJudgeEntity(nil), task.Entities...),
