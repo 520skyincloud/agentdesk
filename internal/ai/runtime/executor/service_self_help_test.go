@@ -160,6 +160,7 @@ func TestJudgeOutputExampleIncludesServiceResolution(t *testing.T) {
 		"该否定结论就是完整答案",
 		"条件未触发时不加入 supportedFacts、answerText 或 missingAspects",
 		"missingAspects 是内部证据边界，不是必须对客户逐项说明的清单",
+		"不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法",
 	} {
 		if !strings.Contains(prompt, instruction) {
 			t.Fatalf("missing general request policy: %s", instruction)

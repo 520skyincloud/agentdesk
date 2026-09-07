@@ -843,6 +843,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - 当前需求已有适用的同目标自助方案时可以判 true；确实未知的执行能力可保留在 missingAspects，decision 可以是 partial，但 answerText 只给出已知方案、必要步骤和适用条件，不附加执行能力尚未确认等解释，不承诺执行。
 - hasUsableSelfService 只表示自助方案可用，不表示客户原本要求的动作已确认；missingAspects 非空时必须判 partial，不能因自助方案完整而判 direct_single/direct_combined。
 - 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
+- 当前客户已明确无法采用或尝试失败，而该层只剩此不可用方案、物品存在性或其位置，没有其他适用办法或能回答当前请求的政策时，判 insufficient：hasUsableSelfService=false，selectedCandidateIds、supportedFacts 为空，answerText 为空。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法；同轮其他独立问题仍分别正常裁决。
 - 餐馆名单、微波炉、有机器人等仅相关信息不是送餐或代点餐的完整自助方案，不能据此判 true；事实、条件与知识层仍不得跨对象拼接。
 - 知识明确要求转接或 decision=insufficient 时为 false。字段缺失不是“没有方案”，而是协议不完整。
 
