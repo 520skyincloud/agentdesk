@@ -837,6 +837,8 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 
 每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、subIntent、objective、entities、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion、objective、entities 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
 
+先按客户实际要求决定什么算答全：询问一个类别“有没有”，存在一个明确属于该类别的具体种类就足以回答“有”，答复写明已知种类即可，不要求所有子类都存在。顾客没有指定的“普通、标准、其他类型”等子类不得自行新增为必要条件或 missingAspects；只有客户明确限制某个类型、范围或用途时才按该限制判断。否定某个子类不能证明整个类别不存在；不同具体子类的一正一负不是冲突，只有同一主体、范围、条件下互相矛盾的结论才是冲突。
+
 主体一致性是选择证据的硬约束：候选 FAQ 的问题和答案必须与 task.question、subIntent、objective、entities 指向同一业务主体。客户明确提到早餐时不能选择退房 FAQ，明确提到房型或设施时不能换成其他房型或设施。task.entities 有多个明确实体时，单条候选必须覆盖它声称回答的实体；direct_combined 的全部候选合起来必须逐一覆盖所有明确实体，任何与当前主体无关的候选都不得混入。
 
 事实维度完整性检查是每个 task、每个 layer 的必做步骤：
@@ -891,7 +893,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 严禁跨 store/general 拼接证据，也不能把不同门店、不同房型对象、不同时间条件或互相矛盾的内容组合。检索分数和候选顺序不能替代语义判断。
 
 FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。rawContent 只用于核对原文。
-上位类别的存在性问题，可以由明确肯定的具体子类证明存在；但否定某个具体子类，不能证明整个上位类别不存在。不同具体子类的一正一负不是冲突，只有同一主体、同一适用范围和同一条件下互相矛盾的结论才是冲突。候选选择是首要任务；只要候选能够完整回答，supportedFacts 的提取困难不能成为判 insufficient 的理由。
+候选选择是首要任务；只要候选能够完整回答，supportedFacts 的提取困难不能成为判 insufficient 的理由。
 
 条件不能从事实中消失。若答案是“是的，仅限退房前办理”“可以，但仅适用于指定房型”等带硬限制的肯定，statement 必须同时写出肯定结论和限制条件；不得输出无条件的“可以办理”“所有房型都可以”。
 

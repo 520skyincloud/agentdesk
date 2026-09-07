@@ -275,3 +275,22 @@ func TestQuestionCoverageRetainsJudgeFailureReason(t *testing.T) {
 		t.Fatalf("lost actual Judge error: %v", err)
 	}
 }
+
+func TestQuestionCoverageClarificationRemainsAQuestionAtGeneration(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "T1", Intent: "hotel_info", SubIntent: "supplies_self_help", Text: "有用品吗", OutputKind: "text", ReplyRequired: true},
+		{TaskID: "T2", Intent: "interaction", SubIntent: "clarify", Text: "那个可以吗", OutputKind: "text", ReplyRequired: true},
+	}}
+	groups := buildTextReplyTaskGroups(plan)
+	if len(groups) != 2 || groups[0].ClarificationOnly || !groups[1].ClarificationOnly {
+		t.Fatalf("clarification mode lost or applied to another task: %+v", groups)
+	}
+	prompt := buildMultiReplyOutputInstruction(plan, true)
+	if !strings.Contains(prompt, "T2：那个可以吗（仅澄清") || !strings.Contains(prompt, "不得擅自回答酒店有或没有") {
+		t.Fatal("Generate did not receive the existing clarification task mode")
+	}
+	plan.TaskPlans = plan.TaskPlans[1:]
+	if prompt := buildMultiReplyOutputInstruction(plan, false); !strings.Contains(prompt, "仅澄清") {
+		t.Fatal("single clarification task lost its mode")
+	}
+}
