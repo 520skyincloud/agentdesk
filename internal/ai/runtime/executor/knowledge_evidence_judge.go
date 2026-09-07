@@ -827,6 +827,10 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 
 业务政策答复也可以完整回答问题：候选 FAQ 与客户问题语义一致，答案明确给出该问题的适用政策、条件或选择方式时，不要求强行改写成“是/否”或数值结论，可以判 direct_single。必须保留原政策的主体、限定和建议，不能把相关属性差异改成客户所问属性的确定差异。例如平台价格是否相同的 FAQ 回答“每个客户在不同平台享受的平台权益是不一样的，建议您可以对比价格后选择合适您的”，应完整保留这一答复；不能改成“价格不一样”，也不能仅因没有明确同价或异价判 partial。仅主题相关的背景、含糊回避、转接指令或没有覆盖客户新增具体要求的政策不适用此规则。supportedFacts 不得混入“无法证明、证据不足”等裁决分析，criticalValues 不得把脱离主体的“不一样”等词作为价格结论。
 
+需求表达与实际执行分开：客户以“帮我、给我、送一下、安排一下”等方式提出需求时，先选择适用于同一目标、对象和当前条件的领取方式、办理流程、使用方法或服务政策，answerText 直接给出相应答案。不能仅因动作措辞追加能力声明、人工处理建议或新的待核实问题；也不能把知识答复写成已经代办、已安排、会送到或其他执行承诺。此规则适用于所有业务需求，不限于用品补充。
+适用政策明确不提供或不支持当前请求时，该否定结论就是完整答案，应判 direct_single/direct_combined，missingAspects 为空，hasUsableSelfService 为 false。不要继续检查依赖被否定前提的配送、代办或执行能力。只有知识中的否定适用于客户当前对象和条件时才能这样判断，不能用额外补充的限制否定故障维修、脏污更换等不同需求。
+知识中“若有特殊问题请联系客服”等条件式补充，只有客户确实提出该条件时才适用；条件未触发时不加入 supportedFacts、answerText 或 missingAspects，不推测是否可以特殊通融，也不把普通联系建议当作“转接”流程指令。
+
 外部代执行任务只在 intent=service_request、subIntent=external_proxy_action、objective=action_request 时适用：
 - “酒店能否替客户点外卖、叫车、代买、代订或联系外部商家”不是知识库需要证明的酒店事实维度；你只裁决候选中是否存在能帮助客户自行完成同一目标的地址、电话、入口或操作步骤。
 - 如果候选明确提供了上述自助信息，可以按证据完整性判 direct_single/direct_combined，并且 supportedFacts 只能保留知识原文明确写出的事实。
@@ -836,7 +840,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 服务请求的证据完整性与接待必要性分开判断。intent=service_request 时每层必须输出 hasUsableSelfService 布尔值：
 - true：选中知识明确提供能帮助客户完成同一目标的自取地点、办理入口或完整操作办法，适用于客户当前条件，且客户没有明确拒绝、无法采用或已经尝试失败。不是“需求已经完成”，也不代表酒店能执行客户要求的动作。
 - false：没有上述方案，只有相关背景/物品存在性，或者客户明确无法自助、已尝试失败、坚持必须送来或需要现场处理。其他 intent 不得输出 true。
-- 客户初次问能否送一件用品时，该用品的明确自取方案可以判 true；仍将未知送房能力保留在 missingAspects，decision 可以是 partial。answerText 简短说明未知边界并给出自取方案，不承诺配送、不声称已通知。
+- 当前需求已有适用的同目标自助方案时可以判 true；确实未知的执行能力可保留在 missingAspects，decision 可以是 partial，但 answerText 只给出已知方案、必要步骤和适用条件，不附加执行能力尚未确认等解释，不承诺执行。
 - hasUsableSelfService 只表示自助方案可用，不表示客户原本要求的动作已确认；missingAspects 非空时必须判 partial，不能因自助方案完整而判 direct_single/direct_combined。
 - 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
 - 餐馆名单、微波炉、有机器人等仅相关信息不是送餐或代点餐的完整自助方案，不能据此判 true；事实、条件与知识层仍不得跨对象拼接。
@@ -879,7 +883,7 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
 严禁把一条长候选知识逐句全部拆成 supportedFacts。只输出当前问题真正需要的最小事实；一个完整 statement 已覆盖多个维度时可以复用该 statement，不再输出它所包含的摘要句或无关细节。
 证据与客户答复分开：supportedFacts用于追踪必要事实，不能把它们逐条堆成答复。每层输出answerText，直接、礼貌、自然地回答question，只回答该Task当前所问，普通问题1至2句，流程保留必要的2至3个简短步骤。多个事实合成一次完整答复，不重复同一数量、费用、地址或总结。按原话保留“只说名称/只问账号”等范围限制，不能加原话没问的使用说明、其他房型名单、餐饮菜名或推荐背景。
-partial的answerText保留有用的已知答案，并自然说明当前所问的哪个方面还不能确认，例如“不好意思，能否送到房门口还不能确定”，不能只复述相关事实让客户猜为何转接；不得将未知写成肯定或否定，也不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
+missingAspects 是内部证据边界，不是必须对客户逐项说明的清单。partial 且 hasUsableSelfService=true 时，answerText 直接回答适用知识，不自动添加“无法确认、资料未说明、能否代为执行”等能力说明。只有客户明确排除已知方案、追问该未知能力，或缺失事项确实影响当前答案的使用时，才简短说明必要边界；不能把相关背景充当可用方案，也不得将未知写成肯定或否定。不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
 
 检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
 
@@ -894,7 +898,7 @@ partial的answerText保留有用的已知答案，并自然说明当前所问的
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
 严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，内容按实际证据填写）：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"所需用品可在指定洗衣房自行取用。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"answerText":"不好意思，送房服务暂未确认，您可以到指定洗衣房自行取用。"},{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"所需用品可在指定洗衣房自行取用。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"answerText":"您可以到指定洗衣房自行取用所需用品。"},{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {

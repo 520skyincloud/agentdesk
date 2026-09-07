@@ -8,24 +8,41 @@ import (
 	"testing"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
-	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 )
 
-func TestServiceSelfHelpKeepsKnowledgeAndUnknownDeliveryWithoutHandoff(t *testing.T) {
-	for _, supply := range []string{"面巾", "拖鞋", "牙刷"} {
+func TestServiceKnowledgeAnswersKeepFactsWithoutAddingExecutionDisclaimers(t *testing.T) {
+	for _, scenario := range []struct {
+		name, question, answer, decision, aspect string
+		selfHelp                                 bool
+	}{
+		{"supply", "送条面巾来", "面巾可在1313对面的洗衣房自行取用。", "partial", "method", true},
+		{"slippers", "帮我拿双拖鞋", "拖鞋可在1313对面的洗衣房自行取用。", "partial", "method", true},
+		{"coffee", "给我送点咖啡", "速溶咖啡可在1313对面的洗衣房自行取用。", "partial", "method", true},
+		{"check_in", "帮我办入住", "您可以通过入住机办理入住。", "direct_single", "method", true},
+		{"luggage", "帮我存一下行李", "行李可在一楼寄存柜自行寄存。", "partial", "method", true},
+		{"parking", "帮我安排停车", "住客可以使用地下停车场。", "direct_single", "method", true},
+		{"unavailable_supply", "再给我送个床单", "酒店暂时不提供多余的床单。", "direct_single", "existence", false},
+		{"unavailable_service", "给我安排早餐", "酒店不提供早餐。", "direct_single", "existence", false},
+	} {
 		for _, usable := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s/self_help_%v", supply, usable), func(t *testing.T) {
-				question := "可以送一些" + supply + "来吗"
-				answer := supply + "在1313对面的洗衣房可自行取用，送房服务暂未确认。"
-				store := judgeTestHit(1, 101, "有多余的"+supply+"吗", "问题：有多余的"+supply+"吗\n答案："+supply+"在1313对面的洗衣房可自行取用。", 0.777)
+			if scenario.decision != "partial" && usable != scenario.selfHelp {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s/self_help_%v", scenario.name, usable), func(t *testing.T) {
+				question, answer := scenario.question, scenario.answer
+				missing := "[]"
+				if scenario.decision == "partial" {
+					missing = `["是否由员工代为执行"]`
+				}
+				store := judgeTestHit(1, 101, question, "问题："+question+"\n答案："+answer, 0.777)
 				general := judgeTestHit(2, 201, question, "问题："+question+"\n答案：转接", 0.95)
-				retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
-					question: judgeTestRetrieveResult(store, general),
-				})
+				// Freeze evidence independently of the existing query rewriting.
+				retriever := judgeTestRetriever(nil)
+				retriever.result = judgeTestRetrieveResult(store, general)
 				judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
 					raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[
-{"layer":"store","decision":"partial","hasUsableSelfService":%t,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"F1","aspect":"method","statement":%q,"criticalValues":["1313"]}],"missingAspects":["是否送到房间"],"answerText":%q},
-{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[]}]}]}`, usable, supply+"在1313对面的洗衣房可自行取用。", answer)
+{"layer":"store","decision":%q,"hasUsableSelfService":%t,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"F1","aspect":%q,"statement":%q,"criticalValues":[]}],"missingAspects":%s,"answerText":%q},
+{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[]}]}]}`, scenario.decision, usable, scenario.aspect, answer, missing, answer)
 					selected, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
 					if err != nil {
 						t.Fatal(err)
@@ -45,15 +62,29 @@ func TestServiceSelfHelpKeepsKnowledgeAndUnknownDeliveryWithoutHandoff(t *testin
 					t.Fatal(err)
 				}
 				trace := collector.Data.Pipeline.EvidenceJudge
-				if judge.calls != 1 || len(trace.Tasks) != 1 || trace.DeferredHandoff == usable {
+				wantHandoff := scenario.decision == "partial" && !usable
+				if judge.calls != 1 || len(trace.Tasks) != 1 || trace.DeferredHandoff != wantHandoff {
 					t.Fatalf("self help must affect routing, not calls or tasks: %+v", trace)
 				}
 				task := trace.Tasks[0]
-				if task.SelectedLayer != "store" || task.Decision != "partial" || len(task.MissingAspects) != 1 || task.HasUsableSelfService != usable {
-					t.Fatalf("preserve selected knowledge and unknown delivery: %+v", task)
+				wantMissing := 0
+				if scenario.decision == "partial" {
+					wantMissing = 1
 				}
-				if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, "1313") {
-					t.Fatal("self-service evidence was lost")
+				if task.SelectedLayer != "store" || task.Decision != scenario.decision || len(task.MissingAspects) != wantMissing || task.HasUsableSelfService != usable {
+					t.Fatalf("preserve selected knowledge and internal completeness: %+v", task)
+				}
+				if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, answer) {
+					t.Fatal("selected service knowledge was lost")
+				}
+				group := textReplyTaskGroup{TaskID: "T1", EvidenceLocked: true, AnswerText: task.AnswerText}
+				for _, fact := range task.SupportedFacts {
+					group.Facts = append(group.Facts, replyFactRequirement{
+						FactID: fact.FactID, Aspect: fact.Aspect, Statement: fact.Statement, CriticalValues: fact.CriticalValues,
+					})
+				}
+				if content, err := renderLockedReplyContent(group); err != nil || content != answer {
+					t.Fatalf("internal unknowns must not add customer-visible claims: %q, %v", content, err)
 				}
 			})
 		}
@@ -117,6 +148,26 @@ func TestJudgeOutputExampleIncludesServiceResolution(t *testing.T) {
 			if layer.HasUsableSelfService == nil {
 				t.Fatalf("output example omitted service resolution for %s", layer.Layer)
 			}
+		}
+	}
+	answer := output.Tasks[0].Layers[0]
+	if string(answer.MissingAspects) == "[]" || answer.AnswerText == nil ||
+		*answer.AnswerText != "您可以到指定洗衣房自行取用所需用品。" {
+		t.Fatalf("example must separate internal unknowns from the concise answer: %+v", answer)
+	}
+	for _, instruction := range []string{
+		"此规则适用于所有业务需求",
+		"该否定结论就是完整答案",
+		"条件未触发时不加入 supportedFacts、answerText 或 missingAspects",
+		"missingAspects 是内部证据边界，不是必须对客户逐项说明的清单",
+	} {
+		if !strings.Contains(prompt, instruction) {
+			t.Fatalf("missing general request policy: %s", instruction)
+		}
+	}
+	for _, obsolete := range []string{"answerText 简短说明未知边界", "能否送到房门口还不能确定", "不好意思，送房服务暂未确认"} {
+		if strings.Contains(prompt, obsolete) {
+			t.Fatalf("obsolete unconditional disclaimer rule remains: %s", obsolete)
 		}
 	}
 }
