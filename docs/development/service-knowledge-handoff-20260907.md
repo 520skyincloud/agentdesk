@@ -176,3 +176,31 @@ Outbox、知识库、计费、数据库、DTO、接口、权限或 WebSocket；�
 customer-audit、ai-billing 对目标文件无新分歧，无需 rebase，可独立合并；
 原始脏工作区不动。回滚点为 20260907-request-answer-a965b39，
 保留当前消息、配置和知识库，发布结果在完成后追加。
+
+### 发布及验收未通过项
+
+程序提交 `bf4f8acbb949f6bba0a34aee0e790c8e9044ff3a` 已推送两个远端，
+部署到 `/opt/agentdesk/releases/20260907-request-answer-bf4f8ac`。
+二进制 SHA256：`0204abd29d0f3ad5d8c073a499385189a3f3c0e113919d026411b577dc86faed`。
+备份 `/opt/backups/agentdesk-20260907-intent-source` 的数据库 gzip、配置及 SHA 已验证。
+
+会话2109、消息18027：截图原文由模型拆成6题，6题均选择门店知识并按序回复，
+合并3条消息；电车 Task 使用 U1 内部上下文，来源协议通过，耗时30.762秒。
+会话2110、消息18032/18033：实际先收到问号、后收到原文，Trace 确认 U1/U2，
+来源协议通过，模型保留6个业务题及1个问号互动，没有丢题或触发 Intent 安全兜底。
+但整体回答未通过，耗时31.436秒，已停止剩余测试，累计仅3次客户输入：
+
+- 问号被 Intent 归 interaction/clarify + unresolved，现有任务整理未将其转成
+  context_only，产生多余的“您具体想问哪方面呀”。
+- 餐饮、游玩均被 Judge 选为混合知识，answerText 各自包含两个主题，形成重复内容。
+- 停车 answerText 未覆盖 Judge 自己返回的全部 criticalValues，触发事实兜底；
+  发票 criticalValues 为“增值税电子普或专票”，而 answerText/statement 为
+  “增值税电子普票或专票”，逐字校验不通过，最终该题变成无法准确回答。
+
+不得把本轮描述为完整验收通过；后续追问及新主题的两次模型输入未执行。
+暂不扩改 intent_pipeline.go、knowledge_evidence_judge.go 或 multi_reply_output.go，
+需要额外确认互动归属与 Judge 答复/关键值契约的最小修复范围。
+当前保留已验证有效的入口修复；8083返回200，systemd active/running、NRestarts=0，
+无 pending/failed 或近期 sending，7条历史 sending 保持原样。
+隔离会话只清理测试路由，保留消息；未向真实企微客户发送测试。
+ChannelID=0 只验证服务器链路，不代表企微手机端投递验收。
