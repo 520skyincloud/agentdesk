@@ -24,13 +24,14 @@ type runtimeQuestionCoverageSource struct {
 }
 
 type runtimeQuestionCoverageTask struct {
-	TaskID       string   `json:"taskId"`
-	Intent       string   `json:"intent"`
-	Objective    string   `json:"objective"`
-	Text         string   `json:"text"`
-	ResolvedText string   `json:"resolvedText"`
-	SourceRefs   []string `json:"sourceRefs"`
-	OutputKind   string   `json:"outputKind"`
+	TaskID         string   `json:"taskId"`
+	Intent         string   `json:"intent"`
+	Objective      string   `json:"objective"`
+	Text           string   `json:"text"`
+	ResolvedText   string   `json:"resolvedText"`
+	SourceRefs     []string `json:"sourceRefs"`
+	OutputKind     string   `json:"outputKind"`
+	NeedsKnowledge bool     `json:"needsKnowledge"`
 }
 
 type runtimeQuestionCoverage struct {
@@ -59,6 +60,7 @@ func runtimeQuestionFirstIntentInstruction() string {
 输出 JSON 时先写 intentTasks，最后才写 primaryIntent 等汇总。一个 Task 是一个客户需要的独立答案或动作，不是一类意图；意图分类相同不代表答案相同。
 列举多个物品、设施或服务是否提供时，逐个对象建立 Task，即使共用一个“有没有”或没有标点。不能用 supplies_self_help、store_knowledge 或 compound_information 包住整份清单。
 只有同一个明确对象、且客户表达的是一个紧密答案目标时才用 compound_information，例如同一物品数量与费用；不同对象、不同知识主题或需要不同答案结果的问题必须拆开，即使 subIntent 相同也不能合并不同答案目标。
+resolutionState 判断的是客户问题能否理解，不是酒店是否能做到或知识是否已知。明确询问酒店能否提供某物/服务，即使对象不常见或你不知道答案，也仍是需要知识的业务 Task，不得因此标 ambiguous 并降为 interaction/clarify。只有无法确定客户所指对象或必要条件存在真实歧义时才澄清。
 比较、交集、条件筛选本身是一个整体目标；“分别列出”是多个结果，不要互相替换。纯背景、礼貌、否定排除和回答格式要求不是新的问题。
 逐题保留当前原话和来源，补全指代后独立检索。任务数量不能由意图种类、消息条数或回复条数决定。`
 }
@@ -77,7 +79,7 @@ func buildRuntimeQuestionCoverageInput(req RunInput, plan callbacks.ReplyPlanTra
 		input.Tasks = append(input.Tasks, runtimeQuestionCoverageTask{
 			TaskID: task.TaskID, Intent: task.Intent, Objective: task.Objective,
 			Text: firstNonEmptyReplyTaskText(task.OriginalText, task.Text), ResolvedText: task.ResolvedText,
-			SourceRefs: task.SourceRefs, OutputKind: task.OutputKind,
+			SourceRefs: task.SourceRefs, OutputKind: task.OutputKind, NeedsKnowledge: runtimeReplyTaskUsesKnowledge(task),
 		})
 	}
 	return input
@@ -171,6 +173,7 @@ func runtimeQuestionCoverageInstruction() string {
 每个可独立获得答案的对象/诉求应有自己的任务。即使属于同一意图或都是问“有没有”，不同物品仍是不同问题。把多个物品放进同一个 compound_information 是 merged_questions；部分物品没召回不是合题合理的理由。
 同一对象紧密相关的数量和费用可以是一个任务；比较、交集、条件筛选是一个整体目标，不得拆坏。背景、礼貌、否定排除的对象不是新增待答问题。明确回指允许结合已经提供的上下文，不能重做历史已答题。
 coverage 只核对问题是否被正确表示，不核对答案是否存在。合法问题没有候选或候选不足属于该任务的 insufficient/partial，不是 missing_question。misdirected_query 只用于检索问题实际遗漏/替换了客户对象或条件，不用于普通低分、召回为空。
+同时核对任务的执行路径：明确的酒店业务问题若因“不知道能否提供”被当作无需知识的 interaction/clarify，实际跳过了该问题的检索，也属于 misdirected_query。问题可理解但答案未知不是歧义；真正指代不明的澄清、闲聊和明确人工请求仍是合法的非知识任务。
 本轮输出在 schemaVersion/tasks 外只新增 coverage 字段，覆盖前面的旧输出示例：coverage: {"status":"complete","issues":[]}；只有明确漏题、错误合题或检索目标改变时返回 status="repair_required"，issues 每项包含 kind（missing_question/merged_questions/misdirected_query）、taskId（漏题可为空）、sourceRef、text（该来源中连续原文）、reason（简短说明遗漏目标）。
 不要在这里新建或改写 Task；仍为本次候选任务正常返回证据裁决。Intent 负责接收反馈后修复，未受影响任务的答案会保留。`
 }

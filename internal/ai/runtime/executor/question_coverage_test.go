@@ -241,13 +241,16 @@ func TestQuestionCoverageRepairRejectsChangingUntouchedQuestion(t *testing.T) {
 
 func TestQuestionCoveragePromptSeparatesTaskAndEvidenceFailures(t *testing.T) {
 	prompt := runtimeQuestionCoverageInstruction()
-	for _, text := range []string{"不是 missing_question", "比较、交集", "背景、礼貌"} {
+	for _, text := range []string{"不是 missing_question", "比较、交集", "背景、礼貌", "实际跳过了该问题的检索", "真正指代不明"} {
 		if !strings.Contains(prompt, text) {
 			t.Errorf("missing coverage boundary %q", text)
 		}
 	}
 	if !strings.HasPrefix(runtimeIntentDetectSystemPrompt(), runtimeQuestionFirstIntentInstruction()) {
 		t.Fatal("question-first contract must precede profile classification")
+	}
+	if !strings.Contains(runtimeQuestionFirstIntentInstruction(), "客户问题能否理解，不是酒店是否能做到") {
+		t.Fatal("unknown answer must not become an ambiguous question")
 	}
 	intent := coverageTestIntent("咖啡有吗")
 	intent.IntentTasks[0].EvidenceQuery = "酒店咖啡"
