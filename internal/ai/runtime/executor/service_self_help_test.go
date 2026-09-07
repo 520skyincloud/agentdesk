@@ -117,6 +117,35 @@ func TestSelfHelpStoreLayerWinsGeneralHandoffButNotStoreHandoff(t *testing.T) {
 	}
 }
 
+func TestInformationEvidenceIgnoresInapplicableSelfHelpFlag(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T", Intent: "hotel_info", Query: "有没有用品",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "C", Layer: "store", Hit: judgeTestHit(1, 1, "用品", "有用品，可在洗衣房自取。", 0.8),
+		}}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T","layers":[{
+"layer":"store","decision":"direct_single","hasUsableSelfService":true,"selectedCandidateIds":["C"],
+"supportedFacts":[{"factId":"F","aspect":"existence","statement":"有用品，可在洗衣房自取。","criticalValues":["洗衣房"]}],
+"missingAspects":[],"answerText":"有用品，可在洗衣房自取。"}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed["T"]["store"]; got.Decision != "direct_single" || got.HasUsableSelfService || got.AnswerText == nil || len(got.SupportedFacts) != 1 {
+		t.Fatalf("an unused service flag vetoed valid information: %+v", got)
+	}
+	task.Intent = "service_request"
+	parsed, err = parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil || !parsed["T"]["store"].HasUsableSelfService {
+		t.Fatalf("service routing flag must still be honored: %+v, %v", parsed, err)
+	}
+	raw = strings.ReplaceAll(raw, `"direct_single"`, `"insufficient"`)
+	raw = strings.ReplaceAll(raw, `["C"]`, `[]`)
+	parsed, err = parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil || parsed["T"]["store"].ProtocolError != "self_service_without_service_evidence" {
+		t.Fatalf("unsupported self-service routing was allowed: %+v, %v", parsed, err)
+	}
+}
+
 func TestSelfHelpProtocolDoesNotGuessMissingServiceDecision(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{TaskID: "T", Intent: "service_request", Query: "送毛巾", Candidates: []knowledgeEvidenceJudgeCandidate{
 		{CandidateID: "C", Layer: "store", Hit: judgeTestHit(1, 1, "毛巾", "可自取。", 0.8)},

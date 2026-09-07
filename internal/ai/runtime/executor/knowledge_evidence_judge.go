@@ -1362,8 +1362,9 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	if expectedTask.Intent == "service_request" && decision == knowledgeEvidenceDecisionPartial && layerResult.HasUsableSelfService == nil {
 		return reject("missing_service_resolution")
 	}
-	hasSelfService := layerResult.HasUsableSelfService != nil && *layerResult.HasUsableSelfService
-	if hasSelfService && (expectedTask.Intent != "service_request" || decision == knowledgeEvidenceDecisionInsufficient) {
+	// This routing flag has no meaning for informational tasks and cannot veto their facts.
+	hasSelfService := expectedTask.Intent == "service_request" && layerResult.HasUsableSelfService != nil && *layerResult.HasUsableSelfService
+	if hasSelfService && decision == knowledgeEvidenceDecisionInsufficient {
 		return reject("self_service_without_service_evidence")
 	}
 	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
