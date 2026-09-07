@@ -120,3 +120,44 @@ func TestJudgeOutputExampleIncludesServiceResolution(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceSelfHelpKeepsExplicitUnknownsDespiteCompleteDecisionLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name, intent, decision, ids, usable, want string
+	}{
+		{"single", "service_request", "direct_single", `"C1"`, "true", "partial"},
+		{"combined", "service_request", "direct_combined", `"C1","C2","C3"`, "true", "partial"},
+		{"cannot_self_serve", "service_request", "direct_combined", `"C1","C2"`, "false", "partial"},
+		{"missing_routing", "service_request", "direct_single", `"C1"`, "null", "protocol_invalid"},
+		{"ordinary_faq", "hotel_info", "direct_single", `"C1"`, "false", "protocol_invalid"},
+		{"unknown_candidate", "service_request", "direct_single", `"unknown"`, "true", "protocol_invalid"},
+		{"duplicate_candidate", "service_request", "direct_combined", `"C1","C1"`, "true", "protocol_invalid"},
+		{"combined_missing_candidate", "service_request", "direct_combined", `"C1"`, "true", "protocol_invalid"},
+		{"single_extra_candidate", "service_request", "direct_single", `"C1","C2"`, "true", "protocol_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{TaskID: "T", Intent: tc.intent, Query: "送用品"}
+			for _, id := range []string{"C1", "C2", "C3"} {
+				task.Candidates = append(task.Candidates, knowledgeEvidenceJudgeCandidate{
+					CandidateID: id, Layer: "store", Hit: judgeTestHit(1, 1, "用品", "可在洗衣房自取。", 0.8),
+				})
+			}
+			raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T","layers":[{
+"layer":"store","decision":%q,"hasUsableSelfService":%s,"selectedCandidateIds":[%s],
+"supportedFacts":[{"factId":"F","aspect":"method","statement":"可在洗衣房自取。","criticalValues":["洗衣房"]}],
+"missingAspects":["是否送到房间"],"answerText":"可在洗衣房自取，送房能力暂未确认。"}]}]}`, tc.decision, tc.usable, tc.ids)
+			parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := parsed["T"]["store"]
+			if result.Decision != tc.want {
+				t.Fatalf("unexpected service decision: %+v", result)
+			}
+			if tc.want == "partial" && (len(result.SupportedFacts) != 1 || len(result.MissingAspects) != 1 ||
+				result.HasUsableSelfService != (tc.usable == "true") || result.AnswerText == nil) {
+				t.Fatalf("normalization must not alter facts, unknowns, answer or routing: %+v", result)
+			}
+		})
+	}
+}

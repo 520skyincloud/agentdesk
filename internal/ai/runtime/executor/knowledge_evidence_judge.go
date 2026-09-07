@@ -837,6 +837,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - true：选中知识明确提供能帮助客户完成同一目标的自取地点、办理入口或完整操作办法，适用于客户当前条件，且客户没有明确拒绝、无法采用或已经尝试失败。不是“需求已经完成”，也不代表酒店能执行客户要求的动作。
 - false：没有上述方案，只有相关背景/物品存在性，或者客户明确无法自助、已尝试失败、坚持必须送来或需要现场处理。其他 intent 不得输出 true。
 - 客户初次问能否送一件用品时，该用品的明确自取方案可以判 true；仍将未知送房能力保留在 missingAspects，decision 可以是 partial。answerText 简短说明未知边界并给出自取方案，不承诺配送、不声称已通知。
+- hasUsableSelfService 只表示自助方案可用，不表示客户原本要求的动作已确认；missingAspects 非空时必须判 partial，不能因自助方案完整而判 direct_single/direct_combined。
 - 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
 - 餐馆名单、微波炉、有机器人等仅相关信息不是送餐或代点餐的完整自助方案，不能据此判 true；事实、条件与知识层仍不得跨对象拼接。
 - 知识明确要求转接或 decision=insufficient 时为 false。字段缺失不是“没有方案”，而是协议不完整。
@@ -1346,6 +1347,13 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
 	if err != nil {
 		return reject("invalid_missing_aspects: " + err.Error())
+	}
+	// Preserve explicit unknowns instead of discarding a usable service answer over its completeness label.
+	if expectedTask.Intent == "service_request" && layerResult.HasUsableSelfService != nil && len(missingAspects) > 0 {
+		if (decision == knowledgeEvidenceDecisionDirectSingle && len(selectedIDs) == 1) ||
+			(decision == knowledgeEvidenceDecisionDirectCombined && len(selectedIDs) >= 2) {
+			decision = knowledgeEvidenceDecisionPartial
+		}
 	}
 	switch decision {
 	case knowledgeEvidenceDecisionInsufficient:
