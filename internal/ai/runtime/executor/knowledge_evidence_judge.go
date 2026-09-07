@@ -913,7 +913,9 @@ func parseKnowledgeEvidenceJudgeResponseWithValidation(raw string, tasks []knowl
 	}
 	parsed := knowledgeEvidenceJudgeRawResponse{}
 	decoder := json.NewDecoder(strings.NewReader(normalized))
-	decoder.DisallowUnknownFields()
+	if !protocolOnly {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(&parsed); err != nil {
 		return nil, knowledgeEvidenceJudgeResponseError(knowledgeEvidenceDecisionMalformed, fmt.Errorf("decode knowledge judge response: %w", err))
 	}
@@ -1057,7 +1059,6 @@ func decodeKnowledgeEvidenceJudgeFacts(raw json.RawMessage, target *[]knowledgeE
 		return fmt.Errorf("supportedFacts must be an array")
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}

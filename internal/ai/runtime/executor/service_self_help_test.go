@@ -161,3 +161,38 @@ func TestServiceSelfHelpKeepsExplicitUnknownsDespiteCompleteDecisionLabel(t *tes
 		})
 	}
 }
+
+func TestJudgeIgnoresUnconsumedFieldsWithoutRelaxingEvidenceContract(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{TaskID: "T", Intent: "service_request", Query: "送用品",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "C", Layer: "store", Hit: judgeTestHit(1, 1, "用品", "可在洗衣房自取。", 0.8),
+		}}}
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","intent":"ignored","tasks":[{
+"taskId":"T","intent":"ignored","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,
+"intent":"ignored","selectedCandidateIds":["C"],"supportedFacts":[{
+"factId":"F","aspect":"method","statement":"可在洗衣房自取。","criticalValues":["洗衣房"],"explanation":"ignored"}],
+"missingAspects":["送房"],"answerText":"可在洗衣房自取。"}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, []knowledgeEvidenceJudgeTask{task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := parsed["T"]["store"]
+	if result.Decision != "partial" || !result.HasUsableSelfService || len(result.SupportedFacts) != 1 {
+		t.Fatalf("extra metadata must not discard usable evidence: %+v", result)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || strings.Contains(string(encoded), "ignored") {
+		t.Fatalf("unconsumed metadata must not enter the reply plan: %s, %v", encoded, err)
+	}
+	for _, broken := range []string{
+		strings.Replace(raw, `"selectedCandidateIds":["C"]`, `"selectedCandidateIds":["unknown"]`, 1),
+		strings.Replace(raw, `"taskId":"T"`, `"task":"T"`, 1),
+		strings.Replace(raw, `"statement":"可在洗衣房自取。"`, `"text":"可在洗衣房自取。"`, 1),
+		strings.Replace(raw, `"hasUsableSelfService":true`, `"hasUsableSelfService":"true"`, 1),
+	} {
+		parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(broken, []knowledgeEvidenceJudgeTask{task})
+		if err == nil && parsed["T"]["store"].Decision != "protocol_invalid" {
+			t.Fatalf("required field and candidate validation must remain: %+v", parsed)
+		}
+	}
+}
