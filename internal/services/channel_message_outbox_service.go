@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"strings"
 	"time"
@@ -26,8 +27,9 @@ type channelMessageOutboxService struct {
 }
 
 type channelMessageOutboxPayload struct {
-	AIServiceNotice            bool `json:"aiServiceNotice,omitempty"`
-	ReplyBeforeDeferredHandoff bool `json:"replyBeforeDeferredHandoff,omitempty"`
+	AIServiceNotice            bool   `json:"aiServiceNotice,omitempty"`
+	ReplyBeforeDeferredHandoff bool   `json:"replyBeforeDeferredHandoff,omitempty"`
+	DeferredHandoffNoticeID    string `json:"deferredHandoffNoticeId,omitempty"`
 }
 
 const channelMessageOutboxDispatchUncertainReasonPrefix = "delivery result uncertain after dispatch claim: "
@@ -528,8 +530,28 @@ func (s *channelMessageOutboxService) MarkReplyBeforeDeferredHandoff(conversatio
 			messageIDs = append(messageIDs, messages[i].ID)
 		}
 	}
+	return s.markRepliesBeforeDeferredHandoff(conversationID, messageIDs, "")
+}
+
+// Source and committed message IDs, unlike request IDs, exist for real channel callbacks.
+func (s *channelMessageOutboxService) MarkRepliesBeforeDeferredHandoff(conversationID, sourceMessageID int64, messageIDs []int64) error {
+	if conversationID <= 0 || sourceMessageID <= 0 {
+		return fmt.Errorf("deferred handoff requires conversation and source message IDs")
+	}
+	return s.markRepliesBeforeDeferredHandoff(conversationID, messageIDs,
+		"ai_handoff_success_"+stableDirectHandoffToken(conversationID, sourceMessageID, ""))
+}
+
+func (s *channelMessageOutboxService) markRepliesBeforeDeferredHandoff(conversationID int64, messageIDs []int64, noticeID string) error {
 	if len(messageIDs) == 0 {
 		return nil
+	}
+	db := sqls.DB()
+	for _, id := range messageIDs {
+		message := repositories.MessageRepository.Get(db, id)
+		if message == nil || message.ConversationID != conversationID || message.SenderType != enums.IMSenderTypeAI {
+			return fmt.Errorf("invalid deferred reply message ID %d", id)
+		}
 	}
 	items := repositories.ChannelMessageOutboxRepository.Find(db, sqls.NewCnd().
 		Eq("conversation_id", conversationID).
@@ -541,7 +563,7 @@ func (s *channelMessageOutboxService) MarkReplyBeforeDeferredHandoff(conversatio
 		}).
 		Asc("id"))
 	for i := range items {
-		if s.isAIServiceNotice(items[i]) || s.isReplyBeforeDeferredHandoff(items[i]) {
+		if s.isAIServiceNotice(items[i]) {
 			continue
 		}
 		payload := make(map[string]any)
@@ -549,6 +571,9 @@ func (s *channelMessageOutboxService) MarkReplyBeforeDeferredHandoff(conversatio
 			return err
 		}
 		payload["replyBeforeDeferredHandoff"] = true
+		if noticeID != "" {
+			payload["deferredHandoffNoticeId"] = noticeID
+		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return err
@@ -716,7 +741,7 @@ func (s *channelMessageOutboxService) handoffNoticeWaitsForDeferredReply(outbox 
 		return false
 	}
 	requestID := strings.TrimSpace(message.RequestID)
-	if requestID == "" || outbox.ID <= 0 {
+	if outbox.ID <= 0 {
 		return false
 	}
 	items := repositories.ChannelMessageOutboxRepository.Find(sqls.DB(), sqls.NewCnd().
@@ -736,8 +761,15 @@ func (s *channelMessageOutboxService) handoffNoticeWaitsForDeferredReply(outbox 
 		if strings.TrimSpace(items[i].SendStatus) == string(enums.ChannelMessageOutboxStatusFailed) && items[i].NextRetryAt == nil {
 			continue
 		}
+		var payload channelMessageOutboxPayload
+		if json.Unmarshal([]byte(items[i].Payload), &payload) == nil && payload.DeferredHandoffNoticeID != "" {
+			if payload.DeferredHandoffNoticeID == message.ClientMsgID {
+				return true
+			}
+			continue
+		}
 		answer := repositories.MessageRepository.Get(sqls.DB(), items[i].MessageID)
-		if answer != nil && strings.TrimSpace(answer.RequestID) == requestID {
+		if requestID != "" && answer != nil && strings.TrimSpace(answer.RequestID) == requestID {
 			return true
 		}
 	}

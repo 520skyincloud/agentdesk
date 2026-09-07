@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,60 @@ import (
 
 	"gorm.io/gorm"
 )
+
+func TestDeferredHandoffUsesSourceAndAllReplyIDsWithEmptyRequestID(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	const cid, source = int64(8801), int64(9911)
+	var messages []models.Message
+	var boxes []models.ChannelMessageOutbox
+	for i := 0; i < 4; i++ {
+		message := models.Message{
+			ConversationID: cid, SeqNo: int64(i + 1), SenderType: enums.IMSenderTypeAI,
+			ClientMsgID: fmt.Sprintf("source-id-test-%d", i), MessageType: enums.IMMessageTypeText, Content: "已知答案",
+		}
+		if i == 3 {
+			message.ClientMsgID = "ai_handoff_success_direct_8801_9911"
+			message.RequestID = "handoff_direct_8801_9911"
+		}
+		if err := db.Create(&message).Error; err != nil {
+			t.Fatal(err)
+		}
+		box := models.ChannelMessageOutbox{ConversationID: cid, MessageID: message.ID,
+			ChannelType: enums.ChannelTypeWxWorkProtocol, Payload: `{}`, SendStatus: "pending"}
+		if i == 3 {
+			box.Payload = `{"aiServiceNotice":true}`
+		}
+		if err := db.Create(&box).Error; err != nil {
+			t.Fatal(err)
+		}
+		messages, boxes = append(messages, message), append(boxes, box)
+	}
+	ids := []int64{messages[0].ID, messages[1].ID, messages[2].ID}
+	if err := ChannelMessageOutboxService.MarkRepliesBeforeDeferredHandoff(cid, source, ids); err != nil {
+		t.Fatal(err)
+	}
+	if err := ChannelMessageOutboxService.MarkRepliesBeforeDeferredHandoff(cid+1, source, ids); err == nil {
+		t.Fatal("cross-conversation message protection must fail")
+	}
+	ready := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkProtocol, 20)
+	if len(ready) != 3 || ready[2].MessageID != messages[2].ID {
+		t.Fatalf("notice overtook one of three answers: %+v", ready)
+	}
+	if _, err := ChannelMessageOutboxService.CancelPendingOrdinaryAIForRoute(cid, 0, "AI handoff"); err != nil {
+		t.Fatal(err)
+	}
+	if ready := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkProtocol, 20); len(ready) != 3 {
+		t.Fatalf("route entry cancelled protected replies: %+v", ready)
+	}
+	for _, box := range boxes[:3] {
+		if err := db.Model(&models.ChannelMessageOutbox{}).Where("id = ?", box.ID).Update("send_status", "sent").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ready := ChannelMessageOutboxService.ListPending(enums.ChannelTypeWxWorkProtocol, 20); len(ready) != 1 || ready[0].MessageID != messages[3].ID {
+		t.Fatalf("notice should be released after all answers: %+v", ready)
+	}
+}
 
 type manualResumeOutboxFixture struct {
 	db           *gorm.DB

@@ -154,6 +154,7 @@ func TestDispatchDeferredKnowledgeHandoffKeepsCommittedAnswerBeforeDirectHandoff
 		Conversation: conversation,
 		Message:      origin,
 		AIAgent:      aiAgent,
+		Trace:        &aiReplyTraceData{Runtime: json.RawMessage(`{"output":{"commitMessages":[{"messageId":9506,"status":"sent"}]}}`)},
 	}, summary)
 	if err != nil {
 		t.Fatalf("dispatchDeferredKnowledgeHandoff() error = %v", err)
@@ -185,5 +186,20 @@ func TestDispatchDeferredKnowledgeHandoffKeepsCommittedAnswerBeforeDirectHandoff
 		if strings.Contains(combined, strings.ToLower(forbidden)) {
 			t.Fatalf("deferred direct handoff still contains confirmation protocol %q: %s", forbidden, combined)
 		}
+	}
+}
+
+func TestCommittedDeferredReplyIDsKeepEveryPartWithoutRequestID(t *testing.T) {
+	ids, err := committedDeferredReplyMessageIDs(&aiReplyTraceData{
+		ReplySent: true,
+		Runtime: json.RawMessage(`{"output":{"commitMessages":[
+{"messageId":11,"status":"sent"},{"messageId":12,"status":"sent"},
+{"messageId":13,"status":"sent"},{"messageId":11,"status":"sent"},{"messageId":14,"status":"error"}]}}`),
+	})
+	if err != nil || len(ids) != 3 || ids[0] != 11 || ids[1] != 12 || ids[2] != 13 {
+		t.Fatalf("all successful parts must be protected in order: %v %v", ids, err)
+	}
+	if _, err := committedDeferredReplyMessageIDs(&aiReplyTraceData{ReplySent: true, Runtime: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("a committed answer without IDs must not silently proceed to handoff")
 	}
 }

@@ -545,9 +545,14 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 	if !ok {
 		return nil
 	}
-	if err := svc.ChannelMessageOutboxService.MarkReplyBeforeDeferredHandoff(
+	messageIDs, err := committedDeferredReplyMessageIDs(replyCtx.Trace)
+	if err != nil {
+		return err
+	}
+	if err := svc.ChannelMessageOutboxService.MarkRepliesBeforeDeferredHandoff(
 		replyCtx.Conversation.ID,
-		strings.TrimSpace(replyCtx.Message.RequestID),
+		replyCtx.Message.ID,
+		messageIDs,
 	); err != nil {
 		return err
 	}
@@ -571,6 +576,35 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 		}
 	}
 	return lastErr
+}
+
+func committedDeferredReplyMessageIDs(trace *aiReplyTraceData) ([]int64, error) {
+	if trace == nil || len(trace.Runtime) == 0 {
+		return nil, nil
+	}
+	var data struct {
+		Output struct {
+			Messages []struct {
+				ID     int64  `json:"messageId"`
+				Status string `json:"status"`
+			} `json:"commitMessages"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(trace.Runtime, &data); err != nil {
+		return nil, fmt.Errorf("decode committed replies before handoff: %w", err)
+	}
+	ids := make([]int64, 0, len(data.Output.Messages))
+	seen := make(map[int64]bool)
+	for _, message := range data.Output.Messages {
+		if message.ID > 0 && message.Status == "sent" && !seen[message.ID] {
+			ids = append(ids, message.ID)
+			seen[message.ID] = true
+		}
+	}
+	if trace.ReplySent && len(ids) == 0 {
+		return nil, fmt.Errorf("committed deferred reply has no message IDs")
+	}
+	return ids, nil
 }
 
 func deferredKnowledgeHandoffFromTrace(raw string) (string, bool) {

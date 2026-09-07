@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-desk/internal/models"
@@ -72,6 +73,38 @@ func newWxWorkProtocolService() *wxWorkProtocolService {
 type wxWorkProtocolService struct {
 	httpClient *http.Client
 	adapter    WxWorkProtocolAdapter
+	outgoing   sync.Map
+}
+
+type wxProtocolOutgoingFlight struct {
+	instanceID int64
+	externalID string
+	done       chan struct{}
+}
+
+func (s *wxWorkProtocolService) trackOutgoing(outboxID, instanceID int64, externalID string) func() {
+	flight := &wxProtocolOutgoingFlight{instanceID: instanceID, externalID: externalID, done: make(chan struct{})}
+	s.outgoing.Store(outboxID, flight)
+	return func() {
+		close(flight.done)
+		s.outgoing.Delete(outboxID)
+	}
+}
+
+// Only employee echoes wait for in-flight send IDs; customer input never waits here.
+func (s *wxWorkProtocolService) awaitOutgoingRefs(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg) {
+	externalID := s.externalConversationID(instance, msg)
+	var flights []*wxProtocolOutgoingFlight
+	s.outgoing.Range(func(_, value any) bool {
+		flight := value.(*wxProtocolOutgoingFlight)
+		if flight.instanceID == instance.ID && flight.externalID == externalID {
+			flights = append(flights, flight)
+		}
+		return true
+	})
+	for _, flight := range flights {
+		<-flight.done
+	}
 }
 
 func (s *wxWorkProtocolService) HandleCallback(req request.WxWorkProtocolCallbackRequest, raw string) error {
@@ -532,6 +565,9 @@ func (s *wxWorkProtocolService) handleBatchMessages(instance *models.WxWorkProto
 
 func (s *wxWorkProtocolService) handleChatMessage(instance *models.WxWorkProtocolInstance, msg request.WxProtocolChatMsg, rawPayload string) error {
 	msg.Normalize()
+	if s.isEmployeeOutgoing(instance, msg) {
+		s.awaitOutgoingRefs(instance, msg)
+	}
 	clientMsgID := s.clientMessageID(instance.Guid, msg)
 	messageType := s.resolveInboundMessageType(msg)
 	if s.isReferencedRecallMessage(msg) {
@@ -1391,20 +1427,28 @@ func (s *wxWorkProtocolService) dispatchOutbox(outbox models.ChannelMessageOutbo
 	if !allowed {
 		return nil
 	}
+	finishFlight := s.trackOutgoing(outbox.ID, instance.ID, strings.TrimPrefix(protocolConversationID, "S:"))
+	defer finishFlight()
 	resp, err := s.adapter.SendMessage(cfg, instance, protocolConversationID, message)
 	if err != nil {
 		return s.handleClaimedOutboxDispatchError(outbox, err)
 	}
 	now := time.Now()
+	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
+	if err := s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent); err != nil {
+		return err
+	}
 	completed, err := ChannelMessageOutboxService.completeClaimedDispatchWithDB(sqls.DB(), outbox, now)
 	if err != nil {
 		return err
 	}
 	if !completed {
-		return nil
+		// A route change cannot undo a successful external send. Record its receipt
+		// without changing the human route or making the message retryable.
+		return sqls.DB().Model(&models.ChannelMessageOutbox{}).
+			Where("id = ? AND send_status = ? AND last_error LIKE ?", outbox.ID, string(enums.ChannelMessageOutboxStatusCancelled), channelMessageOutboxDispatchUncertainReasonPrefix+"%").
+			Updates(map[string]any{"send_status": string(enums.ChannelMessageOutboxStatusSent), "sent_at": now, "next_retry_at": nil, "last_error": "", "updated_at": now}).Error
 	}
-	wxMsgID := s.sentMessageID(instance.Guid, resp, outbox.ID)
-	_ = s.createMessageRef(conversation.ID, message.ID, instance, strings.TrimSpace(mapping.ExternalUserID), wxMsgID, resp, enums.WxWorkKFMessageDirectionOut, enums.WxWorkKFMessageSendStatusSent)
 	if message.SenderType == enums.IMSenderTypeAI {
 		go s.reportConversationReadAfterAIReply(instance.ID, protocolConversationID, conversation.ID, message.ID)
 	}
