@@ -86,6 +86,7 @@ type knowledgeEvidenceJudgeOutcome struct {
 }
 
 type knowledgeEvidenceLayerSelection struct {
+	HasUsableSelfService bool
 	ProtocolError        string
 	Decision             string
 	DecisionSource       string
@@ -142,6 +143,7 @@ type knowledgeEvidenceJudgeResponseTask struct {
 }
 
 type knowledgeEvidenceJudgeResponseLayer struct {
+	HasUsableSelfService *bool                   `json:"hasUsableSelfService,omitempty"`
 	ProtocolError        string                  `json:"-"`
 	Layer                string                  `json:"layer"`
 	Decision             string                  `json:"decision"`
@@ -162,6 +164,7 @@ type knowledgeEvidenceJudgeRawResponseTask struct {
 }
 
 type knowledgeEvidenceJudgeRawResponseLayer struct {
+	HasUsableSelfService *bool           `json:"hasUsableSelfService,omitempty"`
 	Layer                string          `json:"layer"`
 	Decision             string          `json:"decision"`
 	SelectedCandidateIDs []string        `json:"selectedCandidateIds"`
@@ -828,7 +831,15 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - “酒店能否替客户点外卖、叫车、代买、代订或联系外部商家”不是知识库需要证明的酒店事实维度；你只裁决候选中是否存在能帮助客户自行完成同一目标的地址、电话、入口或操作步骤。
 - 如果候选明确提供了上述自助信息，可以按证据完整性判 direct_single/direct_combined，并且 supportedFacts 只能保留知识原文明确写出的事实。
 - 不得输出或暗示酒店已经代点、叫车、购买、预订、联系或稍后会执行；仅有“有外卖机器人”等旁支存在性事实，不能证明机器人能配送、酒店能代下单或其他执行能力。
-- 酒店内部送物、维修、开门等必须由门店处理的动作不属于 external_proxy_action，仍按原有服务证据规则裁决。
+- 酒店内部送物、维修、开门等不属于 external_proxy_action；是否已有可用自助方案按下述服务请求规则判断，不能因为客户使用“送、帮忙、拿”等动作表达就认定必须人工。
+
+服务请求的证据完整性与接待必要性分开判断。intent=service_request 时每层必须输出 hasUsableSelfService 布尔值：
+- true：选中知识明确提供能帮助客户完成同一目标的自取地点、办理入口或完整操作办法，适用于客户当前条件，且客户没有明确拒绝、无法采用或已经尝试失败。不是“需求已经完成”，也不代表酒店能执行客户要求的动作。
+- false：没有上述方案，只有相关背景/物品存在性，或者客户明确无法自助、已尝试失败、坚持必须送来或需要现场处理。其他 intent 不得输出 true。
+- 客户初次问能否送一件用品时，该用品的明确自取方案可以判 true；仍将未知送房能力保留在 missingAspects，decision 可以是 partial。answerText 简短说明未知边界并给出自取方案，不承诺配送、不声称已通知。
+- 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
+- 餐馆名单、微波炉、有机器人等仅相关信息不是送餐或代点餐的完整自助方案，不能据此判 true；事实、条件与知识层仍不得跨对象拼接。
+- 知识明确要求转接或 decision=insufficient 时为 false。字段缺失不是“没有方案”，而是协议不完整。
 
 必须分别裁决 store 和 general 两层，每层只能输出一种 decision：
 - direct_single：单条候选的完整语义足以回答当前问题，只选择这一条。
@@ -1009,6 +1020,7 @@ func parseKnowledgeEvidenceJudgeResponseWithValidation(raw string, tasks []knowl
 
 func decodeKnowledgeEvidenceJudgeRawLayer(raw knowledgeEvidenceJudgeRawResponseLayer) (knowledgeEvidenceJudgeResponseLayer, bool, bool) {
 	layer := knowledgeEvidenceJudgeResponseLayer{
+		HasUsableSelfService: raw.HasUsableSelfService,
 		Layer:                raw.Layer,
 		Decision:             raw.Decision,
 		SelectedCandidateIDs: append([]string(nil), raw.SelectedCandidateIDs...),
@@ -1308,6 +1320,9 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 		return reject("handoff_mixed_with_facts_or_combined_candidates")
 	}
 	if selectedHandoff {
+		if layerResult.HasUsableSelfService != nil && *layerResult.HasUsableSelfService {
+			return reject("handoff_with_self_service")
+		}
 		return knowledgeEvidenceLayerSelection{
 			Decision:             knowledgeEvidenceDecisionDirectSingle,
 			DecisionSource:       "model",
@@ -1316,6 +1331,13 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	}
 	if supportedFactsMalformed || missingAspectsMalformed {
 		return reject("malformed_fact_fields: " + layerResult.ProtocolError)
+	}
+	if expectedTask.Intent == "service_request" && decision == knowledgeEvidenceDecisionPartial && layerResult.HasUsableSelfService == nil {
+		return reject("missing_service_resolution")
+	}
+	hasSelfService := layerResult.HasUsableSelfService != nil && *layerResult.HasUsableSelfService
+	if hasSelfService && (expectedTask.Intent != "service_request" || decision == knowledgeEvidenceDecisionInsufficient) {
+		return reject("self_service_without_service_evidence")
 	}
 	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
 	if err != nil {
@@ -1354,6 +1376,7 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 		}
 	}
 	return knowledgeEvidenceLayerSelection{
+		HasUsableSelfService: hasSelfService,
 		Decision:             decision,
 		DecisionSource:       "model",
 		SelectedCandidateIDs: selectedIDs,

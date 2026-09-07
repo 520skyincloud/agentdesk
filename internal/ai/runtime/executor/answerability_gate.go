@@ -1674,6 +1674,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 				continue
 			}
 			taskTrace.Layers = append(taskTrace.Layers, callbacks.KnowledgeEvidenceJudgeLayerTraceData{
+				HasUsableSelfService: selection.HasUsableSelfService,
 				Layer:                layer,
 				CandidateCount:       knowledgeEvidenceTaskLayerCandidateCount(task, layer),
 				Decision:             selection.Decision,
@@ -1699,6 +1700,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			taskTrace.SupportedFacts = knowledgeEvidenceFactsToTrace(selection.SupportedFacts)
 			taskTrace.MissingAspects = append([]string(nil), selection.MissingAspects...)
 			taskTrace.AnswerText = selection.AnswerText
+			taskTrace.HasUsableSelfService = selection.HasUsableSelfService
 			for _, candidateID := range selection.SelectedCandidateIDs {
 				candidate, ok := candidateByID[candidateID]
 				if !ok || candidate.Layer != selectedLayer {
@@ -1711,6 +1713,8 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 			case selectionHasHandoffDirective(selection, selectedLayer, candidateByID, task.Query):
 				disposition = runtimeKnowledgeDispositionDirectHandoff
 			case externalProxyPartial:
+				disposition = runtimeKnowledgeDispositionAnswer
+			case task.Intent == "service_request" && selection.HasUsableSelfService:
 				disposition = runtimeKnowledgeDispositionAnswer
 			case selection.Decision == knowledgeEvidenceDecisionPartial:
 				disposition = runtimeKnowledgeDispositionAnswerThenHandoff
@@ -1767,6 +1771,7 @@ func normalizeAppliedKnowledgeEvidenceSelections(task knowledgeEvidenceJudgeTask
 			continue
 		}
 		if decision == knowledgeEvidenceDecisionProtocolInvalid || decision == knowledgeEvidenceDecisionTimeout || decision == knowledgeEvidenceDecisionMalformed {
+			selection.HasUsableSelfService = false
 			selection.SelectedCandidateIDs = nil
 			selection.SupportedFacts = nil
 			selection.AnswerText = nil
@@ -1774,6 +1779,9 @@ func normalizeAppliedKnowledgeEvidenceSelections(task knowledgeEvidenceJudgeTask
 			if strings.TrimSpace(selection.DecisionSource) == "" {
 				selection.DecisionSource = decision
 			}
+		}
+		if task.Intent != "service_request" {
+			selection.HasUsableSelfService = false
 		}
 		for index := range selection.SupportedFacts {
 			if !isKnowledgeEvidenceFactAspect(strings.TrimSpace(selection.SupportedFacts[index].Aspect)) {
@@ -1846,7 +1854,7 @@ func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSe
 	if selectionHasHandoffDirective(storeSelection, knowledgeEvidenceLayerStore, candidates, query) {
 		return knowledgeEvidenceLayerStore
 	}
-	if selectionHasCompleteEvidence(storeSelection) {
+	if selectionHasCompleteEvidence(storeSelection) || (selectionHasPartialEvidence(storeSelection) && storeSelection.HasUsableSelfService) {
 		return knowledgeEvidenceLayerStore
 	}
 	if selectionHasCompleteEvidence(generalSelection) {

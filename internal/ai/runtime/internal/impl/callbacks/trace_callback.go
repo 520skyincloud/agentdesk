@@ -96,6 +96,7 @@ type KnowledgeEvidenceJudgeTraceData struct {
 }
 
 type KnowledgeEvidenceJudgeTaskTraceData struct {
+	HasUsableSelfService bool                                   `json:"hasUsableSelfService,omitempty"`
 	TaskID               string                                 `json:"taskId,omitempty"`
 	QueryPreview         string                                 `json:"queryPreview,omitempty"`
 	CandidateCount       int                                    `json:"candidateCount,omitempty"`
@@ -111,6 +112,7 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 }
 
 type KnowledgeEvidenceJudgeLayerTraceData struct {
+	HasUsableSelfService bool                             `json:"hasUsableSelfService,omitempty"`
 	Layer                string                           `json:"layer,omitempty"`
 	CandidateCount       int                              `json:"candidateCount,omitempty"`
 	Decision             string                           `json:"decision,omitempty"`
