@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -96,5 +97,26 @@ func TestSelfHelpProtocolDoesNotGuessMissingServiceDecision(t *testing.T) {
 	}
 	if result := parsed["T"]["store"]; result.Decision != "protocol_invalid" || result.ProtocolError != "missing_service_resolution" {
 		t.Fatalf("missing routing evidence is a protocol error, not lack of knowledge: %+v", result)
+	}
+	general := knowledgeEvidenceJudgeCandidate{CandidateID: "G", Layer: "general", Hit: judgeTestHit(2, 2, "送毛巾", "问题：送毛巾\n答案：转接", 0.9)}
+	parsed["T"]["general"] = knowledgeEvidenceLayerSelection{Decision: "direct_single", SelectedCandidateIDs: []string{"G"}}
+	if layer := selectKnowledgeEvidenceLayer(parsed["T"], map[string]knowledgeEvidenceJudgeCandidate{"G": general}, "送毛巾"); layer != "" {
+		t.Fatalf("store protocol failure must not fall through to general handoff: %s", layer)
+	}
+}
+
+func TestJudgeOutputExampleIncludesServiceResolution(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	raw := prompt[strings.LastIndex(prompt, "\n{")+1:]
+	var output knowledgeEvidenceJudgeRawResponse
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		t.Fatalf("output example must be valid protocol: %v", err)
+	}
+	for _, task := range output.Tasks {
+		for _, layer := range task.Layers {
+			if layer.HasUsableSelfService == nil {
+				t.Fatalf("output example omitted service resolution for %s", layer.Layer)
+			}
+		}
 	}
 }

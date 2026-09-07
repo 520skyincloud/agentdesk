@@ -1857,6 +1857,10 @@ func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSe
 	if selectionHasCompleteEvidence(storeSelection) || (selectionHasPartialEvidence(storeSelection) && storeSelection.HasUsableSelfService) {
 		return knowledgeEvidenceLayerStore
 	}
+	if knowledgeEvidenceSelectionsNeedProtocolRetry(map[string]knowledgeEvidenceLayerSelection{knowledgeEvidenceLayerStore: storeSelection}) &&
+		selectionHasHandoffDirective(generalSelection, knowledgeEvidenceLayerGeneral, candidates, query) {
+		return ""
+	}
 	if selectionHasCompleteEvidence(generalSelection) {
 		return knowledgeEvidenceLayerGeneral
 	}

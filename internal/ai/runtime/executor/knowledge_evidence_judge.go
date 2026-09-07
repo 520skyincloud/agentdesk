@@ -892,8 +892,8 @@ partial的answerText保留有用的已知答案，并自然说明当前所问的
 
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
-严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。输出格式：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_combined","selectedCandidateIds":["T1C1","T1C2"],"supportedFacts":[{"factId":"T1F1","aspect":"quantity","statement":"房间内有两瓶矿泉水。","criticalValues":["两瓶"]},{"factId":"T1F2","aspect":"price","statement":"房间内矿泉水免费。","criticalValues":["免费"]}],"missingAspects":[],"answerText":"房间内有两瓶矿泉水，都是免费的。"},{"layer":"general","decision":"insufficient","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
+严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，内容按实际证据填写）：
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"所需用品可在指定洗衣房自行取用。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"answerText":"不好意思，送房服务暂未确认，您可以到指定洗衣房自行取用。"},{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
