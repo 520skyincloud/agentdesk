@@ -252,6 +252,9 @@ func TestQuestionCoveragePromptSeparatesTaskAndEvidenceFailures(t *testing.T) {
 	if !strings.Contains(runtimeQuestionFirstIntentInstruction(), "客户问题能否理解，不是酒店是否能做到") {
 		t.Fatal("unknown answer must not become an ambiguous question")
 	}
+	if !strings.Contains(knowledgeEvidenceJudgeSystemPrompt(), "不得因召回了音近、字近或更常见的另一物品") {
+		t.Fatal("similar retrieval must not authorize an unconfirmed entity substitution")
+	}
 	intent := coverageTestIntent("咖啡有吗")
 	intent.IntentTasks[0].EvidenceQuery = "酒店咖啡"
 	repairPrompt := runtimeQuestionRepairInstruction(&runtimeQuestionRepairRequest{
