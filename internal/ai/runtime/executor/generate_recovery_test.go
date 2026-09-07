@@ -53,7 +53,7 @@ func TestRunGeneratedReplyWithRecoveryRetriesOnlyGenerate(t *testing.T) {
 	}
 }
 
-func TestLockedInputErrorDoesNotRetryGenerate(t *testing.T) {
+func TestLockedInputRecoversLocallyWithoutRetryingGenerate(t *testing.T) {
 	answer := "矿泉水免费。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
@@ -67,10 +67,11 @@ func TestLockedInputErrorDoesNotRetryGenerate(t *testing.T) {
 	result, err := runGeneratedReplyWithRecovery(context.Background(), nil, summary, collector, func() bool { return true },
 		func(context.Context, []*schema.Message) error {
 			attempts++
-			_, err := normalizeGeneratedReplyPartsResult(`{"replyParts":[{"taskId":"T1","content":"","coveredFactIds":["F1"]}]}`, collector.Data.Pipeline.ReplyPlan, true)
+			var err error
+			summary.ReplyText, err = normalizeGeneratedReplyPartsResult(`{"replyParts":[{"taskId":"T1","content":"","coveredFactIds":["F1"]}]}`, collector.Data.Pipeline.ReplyPlan, true)
 			return err
 		})
-	if err != nil || attempts != 1 || result.AttemptCount != 1 || result.FallbackMode != "supported_facts" {
+	if err != nil || attempts != 1 || result.AttemptCount != 1 || result.FallbackMode != "" {
 		t.Fatalf("fixed input must not consume another Generate: %+v attempts=%d err=%v", result, attempts, err)
 	}
 	if !strings.Contains(summary.ReplyText, "两瓶") || !strings.Contains(summary.ReplyText, "免费") {

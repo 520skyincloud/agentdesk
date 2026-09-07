@@ -204,3 +204,29 @@ customer-audit、ai-billing 对目标文件无新分歧，无需 rebase，可独
 无 pending/failed 或近期 sending，7条历史 sending 保持原样。
 隔离会话只清理测试路由，保留消息；未向真实企微客户发送测试。
 ChannelID=0 只验证服务器链路，不代表企微手机端投递验收。
+
+## 逐题答复最小修复
+
+基线程序 bf4f8ac，继续使用独立修复工作树，不修改原 customer-audit 脏工作区。
+目标：完整问题到达后消解多余澄清；混合 FAQ 分题取用；
+不再因关键值标注与事实不一致而丢掉完整答案；单题异常不覆盖其他已校验回复。
+
+运行文件严格限定 intent_model_detector.go、knowledge_evidence_judge.go、
+multi_reply_output.go、generate_recovery.go。前两者整理现有提示及记录标注异常；
+后两者在 Task 内恢复已选事实，并在本次 Generate 恢复中保留已校验的兄弟答复。
+标注错误必须以完整 Statement 保真恢复，不删除数量、金额、条件或凭据来通过校验。
+没有新增模型阶段、持久化已答状态、数据库/模型、Migration、DTO、接口、WebSocket、
+权限、计费或运行配置；不改检索、知识库、房号、转人工、Outbox。
+错误及恢复日志只记 Task/Fact ID 和类型，不新增客户敏感全文。
+
+对应测试为 per_task_reply_recovery_test.go，加上两项旧整批兜底断言的语义更新。
+自动验证 go test -p=1 ./internal/ai/runtime/executor -count=1 已通过；
+新测试在修改前已复现发票/数量/金额/凭据标注失败、六题整批失败和正确互动被兜底覆盖。
+真实模型最多5次客户输入，逐题核验六问、符号加重发、上下文追问、新主题；
+不运行30/50轮。单元测试不代表模型语义或企微手机投递验收。
+
+开始时 fetch 后 customer-audit、ai-billing 对四个目标运行文件均无新分歧，无需 rebase；
+独立提交可 cherry-pick，文档随后合并，不修改共享字段或状态语义。
+备份当前数据库、shared 配置与 release 身份后原子部署，回滚点为
+20260907-request-answer-bf4f8ac；只切程序，不回退消息和配置。
+部署和真实验收结果待完成后追加，不能以已发送兜底话作为问题解决。

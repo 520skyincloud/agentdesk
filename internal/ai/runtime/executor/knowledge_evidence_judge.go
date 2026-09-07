@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -881,9 +882,9 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 
 肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
 
-最小完整答案规则：supportedFacts 只保留完整回答当前 task 必需的最小事实集合。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通动作语义写在 statement 中，不要求后续逐字复述，也不得把动作词本身放入 criticalValues。
-严禁把一条长候选知识逐句全部拆成 supportedFacts。只输出当前问题真正需要的最小事实；一个完整 statement 已覆盖多个维度时可以复用该 statement，不再输出它所包含的摘要句或无关细节。
-证据与客户答复分开：supportedFacts用于追踪必要事实，不能把它们逐条堆成答复。每层输出answerText，直接、礼貌、自然地回答question，只回答该Task当前所问，普通问题1至2句，流程保留必要的2至3个简短步骤。多个事实合成一次完整答复，不重复同一数量、费用、地址或总结。按原话保留“只说名称/只问账号”等范围限制，不能加原话没问的使用说明、其他房型名单、餐饮菜名或推荐背景。
+最小完整答案规则：先形成当前任务的 answerText，再从该 answerText 提取 supportedFacts，最后原样摘取 criticalValues，JSON 也按此顺序输出；不能把三者当作三份独立答案各写一次。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话、未被客户询问的路线/时长/价格/延伸建议不得加入。普通问题1至2句，流程保留必要的2至3个简短步骤，不截断必要信息。
+同一候选可以被多个 Task 使用，但每次只取回答当前 question 所需的内容，不能把其他 Task 的答案复制进当前答案。例如一条候选同时介绍餐饮和游玩，餐饮任务只取餐饮信息，游玩任务只取游玩信息；不能因为同属周边或候选相同就各自复述整段。返回前逐题对照 question 与 answerText，去掉跨题内容，不删除独立问题。
+supportedFacts 只追踪这份最小完整答案所用的事实，不能反向扩展答案。statement 尽量直接使用 answerText 中的完整事实句，多个 aspect 可以复用同一句，不再单独生成它的摘要或改写版本。criticalValues 只摘取该事实句实际存在的精确值，不另写缩写或同义词。保留原话“只说名称/只问账号”等范围限制；同轮独立任务已承担自助信息时，代操作任务的空 answerText 例外仍按前述归属规则处理。
 missingAspects 是内部证据边界，不是必须对客户逐项说明的清单。partial 且 hasUsableSelfService=true 时，answerText 直接回答适用知识，不自动添加“无法确认、资料未说明、能否代为执行”等能力说明。只有客户明确排除已知方案、追问该未知能力，或缺失事项确实影响当前答案的使用时，才简短说明必要边界；不能把相关背景充当可用方案，也不得将未知写成肯定或否定。不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
 
 检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。一个答案同时包含否定/能力边界与办理方法、数量与费用等必要维度时不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。否定对象、数量、金额、时间、电话、地址等不可遗漏的原文字面值必须进入对应 fact 的 criticalValues。
@@ -899,7 +900,7 @@ missingAspects 是内部证据边界，不是必须对客户逐项说明的清�
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
 严格输出 JSON，不要 Markdown、解释或额外字段。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，内容按实际证据填写）：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"所需用品可在指定洗衣房自行取用。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"answerText":"您可以到指定洗衣房自行取用所需用品。"},{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"answerText":""}]}]}`)
+{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"answerText":"您可以到指定洗衣房自行取用所需用品。","supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"您可以到指定洗衣房自行取用所需用品。","criticalValues":[]}],"missingAspects":["是否提供送房服务"]},{"layer":"general","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"answerText":"","supportedFacts":[],"missingAspects":[]}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
@@ -1349,6 +1350,15 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	supportedFacts, err := normalizeKnowledgeEvidenceFacts(taskID, layer, layerResult.SupportedFacts, make(map[string]struct{}))
 	if err != nil {
 		return reject("invalid_supported_fact: " + err.Error())
+	}
+	for _, fact := range supportedFacts {
+		for _, value := range sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement) {
+			if !containsReplyCriticalValue(fact.Statement, value) {
+				slog.Warn("Judge critical annotation requires complete fact preservation",
+					"task_id", taskID, "layer", layer, "fact_id", fact.FactID)
+				break
+			}
+		}
 	}
 	missingAspects, err := normalizeKnowledgeEvidenceMissingAspects(taskID, layer, layerResult.MissingAspects)
 	if err != nil {

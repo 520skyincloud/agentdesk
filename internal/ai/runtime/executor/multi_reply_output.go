@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"unicode"
@@ -46,6 +47,15 @@ var ErrGeneratedReplyProtocol = errors.New("generated reply protocol validation 
 
 var errGeneratedReplyProtocol = ErrGeneratedReplyProtocol
 var errLockedReplyEvidence = errors.New("locked Judge answer is inconsistent")
+
+// Only validated task text survives a failed batch; malformed envelopes carry no text.
+type generatedReplyTaskError struct {
+	err        error
+	validParts map[string]string
+}
+
+func (e *generatedReplyTaskError) Error() string { return e.err.Error() }
+func (e *generatedReplyTaskError) Unwrap() error { return e.err }
 
 const generatedReplySingleTaskMaxOutputTokens = 512
 
@@ -264,20 +274,23 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 	for _, group := range groups {
 		expectedTaskIDs[group.TaskID] = struct{}{}
 	}
-	contentByTaskID := make(map[string]string, len(envelope.ReplyParts))
+	partsByTaskID := make(map[string]generatedReplyPart, len(envelope.ReplyParts))
 	for _, part := range envelope.ReplyParts {
 		taskID := strings.TrimSpace(part.TaskID)
-		content := strings.TrimSpace(part.Content)
 		if taskID == "" {
 			return "", fmt.Errorf("%w: reply part is missing taskId", errGeneratedReplyProtocol)
 		}
 		if _, expected := expectedTaskIDs[taskID]; !expected {
 			return "", fmt.Errorf("%w: unknown taskId %s", errGeneratedReplyProtocol, taskID)
 		}
-		if _, exists := contentByTaskID[taskID]; exists {
+		if _, exists := partsByTaskID[taskID]; exists {
 			return "", fmt.Errorf("%w: duplicate taskId %s", errGeneratedReplyProtocol, taskID)
 		}
-		group := groupByTaskID(groups, taskID)
+		partsByTaskID[taskID] = part
+	}
+	normalizePart := func(part generatedReplyPart, group textReplyTaskGroup) (string, error) {
+		taskID := group.TaskID
+		content := strings.TrimSpace(part.Content)
 		if content == "" && !group.ExternalProxyAction && !group.EvidenceLocked {
 			return "", fmt.Errorf("%w: missing content for %s", errGeneratedReplyProtocol, taskID)
 		}
@@ -307,18 +320,35 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		if containsReplyMessageMarker(content) || looksLikeGeneratedReplyPartsProtocol(content) {
 			return "", fmt.Errorf("%w: assembled content for %s contains internal protocol", errGeneratedReplyProtocol, taskID)
 		}
+		var err error
+		content, err = sanitizeGeneratedReplyMessage(content)
+		if err != nil {
+			return "", fmt.Errorf("%w: task %s: %w", errGeneratedReplyProtocol, taskID, err)
+		}
 		if content == "" {
 			return "", fmt.Errorf("%w: content for %s became empty after duplicate removal", errGeneratedReplyProtocol, taskID)
 		}
-		contentByTaskID[taskID] = content
+		return content, nil
 	}
+	contentByTaskID := make(map[string]string, len(groups))
 	parts := make([]string, 0, len(groups))
+	var taskErrors []error
 	for _, group := range groups {
-		content := strings.TrimSpace(contentByTaskID[group.TaskID])
-		if content == "" {
-			return "", fmt.Errorf("%w: missing content for %s", errGeneratedReplyProtocol, group.TaskID)
+		part, exists := partsByTaskID[group.TaskID]
+		if !exists {
+			taskErrors = append(taskErrors, fmt.Errorf("%w: missing content for %s", errGeneratedReplyProtocol, group.TaskID))
+			continue
 		}
+		content, err := normalizePart(part, group)
+		if err != nil {
+			taskErrors = append(taskErrors, err)
+			continue
+		}
+		contentByTaskID[group.TaskID] = content
 		parts = append(parts, content)
+	}
+	if len(taskErrors) > 0 {
+		return "", &generatedReplyTaskError{err: errors.Join(taskErrors...), validParts: contentByTaskID}
 	}
 	return composeGeneratedReplyContents(parts, 3), nil
 }
@@ -333,6 +363,21 @@ func applyExternalProxyActionCapabilityBoundary(group textReplyTaskGroup, conten
 
 // Validate fixed input separately: Generate cannot repair a Judge-owned answer.
 func renderLockedReplyContent(group textReplyTaskGroup) (string, error) {
+	content, err := validateLockedReplyContent(group)
+	if err == nil || group.AnswerText == nil {
+		return content, err
+	}
+	// Repair only this answer, using the same Judge-selected facts without rewriting them.
+	group.AnswerText = nil
+	content, factErr := validateLockedReplyContent(group)
+	if factErr != nil {
+		return "", factErr
+	}
+	slog.Warn("Recovered locked reply from its complete facts", "task_id", group.TaskID)
+	return content, nil
+}
+
+func validateLockedReplyContent(group textReplyTaskGroup) (string, error) {
 	content := renderLockedReplyFacts(group.Facts)
 	if group.EvidenceLocked && group.AnswerText != nil {
 		content = strings.TrimSpace(*group.AnswerText)
@@ -423,6 +468,16 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 			return fmt.Errorf("%w: missing coveredFactId %s for %s", errGeneratedReplyProtocol, fact.FactID, group.TaskID)
 		}
 		for _, criticalValue := range sanitizeKnowledgeEvidenceCriticalValuesForStatement(fact.CriticalValues, fact.Statement) {
+			if !containsReplyCriticalValue(fact.Statement, criticalValue) {
+				// An annotation is not another fact. Require the whole original statement
+				// instead of guessing a correction or silently dropping its constraint.
+				statement := strings.TrimSpace(fact.Statement)
+				if statement == "" || !strings.Contains(part.Content, statement) {
+					return fmt.Errorf("%w: content for %s must retain complete fact %s after invalid critical annotation",
+						errGeneratedReplyProtocol, group.TaskID, fact.FactID)
+				}
+				continue
+			}
 			if !containsReplyCriticalValue(part.Content, criticalValue) {
 				return fmt.Errorf("%w: content for %s is missing critical value %s", errGeneratedReplyProtocol, group.TaskID, criticalValue)
 			}

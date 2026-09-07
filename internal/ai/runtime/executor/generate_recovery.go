@@ -56,6 +56,7 @@ func runGeneratedReplyWithRecovery(
 		restoreGeneratedReplyRunToolState(summary, runInvokedToolCodes)
 	}()
 	var lastErr error
+	validParts := make(map[string]string)
 	for attemptIndex := 1; attemptIndex <= generatedReplyMaxAttempts; attemptIndex++ {
 		if attemptIndex > 1 {
 			if stillEligible != nil && !stillEligible() {
@@ -92,6 +93,14 @@ func runGeneratedReplyWithRecovery(
 		recordGeneratedReplyAttemptModelCalls(ctx, summary, receiptOffset, usageOffset, attemptErr)
 		lastErr = attemptErr
 		recordGeneratedReplyProtocolError(collector, lastErr)
+		var taskError *generatedReplyTaskError
+		if errors.As(lastErr, &taskError) {
+			for taskID, content := range taskError.validParts {
+				if _, accepted := validParts[taskID]; !accepted {
+					validParts[taskID] = content
+				}
+			}
+		}
 
 		if attemptIndex == generatedReplyMaxAttempts ||
 			!isRetryableGeneratedReplyError(lastErr) ||
@@ -101,7 +110,12 @@ func runGeneratedReplyWithRecovery(
 		}
 	}
 
-	fallback := deterministicGeneratedReplyFallback(collector)
+	if stillEligible != nil && !stillEligible() {
+		markGeneratedReplyCancelled(summary, collector)
+		result.FallbackMode = "cancelled_before_fallback"
+		return result, nil
+	}
+	fallback := deterministicGeneratedReplyFallbackWithParts(collector, validParts)
 	if fallback != "" {
 		summary.Status = "completed"
 		summary.ReplyText = fallback
@@ -442,6 +456,10 @@ func isRetryableGeneratedReplyError(err error) bool {
 var generatedReplyServerStatusPattern = regexp.MustCompile(`status\s+5\d\d`)
 
 func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollector) string {
+	return deterministicGeneratedReplyFallbackWithParts(collector, nil)
+}
+
+func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTraceCollector, validParts map[string]string) string {
 	if collector == nil {
 		return ""
 	}
@@ -452,12 +470,12 @@ func deterministicGeneratedReplyFallback(collector *callbacks.RuntimeTraceCollec
 	}
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
+		if content := strings.TrimSpace(validParts[group.TaskID]); content != "" {
+			parts = append(parts, content)
+			continue
+		}
 		if group.EvidenceLocked || group.ExternalProxyAction {
 			content, err := renderLockedReplyContent(group)
-			if err != nil && group.AnswerText != nil {
-				group.AnswerText = nil
-				content, err = renderLockedReplyContent(group)
-			}
 			if err != nil {
 				content = deterministicKnowledgeFallback(plan, group.TaskID)
 				if group.ExternalProxyAction {

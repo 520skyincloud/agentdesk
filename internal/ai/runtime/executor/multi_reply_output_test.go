@@ -72,16 +72,16 @@ func TestJudgeAnswerTextReplacesFactDumpWithoutLosingCriticalValues(t *testing.T
 		t.Fatal("fallback must preserve validated answerText")
 	}
 	answer = "矿泉水免费。"
-	_, err = normalizeGeneratedReplyPartsResult(raw, plan, true)
-	if !errors.Is(err, errLockedReplyEvidence) || isRetryableGeneratedReplyError(err) {
-		t.Fatalf("missing fixed quantity is not a Generate error: %v", err)
+	got, err = normalizeGeneratedReplyPartsResult(raw, plan, true)
+	if err != nil || !strings.Contains(got, "两瓶") || !strings.Contains(got, "免费") {
+		t.Fatalf("missing fixed quantity must recover within this task: %q %v", got, err)
 	}
 	if got := deterministicGeneratedReplyFallback(collector); !strings.Contains(got, "两瓶") || !strings.Contains(got, "免费") {
 		t.Fatalf("fallback must retain quantity and price: %q", got)
 	}
 	answer = `{"replyParts":[{"taskId":"T1","content":"bad"}]}`
-	if _, err = normalizeGeneratedReplyPartsResult(raw, plan, true); !errors.Is(err, errLockedReplyEvidence) {
-		t.Fatalf("locked internal protocol must be rejected: %v", err)
+	if got, err = normalizeGeneratedReplyPartsResult(raw, plan, true); err != nil || looksLikeGeneratedReplyPartsProtocol(got) || !strings.Contains(got, "两瓶") {
+		t.Fatalf("unsafe answer must be replaced only with validated facts: %q %v", got, err)
 	}
 	if got := deterministicGeneratedReplyFallback(collector); looksLikeGeneratedReplyPartsProtocol(got) {
 		t.Fatalf("fallback leaked internal protocol: %q", got)
