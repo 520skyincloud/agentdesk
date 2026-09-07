@@ -143,10 +143,14 @@ V2 本地协议只负责机械安全，不再实现第二套中文 NLU：校验 
 Task 可以合并。代码不再按标点或关键词推算题数，不再重判 interaction/业务分类，
 也不再用字符重叠、实体逐字出现或中文词表证明 `resolvedText`。协议失败仍只触发现有
 一次 Intent 协议修复，修复提示要求保留模型已经识别的任务边界和语义。
+来源核验先接受客户原文的直接匹配，问号、标点和表情不能因检索清洗后为空而失去来源。
+协议修复会携带首次模型 JSON 和具体错误；修复后检查任务数量及原先合法任务的身份，
+不能用删题、改写合法任务或重新拆题来绕过失败。
 
-`resolved_from_context` 只做上下文指针校验。同轮承接必须引用当前 primary URef 之前的
-URef；跨轮承接必须使用 previous 类 relation，并且存在紧邻客户问题与紧邻 AI 或人工
-客服答复。本地不判断补全文字是否相似。`answer_rejected` 仍要求
+`resolved_from_context` 只做上下文指针校验。同一个 URef 内部可以包含问题及其上下文，
+允许 independent + resolved_from_context，只引用该 URef 一次；跨 URef 的同轮承接
+仍引用更早的 URef。跨轮承接必须使用 previous 类 relation，并存在已提供的有界历史
+或紧邻客户与客服问答。本地不判断补全文字是否相似。`answer_rejected` 仍要求
 `human_complaint_risk/answer_rejected` 与 relation 一致，且紧邻上一条确实是 AI 答复；
 是否构成否定、矛盾或答非所问由 Intent 模型结合三段上下文判断。
 

@@ -18,6 +18,7 @@ import (
 	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
+	einoschema "github.com/cloudwego/eino/schema"
 	"github.com/glebarez/sqlite"
 	"github.com/mlogclub/simple/sqls"
 	"gorm.io/gorm"
@@ -1725,10 +1726,29 @@ func TestRuntimeIntentRepairInstructionPreservesModelSemantics(t *testing.T) {
 		"保持已识别的任务边界、意图和上下文含义",
 		"text 必须来自 sourceRefs[0]",
 		"不要重新拆题、合题",
+		"保留原任务数量及已通过任务",
+		"同一 URef 内部的承接只引用该 URef 一次",
 	} {
 		if !strings.Contains(instruction, expected) {
 			t.Fatalf("repair instruction missing minimal protocol rule %q: %s", expected, instruction)
 		}
+	}
+}
+
+func TestRuntimeIntentProtocolRepairIncludesOriginalModelResponse(t *testing.T) {
+	messages := []*einoschema.Message{
+		einoschema.SystemMessage("Intent protocol"),
+		einoschema.UserMessage("[CURRENT_TURN_SOURCE_REFS]\nU1: ？\nU2: 早餐几点？停车免费吗？"),
+	}
+	const original = `{"intentTasks":[{"text":"早餐几点","sourceRefs":["U9"]},{"text":"停车免费吗","sourceRefs":["U2"]}]}`
+	repaired := buildRuntimeIntentProtocolRepairMessages(messages, original, fmt.Errorf("intentTasks[0].sourceRefs contains invalid ref U9"))
+	if len(repaired) != 4 || len(messages) != 2 {
+		t.Fatalf("repair must add original output and correction without mutating input: %#v", repaired)
+	}
+	if repaired[0] != messages[0] || repaired[1] != messages[1] ||
+		repaired[2].Role != einoschema.Assistant || repaired[2].Content != original ||
+		!strings.Contains(repaired[3].Content, "intentTasks[0].sourceRefs") {
+		t.Fatalf("repair request lost source context, original tasks, or exact error: %#v", repaired)
 	}
 }
 
@@ -1741,6 +1761,8 @@ func TestDefaultRuntimeIntentContractDeclaresResolvedTextAndSourceRefs(t *testin
 		`"resolvedText"`,
 		`"sourceRefs"`,
 		"字段必须全部出现",
+		"同一个 URef 内也可以包含多个问题及其承接上下文",
+		"问号、标点或表情也是客户原文",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("default intent contract missing %q", expected)

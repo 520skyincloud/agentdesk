@@ -283,10 +283,10 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 		}
 	}
 	if err != nil {
+		original := parsed
 		retryStartedAt := time.Now()
 		retryReceiptOffset := len(usageCapture.Receipts())
-		repairInstruction := buildRuntimeIntentProtocolRepairInstruction(err)
-		retry, retryErr := chatModel.Generate(intentCtx, append(messages, schema.SystemMessage(repairInstruction)))
+		retry, retryErr := chatModel.Generate(intentCtx, buildRuntimeIntentProtocolRepairMessages(messages, result.Content, err))
 		protocolAttempt := modelAttempt + 1
 		if retryErr != nil {
 			recordIntentModelUsage(req, intentConfig, credentialRevision, nil, gatewayReceiptSince(usageCapture, retryReceiptOffset), protocolAttempt, time.Since(retryStartedAt).Milliseconds(), retryErr)
@@ -300,6 +300,9 @@ func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req Run
 			err = validateRuntimeIntentDetectProtocol(parsed, profile, currentText)
 			if err == nil {
 				err = validateRuntimeIntentResolvedReferenceContext(parsed, currentText, protocolRepairContext, protocolRepairEnabled)
+			}
+			if err == nil {
+				err = validateRuntimeIntentProtocolRepairPreservesTasks(original, parsed, profile, currentText, protocolRepairContext, protocolRepairEnabled)
 			}
 		}
 		if err != nil {
@@ -368,7 +371,15 @@ func sleepRuntimeIntentModelRetry(ctx context.Context, duration time.Duration) b
 }
 
 func buildRuntimeIntentProtocolRepairInstruction(protocolErr error) string {
-	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请保持已识别的任务边界、意图和上下文含义，只修复协议字段后重新输出完整 JSON：intentTasks 不能为空；每个任务必须包含合法的 intent、objective、relationToPrevious、resolutionState、entities、text、resolvedText 和 sourceRefs；text 必须来自 sourceRefs[0] 对应的当前客户原话，主 sourceRef 顺序不得倒置。同轮 sourceRefs 补全必须引用更早的 URef 且保持 relationToPrevious=independent；跨轮 resolved_from_context 必须使用 previous 关系且存在已提供的有界会话历史，不要求业务对象只在紧邻一问一答中出现。answer_rejected 的 intent/subIntent 与 relationToPrevious 必须一致，并且只能用于紧邻 AI 答复。顶层字段只能汇总 intentTasks。不要重新拆题、合题或按本地错误文案改变语义；不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+	return "上一版 IntentDetect 输出不满足当前 JSON 协议：" + preview(protocolErr.Error(), 240) + "。请保持已识别的任务边界、意图和上下文含义，只修复协议字段后重新输出完整 JSON；保留原任务数量及已通过任务，不得删除任务来绕过错误：intentTasks 不能为空；每个任务必须包含合法的 intent、objective、relationToPrevious、resolutionState、entities、text、resolvedText 和 sourceRefs；text 必须来自 sourceRefs[0] 对应的当前客户原话，主 sourceRef 顺序不得倒置。同一 URef 内部的承接只引用该 URef 一次，允许 independent + resolved_from_context；跨 URef 的同轮补全引用更早的 URef 且保持 relationToPrevious=independent；跨轮 resolved_from_context 必须使用 previous 关系且存在已提供的有界会话历史，不要求业务对象只在紧邻一问一答中出现。问号、标点或表情也是原文，text 原样保留，不要改写成业务问题。answer_rejected 的 intent/subIntent 与 relationToPrevious 必须一致，并且只能用于紧邻 AI 答复。顶层字段只能汇总 intentTasks。不要重新拆题、合题或按本地错误文案改变语义；不要输出 Markdown、解释、注释、未声明字段或 JSON 外文本。"
+}
+
+func buildRuntimeIntentProtocolRepairMessages(messages []*schema.Message, original string, protocolErr error) []*schema.Message {
+	ret := append([]*schema.Message(nil), messages...)
+	return append(ret,
+		schema.AssistantMessage(original, nil),
+		schema.SystemMessage(buildRuntimeIntentProtocolRepairInstruction(protocolErr)),
+	)
 }
 
 func buildRuntimeIntentProtocolRepairContext(history adapter.HistoryBuildResult) runtimeIntentProtocolRepairContext {
@@ -547,7 +558,7 @@ func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfil
 	if schemaText == "" {
 		schemaText = replyintent.DefaultHotelIntentJSONSchema()
 	}
-	return strings.TrimSpace(prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。")
+	return strings.TrimSpace(prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。同一个 URef 内也可以包含多个问题及其承接上下文，此时允许 independent + resolved_from_context，sourceRefs 只写该 URef 一次，不必虚构更早的消息或 previous 关系。问号、标点或表情也是客户原文，text 原样保留；与业务问题合并输入时可作为 context_only 的互动或真实上下文，不能代替业务 Task 的主要来源。")
 }
 
 func runtimeIntentProfileExpectsTaskSemantics(profile *models.ReplyIntentProfile) bool {

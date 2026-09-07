@@ -115,6 +115,13 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 			}
 			continue
 		}
+		if relation == "independent" && len(task.SourceRefs) == 1 {
+			primarySource := runtimeIntentSourceRefIndex(task.SourceRefs[0])
+			if primarySource >= 0 && primarySource < len(sourceTexts) {
+				// A physical message can contain both the question and its context.
+				continue
+			}
+		}
 		if !semanticGateRelationUsesPrevious(relation) {
 			return fmt.Errorf("intentTasks[%d] resolved_from_context requires an earlier current-turn source or previous-turn relation", taskIndex)
 		}
@@ -127,6 +134,32 @@ func validateRuntimeIntentResolvedReferenceContext(parsed runtimeIntentDetectJSO
 		if !context.HasBoundedHistory && (strings.TrimSpace(context.PreviousCustomerText) == "" || runtimeIntentProtocolAdjacentServiceReply(context) == "") {
 			return fmt.Errorf("intentTasks[%d] resolved_from_context requires bounded conversation history", taskIndex)
 		}
+	}
+	return nil
+}
+
+func validateRuntimeIntentProtocolRepairPreservesTasks(original, repaired runtimeIntentDetectJSON, profile *models.ReplyIntentProfile, currentText string, context runtimeIntentProtocolRepairContext, enforce bool) error {
+	if len(original.IntentTasks) == 0 {
+		return nil
+	}
+	if len(original.IntentTasks) != len(repaired.IntentTasks) {
+		return fmt.Errorf("IntentDetect protocol repair changed task count from %d to %d", len(original.IntentTasks), len(repaired.IntentTasks))
+	}
+	remaining := make(map[string]int, len(repaired.IntentTasks))
+	for _, task := range repaired.IntentTasks {
+		remaining[runtimeIntentProtocolExactTaskKey(task)]++
+	}
+	for index, task := range original.IntentTasks {
+		single := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}
+		if validateRuntimeIntentDetectProtocol(single, profile, currentText) != nil ||
+			validateRuntimeIntentResolvedReferenceContext(single, currentText, context, enforce) != nil {
+			continue
+		}
+		key := runtimeIntentProtocolExactTaskKey(task)
+		if remaining[key] == 0 {
+			return fmt.Errorf("IntentDetect protocol repair removed or changed valid intentTasks[%d]", index)
+		}
+		remaining[key]--
 	}
 	return nil
 }
@@ -513,6 +546,9 @@ func runtimeIntentProtocolCandidateMatchesTaskSource(candidate string, refs runt
 	refIndex := runtimeIntentSourceRefIndex(refs[0])
 	if refIndex < 0 || refIndex >= len(sourceTexts) {
 		return false
+	}
+	if raw := strings.TrimSpace(candidate); raw != "" && strings.Contains(sourceTexts[refIndex], raw) {
+		return true
 	}
 	candidateText := normalizeRuntimeKnowledgeQuery(candidate)
 	sourceText := normalizeRuntimeKnowledgeQuery(sourceTexts[refIndex])

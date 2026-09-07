@@ -73,6 +73,64 @@ func TestValidateRuntimeIntentDetectProtocolChecksSourceRefsAndTextProvenance(t 
 	}
 }
 
+func TestValidateRuntimeIntentDetectProtocolPreservesSymbolSources(t *testing.T) {
+	for _, text := range []string{"？", "?!", "！！！", "……", "[微笑]"} {
+		t.Run(text, func(t *testing.T) {
+			task := validRuntimeIntentProtocolTask(text, "social")
+			task.Intent, task.SubIntent, task.NeedsKnowledge = "interaction", "chat", false
+			if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, text); err != nil {
+				t.Fatalf("literal symbol source must remain traceable: %v", err)
+			}
+		})
+	}
+	task := validRuntimeIntentProtocolTask("早餐几点", "time")
+	if err := validateRuntimeIntentDetectProtocol(runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}}, nil, "？"); err == nil {
+		t.Fatal("symbol support must not allow a business task to claim an unrelated source")
+	}
+}
+
+func TestValidateRuntimeIntentLongMessageAndSymbolBurstPreserveModelTasks(t *testing.T) {
+	const original = "我饿了 有啥吃的推荐没 以及明天要去附近玩 你知道哪里好玩吗  还有啊 我怎么把门打开啊 有没有停车场 我开电车来的你懂我意思吗  发票咋开"
+	texts := []string{"我饿了 有啥吃的推荐没", "明天要去附近玩 你知道哪里好玩吗", "我怎么把门打开啊", "有没有停车场", "我开电车来的你懂我意思吗", "发票咋开"}
+	for _, withSymbol := range []bool{false, true} {
+		current, primary := original, "U1"
+		tasks := runtimeIntentTaskList{}
+		if withSymbol {
+			current = utils.BuildRuntimeCustomerBurstEnvelope([]string{"1. [消息101] ？", "2. [消息102] " + original})
+			primary = "U2"
+			symbol := validRuntimeIntentProtocolTask("？", "social")
+			symbol.Intent, symbol.SubIntent, symbol.NeedsKnowledge = "interaction", "chat", false
+			tasks = append(tasks, symbol)
+		}
+		for index, text := range texts {
+			task := validRuntimeIntentProtocolTask(text, "method")
+			task.SourceRefs = runtimeIntentSourceRefList{primary}
+			if index == 4 {
+				task.Objective = "availability"
+				task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+				task.ResolvedText = "酒店停车场有没有电车充电桩"
+			}
+			tasks = append(tasks, task)
+		}
+		parsed := runtimeIntentDetectJSON{IntentTasks: tasks}
+		if err := validateRuntimeIntentDetectProtocol(parsed, nil, current); err != nil {
+			t.Fatalf("symbol=%v: model-owned tasks failed source validation: %v", withSymbol, err)
+		}
+		if err := validateRuntimeIntentResolvedReferenceContext(parsed, current, runtimeIntentProtocolRepairContext{}, true); err != nil {
+			t.Fatalf("symbol=%v: in-message context must not require a previous physical message: %v", withSymbol, err)
+		}
+		converted := convertRuntimeIntentTasks([]runtimeIntentTaskJSON(parsed.IntentTasks))
+		if len(converted) != len(tasks) {
+			t.Fatalf("model task count changed: got %d, want %d", len(converted), len(tasks))
+		}
+		for index, task := range converted {
+			if task.Text != tasks[index].Text || task.ResolvedText != tasks[index].ResolvedText {
+				t.Fatalf("task %d changed order or meaning: %#v", index, task)
+			}
+		}
+	}
+}
+
 func TestValidateRuntimeIntentDetectProtocolPreservesPrimarySourceOrder(t *testing.T) {
 	current := utils.BuildRuntimeCustomerBurstEnvelope([]string{
 		"1. [消息101] 有早餐吗？",
@@ -273,6 +331,7 @@ func TestValidateRuntimeIntentResolvedReferenceContextAllowsConversationRecapWit
 func TestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredContext(t *testing.T) {
 	task := validRuntimeIntentProtocolTask("早餐几点", "time")
 	task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+	task.SourceRefs = nil
 	err := validateRuntimeIntentResolvedReferenceContext(
 		runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{task}},
 		task.Text,
@@ -281,6 +340,33 @@ func TestValidateRuntimeIntentResolvedReferenceContextRequiresDeclaredContext(t 
 	)
 	if err == nil || !strings.Contains(err.Error(), "earlier current-turn source or previous-turn relation") {
 		t.Fatalf("resolved_from_context without a declared context pointer must fail, got %v", err)
+	}
+}
+
+func TestRuntimeIntentProtocolRepairPreservesValidTasksAndCount(t *testing.T) {
+	const current = "早餐几点？停车免费吗？发票怎么开？"
+	breakfast := validRuntimeIntentProtocolTask("早餐几点", "time")
+	parking := validRuntimeIntentProtocolTask("停车免费吗", "price")
+	parking.SourceRefs = runtimeIntentSourceRefList{"U9"}
+	invoice := validRuntimeIntentProtocolTask("发票怎么开", "method")
+	original := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{breakfast, parking, invoice}}
+	parking.SourceRefs = runtimeIntentSourceRefList{"U1"}
+	repaired := runtimeIntentDetectJSON{IntentTasks: runtimeIntentTaskList{breakfast, parking, invoice}}
+	context := runtimeIntentProtocolRepairContext{}
+	if err := validateRuntimeIntentProtocolRepairPreservesTasks(original, repaired, nil, current, context, true); err != nil {
+		t.Fatalf("repairing an invalid ref must preserve valid sibling tasks: %v", err)
+	}
+	dropped := runtimeIntentDetectJSON{IntentTasks: repaired.IntentTasks[:2]}
+	if err := validateRuntimeIntentProtocolRepairPreservesTasks(original, dropped, nil, current, context, true); err == nil {
+		t.Fatal("protocol repair must not silently discard a task")
+	}
+	changed := runtimeIntentDetectJSON{IntentTasks: append(runtimeIntentTaskList(nil), repaired.IntentTasks...)}
+	changed.IntentTasks[0].ResolvedText = "酒店附近有什么好玩的"
+	if err := validateRuntimeIntentProtocolRepairPreservesTasks(original, changed, nil, current, context, true); err == nil {
+		t.Fatal("protocol repair must not reinterpret an already valid task")
+	}
+	if err := validateRuntimeIntentProtocolRepairPreservesTasks(runtimeIntentDetectJSON{}, repaired, nil, current, context, true); err != nil {
+		t.Fatalf("an initially unparseable response must still be repairable: %v", err)
 	}
 }
 

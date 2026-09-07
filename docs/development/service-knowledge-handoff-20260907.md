@@ -156,3 +156,23 @@ ChannelID=0 验证服务器真实模型、知识和接待链路，不代表企�
 未改 Intent、检索、Generate、房号、人工状态机、Outbox、数据库、知识库或计费。
 推送后再次 fetch，customer-audit 与 ai-billing 无本轮四个文件的新分歧，
 无需 rebase；文档记录提交可独立合并，无需重新构建已验收程序。
+
+## 长消息 Intent 来源协议修复
+
+基线程序 a965b39；其风消息18021在同消息内部上下文校验失败，
+18023及18024因问号来源被检索清洗为空而失败，均未进入检索和 Judge。
+本轮只改 intent_protocol_validation.go、intent_model_detector.go：
+允许同一物理消息内由模型补全上下文，保留跨消息来源及跨轮历史检查；
+先按原文核验来源，使符号消息合法；一次协议修复携带首次 JSON 和错误，
+修复后检查题数及原先合法任务，禁止以删题或改掉合法任务来通过。
+对应测试在 intent_protocol_validation_test.go、intent_pipeline_test.go。
+
+不增加模型调用次数，不修改模型拆题权、检索、Judge、Generate、房号、人工状态机、
+Outbox、知识库、计费、数据库、DTO、接口、权限或 WebSocket；不执行 Migration。
+生产 Intent Profile 不改，兼容规则随现有运行提示注入，回滚只需切换程序。
+验证命令 go test -p=1 ./internal/ai/runtime/executor -count=1 已通过。
+上线隔离实测最多5次客户输入，检查截图原文、问号加重发、上下文追问和新主题；
+所有分题与答复须核对，不把仅有安全兜底回复视为通过。
+customer-audit、ai-billing 对目标文件无新分歧，无需 rebase，可独立合并；
+原始脏工作区不动。回滚点为 20260907-request-answer-a965b39，
+保留当前消息、配置和知识库，发布结果在完成后追加。
