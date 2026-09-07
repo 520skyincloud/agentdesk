@@ -95,18 +95,18 @@ func (s *conversationHumanDispatchService) HandoffByAIWithRequestID(conversation
 	return s.handoffByAIWithRequestID(conversationID, aiAgent, reason, requestID, "")
 }
 
-func (s *conversationHumanDispatchService) HandoffByAIWithDirectNotice(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, handoffToken string) (*HandoffDecisionResult, error) {
-	return s.handoffByAIWithRequestID(conversationID, aiAgent, reason, requestID, strings.TrimSpace(handoffToken))
+func (s *conversationHumanDispatchService) HandoffByAIWithDirectNotice(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, handoffToken string, noticeSubjects ...string) (*HandoffDecisionResult, error) {
+	return s.handoffByAIWithRequestID(conversationID, aiAgent, reason, requestID, strings.TrimSpace(handoffToken), noticeSubjects...)
 }
 
-func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, directHandoffToken string) (*HandoffDecisionResult, error) {
+func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, directHandoffToken string, noticeSubjects ...string) (*HandoffDecisionResult, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, errorsx.InvalidParam("会话不存在")
 	}
 	if statusResult := s.recentHandoffResult(conversationID); statusResult != nil {
 		if directHandoffToken != "" {
-			if err := s.EnsureDirectHandoffArtifacts(conversationID, aiAgent.ID, reason, directHandoffToken, requestID); err != nil {
+			if err := s.EnsureDirectHandoffArtifacts(conversationID, aiAgent.ID, reason, directHandoffToken, requestID, noticeSubjects...); err != nil {
 				return nil, err
 			}
 			statusResult.Message = DirectHandoffSuccessMessage
@@ -124,7 +124,7 @@ func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversation
 		message := HandoffStoreManualMessage
 		if directHandoffToken != "" {
 			message = DirectHandoffSuccessMessage
-			if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID); err != nil {
+			if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID, noticeSubjects...); err != nil {
 				return nil, err
 			}
 		} else {
@@ -139,7 +139,7 @@ func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversation
 		message := HandoffStoreManualMessage
 		if directHandoffToken != "" {
 			message = DirectHandoffSuccessMessage
-			if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID); err != nil {
+			if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID, noticeSubjects...); err != nil {
 				return nil, err
 			}
 		} else {
@@ -158,7 +158,7 @@ func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversation
 				return nil, dispatchErr
 			}
 			if directHandoffToken != "" {
-				if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID); err != nil {
+				if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID, noticeSubjects...); err != nil {
 					return nil, err
 				}
 				result.Message = DirectHandoffSuccessMessage
@@ -174,7 +174,7 @@ func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversation
 	message := HandoffWaitingMessage
 	if directHandoffToken != "" {
 		message = DirectHandoffSuccessMessage
-		if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID); err != nil {
+		if err := s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgent.ID, directHandoffToken, requestID, noticeSubjects...); err != nil {
 			return nil, err
 		}
 	} else {
@@ -183,7 +183,7 @@ func (s *conversationHumanDispatchService) handoffByAIWithRequestID(conversation
 	return &HandoffDecisionResult{Decision: HandoffDecisionHQAgentDesk, Message: message}, nil
 }
 
-func (s *conversationHumanDispatchService) EnsureDirectHandoffArtifacts(conversationID int64, aiAgentID int64, reason string, handoffToken string, requestID string) error {
+func (s *conversationHumanDispatchService) EnsureDirectHandoffArtifacts(conversationID int64, aiAgentID int64, reason string, handoffToken string, requestID string, noticeSubjects ...string) error {
 	state := ConversationRouteService.GetByConversationID(conversationID)
 	if state != nil {
 		switch state.RouteStatus {
@@ -197,10 +197,10 @@ func (s *conversationHumanDispatchService) EnsureDirectHandoffArtifacts(conversa
 			}
 		}
 	}
-	return s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgentID, handoffToken, requestID)
+	return s.EnsureDirectHandoffSuccessNotice(conversationID, aiAgentID, handoffToken, requestID, noticeSubjects...)
 }
 
-func (s *conversationHumanDispatchService) EnsureDirectHandoffSuccessNotice(conversationID int64, aiAgentID int64, handoffToken string, requestID string) error {
+func (s *conversationHumanDispatchService) EnsureDirectHandoffSuccessNotice(conversationID int64, aiAgentID int64, handoffToken string, requestID string, noticeSubjects ...string) error {
 	handoffToken = strings.TrimSpace(handoffToken)
 	if handoffToken == "" {
 		return errorsx.InvalidParam("转人工幂等标识不能为空")
@@ -210,7 +210,7 @@ func (s *conversationHumanDispatchService) EnsureDirectHandoffSuccessNotice(conv
 		conversationID,
 		aiAgentID,
 		clientMsgID,
-		DirectHandoffSuccessMessage,
+		directHandoffSuccessText(noticeSubjects),
 		"",
 		requestID,
 	)
@@ -226,6 +226,28 @@ func (s *conversationHumanDispatchService) EnsureDirectHandoffSuccessNotice(conv
 		go WxWorkProtocolService.DispatchPendingOutbox(10)
 	}
 	return nil
+}
+
+func directHandoffSuccessText(subjects []string) string {
+	labels := make([]string, 0, len(subjects))
+	seen := make(map[string]bool)
+	for _, subject := range subjects {
+		subject = strings.TrimSpace(subject)
+		if subject == "" || seen[subject] {
+			continue
+		}
+		for _, marker := range []string{"replyParts", "taskId", "coveredFactIds", "[历史消息]", "[AI客服]", "[人工客服]", "[人工作答]", "```"} {
+			if strings.Contains(subject, marker) {
+				return DirectHandoffSuccessMessage
+			}
+		}
+		seen[subject] = true
+		labels = append(labels, "“"+subject+"”")
+	}
+	if len(labels) == 0 {
+		return DirectHandoffSuccessMessage
+	}
+	return "关于" + strings.Join(labels, "、") + "，" + DirectHandoffSuccessMessage
 }
 
 func (s *conversationHumanDispatchService) recentHandoffResult(conversationID int64) *HandoffDecisionResult {

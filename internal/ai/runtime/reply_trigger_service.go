@@ -567,6 +567,7 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 			replyCtx.Message.ID,
 			applyRoomNumberPolicy,
 			roomNumberText,
+			runtimeexecutor.HandoffQuestionSubjectsFromTrace(summary.TraceData)...,
 		)
 		if lastErr == nil {
 			return nil

@@ -176,6 +176,7 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 		req.UserMessage.ID,
 		applyRoomNumberPolicy,
 		roomNumberText,
+		runtimeHandoffQuestionSubjects(collector)...,
 	)
 	item := callbacks.GraphToolTraceItem{
 		ToolCode: toolx.GraphHandoffConversation.Code,
@@ -222,6 +223,38 @@ func HandoffRoomNumberPolicyFromTrace(raw string) (bool, string) {
 		return true, ""
 	}
 	return runtimeHandoffRoomNumberPolicy(collector)
+}
+
+func HandoffQuestionSubjectsFromTrace(raw string) []string {
+	collector := callbacks.NewRuntimeTraceCollector()
+	if err := json.Unmarshal([]byte(raw), &collector.Data); err != nil {
+		return nil
+	}
+	return runtimeHandoffQuestionSubjects(collector)
+}
+
+func runtimeHandoffQuestionSubjects(collector *callbacks.RuntimeTraceCollector) []string {
+	if collector == nil {
+		return nil
+	}
+	pending := make(map[string]bool)
+	for _, id := range collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs {
+		pending[id] = true
+	}
+	subjects := make([]string, 0, len(pending))
+	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
+		if !pending[task.TaskID] {
+			continue
+		}
+		if len(task.MissingAspects) > 0 {
+			for _, aspect := range task.MissingAspects {
+				subjects = appendIfMissing(subjects, aspect)
+			}
+		} else if text := firstNonEmptyReplyTaskText(task.OriginalText, task.Text); text != "" {
+			subjects = appendIfMissing(subjects, text)
+		}
+	}
+	return subjects
 }
 
 func runtimeHandoffRoomNumberPolicy(collector *callbacks.RuntimeTraceCollector) (bool, string) {

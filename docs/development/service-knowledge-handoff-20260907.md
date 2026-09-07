@@ -1,5 +1,42 @@
 # 服务知识优先与发送关联修复
 
+## 问题覆盖修复开发记录
+
+本轮生产基线为 `5a8dcf42ae0ae176819dcd12263843d373344246`，
+开发分支 `codex/intent-source-repair-20260907`，原始脏工作区保持不动。
+其风消息18060包含咖啡、剃须刀、牙刷、毛巾、纸币五个目标，Run7876却只有一个
+compound_information Task。混合检索被剃须刀和牙刷的近重复候选占据；Judge 只保留
+这两类事实，其他三项被当作证据不足而转接。此前单问已召回咖啡和毛巾知识。
+本次不以降低分数、补知识、删除校验或改变自助规则掩盖错误合题。
+
+修改范围：
+- `question_coverage.go`、`intent_model_detector.go`：问题优先提示与一次有界修复，
+  原文来源验证和正确任务保留；不新增本地语义拆题器。
+- `knowledge_evidence_judge.go`、`answerability_gate.go`：同次 Judge 对照当前来源，
+  仅错误合题、漏题、检索目标偏移触发修复；仅重查变化任务并合并原正确裁决。
+- `context_builders.go`、`service.go`：传播修复后的计划，失败不能提交残缺答案。
+- `intent_human_route.go`、`reply_trigger_service.go`、两个 handoff service：
+  仅沿现有真实转接入口传递待处理事项，使成功通知可追溯到具体问题。
+- 对应 Executor 和 Services 测试与当前设计文档。
+
+无 Model/Migration、DTO、HTTP、WebSocket、权限、知识库或运行配置变更。
+正常调用次数不变；覆盖异常路径最多额外一次 Intent、局部检索、一次 Judge，
+沿用实际调用计费。现有房号收集、转接状态机、员工优先、Outbox 幂等和恢复时长不变。
+`noticeSubjects` 是原 pending JSON 中的可选兼容字段，不新增数据库列。
+
+验证命令：
+`go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`。
+已通过完整相关包回归；部署后只做少量隔离真实模型代表场景，不运行30轮或50轮。
+自动覆盖：合题修复只重查变化题、正确 Task ID/证据保留、一次修复失败后停止、
+真资料不足不重试、五对象独立检索、同层近重复预算、遗漏来源和通知事项。
+线上结果须追加真实记录，不以模拟输出代替模型验收。
+
+并行分支：`customer-audit` 在 `reply_trigger_service.go` 与两个 handoff service
+有租户改动，本轮只扩展兼容可选事项参数，不合入或覆盖租户逻辑；
+`ai-billing` 无相关目标文件的新分歧。无需整体 rebase，建议先合并 Executor，
+再逐块合并通知参数提交，禁止整文件覆盖。回滚只切回5a8dcf4 release，保留全部消息、
+当前知识和运行配置；本轮不执行 Migration。
+
 ## 范围与基线
 
 生产基线 c42cb8447f82917f371226f44cf1c9b764756237。

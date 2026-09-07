@@ -42,13 +42,14 @@ type HandoffDispatchResult struct {
 }
 
 type handoffConfirmationPayload struct {
-	Reason          string `json:"reason"`
-	AIAgentID       int64  `json:"aiAgentId"`
-	OriginMessageID int64  `json:"originMessageId"`
-	HandoffToken    string `json:"handoffToken"`
-	AwaitingField   string `json:"awaitingField,omitempty"`
-	RoomNumber      string `json:"roomNumber,omitempty"`
-	CreatedAt       string `json:"createdAt"`
+	NoticeSubjects  []string `json:"noticeSubjects,omitempty"`
+	Reason          string   `json:"reason"`
+	AIAgentID       int64    `json:"aiAgentId"`
+	OriginMessageID int64    `json:"originMessageId"`
+	HandoffToken    string   `json:"handoffToken"`
+	AwaitingField   string   `json:"awaitingField,omitempty"`
+	RoomNumber      string   `json:"roomNumber,omitempty"`
+	CreatedAt       string   `json:"createdAt"`
 }
 
 type handoffConfirmationClassifyResult struct {
@@ -104,18 +105,18 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 }
 
 func (s *conversationHandoffConfirmationService) DispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true)
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true, "", nil)
 }
 
-func (s *conversationHandoffConfirmationService) DispatchByAIWithRoomNumberPolicy(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, applyRoomNumberPolicy, roomNumberText)
+func (s *conversationHandoffConfirmationService) DispatchByAIWithRoomNumberPolicy(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string, noticeSubjects ...string) (*HandoffDispatchResult, error) {
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, applyRoomNumberPolicy, roomNumberText, noticeSubjects)
 }
 
 func (s *conversationHandoffConfirmationService) DispatchEmergencyByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false)
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false, "", nil)
 }
 
-func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText ...string) (*HandoffDispatchResult, error) {
+func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string, noticeSubjects []string) (*HandoffDispatchResult, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, fmt.Errorf("会话不存在")
@@ -139,7 +140,7 @@ func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(c
 		if !s.shouldRepairActiveDirectHandoff(conversationID, originMessageID) {
 			return &HandoffDispatchResult{Status: HandoffDispatchStatusAlreadyActive, HandoffToken: handoffToken}, nil
 		}
-		if err := ConversationHumanDispatchService.EnsureDirectHandoffArtifacts(conversationID, aiAgent.ID, reason, handoffToken, requestID); err != nil {
+		if err := ConversationHumanDispatchService.EnsureDirectHandoffArtifacts(conversationID, aiAgent.ID, reason, handoffToken, requestID, noticeSubjects...); err != nil {
 			return nil, err
 		}
 		if _, err := AIManualResumeTaskService.Schedule(conversationID, originMessageID, handoffToken); err != nil {
@@ -167,10 +168,11 @@ func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(c
 	}
 	cleanedReason := cleanHumanHandoffReason(reason)
 	originCustomerText := resolveHandoffOriginCustomerText(conversationID, originMessageID, reason)
-	if len(roomNumberText) > 0 && strings.TrimSpace(roomNumberText[0]) != "" {
-		originCustomerText = roomNumberText[0]
+	if strings.TrimSpace(roomNumberText) != "" {
+		originCustomerText = roomNumberText
 	}
 	payloadValue := handoffConfirmationPayload{
+		NoticeSubjects:  append([]string(nil), noticeSubjects...),
 		Reason:          cleanedReason,
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
@@ -239,7 +241,7 @@ func (s *conversationHandoffConfirmationService) dispatchPreparedHandoff(convers
 		reason = "用户需要人工接待"
 	}
 	requestID = stableHandoffRequestID(requestID, payload.HandoffToken)
-	decision, err := ConversationHumanDispatchService.HandoffByAIWithDirectNotice(conversation.ID, aiAgent, reason, requestID, payload.HandoffToken)
+	decision, err := ConversationHumanDispatchService.HandoffByAIWithDirectNotice(conversation.ID, aiAgent, reason, requestID, payload.HandoffToken, payload.NoticeSubjects...)
 	if err != nil {
 		return nil, err
 	}
