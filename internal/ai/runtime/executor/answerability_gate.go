@@ -1723,6 +1723,8 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 				disposition = runtimeKnowledgeDispositionAnswer
 			case task.Intent == "service_request" && selection.HasUsableSelfService:
 				disposition = runtimeKnowledgeDispositionAnswer
+			case task.Intent == "hotel_info":
+				disposition = runtimeKnowledgeDispositionAnswer
 			case selection.Decision == knowledgeEvidenceDecisionPartial:
 				disposition = runtimeKnowledgeDispositionAnswerThenHandoff
 			default:
@@ -1867,6 +1869,9 @@ func selectKnowledgeEvidenceLayer(selections map[string]knowledgeEvidenceLayerSe
 	if knowledgeEvidenceSelectionsNeedProtocolRetry(map[string]knowledgeEvidenceLayerSelection{knowledgeEvidenceLayerStore: storeSelection}) &&
 		selectionHasHandoffDirective(generalSelection, knowledgeEvidenceLayerGeneral, candidates, query) {
 		return ""
+	}
+	if selectionHasPartialEvidence(storeSelection) && selectionHasHandoffDirective(generalSelection, knowledgeEvidenceLayerGeneral, candidates, query) {
+		return knowledgeEvidenceLayerStore
 	}
 	if selectionHasCompleteEvidence(generalSelection) {
 		return knowledgeEvidenceLayerGeneral

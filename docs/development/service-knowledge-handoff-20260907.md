@@ -1,5 +1,35 @@
 # 服务知识优先与发送关联修复
 
+## 2026-09-08 现有适用知识回答修复
+
+用户明确不新增或修改知识库。线上消息18113、Run7890、检索8157已召回门店
+“有外卖机器人的”，分数0.5311高于当时0.2检索阈值。Judge按原提示把配送范围
+未明判成insufficient并清空答案，原分流进入no_evidence_handoff；并非选中了
+转接知识。历史外卖领取规则的删除另有记录，不以恢复旧知识替代本次链路修复。
+
+限定计划和实现：
+- knowledge_evidence_judge.go：现有提示区分适用答案与细节完整性；同目标可用
+  服务、专用设施或办理方式可以作为partial保留，只回答知识原文已确认的内容。
+  故障、拒绝自助、无关背景与真实现场需求边界不放开，不新增裁决字段。
+- answerability_gate.go：hotel_info合法部分答案正常回复；通用转接不覆盖门店
+  部分正文。服务请求仍依赖已有自助判断，明确转接和无可用证据路径保留。
+- knowledge_evidence_judge_test.go：协议到分流、锁定回复、多任务独立接待、
+  门店部分答案与通用转接优先级回归；调整旧“咨询partial必转人工”断言。
+- 当前设计文档同步以上职责。没有知识、模型配置、Intent、上下文、检索、
+  房号策略、Task、Commit、Outbox、计费、权限、Model/Migration或外部接口变更。
+
+分支codex/intent-source-repair-20260907，原始customer-audit脏工作区不动。
+开始前fetch确认customer-audit、ai-billing均无两个目标Executor文件的新分歧，
+不需要rebase；提交可独立cherry-pick，不合入历史共享service租户修改。
+验证命令：go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime
+./internal/services -count=1。真实服务器隔离验证最多5个AI轮次，不运行30/50轮，
+既有知识、人设、模型及调用路径保持不变，不能把单测模拟裁决当作真实模型通过。
+
+生产基线6108b44，备份/opt/backups/agentdesk-20260908-existing-knowledge-answer，
+完整数据库gzip与shared配置SHA已校验。发布先核对基线及活动任务，校验新二进制
+后原子切换；异常只切回/opt/agentdesk/releases/20260907-request-answer-6108b44，
+不恢复SQL或运行配置，不回退消息。自动测试和真实发布结果完成后追加。
+
 ## 2026-09-08 用户原意澄清与验收纠正
 
 用户确认消息18060的“纸币”是笔误，实际需求是纸笔/草稿纸，本轮不处理现金场景。

@@ -69,6 +69,142 @@ func TestKnowledgeEvidenceJudgePromptDefinesApplicableAspectsAndPolicyAnswers(t 
 	}
 }
 
+func TestKnowledgeEvidenceJudgePromptPreservesApplicableKnowledgeWithoutInventingCapabilities(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, required := range []string{
+		"适用知识的可回答性不等于所有细节都已确认",
+		"先保留这份可用答复",
+		"不能因此把整条知识判 insufficient",
+		"不补出“可以、能送到、已安排”等原文没有确认的结论",
+		"设施已经故障、方案已被拒绝或客户坚持必须现场执行时",
+		"hotel_info 的 partial",
+		"事实维度限制的是答复外推，不是否决已有知识",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Errorf("missing applicable-knowledge boundary %q", required)
+		}
+	}
+}
+
+func TestKnowledgeEvidenceJudgeApplicablePartialAnswersPreserveRoutingBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name, intent, question, faq, answer, missing string
+		usable, handoff                              bool
+	}{
+		{"delivery_information", "hotel_info", "外卖可以送上来吗", "你们家有外卖机器人吗？", "有外卖机器人的。", "外卖能否送上楼", false, false},
+		{"charging_information", "hotel_info", "充电桩怎么收费", "酒店有充电桩吗？", "酒店有充电桩。", "充电价格", false, false},
+		{"service_facility", "service_request", "我想洗衣服", "酒店有洗衣机吗？", "洗衣房有自助洗衣机。", "洗衣步骤", true, false},
+		{"onsite_service", "service_request", "洗衣机坏了，请同事来处理", "酒店有洗衣机吗？", "洗衣房有自助洗衣机。", "维修处理", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hit := judgeTestHit(1, 101, test.faq, "问题："+test.faq+"\n答案："+test.answer, 0.531)
+			retriever := judgeTestRetriever(nil)
+			retriever.result = &retrievers.KnowledgeRetrieveResult{
+				KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit},
+				Hits: []rag.RetrieveResult{hit}, ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+			}
+			judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+				raw := fmt.Sprintf(`{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[
+{"layer":"store","decision":"partial","hasUsableSelfService":%t,"selectedCandidateIds":["T1C1"],"answerText":%q,
+"supportedFacts":[{"factId":"F1","aspect":"existence","statement":%q,"criticalValues":[]}],"missingAspects":[%q]}]}]}`,
+					test.usable, test.answer, test.answer, test.missing)
+				parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed, Trace: callbacks.KnowledgeEvidenceJudgeTraceData{Status: "completed"}}
+			}}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: test.intent, Text: test.question, ResolvedText: test.question, NeedsKnowledge: true, Output: "knowledge_text_reply",
+			}}})
+			intent := hotelInfoIntent()
+			intent.PrimaryIntent = test.intent
+			state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+				Request: newKnowledgePolicyRunInput(test.question, "1"), Summary: &RunResult{}, Collector: collector, Intent: intent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			trace := collector.Data.Pipeline.EvidenceJudge
+			if judge.calls != 1 || len(trace.Tasks) != 1 || trace.DeferredHandoff != test.handoff {
+				t.Fatalf("partial routing changed calls or service boundaries: %+v", trace)
+			}
+			task := trace.Tasks[0]
+			if task.Decision != "partial" || task.SelectedLayer != "store" || len(task.MissingAspects) != 1 || task.MissingAspects[0] != test.missing {
+				t.Fatalf("routing must not erase unknowns or promote partial to complete: %+v", task)
+			}
+			if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, test.answer) {
+				t.Fatal("selected existing knowledge was discarded")
+			}
+			if !test.handoff && (state.Input.Summary.handoffDirective || task.Disposition != runtimeKnowledgeDispositionAnswer) {
+				t.Fatalf("an applicable information answer must not request handoff: %+v", task)
+			}
+			if text, err := renderLockedReplyContent(textReplyTaskGroup{TaskID: "T1", EvidenceLocked: true, AnswerText: task.AnswerText}); err != nil || text != test.answer {
+				t.Fatalf("reply must use the selected answer without disclaimers or capability expansion: %q, %v", text, err)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceJudgePartialInformationKeepsIndependentHandoffTask(t *testing.T) {
+	robot := judgeTestHit(1, 101, "机器人", "问题：有外卖机器人吗？\n答案：有外卖机器人的。", 0.531)
+	repair := judgeTestHit(1, 102, "空调维修", "问题：空调坏了怎么办？\n答案：转接", 0.92)
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{
+		{TaskID: "T1", Intent: "hotel_info", Query: "外卖可以送上来吗", Result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{robot}, Hits: []rag.RetrieveResult{robot},
+			ContextResults: []rag.RetrieveResult{robot}, ContextText: robot.Content,
+		}},
+		{TaskID: "T2", Intent: "service_request", Query: "空调坏了怎么办", Result: &retrievers.KnowledgeRetrieveResult{
+			KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{repair}, Hits: []rag.RetrieveResult{repair},
+			ContextResults: []rag.RetrieveResult{repair}, ContextText: repair.Content,
+		}},
+	}}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1}, retrievers.DefaultKnowledgeRetrieveOptions(), "", batch.Questions)
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "")
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[
+{"taskId":"T1","layers":[{"layer":"store","decision":"partial","hasUsableSelfService":false,"selectedCandidateIds":["T1C1"],"answerText":"有外卖机器人的。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"有外卖机器人的。","criticalValues":[]}],"missingAspects":["配送范围"]}]},
+{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T2C1"],"answerText":"","supportedFacts":[],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, tasks, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+	dispositions := runtimeKnowledgeQuestionDispositions(batch)
+	answered, pending, retry := splitRuntimeKnowledgeQuestionDispositions(dispositions)
+	if len(trace.Tasks) != 2 || answered != 1 || len(pending) != 1 || pending[0].TaskID != "T2" || len(retry) != 0 {
+		t.Fatalf("only the actual repair task may enter handoff: trace=%+v pending=%+v", trace, pending)
+	}
+	if dispositions[0].NeedsHandoff || trace.Tasks[0].AnswerText == nil || *trace.Tasks[0].AnswerText != "有外卖机器人的。" || trace.Tasks[1].Disposition != runtimeKnowledgeDispositionDirectHandoff {
+		t.Fatalf("independent answer and handoff lost their task ownership or order: %+v", trace)
+	}
+}
+
+func TestKnowledgeEvidenceJudgePartialStoreAnswerIsNotReplacedByGeneralHandoff(t *testing.T) {
+	storeHit := judgeTestHit(1, 101, "外卖机器人", "问题：有外卖机器人吗？\n答案：有外卖机器人的。", 0.531)
+	generalHit := judgeTestHit(2, 201, "外卖", "问题：外卖可以送上来吗？\n答案：转接", 0.95)
+	result := judgeTestRetrieveResult(storeHit, generalHit)
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{
+		TaskID: "T1", Intent: "hotel_info", Query: "外卖可以送上来吗", Result: result,
+	}}}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1, 2}, result.Options, "", batch.Questions)
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1, 2}, nil, "")
+	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[
+{"layer":"store","decision":"partial","hasUsableSelfService":false,"selectedCandidateIds":["T1C1"],"answerText":"有外卖机器人的。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"有外卖机器人的。","criticalValues":[]}],"missingAspects":["配送范围"]},
+{"layer":"general","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T1C2"],"answerText":"","supportedFacts":[],"missingAspects":[]}]}]}`
+	parsed, err := parseKnowledgeEvidenceJudgeRuntimeResponse(raw, tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, tasks, knowledgeEvidenceJudgeOutcome{Applied: true, Selections: parsed})
+	if len(trace.Tasks) != 1 || trace.Tasks[0].SelectedLayer != "store" || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer {
+		t.Fatalf("general handoff must not discard the existing store answer: %+v", trace)
+	}
+	if len(result.RawHits) != 2 || len(result.Hits) != 1 || result.Hits[0].KnowledgeBaseID != 1 {
+		t.Fatalf("retain raw diagnostics but expose only the selected store answer: %+v", result)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeRuntimePreservesApplicableAspectAndPolicyDecisions(t *testing.T) {
 	for _, test := range []struct {
 		name, question, answer, decision, aspect string
@@ -585,7 +721,7 @@ func TestKnowledgeEvidenceJudgeMixedProtocolFailureOnlyIsolatesFailedTask(t *tes
 	}
 }
 
-func TestKnowledgeEvidenceJudgePartialAndProtocolFailureKeepAnswerHandoffAndSafeReply(t *testing.T) {
+func TestKnowledgeEvidenceJudgePartialAndProtocolFailureKeepAnswersWithoutHandoff(t *testing.T) {
 	robotHit := judgeTestHit(1, 101, "外卖机器人", "问题：外卖机器人能送到房间吗\n答案：门店有外卖机器人。", 0.93)
 	ownerHit := judgeTestHit(1, 102, "客房用品", "问题：浴巾在哪里\n答案：浴巾放在衣柜里。", 0.82)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -645,8 +781,8 @@ func TestKnowledgeEvidenceJudgePartialAndProtocolFailureKeepAnswerHandoffAndSafe
 		t.Fatalf("partial evidence must survive a sibling protocol failure without another Judge call: calls=%d result=%#v", judge.calls, state.RetrieveResult)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
-		t.Fatalf("the partial task must retain its missing-aspect handoff: %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 || state.Input.Summary.handoffDirective {
+		t.Fatalf("usable information and a sibling protocol failure must not authorize handoff: %#v", trace)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
 	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].SelectedLayer != knowledgeEvidenceLayerStore || len(plan.TaskPlans[0].SupportedFacts) != 1 || plan.TaskPlans[1].SelectedLayer != "" {
@@ -3541,7 +3677,7 @@ func TestBuildKnowledgeEvidenceJudgeTasksCarriesIntentObjectiveAndEntities(t *te
 
 func TestKnowledgeEvidenceJudgePromptSupportsFAQRehydrationAndSameLayerCombination(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
-	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "最小完整答案规则", "未被客户询问的路线/时长/价格/延伸建议不得加入", "普通动作词不得放入 criticalValues", "同一完整句已经覆盖多个维度", "禁止再输出被该完整句包含的摘要或碎片", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined", "有外卖机器人", "不能生成“能送到房间”"} {
+	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "最小完整答案规则", "未被客户询问的路线/时长/价格/延伸建议不得加入", "普通动作词不得放入 criticalValues", "同一完整句已经覆盖多个维度", "禁止再输出被该完整句包含的摘要或碎片", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined", "不能扩写未确认的配送范围、使用条件或执行结果"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("expected judge prompt to contain %q, got %q", required, prompt)
 		}
@@ -5524,7 +5660,7 @@ func TestKnowledgeEvidenceJudgeGeneralCompleteWinsStorePartial(t *testing.T) {
 }
 
 func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *testing.T) {
-	answer := "门店有外卖机器人。不好意思，是否能送到房门口还不能确认。"
+	answer := "门店有外卖机器人。"
 	storePartial := judgeTestHit(1, 101, "外卖机器人", "问题：有外卖机器人吗\n答案：有外卖机器人的。", 0.93)
 	generalPartial := judgeTestHit(2, 201, "通用机器人", "问题：酒店会配机器人吗\n答案：部分酒店会配。", 0.88)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -5592,14 +5728,11 @@ func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *tes
 		t.Fatalf("selected facts were not propagated to ReplyPlan: %#v", planTask)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
-		t.Fatalf("partial missing scope must be deferred without removing its answer task: %#v", trace)
-	}
-	if !strings.Contains(trace.DeferredHandoffReason, "仅待确认缺失方面") || !strings.Contains(trace.DeferredHandoffReason, "机器人是否能送到房间") || strings.Contains(trace.DeferredHandoffReason, "完整待处理问题") {
-		t.Fatalf("deferred reason must contain only the missing scope, got %q", trace.DeferredHandoffReason)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 || trace.DeferredHandoffReason != "" {
+		t.Fatalf("partial information must not turn its internal unknowns into handoff: %#v", trace)
 	}
 	if summary.handoffDirective {
-		t.Fatal("partial evidence must answer first and defer only its missing aspect")
+		t.Fatal("partial information must answer without handoff")
 	}
 	instructions := make([]string, 0, len(state.Decision.Instructions))
 	for _, message := range state.Decision.Instructions {
@@ -5608,8 +5741,11 @@ func TestKnowledgeEvidenceJudgeStorePartialFactsReachGenerateAndReplyPlan(t *tes
 		}
 	}
 	joinedInstructions := strings.Join(instructions, "\n")
-	if !strings.Contains(joinedInstructions, "仍保留在 active ReplyPlan") || !strings.Contains(joinedInstructions, "必须回答其 supportedFacts") || !strings.Contains(joinedInstructions, "机器人是否能送到房间") {
-		t.Fatalf("partial Generate boundary did not preserve the answer while deferring scope: %q", joinedInstructions)
+	if strings.Contains(joinedInstructions, "仅待确认缺失方面") || strings.Contains(joinedInstructions, "仍保留在 active ReplyPlan") {
+		t.Fatalf("partial information must not inject deferred-handoff instructions: %q", joinedInstructions)
+	}
+	if got, err := renderLockedReplyContent(textReplyTaskGroup{TaskID: "T1", EvidenceLocked: true, AnswerText: planTask.AnswerText}); err != nil || got != answer {
+		t.Fatalf("selected answer must remain unchanged through rendering: %q, %v", got, err)
 	}
 }
 
@@ -6847,11 +6983,11 @@ func TestStorePartialWithGeneralProtocolFailureIsIsolatedWithoutHandoff(t *testi
 		ContextText:      storeHit.Content,
 	}
 	batch := &runtimeKnowledgeRetrieveBatch{
-		Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Query: "外卖机器人能送到房间吗", Result: result}},
+		Questions: []runtimeKnowledgeQuestionResult{{TaskID: "T1", Intent: "hotel_info", Query: "外卖机器人能送到房间吗", Result: result}},
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1, 2}, result.Options, "外卖机器人能送到房间吗", batch.Questions)
 	tasks := []knowledgeEvidenceJudgeTask{{
-		TaskID: "T1", Query: "外卖机器人能送到房间吗",
+		TaskID: "T1", Intent: "hotel_info", Query: "外卖机器人能送到房间吗",
 		Candidates: []knowledgeEvidenceJudgeCandidate{
 			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: storeHit},
 			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerGeneral, Hit: generalHit},
@@ -6874,12 +7010,12 @@ func TestStorePartialWithGeneralProtocolFailureIsIsolatedWithoutHandoff(t *testi
 	if len(result.EffectiveHits) != 1 || len(result.Hits) != 1 || !strings.Contains(result.ContextText, "有外卖机器人") {
 		t.Fatalf("a valid store partial must remain customer-visible despite a failed general layer: %#v", result)
 	}
-	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswerThenHandoff || trace.Tasks[0].SelectedLayer != knowledgeEvidenceLayerStore {
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.Tasks[0].SelectedLayer != knowledgeEvidenceLayerStore {
 		t.Fatalf("the valid partial answer must win without a Judge protocol retry: %#v", trace)
 	}
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
-	if len(dispositions) != 1 || dispositions[0].NeedsRetry || !dispositions[0].NeedsHandoff || !dispositions[0].HasAnswer {
-		t.Fatalf("valid partial evidence must answer confirmed facts and defer only the missing part: %#v", dispositions)
+	if len(dispositions) != 1 || dispositions[0].NeedsRetry || dispositions[0].NeedsHandoff || !dispositions[0].HasAnswer {
+		t.Fatalf("valid partial information must answer confirmed facts without automatic handoff: %#v", dispositions)
 	}
 }
 
