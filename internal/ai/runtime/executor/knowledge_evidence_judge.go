@@ -375,11 +375,12 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 			Intent:           canonicalIntentCode(task.Intent),
 			Question:         firstNonEmptyReplyTaskText(task.OriginalText, task.Query),
 			ResolvedQuestion: strings.TrimSpace(task.Query),
-			RetrievalQuery:   strings.TrimSpace(task.RetrievalQuery),
-			SubIntent:        strings.TrimSpace(task.SubIntent),
-			Objective:        strings.TrimSpace(task.Objective),
-			Entities:         append([]knowledgeEvidenceJudgeEntity(nil), task.Entities...),
 			SourceContext:    append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
+		}
+		// Classification helps routing, but must not add requirements to an evidence question.
+		if isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
+			item.SubIntent = strings.TrimSpace(task.SubIntent)
+			item.Objective = strings.TrimSpace(task.Objective)
 		}
 		item.Candidates = make([]knowledgeEvidenceJudgePromptCandidate, 0, len(task.Candidates))
 		for _, candidate := range task.Candidates {
@@ -835,7 +836,7 @@ func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
 func knowledgeEvidenceJudgeSystemPrompt() string {
 	return strings.TrimSpace(`你是酒店客服知识证据裁判。你为每个客户任务在每个知识层选择证据，并给出基于该层证据的简短答复answerText；不执行动作、不决定转人工、不声称接待已完成。
 
-每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、subIntent、objective、entities、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion、objective、entities 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
+每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。不要把客户问能否自行完成某件事解读成酒店要替他执行；已有同目标的明确办理建议可以直接回答，不另外要求许可或执行能力证明。只有外部代办任务额外提供subIntent、objective来标注下述能力边界。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
 
 先按客户实际要求决定什么算答全：询问一个类别“有没有”，存在一个明确属于该类别的具体种类就足以回答“有”，答复写明已知种类即可，不要求所有子类都存在。顾客没有指定的“普通、标准、其他类型”等子类不得自行新增为必要条件或 missingAspects；只有客户明确限制某个类型、范围或用途时才按该限制判断。否定某个子类不能证明整个类别不存在；不同具体子类的一正一负不是冲突，只有同一主体、范围、条件下互相矛盾的结论才是冲突。
 

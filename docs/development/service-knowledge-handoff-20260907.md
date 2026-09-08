@@ -42,6 +42,18 @@ Judge仍输出“酒店没有本子，建议您可以在美团上下个外卖订
 解析、事实协议和转接不改。三输入复验将短反馈与天气/常识/颜色多题合并，
 反馈上下文使用隔离复制的原始错误问答，不触碰客户会话。
 
+99b6486复验2123/18160仍失败：Intent此次将酒店咨询标成
+hotel_info/external_proxy_action/availability，Judge两层insufficient，9.761秒。
+已恢复a1d89e2和原Profile。相同原话的food_delivery、supplies_self_help、
+external_proxy_action子标签漂移已在真实Trace中出现。
+继续仅在Judge输入构建处移除普通知识任务的派生subIntent/objective/entities/
+retrievalQuery，Task内部元数据及Trace不变；原问题、补全、实际来源、完整FAQ仍提供。
+仅真正service_request/external_proxy_action/action_request保留代办契约标签，
+普通service_request仍保留intent供已有自助路由使用。覆盖核对输入不改。
+固定回归验证同问同证据不同子标签的Judge任务载荷相同，并验证真实代办边界保留。
+累计3个模型输入，剩余2个用于外卖原话及合并的反馈/天气/常识/建议，
+混合维修本次不再额外模型复验，不能标为已通过。
+
 ## 2026-09-08 Judge、工具事件与互动最小修复
 
 基线 a1d89e2；目标为其风18135问外卖答本子、18139/18141/18149天气有结果却

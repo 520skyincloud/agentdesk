@@ -95,6 +95,32 @@ func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing
 	}
 }
 
+func TestJudgeQuestionDoesNotDriftWithInformationalRoutingLabels(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "hotel_info", OriginalText: "你们这可以点外卖吗", Query: "你们这可以点外卖吗",
+		SourceContext: []knowledgeEvidenceJudgeSourceMessage{{Role: "customer", Content: "你们这可以点外卖吗"}},
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: "store",
+			Hit: judgeTestHit(3, 101, "酒店有本子吗？", "问题：酒店有本子吗？\n答案：酒店没有哈，建议您可以在美团上下个外卖订单。", .7691)}},
+	}
+	original, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"food_delivery", "supplies_self_help", "external_proxy_action"} {
+		task.SubIntent, task.Objective, task.RetrievalQuery = label, "availability", "可以点外卖吗"
+		task.Entities = []knowledgeEvidenceJudgeEntity{{Text: "外卖", Type: "service"}}
+		got, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}))
+		if err != nil || string(got) != string(original) {
+			t.Fatalf("routing metadata changed the same evidence question: label=%s got=%s err=%v", label, got, err)
+		}
+	}
+	task.Intent, task.SubIntent, task.Objective = "service_request", "external_proxy_action", "action_request"
+	proxy := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}).Tasks[0]
+	if proxy.SubIntent != "external_proxy_action" || proxy.Objective != "action_request" {
+		t.Fatalf("actual external action boundary must remain explicit: %+v", proxy)
+	}
+}
+
 func TestKnowledgeEvidenceJudgePromptDefinesExternalProxyEvidenceBoundary(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
 	for _, expected := range []string{
@@ -4969,7 +4995,7 @@ func TestBuildKnowledgeEvidenceJudgePromptSeparatesFastGPTFAQQuestionAnswerAndRa
 	}
 }
 
-func TestBuildKnowledgeEvidenceJudgePromptIncludesTaskSemantics(t *testing.T) {
+func TestBuildKnowledgeEvidenceJudgePromptKeepsQuestionWithoutDerivedLabels(t *testing.T) {
 	prompt := buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{{
 		TaskID:    "T1",
 		Query:     "早餐几点",
@@ -4981,8 +5007,8 @@ func TestBuildKnowledgeEvidenceJudgePromptIncludesTaskSemantics(t *testing.T) {
 		t.Fatalf("expected one prompt task, got %#v", prompt.Tasks)
 	}
 	task := prompt.Tasks[0]
-	if task.SubIntent != "breakfast" || task.Objective != "time" || len(task.Entities) != 1 || task.Entities[0].Text != "早餐" || task.Entities[0].Type != "meal" {
-		t.Fatalf("task semantics must be disclosed to Judge: %#v", task)
+	if task.Question != "早餐几点" || task.ResolvedQuestion != "早餐几点" || task.SubIntent != "" || task.Objective != "" || len(task.Entities) != 0 {
+		t.Fatalf("the original question must carry its semantics without derived routing labels: %#v", task)
 	}
 }
 
