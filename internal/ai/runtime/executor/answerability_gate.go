@@ -656,7 +656,8 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	}
 	if spec.ResolutionState == "clear" && spec.RelationToPrevious == "independent" {
 		if original := runtimeIntentRetrievalQuery(spec.OriginalText); original != "" {
-			query = original
+			// A complete atomic question does not need a model-selected shorter excerpt.
+			return original
 		}
 	}
 	if evidenceQuery := strings.TrimSpace(spec.EvidenceQuery); evidenceQuery != "" {

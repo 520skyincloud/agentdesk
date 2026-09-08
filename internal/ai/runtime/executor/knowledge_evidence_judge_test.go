@@ -34,6 +34,8 @@ func TestJudgeSelectsApplicableFactsBeforeComposingTheAnswer(t *testing.T) {
 	for _, rule := range []string{
 		"选中 Candidate ID 只表示使用其中的适用事实",
 		"混合 FAQ 中能独立回答当前问题的次要事实可以使用",
+		"原问题的物品或主题不自动成为后续独立操作建议的限制条件",
+		"不复制前面的无关否定结论",
 		"不能把“在某条件下可采用的办法”改成无条件政策",
 		"partial 不是保留所有相关背景的许可",
 		"不能先复制候选答案，再为其中的无关内容寻找理由",

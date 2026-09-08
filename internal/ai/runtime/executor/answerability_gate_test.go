@@ -972,12 +972,13 @@ func TestRuntimeEvidenceQueryUsesSourceSpanOrFallsBackWithoutChangingTask(t *tes
 		{"added walking time", "地铁在哪", "地铁在哪", "地铁步行几分钟能到", "clear", "independent", "地铁在哪"},
 		{"changed area", "大堂WiFi密码是什么", "大堂WiFi密码是什么", "客房WiFi密码是什么", "clear", "independent", "大堂WiFi密码是什么"},
 		{"explicit room scope", "外卖可以直接送到房门口吗", "外卖可以直接送到房门口吗", "外卖可以直接送到房门口吗", "clear", "independent", "外卖可以直接送到房门口吗"},
-		{"public policy excerpt", "合柴和艺林有免费停车吗", "合柴和艺林有免费停车吗", "免费停车吗", "clear", "independent", "免费停车吗"},
+		{"independent question keeps source", "你们这可以点外卖吗", "你们这可以点外卖吗", "可以点外卖吗", "clear", "independent", "你们这可以点外卖吗"},
+		{"independent policy keeps scope", "合柴和艺林有免费停车吗", "合柴和艺林有免费停车吗", "免费停车吗", "clear", "independent", "合柴和艺林有免费停车吗"},
 		{"context keeps object", "那麦田呢", "麦田房型有办公桌吗", "麦田房型有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
 		{"context fallback", "那麦田呢", "麦田房型有办公桌吗", "麦田房型所有房间都有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
 		{"source excerpt with room context", "外卖可以送上来吗？我住1315", "外卖可以送到1315房间吗？", "外卖可以送上来吗", "resolved_from_context", "follow_up", "外卖可以送上来吗"},
 		{"same turn context", "几点", "早餐几点开始", "早餐几点开始", "resolved_from_context", "independent", "早餐几点开始"},
-		{"case and punctuation", "大堂 WiFi 密码是什么？", "大堂 WiFi 密码是什么？", "大堂wifi密码是什么", "clear", "independent", "大堂wifi密码是什么"},
+		{"case and punctuation", "大堂 WiFi 密码是什么？", "大堂 WiFi 密码是什么？", "大堂wifi密码是什么", "clear", "independent", "大堂 WiFi 密码是什么"},
 		{"legacy no source", "", "早餐几点开始", "", "", "", "早餐几点开始"},
 		{"legacy rewritten query", "", "早餐几点开始", "早餐几点可以送到房间", "", "", "早餐几点开始"},
 	}
@@ -994,6 +995,34 @@ func TestRuntimeEvidenceQueryUsesSourceSpanOrFallsBackWithoutChangingTask(t *tes
 				t.Fatalf("query selection changed the semantic task: %+v", spec)
 			}
 		})
+	}
+}
+
+func TestIndependentTasksUseOneOriginalRetrievalEachAndKeepTaskOrder(t *testing.T) {
+	const delivery = "你们这可以点外卖吗"
+	const parking = "你们这有免费停车吗"
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{3}}
+	batch, err := retrieveContextForRuntimeQuestionList(
+		context.Background(), retriever, retrievers.KnowledgeRetrieveOptions{}, delivery+"？"+parking,
+		[]runtimeKnowledgeQuestionSpec{
+			{TaskID: "T1", Intent: "hotel_info", Query: delivery, OriginalText: delivery,
+				EvidenceQuery: "可以点外卖吗", ResolutionState: "clear", RelationToPrevious: "independent", SourceRefs: []string{"U1"}},
+			{TaskID: "T2", Intent: "hotel_info", Query: parking, OriginalText: parking,
+				EvidenceQuery: "免费停车吗", ResolutionState: "clear", RelationToPrevious: "independent", SourceRefs: []string{"U1"}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retriever.queries) != 2 || len(batch.Questions) != 2 {
+		t.Fatalf("each model task must issue exactly one retrieval: queries=%v batch=%+v", retriever.queries, batch)
+	}
+	for index, original := range []string{delivery, parking} {
+		question := batch.Questions[index]
+		if question.TaskID != fmt.Sprintf("T%d", index+1) || question.Query != original || question.EvidenceQuery != original ||
+			len(question.SourceRefs) != 1 || question.SourceRefs[0] != "U1" {
+			t.Fatalf("retrieval must retain each task's original scope and order: %+v", question)
+		}
 	}
 }
 
