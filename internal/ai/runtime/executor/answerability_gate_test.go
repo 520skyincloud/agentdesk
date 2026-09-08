@@ -940,14 +940,14 @@ func TestModelEvidenceQueryDoesNotReplaceFullJudgeQuestion(t *testing.T) {
 	tasks := convertRuntimeIntentTasks([]runtimeIntentTaskJSON{{
 		Intent: "hotel_info", SubIntent: "parking", Objective: "price",
 		Text: "这两种房型有免费停车吗", ResolvedText: resolved,
-		EvidenceQuery: "酒店停车收费政策", NeedsKnowledge: true, SourceRefs: []string{"U1"},
+		EvidenceQuery: "免费停车吗", NeedsKnowledge: true, SourceRefs: []string{"U1"},
 	}})
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "parking", Objective: "price",
 		Text: tasks[0].Text, ResolvedText: resolved, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true,
 	}}}
 	specs, ok := runtimeKnowledgeQuestionsFromReplyPlan(plan, callbacks.IntentTraceData{IntentTasks: tasks})
-	if !ok || len(specs) != 1 || runtimeIntentEvidenceQuery(specs[0]) != "酒店停车收费政策" || specs[0].Query != resolved {
+	if !ok || len(specs) != 1 || runtimeIntentEvidenceQuery(specs[0]) != "免费停车吗" || specs[0].Query != resolved {
 		t.Fatalf("retrieval target and Judge conditions must remain separate: %+v", specs)
 	}
 	tasks[0].EvidenceQuery = ""
@@ -956,6 +956,78 @@ func TestModelEvidenceQueryDoesNotReplaceFullJudgeQuestion(t *testing.T) {
 		t.Fatalf("old profiles must retain the original full-question query: %+v", specs)
 	}
 }
+
+func TestRuntimeEvidenceQueryUsesSourceSpanOrFallsBackWithoutChangingTask(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+		resolved string
+		evidence string
+		state    string
+		relation string
+		want     string
+	}{
+		{"delivery expansion", "外卖可以送上来吗", "外卖可以送上来吗", "外卖是否可以直接送到房间", "clear", "independent", "外卖可以送上来吗"},
+		{"resolved expansion", "外卖可以送上来吗", "外卖是否可以直接送到房间", "外卖是否可以直接送到房间", "clear", "independent", "外卖可以送上来吗"},
+		{"added walking time", "地铁在哪", "地铁在哪", "地铁步行几分钟能到", "clear", "independent", "地铁在哪"},
+		{"changed area", "大堂WiFi密码是什么", "大堂WiFi密码是什么", "客房WiFi密码是什么", "clear", "independent", "大堂WiFi密码是什么"},
+		{"explicit room scope", "外卖可以直接送到房门口吗", "外卖可以直接送到房门口吗", "外卖可以直接送到房门口吗", "clear", "independent", "外卖可以直接送到房门口吗"},
+		{"public policy excerpt", "合柴和艺林有免费停车吗", "合柴和艺林有免费停车吗", "免费停车吗", "clear", "independent", "免费停车吗"},
+		{"context keeps object", "那麦田呢", "麦田房型有办公桌吗", "麦田房型有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
+		{"context fallback", "那麦田呢", "麦田房型有办公桌吗", "麦田房型所有房间都有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
+		{"same turn context", "几点", "早餐几点开始", "早餐几点开始", "resolved_from_context", "independent", "早餐几点开始"},
+		{"case and punctuation", "大堂 WiFi 密码是什么？", "大堂 WiFi 密码是什么？", "大堂wifi密码是什么", "clear", "independent", "大堂wifi密码是什么"},
+		{"legacy no source", "", "早餐几点开始", "", "", "", "早餐几点开始"},
+		{"legacy rewritten query", "", "早餐几点开始", "早餐几点可以送到房间", "", "", "早餐几点开始"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := runtimeKnowledgeQuestionSpec{
+				Intent: "hotel_info", OriginalText: tt.original, Query: tt.resolved,
+				EvidenceQuery: tt.evidence, ResolutionState: tt.state, RelationToPrevious: tt.relation,
+			}
+			if got := runtimeIntentEvidenceQuery(spec); got != tt.want {
+				t.Fatalf("query=%q, want %q", got, tt.want)
+			}
+			if spec.Query != tt.resolved || spec.OriginalText != tt.original || spec.EvidenceQuery != tt.evidence {
+				t.Fatalf("query selection changed the semantic task: %+v", spec)
+			}
+		})
+	}
+}
+
+func TestExpandedEvidenceQueryUsesOneOriginalRetrievalAndKeepsJudgeContext(t *testing.T) {
+	const original = "外卖可以送上来吗"
+	const expanded = "外卖是否可以直接送到房间"
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			original: {RawHits: []rag.RetrieveResult{{
+				KnowledgeBaseID: 1, ChunkID: 101,
+				Content: "问题：你们家有外卖机器人吗？\n答案：有外卖机器人的。", Score: 0.53,
+			}}},
+		},
+	}
+	batch, err := retrieveContextForRuntimeQuestionList(
+		context.Background(), retriever, retrievers.KnowledgeRetrieveOptions{}, original,
+		[]runtimeKnowledgeQuestionSpec{{
+			TaskID: "T1", Intent: "hotel_info", Query: original, OriginalText: original,
+			EvidenceQuery: expanded, ResolutionState: "clear", RelationToPrevious: "independent",
+			SourceRefs: []string{"U1"},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0] != original {
+		t.Fatalf("fallback must replace, not add another retrieval: %#v", retriever.queries)
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, original)
+	if len(tasks) != 1 || tasks[0].Query != original || tasks[0].RetrievalQuery != original || len(tasks[0].Candidates) != 1 {
+		t.Fatalf("original question and retrieved evidence must reach Judge: %#v", tasks)
+	}
+}
+
 func TestMergeRuntimeKnowledgeQueriesDoesNotInventKnowledgeBesideResourceTask(t *testing.T) {
 	query := "客人刚才连续发了几条消息。请按顺序合并理解，最后统一回复当前真正的问题：\n1. [消息] 定位发我\n2. [消息] 早餐几点"
 	got := mergeRuntimeKnowledgeQueries(query, nil, []string{"定位发我"})

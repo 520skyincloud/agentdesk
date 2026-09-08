@@ -105,6 +105,21 @@ func TestRuntimeIntentPromptKeepsActorAndEvidenceGoalDistinct(t *testing.T) {
 	}
 }
 
+func TestRuntimeIntentPromptRestrictsEvidenceQueryToSourceExcerpt(t *testing.T) {
+	prompt := runtimeIntentDetectSystemPrompt()
+	for _, expected := range []string{
+		"evidenceQuery 只能摘取检索依据中的连续原文片段",
+		"clear + independent",
+		"resolved_from_context",
+		"不能新增执行主体、配送终点、时间、数量或使用范围",
+		"不需要精简时留空",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("missing source-bound retrieval rule %q", expected)
+		}
+	}
+}
+
 func TestNormalizeModelIntentHandoffCancellationCannotStartHandoff(t *testing.T) {
 	for _, semanticContract := range []bool{false, true} {
 		for _, withSibling := range []bool{false, true} {

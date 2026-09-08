@@ -654,8 +654,18 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 		}
 		return query + "；办理时酒店地址怎么填写；如何自行办理"
 	}
+	if spec.ResolutionState == "clear" && spec.RelationToPrevious == "independent" {
+		if original := runtimeIntentRetrievalQuery(spec.OriginalText); original != "" {
+			query = original
+		}
+	}
 	if evidenceQuery := strings.TrimSpace(spec.EvidenceQuery); evidenceQuery != "" {
-		return evidenceQuery
+		// Query selection checks only source text; it never rejects the task or decides answerability.
+		excerpt := normalizeRuntimeKnowledgeQuery(evidenceQuery)
+		if excerpt != "" && strings.Contains(normalizeRuntimeKnowledgeQuery(query), excerpt) {
+			return evidenceQuery
+		}
+		return query
 	}
 	if query == "" || !runtimeIntentShortKnowledgeLabel(query) {
 		return query

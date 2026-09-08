@@ -571,7 +571,7 @@ func runtimeIntentDetectSystemPromptForProfile(profile *models.ReplyIntentProfil
 	if schemaText == "" {
 		schemaText = replyintent.DefaultHotelIntentJSONSchema()
 	}
-	return strings.TrimSpace(runtimeQuestionFirstIntentInstruction() + "\n\n" + prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。围绕当前要回答的业务目标写简短自包含检索问题；与该目标无关的背景名称不要挤占查询。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。信息不足时 evidenceQuery 留空，沿用 resolvedText；不得猜答案或本地规则值。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。同一个 URef 内也可以包含多个问题及其承接上下文，此时允许 independent + resolved_from_context，sourceRefs 只写该 URef 一次，不必虚构更早的消息或 previous 关系。问号、标点或表情也是客户原文，text 原样保留；与业务问题合并输入时可作为 context_only 的互动或真实上下文，不能代替业务 Task 的主要来源。")
+	return strings.TrimSpace(runtimeQuestionFirstIntentInstruction() + "\n\n" + prompt + "\n\n" + schemaText + "\n\n本轮内部兼容扩展：intentTasks 允许额外输出 evidenceQuery 字符串，仅用于知识召回。clear + independent 的完整新问题以 text 原话为检索依据，resolvedText 保留原话；resolved_from_context 的问题先在 resolvedText 中补全已知指代，以补全问题为检索依据，不得猜测指代或答案。evidenceQuery 只能摘取检索依据中的连续原文片段，保留当前问题的对象、属性及仍有效的限定，不重新改写句子，不需要精简时留空。只有与所问公共服务无关的背景名称可以不摘取；房型设施和区域配置的对象、条件不能省略。不能新增执行主体、配送终点、时间、数量或使用范围，不用同义扩写替代客户表达。resolvedText 仍保留全部对象、区域、条件，交给 Judge 判断适用性。其他字段约定不变。\n上下文关系按下方实际提供的有界会话历史判断，不限于紧邻完整问答对；只有 answer_rejected 继续要求紧邻AI答复。同一个 URef 内也可以包含多个问题及其承接上下文，此时允许 independent + resolved_from_context，sourceRefs 只写该 URef 一次，不必虚构更早的消息或 previous 关系。问号、标点或表情也是客户原文，text 原样保留；与业务问题合并输入时可作为 context_only 的互动或真实上下文，不能代替业务 Task 的主要来源。")
 }
 
 func runtimeIntentProfileExpectsTaskSemantics(profile *models.ReplyIntentProfile) bool {
@@ -626,10 +626,10 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	}
 	b.WriteString("\n\n判别纪律：只给“当前消息”分类；最近原始消息、媒体理解和长期记忆只用于解释“这个/刚才/还/继续/那”等指代。")
 	b.WriteString("如果当前消息已经有独立的新主题，禁止沿用上一轮早餐、停车、投诉、安全、转人工等历史主题。")
-	b.WriteString("客户原话决定本轮请求范围；resolvedText 只补全指代，不能把询问存在改为询问能力、范围或请求执行，也不能继承已经撤回的动作。原话中的‘只说名称、只发账号、不用密码’等回答范围限制必须保留在 resolvedText；evidenceQuery 可以压缩检索表达，但不能增加客户没问的要求。")
+	b.WriteString("客户原话决定本轮请求范围；resolvedText 只补全指代，不能把询问存在改为询问能力、范围或请求执行，也不能继承已经撤回的动作。原话中的‘只说名称、只发账号、不用密码’等回答范围限制必须保留在 resolvedText；evidenceQuery 只摘取上述检索依据的连续原文，不能增加客户没问的要求。")
 	b.WriteString("clarification_answer 只用于回答紧邻客服正在追问的必要字段、条件、偏好、范围或选项；此时必须继承该业务 intent/subIntent，intentTasks[].text 保留客户当前原表达，intentTasks[].resolvedText 写成包含上一轮业务主题和当前补充内容的完整检索问题。")
 	b.WriteString("例如 AI 问附近餐饮口味、客户答‘麻辣口味的’，应继承餐饮业务并补全偏好。对追问、比较、复述或省略问法，从已提供的有界历史中选择最近仍相关且唯一的业务对象，不要求它必须在紧邻一问一答里出现；中间的感谢、单独重发某个字段、房号补充或系统通知不自动切断业务上下文。明确切换主题时更新对象；有多个同等合理对象且无法确定时才澄清。旧问题即使已回答也能供本轮回指，但不能重新变成待答任务。客户已撤回的动作和放弃的条件不得带入新任务，例如客户改为自己操作后只问地址，就只保留地址问题。")
-	b.WriteString("拆题按答案目标而非共同场景：同在房间里的不同物品不是同一对象；空调存在性与矿泉水数量费用应分别建 Task，三种用品分别去哪拿应分别建 Task。同一批矿泉水数量和费用可合并。evidenceQuery 用当前所问服务或设施作主语，不是缩短 resolvedText；resolvedText 保留全部裁决条件。询问酒店公共服务政策时，房型、入住背景只留在 resolvedText，不写入 evidenceQuery，例如‘合柴和艺林有免费停车吗’输出 evidenceQuery='酒店停车是否免费'；仍须保留费用、时间、条件等当前请求方面。询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉，例如‘麦田有办公桌吗’或‘大堂WiFi密码’仍保留麦田或大堂。")
+	b.WriteString("拆题按答案目标而非共同场景：同在房间里的不同物品不是同一对象；空调存在性与矿泉水数量费用应分别建 Task，三种用品分别去哪拿应分别建 Task。同一批矿泉水数量和费用可合并。evidenceQuery 摘取当前所问服务或设施及对应问题，resolvedText 保留全部裁决条件。询问酒店公共服务政策时，房型、入住背景只留在 resolvedText，不写入 evidenceQuery，例如‘合柴和艺林有免费停车吗’可以摘取 evidenceQuery='免费停车吗'；仍须保留费用、时间、条件等当前请求方面。询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉，例如‘麦田有办公桌吗’或‘大堂WiFi密码’仍保留麦田或大堂。")
 	b.WriteString("先区分当前请求的执行主体与目的，再选类别；不能因话题包含外卖、订单或上一轮的动作就继续代操作。只有当前明确委托酒店替客户在第三方平台下单、购买、预订、叫车或联系外部商家时，输出 service_request/external_proxy_action，objective=action_request，needsKnowledge=true，以便查询地址、电话、入口或步骤等自助方案。询问酒店自身设备或服务的存在性、能力、范围、规则属于 hotel_info，先检索知识；例如客户自己下单后询问酒店机器人配送范围，不是委托下单，resolvedText 不得添加原文未指定的酒店工作人员。酒店内部送物、补用品、维修、开门、换房、打扫等实际执行请求仍使用原有 service_request 子意图，禁止归入 external_proxy_action。")
 	b.WriteString("撤回人工接待意愿属于 interaction/acknowledgement，objective=cancel，不是再次要求转接；取消订单、预订等业务动作仍按其业务类别处理，不能仅因包含取消就降为互动。当前已经由AI接待时只接住撤回，不得声称取消了未经执行的订单或服务。")
 	b.WriteString("客户明确问‘刚刚都问了什么’‘刚才聊了什么’‘你刚才回答了哪些’等会话回顾时，只建立一个 interaction/conversation_recap 文本任务，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 写明回顾最近当前会话；不能当作新闲聊或 unresolved，也不能重新执行历史业务任务。")

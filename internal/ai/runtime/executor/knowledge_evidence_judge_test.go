@@ -75,6 +75,7 @@ func TestKnowledgeEvidenceJudgePromptPreservesApplicableKnowledgeWithoutInventin
 		"适用知识的可回答性不等于所有细节都已确认",
 		"先保留这份可用答复",
 		"不能因此把整条知识判 insufficient",
+		"不能把缺少完整证明等同于没有适用事实",
 		"不补出“可以、能送到、已安排”等原文没有确认的结论",
 		"设施已经故障、方案已被拒绝或客户坚持必须现场执行时",
 		"hotel_info 的 partial",
