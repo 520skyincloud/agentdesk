@@ -662,7 +662,8 @@ func runtimeIntentEvidenceQuery(spec runtimeKnowledgeQuestionSpec) string {
 	if evidenceQuery := strings.TrimSpace(spec.EvidenceQuery); evidenceQuery != "" {
 		// Query selection checks only source text; it never rejects the task or decides answerability.
 		excerpt := normalizeRuntimeKnowledgeQuery(evidenceQuery)
-		if excerpt != "" && strings.Contains(normalizeRuntimeKnowledgeQuery(query), excerpt) {
+		if excerpt != "" && (strings.Contains(normalizeRuntimeKnowledgeQuery(query), excerpt) ||
+			strings.Contains(normalizeRuntimeKnowledgeQuery(spec.OriginalText), excerpt)) {
 			return evidenceQuery
 		}
 		return query

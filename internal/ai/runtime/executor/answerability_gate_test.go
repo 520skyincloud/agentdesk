@@ -975,6 +975,7 @@ func TestRuntimeEvidenceQueryUsesSourceSpanOrFallsBackWithoutChangingTask(t *tes
 		{"public policy excerpt", "合柴和艺林有免费停车吗", "合柴和艺林有免费停车吗", "免费停车吗", "clear", "independent", "免费停车吗"},
 		{"context keeps object", "那麦田呢", "麦田房型有办公桌吗", "麦田房型有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
 		{"context fallback", "那麦田呢", "麦田房型有办公桌吗", "麦田房型所有房间都有办公桌吗", "resolved_from_context", "reference_previous", "麦田房型有办公桌吗"},
+		{"source excerpt with room context", "外卖可以送上来吗？我住1315", "外卖可以送到1315房间吗？", "外卖可以送上来吗", "resolved_from_context", "follow_up", "外卖可以送上来吗"},
 		{"same turn context", "几点", "早餐几点开始", "早餐几点开始", "resolved_from_context", "independent", "早餐几点开始"},
 		{"case and punctuation", "大堂 WiFi 密码是什么？", "大堂 WiFi 密码是什么？", "大堂wifi密码是什么", "clear", "independent", "大堂wifi密码是什么"},
 		{"legacy no source", "", "早餐几点开始", "", "", "", "早餐几点开始"},
@@ -993,6 +994,40 @@ func TestRuntimeEvidenceQueryUsesSourceSpanOrFallsBackWithoutChangingTask(t *tes
 				t.Fatalf("query selection changed the semantic task: %+v", spec)
 			}
 		})
+	}
+}
+
+func TestContextualSourceExcerptReachesRetrievalWithoutLosingJudgeConditions(t *testing.T) {
+	const original = "外卖可以送上来吗？我住1315"
+	const resolved = "外卖可以送到1315房间吗？"
+	const evidence = "外卖可以送上来吗"
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		resultsByQuery: map[string]*retrievers.KnowledgeRetrieveResult{
+			evidence: {RawHits: []rag.RetrieveResult{{
+				KnowledgeBaseID: 1, ChunkID: 101,
+				Content: "问题：你们家有外卖机器人吗？\n答案：有外卖机器人的。", Score: 0.675,
+			}}},
+		},
+	}
+	batch, err := retrieveContextForRuntimeQuestionList(
+		context.Background(), retriever, retrievers.KnowledgeRetrieveOptions{}, original,
+		[]runtimeKnowledgeQuestionSpec{{
+			TaskID: "T1", Intent: "hotel_info", Query: resolved, OriginalText: original,
+			EvidenceQuery: evidence, ResolutionState: "resolved_from_context", RelationToPrevious: "follow_up",
+			SourceRefs: []string{"U1"},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0] != evidence {
+		t.Fatalf("current source excerpt was replaced by contextual wording: %#v", retriever.queries)
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, original)
+	if len(tasks) != 1 || tasks[0].Query != resolved || tasks[0].OriginalText != original ||
+		tasks[0].RetrievalQuery != evidence || len(tasks[0].Candidates) != 1 {
+		t.Fatalf("Judge must keep full context alongside the source-grounded retrieval: %#v", tasks)
 	}
 }
 
