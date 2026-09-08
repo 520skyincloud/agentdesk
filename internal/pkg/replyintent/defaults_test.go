@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestDefaultHotelIntentKeepsClearNonHotelQuestionsAnswerable(t *testing.T) {
+	for _, rule := range []string{
+		"问题是否明确与是否属于酒店业务分开判断",
+		"明确的非酒店常识、解释和日常建议使用 interaction/chat",
+		"没有上下文依据时，不能把普通人物、事物擅自解释成入住人",
+		"只有答案确实依赖实时天气时才使用 weather_query",
+		"问号、短评、表情等也是会话反馈",
+		"不因单个符号强制转人工",
+		"酒店政策和门店事实仍必须走 hotel_info",
+	} {
+		if !strings.Contains(DefaultHotelIntentDetectPrompt(), rule) {
+			t.Errorf("missing interaction boundary: %s", rule)
+		}
+	}
+}
+
 func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) {
 	prompt := DefaultHotelIntentDetectPrompt()
 	for _, expected := range []string{

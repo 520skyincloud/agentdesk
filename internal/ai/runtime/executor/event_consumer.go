@@ -67,6 +67,10 @@ func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.Agen
 			if suppressAssistantReply {
 				continue
 			}
+			// Tool-call events are intermediate output; usage was collected above.
+			if messageOutput.Message != nil && len(messageOutput.Message.ToolCalls) > 0 {
+				continue
+			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
 			replyText, err := normalizeGeneratedReplyPartsResult(
 				replyText,

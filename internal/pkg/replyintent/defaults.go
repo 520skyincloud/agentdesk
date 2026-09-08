@@ -23,6 +23,7 @@ func DefaultHotelIntentDetectPrompt() string {
 - resolutionState 只允许：clear、resolved_from_context、ambiguous、unresolved。当前原话自包含时用 clear；借助紧邻上一会话轮或同一当前轮 sourceRefs 才补全 resolvedText 时用 resolved_from_context；同时存在多个合理对象或解释时用 ambiguous；信息过少且无法形成任何可回答问题时用 unresolved。不能只因为 confidence 较低就标记歧义。“我开电车来的你懂我意思吗”本身足以表达充电设施咨询时，可输出 availability + clear，并在 resolvedText 中写成自包含问题。
 - entities 是当前任务明确谈到的业务对象数组，每项只输出 text 和 type。type 只允许 facility、supply、room_type、room、service、location、order、resource、person、company、other；没有明确对象时输出空数组。text 保留客户或允许使用的紧邻上下文原词，不输出标准名或同义关系；“功能相近”不等于“同一物品”。
 - needsClarification=true 只能来自真正的 ambiguous 或 unresolved 任务。能由紧邻上下文唯一补全时必须直接补全，不能把模型的不确定性丢给客户。
+- 问题是否明确与是否属于酒店业务分开判断。对象和问题已明确的普通常识、解释或建议使用 clear；不能因为酒店知识库未必有答案、与酒店无关或没有现实动作，就虚构其他对象并要求澄清。没有上下文依据时，不能把普通人物、事物擅自解释成入住人或酒店设施。
 
 只允许 5 个顶层意图：
 1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边，以及酒店、品牌、公司介绍和老板、创始人、董事长等公开身份或公开职务。任务 needsKnowledge=true。
@@ -30,6 +31,7 @@ func DefaultHotelIntentDetectPrompt() string {
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
 4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
 5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、会话回顾，以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；天气查询例外，必须输出 interaction/weather_query、needsTool=true。其他不明确表达使用 subIntent=clarify 且 needsClarification=true，只追问一个关键点。客户明确问“刚刚都问了什么/刚才聊了什么/你刚才回答了哪些”时，使用 interaction/conversation_recap、relationToPrevious=reference_previous、resolutionState=resolved_from_context；这是有明确目标的会话回顾，不是 unresolved，也不能回答“没有具体问题”。
+明确的非酒店常识、解释和日常建议使用 interaction/chat，objective 按 identity、explanation、recommendation 等实际目标选择，needsClarification=false、needsKnowledge=false；由 Generate 正常回答，不需要客户说明与酒店有什么关系。只有答案确实依赖实时天气时才使用 weather_query，不能仅因上一轮聊过天气就让一般审美、配色或偏好建议依赖天气工具。酒店政策和门店事实仍必须走 hotel_info，不允许用普通常识编造酒店答案。
 
 公开经营主体信息边界：
 - “你们酒店/品牌/公司是谁创办的”“老板/创始人/董事长是谁”“某位公开经营者是谁、担任什么公开职务”属于 hotel_info/company_profile，needsKnowledge=true，必须查询知识库。
@@ -83,7 +85,8 @@ subIntent 字段纪律：
 
 上下文规则：
 - 图片/文件/语音识别内容只是上下文文本，不是单独意图分类。
-- 历史消息、媒体理解、长期记忆只用于解释“这个/刚才/还/继续/那”等指代；当前消息有新主题时，以当前消息为准。
+- 历史消息、媒体理解、长期记忆用于解释当前指代、承接和反馈，不重新建立历史待答任务；当前消息有新主题时，以当前消息为准。
+- 问号、短评、表情等也是会话反馈，短不等于没有含义。结合紧邻客户问题与客服答复判断是在疑惑、认可、调侃还是纠错；不能不看上一答复就变成新的招呼或泛化 clarify。能确定上一答复答非所问时，围绕原问题回应；不能确定反馈具体含义时只针对该话题追问，不虚构客户意图，也不因单个符号强制转人工。明确否定和风险仍按原有人工/投诉/风险边界处理。
 - clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段、条件、偏好、范围、身份信息或选项。客户当前的短回答必须继承上一轮业务意图和 subIntent；能唯一补全时 resolutionState=resolved_from_context，text 保留客户当前原话，resolvedText 写成“上一轮业务主题 + 当前补充内容”的完整问题。
 - “是的啊/对/可以”等肯定答复，只要是在回答紧邻客服的明确业务问题，就必须承接该业务。例如客服问“是想问酒店有没有充电桩吗”，客户答“是的啊”，resolvedText 必须补全为“酒店有没有充电桩”，不能归 interaction/social 或 interaction/clarify。单独“不是”且没有同时给出正确目标时，必须保留纠正关系并标记 ambiguous 或 unresolved，不能虚构客户真正想问的内容。
 - AI 或人工客服追问姓名、房号或其他必要字段后，客户只回复“吴朝伟”“1208”等字段值时，这是 clarification_answer；不能把姓名当作重新打招呼，也不能把房号当成无关数字。

@@ -17,6 +17,80 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+func TestToolCallEventsDoNotReplaceFinalReplyWithRecoveryFallback(t *testing.T) {
+	for _, intermediate := range []string{"", "正在查询。", `{"location":"合肥"}`} {
+		t.Run(intermediate, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "interaction", SubIntent: "weather_query",
+				OutputKind: "text", ReplyRequired: true, NeedsTool: true,
+			}}})
+			summary := &RunResult{Status: "started"}
+			attempts := 0
+			result, err := runGeneratedReplyWithRecovery(context.Background(), nil, summary, collector, nil,
+				func(ctx context.Context, _ []*schema.Message) error {
+					attempts++
+					events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+					for _, message := range []*schema.Message{
+						{
+							Role: schema.Assistant, Content: intermediate,
+							ToolCalls: []schema.ToolCall{{ID: "call-1", Type: "function", Function: schema.FunctionCall{
+								Name: "get_weather", Arguments: `{"location":"合肥"}`,
+							}}},
+							ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+						},
+						{Role: schema.Tool, ToolCallID: "call-1", ToolName: "get_weather", Content: `{"status":"ok","tempC":"29"}`},
+						{
+							Role: schema.Assistant, Content: `{"replyParts":[{"taskId":"T1","content":"合肥当前29°C。"}]}`,
+							ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 20, CompletionTokens: 3, TotalTokens: 23}},
+						},
+					} {
+						gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+							Role: message.Role, ToolName: message.ToolName, Message: message,
+						}}})
+					}
+					gen.Close()
+					return consumeAgentEvents(ctx, events, summary, collector, map[string]string{"get_weather": "builtin/get_weather"})
+				})
+			if err != nil || attempts != 1 || result.FallbackMode != "" || summary.Status != "completed" || summary.ReplyText != "合肥当前29°C。" {
+				t.Fatalf("tool events poisoned the final answer: result=%+v summary=%+v err=%v", result, summary, err)
+			}
+			if summary.ToolCallCount != 1 || summary.PromptTokens != 30 || summary.TotalTokens != 35 || len(summary.ModelUsageCalls) != 2 {
+				t.Fatalf("skipping intermediate text must preserve tool and model accounting: %+v", summary)
+			}
+			if collector.Data.Pipeline.Generate.LastProtocolError != "" {
+				t.Fatal("a tool-call event is not a reply protocol error")
+			}
+		})
+	}
+}
+
+func TestToolCallDoesNotBypassFinalReplySafety(t *testing.T) {
+	for _, final := range []string{"", "普通文本未按协议返回", `{"replyParts":[{"taskId":"unknown","content":"天气晴"}]}`,
+		`{"replyParts":[{"taskId":"T1","content":"天气[历史消息]晴"}]}`} {
+		t.Run(final, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "interaction", SubIntent: "weather_query", OutputKind: "text", ReplyRequired: true,
+			}}})
+			summary := &RunResult{Status: "started"}
+			events, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+			gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+				Role: schema.Assistant, Message: &schema.Message{
+					ToolCalls: []schema.ToolCall{{ID: "call-1", Function: schema.FunctionCall{Name: "get_weather"}}},
+				},
+			}}})
+			gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: &adk.MessageVariant{
+				Role: schema.Assistant, Message: &schema.Message{Content: final},
+			}}})
+			gen.Close()
+			if err := consumeAgentEvents(context.Background(), events, summary, collector, nil); err == nil || summary.ReplyText != "" {
+				t.Fatalf("invalid final answer must remain blocked: reply=%q err=%v", summary.ReplyText, err)
+			}
+		})
+	}
+}
+
 func TestConsumeAgentEventsIgnoresPlainGraphToolText(t *testing.T) {
 	summary := &RunResult{
 		Status:           "started",

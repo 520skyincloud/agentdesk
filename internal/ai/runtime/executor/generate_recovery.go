@@ -627,8 +627,6 @@ func deterministicInteractionFallback(plan callbacks.ReplyPlanTraceData, taskID 
 			return "不客气呀。"
 		case "acknowledgement", "accepted", "confirmation":
 			return "好的。"
-		case "social":
-			return "嗯嗯，在的呀。"
 		case "correction":
 			return "不好意思，是我理解错了。"
 		case "clarify":
@@ -637,10 +635,8 @@ func deterministicInteractionFallback(plan callbacks.ReplyPlanTraceData, taskID 
 			return "不好意思，您把当前问题发我，我继续帮您处理。"
 		case "media_context_follow_up", "actionable_media_context":
 			return "您具体想问图片或文件里的哪一部分呀？"
-		case "chat", "small_talk":
-			return "在的呀，您说。"
 		default:
-			return "在的呀，您说。"
+			return "不好意思，刚才没能正常回复您的问题。"
 		}
 	}
 	return ""

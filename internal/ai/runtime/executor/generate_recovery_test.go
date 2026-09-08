@@ -454,12 +454,17 @@ func TestRunGeneratedReplyWithRecoveryPreservesFactsWhenAnotherKnowledgeTaskHasN
 
 func TestRunGeneratedReplyWithRecoveryFallsBackForCommonInteractions(t *testing.T) {
 	tests := map[string]string{
-		"social":                  "嗯嗯，在的呀。",
+		"greeting":                "在的呀，您说。",
+		"thanks":                  "不客气呀。",
+		"acknowledgement":         "好的。",
+		"social":                  "不好意思，刚才没能正常回复您的问题。",
 		"correction":              "不好意思，是我理解错了。",
 		"clarify":                 "您具体想问哪方面呀？",
-		"chat":                    "在的呀，您说。",
+		"chat":                    "不好意思，刚才没能正常回复您的问题。",
+		"weather_query":           "不好意思，刚才没能正常回复您的问题。",
+		"conversation_recap":      "不好意思，刚才没能正常回复您的问题。",
 		"media_context_follow_up": "您具体想问图片或文件里的哪一部分呀？",
-		"unknown_interaction":     "在的呀，您说。",
+		"unknown_interaction":     "不好意思，刚才没能正常回复您的问题。",
 	}
 	for subIntent, want := range tests {
 		t.Run(subIntent, func(t *testing.T) {

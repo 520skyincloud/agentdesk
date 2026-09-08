@@ -40,6 +40,27 @@ type recordingRuntimeIntentModelDetector struct {
 	err    error
 }
 
+func TestRuntimeIntentFeedbackRetainsTheActualAdjacentExchange(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, Content: "你们这可以点外卖吗"},
+		{ID: 2, SenderType: enums.IMSenderTypeAI, Content: "酒店没有本子，建议您可以在美团上下个外卖订单。"},
+	}}
+	for _, input := range []string{"？", "666", "杜甫是谁", "今天穿什么颜色好看"} {
+		prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{ID: 3, Content: input}}, history, nil)
+		for _, required := range []string{
+			input, history.RawItems[0].Content, history.RawItems[1].Content,
+			"短评、问号或表情要结合紧邻问答理解",
+			"普通常识、解释和日常建议即使与酒店无关，也可以是明确问题",
+			"只有回答确实需要实时天气才归 weather_query",
+			"如果当前消息已经有独立的新主题，禁止沿用上一轮",
+		} {
+			if !strings.Contains(prompt, required) {
+				t.Fatalf("current feedback and its real context must remain available: missing %q", required)
+			}
+		}
+	}
+}
+
 func TestSelectIntentPromptPackScopesExternalProxyActionInstruction(t *testing.T) {
 	external := callbacks.IntentTraceData{
 		PrimaryIntent: "service_request",

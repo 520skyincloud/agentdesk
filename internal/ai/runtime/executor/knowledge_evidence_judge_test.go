@@ -29,6 +29,61 @@ type fakeKnowledgeEvidenceJudge struct {
 	outcome func([]knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome
 }
 
+func TestJudgeSelectsApplicableFactsBeforeComposingTheAnswer(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, rule := range []string{
+		"选中 Candidate ID 只表示使用其中的适用事实",
+		"混合 FAQ 中能独立回答当前问题的次要事实可以使用",
+		"不能把“在某条件下可采用的办法”改成无条件政策",
+		"partial 不是保留所有相关背景的许可",
+		"不能先复制候选答案，再为其中的无关内容寻找理由",
+		"必要值只从本题最终采用的事实中摘取",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("missing Judge applicability boundary %q", rule)
+		}
+	}
+}
+
+func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing.T) {
+	const faq = "酒店有本子吗？"
+	const raw = "问题：" + faq + "\n答案：不好意思，酒店没有哈，建议您可以在美团上下个外卖订单。"
+	tasks := []knowledgeEvidenceJudgeTask{
+		{TaskID: "T1", Intent: "hotel_info", OriginalText: "你们这可以点外卖吗", Query: "你们这可以点外卖吗",
+			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)}}},
+		{TaskID: "T2", Intent: "hotel_info", OriginalText: "有本子吗", Query: "有本子吗",
+			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T2C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)}}},
+	}
+	prompt := buildKnowledgeEvidenceJudgePrompt(tasks)
+	for index, task := range prompt.Tasks {
+		if task.Question != tasks[index].OriginalText || len(task.Candidates) != 1 ||
+			task.Candidates[0].FAQQuestion != faq || task.Candidates[0].RawContent != raw {
+			t.Fatalf("mixed evidence must retain its own FAQ semantics and task owner: %+v", task)
+		}
+	}
+	// This verifies the wire/rendering contract, not the model's semantic choice.
+	response := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[
+{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T1C1"],"answerText":"建议您可以在美团上下个外卖订单。","supportedFacts":[{"factId":"F1","aspect":"method","statement":"建议您可以在美团上下个外卖订单。","criticalValues":[]}],"missingAspects":[]}]},
+{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T2C1"],"answerText":"酒店没有本子。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"酒店没有本子。","criticalValues":[]}],"missingAspects":[]}]}]}`
+	selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(response, tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []string{"建议您可以在美团上下个外卖订单。", "酒店没有本子。"} {
+		task := tasks[index]
+		selection := selections[task.TaskID]["store"]
+		if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
+			t.Fatalf("valid model evidence must not be semantically rejudged locally: %+v", selection)
+		}
+		got, err := renderLockedReplyContent(textReplyTaskGroup{
+			TaskID: task.TaskID, EvidenceLocked: true, AnswerText: selection.AnswerText,
+		})
+		if err != nil || got != want {
+			t.Fatalf("task-specific answer must not expand back into the source paragraph: got=%q err=%v", got, err)
+		}
+	}
+}
+
 func TestKnowledgeEvidenceJudgePromptDefinesExternalProxyEvidenceBoundary(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
 	for _, expected := range []string{

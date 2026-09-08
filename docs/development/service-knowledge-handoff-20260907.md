@@ -1,5 +1,31 @@
 # 服务知识优先与发送关联修复
 
+## 2026-09-08 Judge、工具事件与互动最小修复
+
+基线 a1d89e2；目标为其风18135问外卖答本子、18139/18141/18149天气有结果却
+被问候替换、18145明确常识被当成酒店歧义。原始脏工作区不动。
+运行文件限定五个：knowledge_evidence_judge.go仅整理适用性和答案范围提示；
+event_consumer.go区分工具调用事件与最终答案；generate_recovery.go收紧问候兜底；
+intent_model_detector.go与internal/pkg/replyintent/defaults.go澄清普通互动及反馈上下文。
+测试分别放入对应既有文件；设计文档同步职责，不新增运行契约或语义判断器。
+
+固定工具事件回归在旧代码下复现：即使最后返回合法replyParts，
+工具调用的中间Assistant内容仍留下protocolErr，已有恢复将真实答案替换成问候。
+修复后只跳过ToolCalls事件的文本校验，用量记录、真实最终协议错误、工具状态和
+Graph终止逻辑不变。新增测试覆盖空/带文字/参数JSON中间内容和两次模型用量。
+Judge模拟结果仅验证输入完整、Task归属和锁定答案，不作为语义通过证据。
+
+无知识库、检索、阈值、模型、房号、转接、Outbox、计费、权限、数据库/Migration、
+DTO/API/WebSocket变更。仅生产hotel Profile的对应说明计划局部同步；
+必须备份、比较旧值后写入，不能用默认Profile整份覆盖现有定制。
+验证命令：go test -p=1 ./internal/ai/runtime/executor ./internal/pkg/replyintent -count=1。
+真实服务器隔离模型输入最多5个，不运行30/50轮；失败立即停止并恢复程序与Profile，
+不恢复数据库消息。ChannelID=0验收不等同于企微设备投递验收。
+
+fetch后customer-audit和ai-billing对五个运行文件无新同文件分歧，无需rebase；
+本提交基于d099b45，可独立review，需在既有a1d89e2基础上合并。测试、备份、
+发布和真实逐题结果完成后追加，不提前标记验收成功。
+
 ## 2026-09-08 检索词来源修复
 
 用户确认将现有Intent检索词生成与查询选择纳入最小修复范围。
