@@ -26,6 +26,46 @@ fetch后customer-audit和ai-billing对五个运行文件无新同文件分歧，
 本提交基于d099b45，可独立review，需在既有a1d89e2基础上合并。测试、备份、
 发布和真实逐题结果完成后追加，不提前标记验收成功。
 
+### 发布、首轮失败与回退
+
+提交 `6a3e0369c3aa04f7dc2900897b4d1c1320ab745d` 已推送origin、weibao。
+两个约定Go包完整测试通过（executor 8.550秒、replyintent 0.247秒），
+gofmt及diff检查通过。运行修改仍只在五个文件，没有继续扩改。
+首轮全包测试仅旧提示措辞断言失败，保留其答案到事实的一致性要求后通过，
+未放松测试要求，也不将提示断言当作真实模型语义验收。
+
+备份 `/opt/backups/agentdesk-20260908-judge-tool-interaction`，
+完整数据库gzip、shared配置和独立Intent Profile备份均完成SHA256校验。
+曾发布 `/opt/agentdesk/releases/20260907-request-answer-6a3e036`，
+二进制SHA256 `0353bd3d2a818b6880c4da517cb6534864cb3aa1c41df2252d5c3aca02a5b3d1`。
+release名称沿用既有脚本前缀，实际发布时间为2026-09-08。
+hotel Profile仅增加明确常识分类、互动边界和反馈上下文三个相关说明段，
+按旧值SHA条件更新，Schema和其余定制保留。
+
+隔离会话2121首个模型输入18154“你们这可以点外卖吗”，Run7907、检索8167，
+回复18155“关于‘你们这可以点外卖吗’，帮您转接到同事了”，9.722秒，未通过。
+Intent仍为hotel_info/food_delivery，evidenceQuery是“可以点外卖吗”；
+实际检索也使用该摘取词。门店5条为草稿纸、售卖柜、纸笔、本子、写字工具，
+未召回机器人；这些候选中仍包含美团下单建议。
+Judge deepseek-v4-pro对两层均判insufficient，缺失“酒店是否支持点外卖”，
+因此进入no_evidence_handoff，Generate跳过。本轮1次Intent、1次Judge、0次Generate。
+不能将本次直接解释为原始10条候选上的同条件回放，也不能声称检索词未发生变化。
+
+按约定首轮失败立即停止，只用了1/5个输入，没有继续天气、常识、反馈和混合维修，
+没有额外30/50轮，也没有在线追加修补。原始记录
+`/tmp/agentdesk-judge-tool-smoke-20260908.jsonl`保留，不提交生成报告。
+隔离2121的恢复任务及路由已清理，全部消息保留；ChannelID=0非企微手机投递验收。
+已原子切回 `/opt/agentdesk/releases/20260907-request-answer-a1d89e2`，
+恢复原hotel Profile及其原更新时间，没有恢复数据库、知识库或消息。
+回退后8083 HTTP200，systemd active/running、NRestarts=0，
+无pending/failed Outbox，7条历史sending未动。
+
+本轮结论：代码固定回归通过，模型语义验收0/1，不可标记整体完成或上线成功。
+工具回复修复已在本地固定事件中验证，但天气真实模型验收尚未执行。
+检索候选漂移和Judge未采用已有下单建议均保留为待解决证据，不超出批准范围扩改。
+推送后fetch复核两个并行分支，五个运行文件无新分歧，无需rebase；
+修复提交保留可review，不能因已推送而当作生产正在运行。
+
 ## 2026-09-08 检索词来源修复
 
 用户确认将现有Intent检索词生成与查询选择纳入最小修复范围。
