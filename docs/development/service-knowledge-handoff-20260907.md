@@ -1,5 +1,40 @@
 # 服务知识优先与发送关联修复
 
+## 最新结果：52b44f1已部署，直答完整度仍未全部达标
+
+当前程序52b44f1d4f5fe8aedc31904d658c05e9718ffd76已推送origin、weibao并部署。
+二进制SHA256为44f15acd0466b088dbed6d36680b83a88725d1c9eb296700256c8489d70bb5a3，
+release为/opt/agentdesk/releases/20260907-request-answer-52b44f1。
+备份/opt/backups/agentdesk-20260908-judge-input包含经gzip/SHA校验的完整数据库、
+shared配置及原Profile。仅Profile三个说明段局部更新，schema及其他定制不变。
+回滚点仍是a1d89e2及该备份的原Profile，禁止恢复数据库消息。
+
+两个Go包完整回归通过（executor7.797秒，replyintent0.380秒），gofmt/diff检查通过。
+最后使用隔离2124完成两个真实输入，连续追加同一会话：
+- 18163“你们这可以点外卖吗” -> 18164“酒店有外卖机器人。”，10.231秒。
+  实际仍使用完整原话检索，1Intent+1Judge+1Generate，无协议错误/兜底/转接。
+  Judge选门店C1、decision=partial，missingAspects仍含“酒店是否支持点外卖”。
+  原先本子串答/错误转接未复现，但是否可以点外卖没有完整直答，不能算彻底解决。
+- 18165天气/杜甫/穿衣颜色三问 -> 18166至18168按序三条回复，12.724秒。
+  天气工具真实成功，其28度结果进入天气答复；杜甫介绍正常，建议浅色衣服。
+  三个Intent Task分别weather_query/chat/chat，没有误澄清，未检索酒店知识或转接。
+  Generate阶段attemptCount=1，工具调用前后原有模型过程保留，无LastProtocolError/fallback。
+
+临时脚本仅检查相关性、协议和转接，所以记录passedInputs=2；
+人工复核确认首项只属部分答复，整体语义验收尚未全通过。不得混淆两种标准。
+计划中的短反馈没有继续单独实测，混合维修没有本轮模型复验；
+固定上下文、外部代办、房号和协议测试保留，但不等同真实模型全场景通过。
+包含前次首轮失败，累计共5个输入，不额外运行30/50轮或反复重试。
+原始结果/tmp/agentdesk-judge-input-smoke-20260908.jsonl留存，不提交生成报告。
+
+当前systemd active/running、NRestarts=0、8083为200，近期无systemd错误；
+无pending/failed Outbox，7条历史sending未动。消息5710条、max18168，
+会话130个；所有隔离路由已清理回AI、pending_action为空，消息未删除。
+ChannelID=0验证不代表企微手机端最终投递验收。生产其他人工路由未操作。
+推送后fetch检查customer-audit和ai-billing无同文件新分歧，无需rebase。
+后续只需聚焦Judge对当前动作的直接办理建议与相关设施背景的选择，
+不以增加新知识、本地强答或再加语义模型规避剩余问题。
+
 ## 2026-09-08 首轮失败后继续修复
 
 用户要求修复到可用。新增运行修改仅answerability_gate.go查询选择，
