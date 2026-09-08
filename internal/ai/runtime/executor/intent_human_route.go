@@ -246,12 +246,17 @@ func runtimeHandoffQuestionSubjects(collector *callbacks.RuntimeTraceCollector) 
 		if !pending[task.TaskID] {
 			continue
 		}
+		subject := firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
 		if len(task.MissingAspects) > 0 {
-			for _, aspect := range task.MissingAspects {
-				subjects = appendIfMissing(subjects, aspect)
+			missing := strings.Join(task.MissingAspects, "、")
+			if subject == "" {
+				subject = missing
+			} else {
+				subject += "（仅待确认：" + missing + "）"
 			}
-		} else if text := firstNonEmptyReplyTaskText(task.OriginalText, task.Text); text != "" {
-			subjects = appendIfMissing(subjects, text)
+		}
+		if subject != "" {
+			subjects = appendIfMissing(subjects, subject)
 		}
 	}
 	return subjects

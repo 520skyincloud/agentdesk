@@ -154,7 +154,7 @@ func TestQuestionCoverageRepairPreservesOtherTaskIDsAndQueries(t *testing.T) {
 }
 
 func TestQuestionCoverageFiveObjectsRetrieveIndependentlyWithinBudget(t *testing.T) {
-	texts := []string{"有没有咖啡", "有没有剃须刀", "有没有牙刷", "有没有毛巾", "能不能给我纸币"}
+	texts := []string{"有没有咖啡", "有没有剃须刀", "有没有牙刷", "有没有毛巾", "能不能给我纸笔"}
 	intent := coverageTestIntent(texts...)
 	plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
 	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1, 2}, resultsByQuery: make(map[string]*retrievers.KnowledgeRetrieveResult)}
@@ -252,6 +252,16 @@ func TestQuestionCoveragePromptSeparatesTaskAndEvidenceFailures(t *testing.T) {
 	if !strings.Contains(runtimeQuestionFirstIntentInstruction(), "客户问题能否理解，不是酒店是否能做到") {
 		t.Fatal("unknown answer must not become an ambiguous question")
 	}
+	if !strings.Contains(runtimeQuestionFirstIntentInstruction(), "回指多个对象时也先解析本轮实际对象集合") ||
+		!strings.Contains(prompt, "resolvedText 已列出多个独立对象却仍共用一条检索任务") {
+		t.Fatal("contextual plural requests must follow the same per-object coverage contract")
+	}
+	judgePrompt := knowledgeEvidenceJudgeSystemPrompt()
+	applicability := strings.Index(judgePrompt, "先检查方案适用性")
+	completeness := strings.Index(judgePrompt, "事实维度完整性检查")
+	if applicability < 0 || applicability >= completeness {
+		t.Fatal("an unusable solution must be excluded before retaining partial facts")
+	}
 	intent := coverageTestIntent("咖啡有吗")
 	intent.IntentTasks[0].EvidenceQuery = "酒店咖啡"
 	repairPrompt := runtimeQuestionRepairInstruction(&runtimeQuestionRepairRequest{
@@ -261,6 +271,44 @@ func TestQuestionCoveragePromptSeparatesTaskAndEvidenceFailures(t *testing.T) {
 		if !strings.Contains(repairPrompt, field) {
 			t.Fatalf("repair cannot preserve an omitted original task field: %s", field)
 		}
+	}
+}
+
+func TestQuestionCoverageContextRepairRetainsSourceAndSeparateQueries(t *testing.T) {
+	const current = "那有的这些东西去哪里拿？"
+	old := coverageTestIntent(current)
+	old.IntentTasks[0].ResolvedText = "咖啡、剃须刀、牙刷、毛巾去哪里拿？"
+	oldPlan := buildReplyPlan(old, selectIntentPromptPack(old))
+	req := RunInput{UserMessage: models.Message{Content: current}}
+	input := buildRuntimeQuestionCoverageInput(req, oldPlan)
+	coverage := &runtimeQuestionCoverage{Status: "repair_required", Issues: []runtimeQuestionCoverageIssue{
+		{Kind: "merged_questions", TaskID: oldPlan.TaskPlans[0].TaskID, SourceRef: "U1", Text: current, Reason: "回指四个独立对象共用检索"},
+	}}
+	if err := validateRuntimeQuestionCoverage(coverage, input); err != nil {
+		t.Fatal(err)
+	}
+	repaired := coverageTestIntent(current, current, current, current)
+	queries := []string{"咖啡在哪里拿", "剃须刀在哪里拿", "牙刷在哪里拿", "毛巾在哪里拿"}
+	for i := range repaired.IntentTasks {
+		task := &repaired.IntentTasks[i]
+		task.Objective = "method"
+		task.RelationToPrevious = "follow_up"
+		task.ResolutionState = "resolved_from_context"
+		task.ResolvedText, task.EvidenceQuery = queries[i], queries[i]
+	}
+	plan, changed, err := reconcileRuntimeQuestionRepairPlan(oldPlan,
+		buildReplyPlan(repaired, selectIntentPromptPack(repaired)), input, coverage.Issues)
+	if err != nil || len(changed) != 4 {
+		t.Fatalf("shared current source was rejected as duplicate: changed=%v err=%v", changed, err)
+	}
+	retriever := &fakeKnowledgeContextRetriever{
+		knowledgeBaseIDs: []int64{1},
+		result:           &retrievers.KnowledgeRetrieveResult{},
+	}
+	batch, err := retrieveContextForRuntimeQuestions(context.Background(), retriever,
+		retrievers.DefaultKnowledgeRetrieveOptions(), current, repaired, plan)
+	if err != nil || len(batch.Questions) != 4 || !stringSliceSetEqual(retriever.queries, queries) {
+		t.Fatalf("contextual queries merged or lost: queries=%v err=%v", retriever.queries, err)
 	}
 }
 

@@ -841,6 +841,8 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 
 主体一致性是选择证据的硬约束：候选 FAQ 的问题和答案必须与 task.question、subIntent、objective、entities 指向同一业务主体。客户明确提到早餐时不能选择退房 FAQ，明确提到房型或设施时不能换成其他房型或设施。task.entities 有多个明确实体时，单条候选必须覆盖它声称回答的实体；direct_combined 的全部候选合起来必须逐一覆盖所有明确实体，任何与当前主体无关的候选都不得混入。
 
+先检查方案适用性，再提取事实和判断完整性。客户已明确无法采用、拒绝或尝试失败的方案，以及仅解释该不可用方案的物品存在性、位置，不是当前请求的有用部分答案。当前层只有这些内容、没有其他适用办法或可回答当前请求的政策时，直接判 insufficient，hasUsableSelfService=false，selectedCandidateIds、supportedFacts、answerText 为空。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法；此顺序适用于当前原话和 sourceContext 中仍有效的条件，同轮其他独立问题分别裁决。
+
 事实维度完整性检查是每个 task、每个 layer 的必做步骤：
 1. 先把客户当前原子问题拆成内部事实维度清单，并判断维度之间的前提依赖。例如同一句同时询问是否存在、数量、费用、时间、位置、方法、范围或条件时，每个仍然适用的维度都必须单独列入检查；这个内部清单不要作为额外字段输出。只有证据明确否定前提时，依赖该前提的追问才不再适用，不得列入 missingAspects。例如明确不能步行时，步行分钟数不再适用；仅“建议驾车”不能推导“不能步行”，步行可行性和时长未知时仍须保留缺失。独立问题或客户明确追问的其他交通方式、时间仍须检查。
 2. 对当前 layer 提供的全部候选逐条检查，每条候选的 faqQuestion、faqAnswer 和 rawContent 都要核对它能支持清单中的哪些维度，不能在看到第一条相关候选后提前停止。
@@ -865,14 +867,13 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 - 当前需求已有适用的同目标自助方案时可以判 true；确实未知的执行能力可保留在 missingAspects，decision 可以是 partial，但 answerText 只给出已知方案、必要步骤和适用条件，不附加执行能力尚未确认等解释，不承诺执行。
 - hasUsableSelfService 只表示自助方案可用，不表示客户原本要求的动作已确认；missingAspects 非空时必须判 partial，不能因自助方案完整而判 direct_single/direct_combined。
 - 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
-- 当前客户已明确无法采用或尝试失败，而该层只剩此不可用方案、物品存在性或其位置，没有其他适用办法或能回答当前请求的政策时，判 insufficient：hasUsableSelfService=false，selectedCandidateIds、supportedFacts 为空，answerText 为空。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法；同轮其他独立问题仍分别正常裁决。
 - 餐馆名单、微波炉、有机器人等仅相关信息不是送餐或代点餐的完整自助方案，不能据此判 true；事实、条件与知识层仍不得跨对象拼接。
 - 知识明确要求转接或 decision=insufficient 时为 false。字段缺失不是“没有方案”，而是协议不完整。
 
 必须分别裁决 store 和 general 两层，每层只能输出一种 decision：
 - direct_single：单条候选的完整语义足以回答当前问题，只选择这一条。
 - direct_combined：同一层内至少两条候选指向同一门店、同一实体和同一适用范围，合在一起足以回答当前问题，只选择必要的候选。
-- partial：同一层内已确认一部分有用事实，但仍缺少当前问题要求的一个或多个事实维度。只选择支持已确认事实的必要候选。
+- partial：同一层内已确认一部分适用于当前条件、能回答当前请求的有用事实，但仍缺少当前问题要求的一个或多个事实维度。只选择支持这些事实的必要候选，不保留已被当前条件排除的方案及其背景。
 - insufficient：该层没有足够证据，selectedCandidateIds 必须为空。
 
 先确定当前仍有效的要求：客户明确说“不要求、不用考虑、只要”等时，已放弃的条件不是缺失事实，不得加入 missingAspects。当前问题优先于 sourceContext 中的旧要求。
