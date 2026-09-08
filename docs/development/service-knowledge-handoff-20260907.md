@@ -52,6 +52,23 @@ intent_human_route.go将待确认方面与其原始问题同时保留，防止�
 累计真实模型预算已用满8轮，最后收口只做自动测试及服务健康验证，
 未追加真实模型轮次，不得声称最后两项已通过真实模型复验或达到延迟目标。
 
+### 2026-09-08 最终发布身份
+
+程序提交 `6108b44fbecc740badc6515f74d59af4e97070fd` 已推送origin、weibao，
+发布 `/opt/agentdesk/releases/20260907-request-answer-6108b44`；
+目录日期沿用既有发布脚本，实际切换发生在2026-09-08。
+Binary SHA256：`f321e6aabb76dbec5a3cfd0c0ecaf9b37b6a859c8aacf8ade980f6c3d91f14d0`。
+Executor、Runtime、Services三个包完整测试通过，耗时分别7.226、0.830、16.934秒。
+切换前确认无活跃AI运行，使用已校验备份，SHA核对后原子切换；
+systemd active/running，NRestarts=0，8083 HTTP200，检查的近期启动日志无新错误。
+无pending/failed Outbox，7条历史sending保持原样；2118无待处理动作或活跃恢复任务。
+消息、知识、运行配置保留，未执行Migration或恢复SQL。
+最近程序回退点为a4e1591，原生产5a8dcf4 release和本轮备份继续保留；
+若切回只切程序，禁止回退消息。最后收口没有真实模型复验，没有企微设备投递验收。
+推送后fetch确认三个Executor运行文件无并行新分歧，无需rebase；
+后续合并仍须逐块处理customer-audit的三个共享service/runtime文件租户改动。
+本轮到此停止代码修改和模型测试，不追加30/50轮。
+
 ## 问题覆盖修复开发记录
 
 本轮生产基线为 `5a8dcf42ae0ae176819dcd12263843d373344246`，
