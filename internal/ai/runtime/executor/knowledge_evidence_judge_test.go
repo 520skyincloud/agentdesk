@@ -40,6 +40,8 @@ func TestJudgeSelectsApplicableFactsBeforeComposingTheAnswer(t *testing.T) {
 		"partial 不是保留所有相关背景的许可",
 		"不能先复制候选答案，再为其中的无关内容寻找理由",
 		"必要值只从本题最终采用的事实中摘取",
+		"逗号前后表达不同对象时可以拆开",
+		"不再从选中FAQ反向补入其他结论",
 	} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("missing Judge applicability boundary %q", rule)
@@ -57,6 +59,13 @@ func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing
 			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T2C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)}}},
 	}
 	prompt := buildKnowledgeEvidenceJudgePrompt(tasks)
+	encoded, err := json.Marshal(prompt.Tasks[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Index(string(encoded), `"candidates":`) > strings.Index(string(encoded), `"question":`) {
+		t.Fatal("the current question must remain visible after the candidate material")
+	}
 	for index, task := range prompt.Tasks {
 		if task.Question != tasks[index].OriginalText || len(task.Candidates) != 1 ||
 			task.Candidates[0].FAQQuestion != faq || task.Candidates[0].RawContent != raw {

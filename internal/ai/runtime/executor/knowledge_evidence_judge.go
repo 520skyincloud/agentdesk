@@ -116,15 +116,15 @@ type knowledgeEvidenceJudgePrompt struct {
 
 type knowledgeEvidenceJudgePromptTask struct {
 	TaskID           string                                  `json:"taskId"`
+	Candidates       []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
 	Intent           string                                  `json:"intent,omitempty"`
-	Question         string                                  `json:"question"`
-	ResolvedQuestion string                                  `json:"resolvedQuestion"`
 	RetrievalQuery   string                                  `json:"retrievalQuery,omitempty"`
 	SubIntent        string                                  `json:"subIntent,omitempty"`
 	Objective        string                                  `json:"objective,omitempty"`
 	Entities         []knowledgeEvidenceJudgeEntity          `json:"entities,omitempty"`
 	SourceContext    []knowledgeEvidenceJudgeSourceMessage   `json:"sourceContext,omitempty"`
-	Candidates       []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
+	ResolvedQuestion string                                  `json:"resolvedQuestion"`
+	Question         string                                  `json:"question"`
 }
 
 type knowledgeEvidenceJudgePromptCandidate struct {
@@ -912,7 +912,9 @@ FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答�
 supportedFacts 只追踪这份最小完整答案所用的事实，不能反向扩展答案。statement 尽量直接使用 answerText 中的完整事实句，多个 aspect 可以复用同一句，不再单独生成它的摘要或改写版本。criticalValues 只摘取该事实句实际存在的精确值，不另写缩写或同义词。保留原话“只说名称/只问账号”等范围限制；同轮独立任务已承担自助信息时，代操作任务的空 answerText 例外仍按前述归属规则处理。
 missingAspects 是内部证据边界，不是必须对客户逐项说明的清单。hotel_info 的 partial，或 service_request 的 partial 且 hasUsableSelfService=true 时，answerText 直接回答适用知识，不自动添加“无法确认、资料未说明、能否代为执行”等能力说明。只有客户明确排除已知方案、追问该未知能力，或缺失事项确实影响当前答案的使用时，才简短说明必要边界；不能把相关背景充当可用方案，也不得将未知写成肯定或否定。不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
 
-检查 selectedCandidateIds 的 faqAnswer 时，只拆出当前问题实际要求的独立事实维度。已确认适用于本题的否定/能力边界与办理方法、数量与费用等必要维度不能遗漏；同一完整句已经覆盖多个维度时，各 Fact 可以复用同一个完整 statement，禁止再输出被该完整句包含的摘要或碎片。必要值只从本题最终采用的事实中摘取，不能因为无关句子含否定对象、数量、位置等值就把它变成必答事实。
+这里的“完整事实”是所选事实自己意思完整，不是必须保留原文从句首到句号的整句。逗号前后表达不同对象时可以拆开，只保留当前问题需要的分句；否定结论也只有针对当前所问对象才需要回答。answerText确定后，不再从选中FAQ反向补入其他结论。重复出现的同一操作建议只选一条候选，不因重复出现就组合无关对象。
+裁剪示例：候选C1的问题是“有咖啡机吗”，答案是“没有咖啡机，饮用水可到前台领取”。当前问“哪里能领饮用水”，仅选择C1，direct_single，answerText和statement均为“饮用水可到前台领取”，不能加入“没有咖啡机”；当前问“有咖啡机吗”，答“没有咖啡机”，不展开饮用水。若原文写“仅限入住期间领取”，领取答复必须保留该条件。这是在同一次Judge内按当前问题选择事实，不是删改知识。
+去重只针对已经选入answerText的事实：同一完整句已经覆盖多个维度时，各Fact可以复用它，禁止再输出被该完整句包含的摘要或碎片。必要值只从本题最终采用的事实中摘取。
 
 例如 FAQ 问题“问下房间的两瓶矿泉水是免费的吗？”、答案“是的，房间内的矿泉水都是免费的”，完整语义已经确认“房间内有两瓶矿泉水，并且免费”。它足以回答“房间里有几瓶矿泉水”，应判 direct_single；不能因为数量只写在 faqQuestion 中就丢掉这个已被肯定回答确认的事实。这个规则同样适用于其他 FAQ 中被肯定或否定答案确认的对象、数量与条件。
 
