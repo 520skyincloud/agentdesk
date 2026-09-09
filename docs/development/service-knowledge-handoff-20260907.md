@@ -1,5 +1,51 @@
 # 服务知识优先与发送关联修复
 
+## 当前结果：2026-09-09 5cfc219已部署，获准真实出站验收完成
+
+程序5cfc2190feaaa61b3109706ca32290b5657294ab已推送origin、weibao并部署至
+/opt/agentdesk/releases/20260907-request-answer-5cfc219，二进制SHA256为
+b80fae805f39f92803bfb6a101755dc53a1bbe41d2d77b1e12e86e26b87e3934。
+/opt/backups/agentdesk-20260909-coverage-label的完整数据库和配置压缩包已校验。
+Profile正文、Schema及更新时间指纹切换前后一致；只部署程序，未修改任何配置。
+
+其风同一会话1889补正后4输入通过，不另开会话、不删除历史：
+- 18220外卖原问：18221回答“您可以在美团上下个外卖订单。”，Intent仍为
+  availability，Judge选门店C2/direct_single，无转接。服务端9.433秒，
+  Judge2.818秒，Generate1.231秒，Outbox2267发送成功。
+- 18222地址加机器人：初次Intent拆成两个Task，各自检索并选门店证据，
+  18223地址、18224机器人按序回答。服务端12.477秒，Judge4.575秒，
+  Generate1.264秒，Outbox2268/2269发送成功，没有送房能力外推。
+- 18225“转接”：explicit_handoff直接进入STORE_WECOM_MANUAL，
+  pendingAction为空，跳过Generate；18226仅发“帮您转接到同事了”。
+  Outbox2270门店通知、2271客户通知均成功；重复同一回调后没有新增客户消息、
+  AI消息、Outbox或恢复任务。该转接只创建恢复任务150。
+- 18227取消：18228确认取消，Outbox2272成功，任务150变为cancelled，
+  AI_SERVING、pendingAction为空、needHuman=false。全程使用既有服务，
+  没有直接改路由、Outbox、消息或恢复任务的数据库状态。
+
+客户发送回执1016313、1016317、1016319、1016327均error_code=0且
+is_svr_fail=false；其seq13557019、13557021、13557022、13557026顺序一致，
+接收方和实例匹配其风。真实出站echo也按相同消息ID到达，被幂等识别为duplicate；
+没有被误当作本地员工新消息而接管AI。门店通知2270的真实群发送回执为
+1016325/seq13557025，同样成功。取消消息回执留在原始日志中。
+这些证明真实发送接口及回调闭环，不证明客户设备已读或人工已实际处理。
+输入为按官方格式模拟的回调，不冒充手机端真实键入或真实语音上行。
+
+两轮知识问题各1次Judge用量记录、Generate attemptCount=1，无coverage修复、
+协议兜底或泄漏。人工路由保留原有handoff_summary调用，不声称转接仅调用Intent。
+脚本总耗时包含等待Outbox及连续稳定采样，不当作模型延迟。
+加上首条失败和取消收尾，本轮共6个客户输入，另重放1次相同回调；
+失败记录保留，不能称整轮零失败，也不据此承诺长期随机稳定率或整体P90。
+
+最终8083=200、systemd active/running、PID2629、NRestarts=0；
+消息总数5770/max18228，会话133未增，未恢复SQL；无pending/failed Outbox，
+原7条历史sending未动。其风无活跃恢复任务，原客户偏好与会话绑定未变。
+原始复验日志位于本次备份目录acceptance-qifeng-{knowledge,multi,handoff,cancel}.jsonl。
+本轮运行修复仅question_coverage.go，既有测试和两份文档同步；
+没有扩展新模型、状态机、知识特补或本地语义规则。
+推送后fetch检查两并行分支无目标文件新差异，无需rebase；以3c38150为合并基础。
+回退仅切3c38150，配置保持当前，禁止恢复旧数据库；本次没有回滚。
+
 ## 2026-09-09 其风真实出站验收与覆盖标签遗漏
 
 用户批准其风及南七门店通知。核实当前会话1889、客户1811、渠道3、
