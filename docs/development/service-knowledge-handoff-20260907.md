@@ -1,5 +1,43 @@
 # 服务知识优先与发送关联修复
 
+## 当前结果：2026-09-09 3c38150已部署，投递验收待接收范围
+
+程序提交`3c38150a4b9e122f39f19dadb8acc311dce45668`已推送origin、weibao，
+release为`/opt/agentdesk/releases/20260907-request-answer-3c38150`，
+Linux amd64二进制SHA256为
+`16f493dfaf1dcbfa7378916b3de2ecea6a2ca236cbf7acfdffb1800a9d954c06`。
+新备份`/opt/backups/agentdesk-20260909-intent-goals-protocol`包含完整数据库、
+shared配置、原Profile和应用Profile，gzip/SHA校验通过。原计划11处说明再次条件
+更新，Schema字段集合不变。回滚只切5b8ca94并恢复该备份的Profile，不恢复SQL。
+
+原隔离会话2127继续5输入，18202至18212，共9条AI消息，末条18215：
+- 两次外卖原问均回答美团下单办法，没有本子、售卖柜或配送能力外推。
+- 两次地址加机器人均初次拆为两个Task，逐题检索、独立选证据并按序回答，
+  无coverage_repair。子意图标签仍有food_delivery/supplies_self_help漂移，
+  本次查询、Task归属和答案未受影响，不据此宣称标签完全稳定。
+- 天气/杜甫/配色三问按序三答；天气工具成功，第三个Task明确推荐浅色系，
+  不再以另一题“李白”的字样计算颜色回答通过。
+
+五轮内容和任务复验通过，无空答、协议泄漏、Generate重试或确定性兜底。
+服务器run latency分别9218、12031、9651、11755、10344毫秒；
+测试脚本总耗时另含轮询及收尾等待，不与模型耗时混为一谈。
+知识检索771至849毫秒，Judge3499至4828毫秒；四轮知识问题用量事件各1次Judge，
+所有Generate attemptCount=1。第一轮诊断中22秒的双题修复此次未再出现，
+但5输入不构成整体延迟P90或长期随机稳定性的证据。
+
+19:10检查current/Profile正确，8083正常、systemd active/running、NRestarts=0；
+消息5743/max18201增至5757/max18215，会话数133不变。2127为AI_SERVING，
+pendingAction为空、活跃恢复任务0、Outbox0。原7条历史sending和生产路由未改。
+主测试原始日志与复验日志已分别归档至上述备份目录的
+`acceptance-diagnostic-10.jsonl`和`acceptance-followup-5.jsonl`，
+本地`/private/tmp/`也保留副本，测试消息不删除；没有新建30/50轮批次。
+推送后fetch复核两并行分支无四个目标运行文件的新差异，无需rebase；
+代码保持独立提交，可在418c535基础上合并。文档提交不需要重建二进制。
+
+未完成项：真实企微手机投递及转接通知验收尚缺用户批准的测试接收范围。
+不把ChannelID=0、消息入库或Go测试算作手机送达，也不更改Outbox或人工状态机
+绕过此边界。已向用户索取测试客户及门店通知许可；在确认前不向真实客户发测试。
+
 ## 2026-09-09 18:50 环境恢复后10输入复验及小范围补正
 
 只读确认FastGPT Redis于18:21恢复，门店/通用真实检索分别1.117/0.664秒成功。
@@ -25,7 +63,8 @@ knowledge_evidence_judge.go统一完整根对象示例、兼容缺失冗余版�
 multi_reply_output.go只补充明确常识/建议逐题回答目标的说明。
 本地不增加自然语言语义检查，不推导答案，不增加模型或重试。
 无Model/Migration、DTO/API/WebSocket、权限、计费、知识库或人设修改。
-新增版本兼容回归先在旧解析上复现失败；严格版本、无Task、未知Task和候选仍拒绝。
+新增版本兼容回归先在旧解析上复现失败；显式错误版本仍拒绝，
+缺失所需Task或无效候选不会因兼容版本标记变成可提交答案。
 `go test -p=1 ./internal/ai/runtime/executor ./internal/pkg/replyintent -count=1`
 通过，耗时7.801/0.230秒；gofmt及diff检查通过。提示断言不代替模型行为验证。
 并行分支在目标文件上无新增差异，无需rebase；独立提交可在418c535基础合并。
