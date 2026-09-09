@@ -5074,6 +5074,24 @@ func TestJudgeKeepsOriginalRequestSeparateFromResolution(t *testing.T) {
 	}
 }
 
+func TestJudgeExampleKeepsCoverageAndEvidenceInOneEnvelope(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	start := strings.LastIndex(prompt, "\n{")
+	if start < 0 {
+		t.Fatal("missing complete JSON example")
+	}
+	var example knowledgeEvidenceJudgeRawResponse
+	if err := json.Unmarshal([]byte(prompt[start:]), &example); err != nil {
+		t.Fatal(err)
+	}
+	if example.SchemaVersion != knowledgeEvidenceJudgeSchemaVersion || len(example.Tasks) != 1 || example.Coverage == nil {
+		t.Fatal("coverage must not replace the evidence envelope")
+	}
+	if !strings.Contains(prompt, "优先选择直接适用且没有额外前提的证据") {
+		t.Fatal("repeated methods must not import another candidate's prerequisites")
+	}
+}
+
 func TestJudgeRuntimeAnswerTextContract(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{TaskID: "T1", Intent: "hotel_info", Query: "矿泉水几瓶",
 		Candidates: []knowledgeEvidenceJudgeCandidate{{
@@ -5084,6 +5102,7 @@ func TestJudgeRuntimeAnswerTextContract(t *testing.T) {
 	raw := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"F1","aspect":"quantity","statement":"矿泉水两瓶。","criticalValues":["两瓶"]}],"missingAspects":[],"answerText":"房间内有两瓶矿泉水。"}]}]}`
 	for _, tt := range []struct{ name, raw, decision string }{
 		{"new", raw, knowledgeEvidenceDecisionDirectSingle},
+		{"omitted redundant version", strings.Replace(raw, `"schemaVersion":"knowledge_evidence_judge.v2",`, "", 1), knowledgeEvidenceDecisionDirectSingle},
 		{"legacy", strings.Replace(raw, `,"answerText":"房间内有两瓶矿泉水。"`, "", 1), knowledgeEvidenceDecisionDirectSingle},
 		{"empty answer", strings.Replace(raw, `"answerText":"房间内有两瓶矿泉水。"`, `"answerText":""`, 1), knowledgeEvidenceDecisionProtocolInvalid},
 		{"wrong candidate", strings.Replace(raw, `["T1C1"]`, `["T2C1"]`, 1), knowledgeEvidenceDecisionProtocolInvalid},
@@ -5100,6 +5119,17 @@ func TestJudgeRuntimeAnswerTextContract(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, invalid := range []string{
+		strings.Replace(raw, knowledgeEvidenceJudgeSchemaVersion, "knowledge_evidence_judge.v99", 1),
+		`{"coverage":{"status":"complete","issues":[]},"tasks":[]}`,
+		`{"coverage":{"status":"complete","issues":[]}}`,
+		strings.Replace(raw, `"taskId":"T1"`, `"taskId":"unknown"`, 1),
+	} {
+		selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(invalid, []knowledgeEvidenceJudgeTask{task})
+		if err == nil && selections["T1"]["store"].Decision != knowledgeEvidenceDecisionProtocolInvalid {
+			t.Fatal("version compatibility must not accept unknown versions or incomplete task envelopes")
+		}
 	}
 	task.Intent, task.SubIntent, task.Objective = "service_request", "external_proxy_action", "action_request"
 	selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(

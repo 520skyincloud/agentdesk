@@ -684,7 +684,7 @@ func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
 		},
 	}}
 	instruction := buildMultiReplyOutputInstruction(plan, false)
-	for _, want := range []string{"T1", "T1F1", "T1F2", "两瓶", "免费", "coveredFactIds"} {
+	for _, want := range []string{"T1", "T1F1", "T1F2", "两瓶", "免费", "coveredFactIds", "建议应给出具体选择", "不能用另一题的工具结果"} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("active fact contract is missing %q: %s", want, instruction)
 		}

@@ -345,6 +345,16 @@ func TestRuntimePipelineIntentDetectFailureStillReplies(t *testing.T) {
 	}
 }
 
+func TestRuntimeIntentQuestionPassFollowsContextAndClassification(t *testing.T) {
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{
+		UserMessage: models.Message{Content: "发票在哪申请，有打印机吗"},
+	}, adapter.HistoryBuildResult{}, []models.ReplyIntentConfig{{Code: "hotel_info", Name: "酒店信息"}})
+	if strings.Count(prompt, "【当前轮逐题识别】") != 1 ||
+		strings.Index(prompt, "【当前轮逐题识别】") < strings.Index(prompt, "启用的分类配置") {
+		t.Fatal("finish by resolving customer goals rather than grouping classification labels")
+	}
+}
+
 func TestRuntimeIntentDetectPromptRequiresSpecificHotelInfoSubIntent(t *testing.T) {
 	prompt := runtimeIntentDetectSystemPrompt()
 	for _, expected := range []string{

@@ -69,7 +69,7 @@ func TestQuestionCoverageValidatesOnlyProtocolAndSource(t *testing.T) {
 func TestQuestionCoverageSeparatesAnswerGoalsRegardlessOfClassification(t *testing.T) {
 	prompt := runtimeQuestionCoverageInstruction()
 	for _, rule := range []string{
-		"先输出 coverage，再输出 tasks",
+		"coverage、schemaVersion、tasks 必须在同一个完整 JSON 根对象中",
 		"不论 objective 是 method、availability 还是 compound_information",
 		"direct_combined 不代表合题正确",
 		"比较、交集、条件筛选是一个整体目标",

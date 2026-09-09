@@ -846,7 +846,7 @@ func knowledgeEvidenceJudgeSystemPrompt() string {
 先检查方案适用性，再提取事实和判断完整性。客户已明确无法采用、拒绝或尝试失败的方案，以及仅解释该不可用方案的物品存在性、位置，不是当前请求的有用部分答案。当前层只有这些内容、没有其他适用办法或可回答当前请求的政策时，直接判 insufficient，hasUsableSelfService=false，selectedCandidateIds、supportedFacts、answerText 为空。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法；此顺序适用于当前原话和 sourceContext 中仍有效的条件，同轮其他独立问题分别裁决。
 
 先比较当前层全部候选对客户所求结论或动作的覆盖，再选证据：直接办理方法优先于仅相关的设施存在性。客户问能否自行办理某事，知识明确建议通过某渠道办理该事，就直接回答这个办法，可以判完整可答；不必另找一句同问法的“是/否”，也不把建议扩写成酒店代办或特殊许可。不能把流程中的不同动作当成同一个目标，例如申请、打印、领取是不同环节。已有直接答复时，不得退回只报相关设施、再把客户唯一所问目标列为 missingAspects。只问某设施是否存在时，存在性本身就是直接答案，不必再附加办理方法。
-选择示例（仅说明规则，不是门店知识）：当前问“能自己申请电子发票吗”，C1写“酒店有打印机”，C2写“没有文件夹，电子发票可以在订单中申请”。应选C2，答“电子发票可以在订单中申请”，判direct_single；不能选C1只答有打印机，也不能带入没有文件夹。当前改问“有打印机吗”才选C1。候选排位或分数更高不改变这个选择顺序。
+选择示例（仅说明规则，不是门店知识）：当前问“能自己申请电子发票吗”，C1写“酒店有打印机”，C2写“没有文件夹，电子发票可以在订单中申请”，C3写“前台提供纸质单据，如果纸质单据不够，可以在订单中申请电子发票”。应选C2，答“电子发票可以在订单中申请”，判direct_single；不能选C1只答有打印机，也不能带入没有文件夹。C3虽重复同一方法，但附带客户未提出的物品和条件，不应取代C2的直接答案，更不能要求客户先走C3的其他流程。多条候选重复同一办法时，优先选择直接适用且没有额外前提的证据，不把其他候选的条件或背景拼入答案。当前改问“有打印机吗”才选C1。候选排位或分数更高不改变这个选择顺序。
 适用知识的可回答性不等于所有细节都已确认：没有完整答案时，知识中与当前需要直接对应的服务、专用设施或自助办法仍可保留，先保留这份可用答复；实际问到的方面尚不完整则判 partial，不能因此把整条知识判 insufficient。没有询问且不影响答案成立的配送、费用、时长不加入 missingAspects。answerText只给出已确认且本题需要的内容，不补出“可以、能送到、已安排”等原文没有确认的结论，不自动追加未知说明或联系人工建议。partial 不是保留所有相关背景的许可；设施已经故障、方案已被拒绝或客户坚持必须现场执行时，不能用设施存在性充当解决办法。
 
 事实维度完整性检查是每个 task、每个 layer 的必做步骤：
@@ -929,8 +929,8 @@ missingAspects 是内部证据边界，不是必须对客户逐项说明的清�
 
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
-严格输出 JSON，不要 Markdown、解释或额外字段。先输出 answerText，再输出所用证据和完整性判定，不能先认定partial再寻找一句相关背景填入答案。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，内容按实际证据填写）：
-{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","answerText":"您可以到指定洗衣房自行取用所需用品。","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"您可以到指定洗衣房自行取用所需用品。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"decision":"partial","hasUsableSelfService":true},{"layer":"general","answerText":"","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"decision":"insufficient","hasUsableSelfService":false}]}]}`)
+严格输出一个完整 JSON 根对象，不要 Markdown、解释或额外字段。根对象包含 schemaVersion 和 tasks；输入带 coverageInput 时还必须包含 coverage，不能只输出 coverage 子对象。各 layer 内先输出 answerText，再输出所用证据和完整性判定，不能先认定partial再寻找一句相关背景填入答案。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，coverage 和内容均按实际输入判断）：
+{"schemaVersion":"knowledge_evidence_judge.v2","coverage":{"status":"complete","issues":[]},"tasks":[{"taskId":"T1","layers":[{"layer":"store","answerText":"您可以到指定洗衣房自行取用所需用品。","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"您可以到指定洗衣房自行取用所需用品。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"decision":"partial","hasUsableSelfService":true},{"layer":"general","answerText":"","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"decision":"insufficient","hasUsableSelfService":false}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
@@ -958,7 +958,7 @@ func parseKnowledgeEvidenceJudgeResponseWithValidation(raw string, tasks []knowl
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, knowledgeEvidenceJudgeResponseError(knowledgeEvidenceDecisionMalformed, fmt.Errorf("knowledge judge response contains trailing content"))
 	}
-	if parsed.SchemaVersion != knowledgeEvidenceJudgeSchemaVersion {
+	if parsed.SchemaVersion != knowledgeEvidenceJudgeSchemaVersion && (!protocolOnly || parsed.SchemaVersion != "") {
 		return nil, knowledgeEvidenceJudgeResponseError(knowledgeEvidenceDecisionProtocolInvalid, fmt.Errorf("unexpected knowledge judge schema version %q", parsed.SchemaVersion))
 	}
 	expected := make(map[string]map[string]map[string]struct{}, len(tasks))

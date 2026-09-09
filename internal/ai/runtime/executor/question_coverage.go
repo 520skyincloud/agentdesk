@@ -177,7 +177,7 @@ func runtimeQuestionCoverageInstruction() string {
 同一对象紧密相关的数量和费用可以是一个任务；比较、交集、条件筛选是一个整体目标，不得拆坏。背景、礼貌、否定排除的对象不是新增待答问题。明确回指允许结合已经提供的上下文，不能重做历史已答题。
 coverage 只核对问题是否被正确表示，不核对答案是否存在。合法问题没有候选或候选不足属于该任务的 insufficient/partial，不是 missing_question。misdirected_query 只用于检索问题实际遗漏/替换了客户对象或条件，不用于普通低分、召回为空。
 同时核对任务的执行路径：明确的酒店业务问题若因“不知道能否提供”被当作无需知识的 interaction/clarify，实际跳过了该问题的检索，也属于 misdirected_query。问题可理解但答案未知不是歧义；真正指代不明的澄清、闲聊和明确人工请求仍是合法的非知识任务。
-先输出 coverage，再输出 tasks；这只调整已有字段的输出顺序，不新增协议字段。coverage: {"status":"complete","issues":[]} 仅表示客户目标和 Task 一一对应，不能因为一个 Task 恰好召回全部答案就判 complete，direct_combined 不代表合题正确。发现明确漏题、错误合题或检索目标改变时返回 status="repair_required"，issues 每项包含 kind（missing_question/merged_questions/misdirected_query）、taskId（漏题可为空）、sourceRef、text（该来源中连续原文）、reason（简短说明遗漏目标）。schemaVersion 和 tasks 仍按原契约输出。
+先核对 coverage，再裁决 tasks；coverage、schemaVersion、tasks 必须在同一个完整 JSON 根对象中，沿用前面的完整示例，不另输出子对象或省略其他字段。coverage: {"status":"complete","issues":[]} 仅表示客户目标和 Task 一一对应，不能因为一个 Task 恰好召回全部答案就判 complete，direct_combined 不代表合题正确。发现明确漏题、错误合题或检索目标改变时返回 status="repair_required"，issues 每项包含 kind（missing_question/merged_questions/misdirected_query）、taskId（漏题可为空）、sourceRef、text（该来源中连续原文）、reason（简短说明遗漏目标）。schemaVersion 和 tasks 仍按原契约输出。
 不要在这里新建或改写 Task；仍为本次候选任务正常返回证据裁决。Intent 负责接收反馈后修复，未受影响任务的答案会保留。`
 }
 

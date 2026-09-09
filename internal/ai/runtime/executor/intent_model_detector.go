@@ -615,7 +615,6 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 		b.WriteString("必须分类的当前消息:\n")
 		b.WriteString(currentDisplayText)
 	}
-	b.WriteString("\n\n【当前轮逐题识别】逐条扫描 U1 到 Un，按每个独立答案目标输出 Task，不按意图类别归组。任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词。保持 URef 顺序和同一来源内的问题顺序；text 保留连续原话，resolvedText 补全对象，evidenceQuery 独立检索。背景、情绪和回答格式要求绑定相关任务。")
 	b.WriteString("同一当前轮中，若后一个 URef 需要前一个 URef 才能补全，就把前一个 URef 加入 sourceRefs，并保持 relationToPrevious=independent；context sourceRef 只负责补全，不能替代前一个 URef 自己的独立业务 Task。follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，必须建立停车 Task（text=U1原话、sourceRefs=[U1]）和充电 Task（text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context）。")
 	b.WriteString("先读完本轮全部 URef，再决定哪些问题仍需要澄清。前面的催问、符号、情绪或不完整表达，若已经被本轮后续完整问题解释，只作为该问题的 context sourceRef，不再建立 interaction/clarify，也不再问客户想问什么。独立且仍有歧义的业务问题必须保留澄清，不能因为旁边有明确问题就吞掉；单独互动、真实否定上一答复和跨轮追问仍按原语义识别。")
 	b.WriteString("\n\n当前消息类型: ")
@@ -695,6 +694,7 @@ func buildRuntimeIntentDetectUserPrompt(req RunInput, history adapter.HistoryBui
 	if currentText != "" {
 		b.WriteString("\n再次强调，最终 JSON 只能分类本轮 CURRENT_TURN_SOURCE_REFS 对应的客户消息；历史和媒体上下文只能用于补全明确指代，不能变成新任务。\n")
 	}
+	b.WriteString("\n\n【当前轮逐题识别】逐条扫描 U1 到 Un，按每个独立答案目标输出 Task，不按意图类别归组。任务数量和边界只能由你根据完整语义判断，不能依赖标点、换行、空格或固定连接词。保持 URef 顺序和同一来源内的问题顺序；text 保留连续原话，resolvedText 补全对象，evidenceQuery 独立检索。背景、情绪和回答格式要求绑定相关任务。")
 	b.WriteString("\n请输出严格 JSON。")
 	return b.String()
 }
