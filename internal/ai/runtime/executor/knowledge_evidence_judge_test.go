@@ -49,14 +49,42 @@ func TestJudgeSelectsApplicableFactsBeforeComposingTheAnswer(t *testing.T) {
 	}
 }
 
+func TestJudgeComparesDirectAnswersBeforeRetainingPartialBackground(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, rule := range []string{
+		"先比较当前层全部候选对客户所求结论或动作的覆盖",
+		"直接办理方法优先于仅相关的设施存在性",
+		"不能把流程中的不同动作当成同一个目标",
+		"已有直接答复时，不得退回只报相关设施",
+		"先输出 answerText，再输出所用证据和完整性判定",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("missing direct-answer selection rule %q", rule)
+		}
+	}
+	example := prompt[strings.LastIndex(prompt, "\n{")+1:]
+	if strings.Index(example, `"answerText"`) >= strings.Index(example, `"decision"`) {
+		t.Fatal("the output example must not decide completeness before composing the task answer")
+	}
+}
+
 func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing.T) {
 	const faq = "酒店有本子吗？"
 	const raw = "问题：" + faq + "\n答案：不好意思，酒店没有哈，建议您可以在美团上下个外卖订单。"
+	const robot = "问题：你们家有外卖机器人吗？\n答案：有外卖机器人的。"
 	tasks := []knowledgeEvidenceJudgeTask{
 		{TaskID: "T1", Intent: "hotel_info", OriginalText: "你们这可以点外卖吗", Query: "你们这可以点外卖吗",
-			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)}}},
+			Candidates: []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T1C1", Layer: "store", Hit: judgeTestHit(3, 102, "你们家有外卖机器人吗？", robot, .99)},
+				{CandidateID: "T1C2", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)},
+			}},
 		{TaskID: "T2", Intent: "hotel_info", OriginalText: "有本子吗", Query: "有本子吗",
 			Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T2C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .7691)}}},
+		{TaskID: "T3", Intent: "hotel_info", OriginalText: "有外卖机器人吗", Query: "有外卖机器人吗",
+			Candidates: []knowledgeEvidenceJudgeCandidate{
+				{CandidateID: "T3C1", Layer: "store", Hit: judgeTestHit(3, 101, faq, raw, .99)},
+				{CandidateID: "T3C2", Layer: "store", Hit: judgeTestHit(3, 102, "你们家有外卖机器人吗？", robot, .7853)},
+			}},
 	}
 	prompt := buildKnowledgeEvidenceJudgePrompt(tasks)
 	encoded, err := json.Marshal(prompt.Tasks[0])
@@ -67,20 +95,25 @@ func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing
 		t.Fatal("the current question must remain visible after the candidate material")
 	}
 	for index, task := range prompt.Tasks {
-		if task.Question != tasks[index].OriginalText || len(task.Candidates) != 1 ||
-			task.Candidates[0].FAQQuestion != faq || task.Candidates[0].RawContent != raw {
+		if task.Question != tasks[index].OriginalText || len(task.Candidates) != len(tasks[index].Candidates) {
 			t.Fatalf("mixed evidence must retain its own FAQ semantics and task owner: %+v", task)
+		}
+		for candidateIndex, candidate := range task.Candidates {
+			if candidate.RawContent != tasks[index].Candidates[candidateIndex].Hit.Content {
+				t.Fatalf("competition must not locally filter or rewrite candidate evidence: %+v", candidate)
+			}
 		}
 	}
 	// This verifies the wire/rendering contract, not the model's semantic choice.
 	response := `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[
-{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T1C1"],"answerText":"建议您可以在美团上下个外卖订单。","supportedFacts":[{"factId":"F1","aspect":"method","statement":"建议您可以在美团上下个外卖订单。","criticalValues":[]}],"missingAspects":[]}]},
-{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T2C1"],"answerText":"酒店没有本子。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"酒店没有本子。","criticalValues":[]}],"missingAspects":[]}]}]}`
+{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T1C2"],"answerText":"建议您可以在美团上下个外卖订单。","supportedFacts":[{"factId":"F1","aspect":"method","statement":"建议您可以在美团上下个外卖订单。","criticalValues":[]}],"missingAspects":[]}]},
+{"taskId":"T2","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T2C1"],"answerText":"酒店没有本子。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"酒店没有本子。","criticalValues":[]}],"missingAspects":[]}]},
+{"taskId":"T3","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":false,"selectedCandidateIds":["T3C2"],"answerText":"有外卖机器人的。","supportedFacts":[{"factId":"F1","aspect":"existence","statement":"有外卖机器人的。","criticalValues":[]}],"missingAspects":[]}]}]}`
 	selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(response, tasks)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, want := range []string{"建议您可以在美团上下个外卖订单。", "酒店没有本子。"} {
+	for index, want := range []string{"建议您可以在美团上下个外卖订单。", "酒店没有本子。", "有外卖机器人的。"} {
 		task := tasks[index]
 		selection := selections[task.TaskID]["store"]
 		if selection.Decision != knowledgeEvidenceDecisionDirectSingle {
