@@ -57,7 +57,8 @@ type runtimeQuestionRepairRequest struct {
 
 func runtimeQuestionFirstIntentInstruction() string {
 	return `【问题优先，分类随后】
-输出 JSON 时先写 intentTasks，最后才写 primaryIntent 等汇总。一个 Task 是一个客户需要的独立答案或动作，不是一类意图；意图分类相同不代表答案相同。
+输出 JSON 时先写 intentTasks，最后才写 primaryIntent 等汇总。每个 Task 先写 text、resolvedText、sourceRefs，再写 intent、subIntent、objective 等分类字段。先确定客户需要哪些独立结果，再分类；不能先选一个话题，再把同话题的不同问题塞进一个 Task。
+同一场景的不同结果必须分开：方法、存在性、位置等结果若分别回答不同对象或办理环节，就各自建 Task。例如“发票在哪申请，有打印机吗”是申请方法和设备存在性两个目标，不能合成一个 method 任务。是否拆题不取决于措辞相近、类别相同或能否在一句回复里回答。
 列举多个物品、设施或服务是否提供时，逐个对象建立 Task，即使共用一个“有没有”或没有标点。不能用 supplies_self_help、store_knowledge 或 compound_information 包住整份清单。
 回指多个对象时也先解析本轮实际对象集合，再逐对象建立 Task 和独立 evidenceQuery；共享一个“在哪里、怎么拿、收费吗”不代表只有一个答案目标。按当前限定筛选上下文：“有的这些”只指上轮明确提供的对象，已明确不提供的对象不进入本轮 entities 或查询。各 Task 的 text/sourceRefs 可以共享同一回指原话，resolvedText/evidenceQuery 必须分别写清实际对象；不得重新回答上一轮已经答过的属性。
 只有同一个明确对象、且客户表达的是一个紧密答案目标时才用 compound_information，例如同一物品数量与费用；不同对象、不同知识主题或需要不同答案结果的问题必须拆开，即使 subIntent 相同也不能合并不同答案目标。
@@ -171,12 +172,12 @@ func validateRuntimeQuestionCoverage(coverage *runtimeQuestionCoverage, input *r
 func runtimeQuestionCoverageInstruction() string {
 	return `【先核对客户问题覆盖，再裁决证据】
 输入含 coverageInput 时，必须先独立阅读 sources 的完整本轮原话，结合 tasks.resolvedText 理解已补全的回指对象，对照全部任务（包括资源、互动、转接），不要把已有 Task 数当成客户问题数。
-每个可独立获得答案的对象/诉求应有自己的任务。即使属于同一意图或都是问“有没有”，不同物品仍是不同问题。把多个物品放进同一个 compound_information 是 merged_questions；部分物品没召回不是合题合理的理由。
+先逐一找出客户所求的独立结果，再核对 Task 归属，不受现有分类和候选答案影响。不论 objective 是 method、availability 还是 compound_information，多个独立对象或办理结果塞进一个 Task 都是 merged_questions。方法和设施存在性即使属于同一话题也不是一个结果，例如“发票在哪申请，有打印机吗”应有两个 Task；部分物品没召回不是合题合理的理由。
 回指后的多个对象共问位置、方法或费用时也按对象核对；即使当前 sources 只有一句“这些在哪里拿”，resolvedText 已列出多个独立对象却仍共用一条检索任务，也属于 merged_questions。issue.text 仍引用当前 sources 的回指原话，不编造历史来源；不要因候选只覆盖其中几个对象，就把其余对象从本轮目标中删除。
 同一对象紧密相关的数量和费用可以是一个任务；比较、交集、条件筛选是一个整体目标，不得拆坏。背景、礼貌、否定排除的对象不是新增待答问题。明确回指允许结合已经提供的上下文，不能重做历史已答题。
 coverage 只核对问题是否被正确表示，不核对答案是否存在。合法问题没有候选或候选不足属于该任务的 insufficient/partial，不是 missing_question。misdirected_query 只用于检索问题实际遗漏/替换了客户对象或条件，不用于普通低分、召回为空。
 同时核对任务的执行路径：明确的酒店业务问题若因“不知道能否提供”被当作无需知识的 interaction/clarify，实际跳过了该问题的检索，也属于 misdirected_query。问题可理解但答案未知不是歧义；真正指代不明的澄清、闲聊和明确人工请求仍是合法的非知识任务。
-本轮输出在 schemaVersion/tasks 外只新增 coverage 字段，覆盖前面的旧输出示例：coverage: {"status":"complete","issues":[]}；只有明确漏题、错误合题或检索目标改变时返回 status="repair_required"，issues 每项包含 kind（missing_question/merged_questions/misdirected_query）、taskId（漏题可为空）、sourceRef、text（该来源中连续原文）、reason（简短说明遗漏目标）。
+先输出 coverage，再输出 tasks；这只调整已有字段的输出顺序，不新增协议字段。coverage: {"status":"complete","issues":[]} 仅表示客户目标和 Task 一一对应，不能因为一个 Task 恰好召回全部答案就判 complete，direct_combined 不代表合题正确。发现明确漏题、错误合题或检索目标改变时返回 status="repair_required"，issues 每项包含 kind（missing_question/merged_questions/misdirected_query）、taskId（漏题可为空）、sourceRef、text（该来源中连续原文）、reason（简短说明遗漏目标）。schemaVersion 和 tasks 仍按原契约输出。
 不要在这里新建或改写 Task；仍为本次候选任务正常返回证据裁决。Intent 负责接收反馈后修复，未受影响任务的答案会保留。`
 }
 

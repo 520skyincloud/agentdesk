@@ -1,9 +1,54 @@
 package replyintent
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestDefaultHotelIntentSchemaDescribesQuestionsBeforeClassification(t *testing.T) {
+	schema := DefaultHotelIntentJSONSchema()
+	start, end := strings.Index(schema, "{"), strings.LastIndex(schema, "}")
+	var example map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(schema[start:end+1]), &example); err != nil {
+		t.Fatal(err)
+	}
+	var tasks []map[string]json.RawMessage
+	if err := json.Unmarshal(example["intentTasks"], &tasks); err != nil || len(tasks) != 1 {
+		t.Fatalf("invalid task example: %v", err)
+	}
+	if len(example) != 14 || len(tasks[0]) != 15 {
+		t.Fatalf("reordering must not add or remove contract fields: %d/%d", len(example), len(tasks[0]))
+	}
+	if strings.Index(schema, `"intentTasks"`) > strings.Index(schema, `"primaryIntent"`) ||
+		strings.Index(schema, `"resolvedText"`) > strings.Index(schema, `"intent"`) {
+		t.Fatal("the example must identify each question before assigning its category")
+	}
+}
+
+func TestDefaultHotelIntentUsesBoundedContextWithoutReplayingHistory(t *testing.T) {
+	prompt := DefaultHotelIntentDetectPrompt()
+	for _, obsolete := range []string{
+		"没有紧邻业务上下文时不得从更早历史继承对象",
+		"上述继承只允许使用紧邻的业务上下文",
+		"必须结合紧邻上下文补全对象和所问方面",
+	} {
+		if strings.Contains(prompt, obsolete) {
+			t.Errorf("obsolete reference restriction remains: %s", obsolete)
+		}
+	}
+	for _, rule := range []string{
+		"有界历史中最近仍相关且唯一的对象",
+		"新主题不继承旧对象",
+		"不重新建立历史待答任务",
+		"clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段",
+		"external_proxy_action 只用于 service_request + action_request",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("missing scope boundary: %s", rule)
+		}
+	}
+}
 
 func TestDefaultHotelIntentKeepsClearNonHotelQuestionsAnswerable(t *testing.T) {
 	for _, rule := range []string{
@@ -43,9 +88,9 @@ func TestDefaultHotelIntentPromptDeclaresLightweightTaskSemantics(t *testing.T) 
 		"单独“不是”",
 		"AI 或人工客服追问姓名、房号或其他必要字段",
 		"clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段",
-		"follow_up 和 reference_previous 可以承接紧邻的“客户业务问题 + AI/人工客服已完成答复”组合",
+		"follow_up 和 reference_previous 从已提供的有界历史中选择最近仍相关且唯一的对象",
 		"即使紧邻答复说“没有资料、无法确认、需要同事处理”",
-		"不能从更早、非紧邻历史里挑一个旧主题强行续接",
+		"不能绕过新主题强行续接旧对象",
 		"不同答案结果的问题绝不能合并",
 		"同一个明确对象、且客户表达的是一个紧密答案目标",
 		"必须拆成办公桌房型和沙发房型两个 Task",

@@ -66,6 +66,53 @@ func TestQuestionCoverageValidatesOnlyProtocolAndSource(t *testing.T) {
 	}
 }
 
+func TestQuestionCoverageSeparatesAnswerGoalsRegardlessOfClassification(t *testing.T) {
+	prompt := runtimeQuestionCoverageInstruction()
+	for _, rule := range []string{
+		"先输出 coverage，再输出 tasks",
+		"不论 objective 是 method、availability 还是 compound_information",
+		"direct_combined 不代表合题正确",
+		"比较、交集、条件筛选是一个整体目标",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("coverage must inspect customer goals, not task labels: %s", rule)
+		}
+	}
+	if !strings.Contains(runtimeQuestionFirstIntentInstruction(), "先写 text、resolvedText、sourceRefs，再写 intent、subIntent、objective") {
+		t.Fatal("the task example and runtime instruction must use the same question-first order")
+	}
+
+	const question = "发票在哪申请，有打印机吗"
+	old := coverageTestIntent(question, "矿泉水几瓶、免费吗")
+	old.IntentTasks[0].Objective = "method"
+	old.IntentTasks[1].Objective = "compound_information"
+	plan := buildReplyPlan(old, selectIntentPromptPack(old))
+	input := buildRuntimeQuestionCoverageInput(RunInput{UserMessage: models.Message{
+		Content: question + "，矿泉水几瓶、免费吗",
+	}}, plan)
+	// A model-reported merged method is repairable without splitting a valid sibling.
+	issue := runtimeQuestionCoverageIssue{
+		Kind: "merged_questions", TaskID: plan.TaskPlans[0].TaskID,
+		SourceRef: "U1", Text: question, Reason: "申请方法和设备存在性是独立答案目标",
+	}
+	if err := validateRuntimeQuestionCoverage(&runtimeQuestionCoverage{
+		Status: "repair_required", Issues: []runtimeQuestionCoverageIssue{issue},
+	}, input); err != nil {
+		t.Fatal(err)
+	}
+	repaired := coverageTestIntent("发票在哪申请", "有打印机吗", "矿泉水几瓶、免费吗")
+	repaired.IntentTasks[0].Objective = "method"
+	repaired.IntentTasks[2] = old.IntentTasks[1]
+	got, changed, err := reconcileRuntimeQuestionRepairPlan(plan,
+		buildReplyPlan(repaired, selectIntentPromptPack(repaired)), input, []runtimeQuestionCoverageIssue{issue})
+	if err != nil || len(changed) != 2 || len(got.TaskPlans) != 3 {
+		t.Fatalf("repair lost the independent goals or split a valid compound: changed=%v err=%v", changed, err)
+	}
+	if !reflect.DeepEqual(got.TaskPlans[2], plan.TaskPlans[1]) {
+		t.Fatal("the valid quantity/price sibling must retain its fields and stable ID")
+	}
+}
+
 func TestQuestionCoverageRepairPreservesOtherTaskIDsAndQueries(t *testing.T) {
 	oldIntent := coverageTestIntent("咖啡和毛巾有吗", "停车收费吗")
 	oldPlan := buildReplyPlan(oldIntent, selectIntentPromptPack(oldIntent))

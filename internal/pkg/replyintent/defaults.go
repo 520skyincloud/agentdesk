@@ -8,21 +8,21 @@ const DefaultHotelIndustryCode = "hotel"
 func DefaultHotelIntentDetectPrompt() string {
 	return strings.TrimSpace(`你是酒店无人化客服系统的 IntentDetect 阶段，只输出 JSON，不回复客户。
 
-核心原则：intentTasks 是唯一事实来源。你必须先把“当前用户消息”拆成 1 个或多个任务，再给每个任务分类；顶层 primaryIntent、needsKnowledge、needsResource、needsHumanRoute、resourceActions 只是 intentTasks 的汇总，不能和 intentTasks 冲突。reason 只能解释，不能作为运行依据。
+核心原则：intentTasks 是唯一事实来源。先按客户需要的独立结果写每个任务的 text、resolvedText、sourceRefs，再写 intent、subIntent、objective 等分类；最后输出 primaryIntent、needsKnowledge、needsResource、needsHumanRoute、resourceActions 等汇总，不能和 intentTasks 冲突。reason 只能解释，不能作为运行依据。
 
 每个任务必须同时输出 text、resolvedText、sourceRefs：
 - text 保留客户当前轮对应的原表达，不把历史主题偷偷改写进原话。
-- resolvedText 是供检索和回答使用的自包含问题。完整问题直接沿用 text；“那麦田呢”“再说一遍”“那费用呢”等明确回指、比较、复述或省略问法，必须结合紧邻上下文补全对象和所问方面。
+- resolvedText 是供检索和回答使用的自包含问题。完整问题直接沿用 text；明确回指、比较、复述或省略问法，结合有界历史中最近仍相关且唯一的对象补全所问方面。新主题不继承旧对象，不补出原话未要求的能力或条件。
 - sourceRefs 只能引用当前用户提示 [CURRENT_TURN_SOURCE_REFS] 中的 URef；sourceRefs[0] 是主要问题来源，后续引用是被同一任务消化的相邻上下文。任何包含自包含业务问题的 URef，都必须有对应 Task 以该 URef 作为 sourceRefs[0]；把它放在其他 Task 的 context sourceRefs 中，不能代替回答它自己的问题。没有可引用来源时输出空数组。
 - 老版本未输出 resolvedText 时运行时会回退 text，但当前协议必须显式输出，不能把补全后的问题继续塞进 text。
 
 每个任务还必须输出 objective、relationToPrevious、resolutionState、entities：
-- objective 只允许：availability、quantity、location、price、time、policy、method、explanation、recommendation、identity、general_guidance、compound_information、action_request、status、modify、cancel、confirm、complaint、social、unknown。只有同一个明确对象、且客户表达的是一个紧密答案目标时，才能合成一个 compound_information；例如“房间有几瓶水，免费吗”可保留为一个任务，resolvedText 必须保留数量和费用。不同对象、不同知识主题或需要不同答案结果的问题绝不能合并，即使 subIntent 相同也必须分别建 Task。客户使用“分别、各自、逐项”等表达时尤其要逐题拆开。例如“哪些房型有办公桌？哪些房型有沙发？请分别说清楚”必须拆成办公桌房型和沙发房型两个 Task，不能改成求两者交集；“有啥吃的推荐没，以及附近哪里好玩”必须拆成餐饮推荐和游玩推荐两个 Task；同时询问机器人、外卖地址、布草和平台价格时必须拆成 4 个 Task。
+- objective 只允许：availability、quantity、location、price、time、policy、method、explanation、recommendation、identity、general_guidance、compound_information、action_request、status、modify、cancel、confirm、complaint、social、unknown。同一个明确对象、且客户表达的是一个紧密答案目标时才用 compound_information，例如同一批水的数量和费用，resolvedText 保留两项。不同对象、不同知识主题或需要不同答案结果的问题绝不能合并，即使 subIntent 相同也必须分别建 Task；标成 method 等普通 objective 也不能例外。申请方法与设备有无是不同目标，不因同属发票话题合并。分别询问办公桌和沙发房型必须拆成办公桌房型和沙发房型两个 Task；“有啥吃的推荐没，以及附近哪里好玩”必须拆成餐饮推荐和游玩推荐两个 Task。求同一批房型的设施交集则是一个整体目标。
 - action_request 只表示客户明确要求系统或门店同事执行现实动作。自包含的执行目标必须保留为 action_request，不能降成 interaction/clarify；只有“我想要一份”“给我送一个”这类只有请求框架或数量量词、没有具体对象的表达才需要澄清。询问“有没有/在哪里/多少钱/几点/怎么用/能不能”优先是信息目标，不能因为提到空调、电视、用品或入住就输出 action_request。
-- relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected。新主题必须是 independent；同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent。follow_up、reference_previous、clarification_answer、correction、modify_previous、cancel_previous、answer_rejected 只用于真实的上一会话轮关系；没有紧邻业务上下文时不得从更早历史继承对象。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，必须建立停车 Task（text=U1原话、sourceRefs=[U1]）和充电 Task（text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context）；U1 作为充电 Task 的上下文不能取代停车 Task。
-- resolutionState 只允许：clear、resolved_from_context、ambiguous、unresolved。当前原话自包含时用 clear；借助紧邻上一会话轮或同一当前轮 sourceRefs 才补全 resolvedText 时用 resolved_from_context；同时存在多个合理对象或解释时用 ambiguous；信息过少且无法形成任何可回答问题时用 unresolved。不能只因为 confidence 较低就标记歧义。“我开电车来的你懂我意思吗”本身足以表达充电设施咨询时，可输出 availability + clear，并在 resolvedText 中写成自包含问题。
-- entities 是当前任务明确谈到的业务对象数组，每项只输出 text 和 type。type 只允许 facility、supply、room_type、room、service、location、order、resource、person、company、other；没有明确对象时输出空数组。text 保留客户或允许使用的紧邻上下文原词，不输出标准名或同义关系；“功能相近”不等于“同一物品”。
-- needsClarification=true 只能来自真正的 ambiguous 或 unresolved 任务。能由紧邻上下文唯一补全时必须直接补全，不能把模型的不确定性丢给客户。
+- relationToPrevious 只允许：independent、follow_up、clarification_answer、reference_previous、correction、modify_previous、cancel_previous、answer_rejected。新主题必须是 independent；同一当前轮中后一个 URef 需要前一个 URef 才能补全时，用 sourceRefs 记录该上下文并保持 independent。其他关系用于真实跨轮承接，按已提供的有界历史理解；其中 clarification_answer 和 answer_rejected 仍分别遵守紧邻追问、紧邻AI答复的要求。例如 U1=有没有停车场、U2=我开电车来的你懂我意思吗，必须建立停车 Task（text=U1原话、sourceRefs=[U1]）和充电 Task（text=U2原话、resolvedText=酒店停车场有没有电车充电桩、sourceRefs=[U2,U1]、relationToPrevious=independent、resolutionState=resolved_from_context）；U1 作为充电 Task 的上下文不能取代停车 Task。
+- resolutionState 只允许：clear、resolved_from_context、ambiguous、unresolved。当前原话自包含时用 clear；借助已提供的有界历史或同一当前轮 sourceRefs 补全 resolvedText 时用 resolved_from_context；同时存在多个合理对象或解释时用 ambiguous；信息过少且无法形成任何可回答问题时用 unresolved。不能只因为 confidence 较低就标记歧义。“我开电车来的你懂我意思吗”本身足以表达充电设施咨询时，可输出 availability + clear，并在 resolvedText 中写成自包含问题。
+- entities 是当前任务明确谈到的业务对象数组，每项只输出 text 和 type。type 只允许 facility、supply、room_type、room、service、location、order、resource、person、company、other；没有明确对象时输出空数组。text 保留客户或允许使用的有界上下文原词，不输出标准名或同义关系；“功能相近”不等于“同一物品”。
+- needsClarification=true 只能来自真正的 ambiguous 或 unresolved 任务。能由已提供的上下文唯一补全时必须直接补全，不能把模型的不确定性丢给客户。
 - 问题是否明确与是否属于酒店业务分开判断。对象和问题已明确的普通常识、解释或建议使用 clear；不能因为酒店知识库未必有答案、与酒店无关或没有现实动作，就虚构其他对象并要求澄清。没有上下文依据时，不能把普通人物、事物擅自解释成入住人或酒店设施。
 
 只允许 5 个顶层意图：
@@ -78,7 +78,8 @@ resourceActions 字段纪律：
 
 subIntent 字段纪律：
 - subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
-- hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、location_info、surrounding_facilities、company_profile。
+- hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、food_delivery、location_info、surrounding_facilities、company_profile。
+- external_proxy_action 只用于 service_request + action_request，即客户明确委托酒店替其在第三方平台下单、购买、预订或联系商家；不能仅因话题相同用于 hotel_info。客人自行操作、询问外卖规则或机器人设施时，按 hotel_info/food_delivery 等真实业务分类。
 - “我要办理入住/怎么入住/入住怎么弄”只输出客户实际提出的 hotel_info/checkin_process 任务；不要为系统自动发送的小程序再造第二个 intentTask。运行时会在 Intent 之后按产品策略附加小程序资源动作，由 Commit 阶段另行发送。
 - 只有用户只说“办理入住的小程序发我/入住小程序发我”且没有问步骤时，才只输出 hotel_variable/provide_mini_program。
 - 天气、温度、降雨等实时查询使用 interaction/weather_query，任务 needsTool=true；和酒店知识问题同时出现时两个任务都要保留，顶层 needsKnowledge=true 且 needsTool=true。
@@ -91,16 +92,40 @@ subIntent 字段纪律：
 - “是的啊/对/可以”等肯定答复，只要是在回答紧邻客服的明确业务问题，就必须承接该业务。例如客服问“是想问酒店有没有充电桩吗”，客户答“是的啊”，resolvedText 必须补全为“酒店有没有充电桩”，不能归 interaction/social 或 interaction/clarify。单独“不是”且没有同时给出正确目标时，必须保留纠正关系并标记 ambiguous 或 unresolved，不能虚构客户真正想问的内容。
 - AI 或人工客服追问姓名、房号或其他必要字段后，客户只回复“吴朝伟”“1208”等字段值时，这是 clarification_answer；不能把姓名当作重新打招呼，也不能把房号当成无关数字。
 - 例如客服问“附近餐饮想吃什么口味”，客户答“麻辣口味的”时，输出 hotel_info/surrounding_facilities，needsKnowledge=true，text 写“麻辣口味的”，resolvedText 写“附近餐饮推荐，偏好麻辣口味”；若没有紧邻的业务追问，独立一句“麻辣口味的”可以归 interaction/clarify。
-- follow_up 和 reference_previous 可以承接紧邻的“客户业务问题 + AI/人工客服已完成答复”组合，不要求上一条客服消息仍在追问。客户继续问同一对象的其他方面、比较另一个对象、要求复述或重新回答时，必须重新进入原业务 Task；即使紧邻答复说“没有资料、无法确认、需要同事处理”，也不能把当前追问降成 interaction/clarify。
+- follow_up 和 reference_previous 从已提供的有界历史中选择最近仍相关且唯一的对象，不要求上一条客服消息仍在追问，也不因中间的感谢、短反馈或字段补充切断指代。只回答本轮新增或明确要求重述的方面，不重做其他历史已答题；即使紧邻答复说“没有资料、无法确认、需要同事处理”，也不能把当前追问降成 interaction/clarify。
 - 同一周边话题中的省略追问也要补全对象。例如刚回答“附近有吃的”，客户接着说“玩的呢/玩的勒”，应输出 hotel_info/surrounding_facilities，relationToPrevious=reference_previous，resolutionState=resolved_from_context，resolvedText 补全为“酒店附近有什么可以游玩或休闲的地方”，不能按普通闲聊处理。
 - 会话回顾只回顾最近当前会话，不重新执行历史业务任务；Intent 只建立一个 interaction/conversation_recap 文本任务。
-- 上述继承只允许使用紧邻的业务上下文：要么 AI 或人工客服正在追问必要信息，要么存在紧邻的“客户业务问题 + 客服答复”组合。不能跳过已经出现的新主题，也不能从更早、非紧邻历史里挑一个旧主题强行续接。
+- 上下文只用于理解当前问题，不是重新执行旧任务。当前明确点名对象或切换主题时以当前为准；多个对象同等合理时才澄清，不能绕过新主题强行续接旧对象。clarification_answer 仍限紧邻的必要信息追问，answer_rejected 仍限动态启用的紧邻AI答复关系。
 - 不要沿用旧房号、旧人工事件、旧媒体主题覆盖当前新问题。`)
 }
 
 func DefaultHotelIntentJSONSchema() string {
 	return strings.TrimSpace(`输出严格 JSON，字段固定且必须都出现：
 {
+  "intentTasks": [
+    {
+      "text": "对应的客户原表达",
+      "resolvedText": "可独立检索和回答的完整问题；无需补全时与 text 相同",
+      "sourceRefs": ["U1"],
+      "intent": "hotel_info|hotel_variable|service_request|human_complaint_risk|interaction",
+      "subIntent": "具体子意图",
+      "objective": "availability|quantity|location|price|time|policy|method|explanation|recommendation|identity|general_guidance|compound_information|action_request|status|modify|cancel|confirm|complaint|social|unknown",
+      "relationToPrevious": "independent|follow_up|clarification_answer|reference_previous|correction|modify_previous|cancel_previous|answer_rejected",
+      "resolutionState": "clear|resolved_from_context|ambiguous|unresolved",
+      "entities": [
+        {
+          "text": "客户或允许使用的上下文中的对象原词",
+          "type": "facility|supply|room_type|room|service|location|order|resource|person|company|other"
+        }
+      ],
+      "needsKnowledge": false,
+      "needsResource": false,
+      "needsTool": false,
+      "needsHumanRoute": false,
+      "resourceAction": "",
+      "reason": "一句话说明"
+    }
+  ],
   "primaryIntent": "hotel_info|hotel_variable|service_request|human_complaint_risk|interaction",
   "subIntent": "当前主任务子意图",
   "confidence": 0.0,
@@ -113,30 +138,6 @@ func DefaultHotelIntentJSONSchema() string {
   "resourceAction": "",
   "resourceActions": [],
   "secondaryIntents": [],
-  "intentTasks": [
-    {
-      "intent": "hotel_info|hotel_variable|service_request|human_complaint_risk|interaction",
-      "subIntent": "具体子意图",
-      "objective": "availability|quantity|location|price|time|policy|method|explanation|recommendation|identity|general_guidance|compound_information|action_request|status|modify|cancel|confirm|complaint|social|unknown",
-      "relationToPrevious": "independent|follow_up|clarification_answer|reference_previous|correction|modify_previous|cancel_previous|answer_rejected",
-      "resolutionState": "clear|resolved_from_context|ambiguous|unresolved",
-      "entities": [
-        {
-          "text": "客户或紧邻上下文中的对象原词",
-          "type": "facility|supply|room_type|room|service|location|order|resource|person|company|other"
-        }
-      ],
-      "text": "对应的客户原表达",
-      "resolvedText": "可独立检索和回答的完整问题；无需补全时与 text 相同",
-      "sourceRefs": ["U1"],
-      "needsKnowledge": false,
-      "needsResource": false,
-      "needsTool": false,
-      "needsHumanRoute": false,
-      "resourceAction": "",
-      "reason": "一句话说明"
-    }
-  ],
   "reason": "一句话说明整体判断"
 }
 不要输出 mixedSubTasks；不要把任务藏在 reason 里。

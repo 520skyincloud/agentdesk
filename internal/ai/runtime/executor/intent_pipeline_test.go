@@ -40,6 +40,23 @@ type recordingRuntimeIntentModelDetector struct {
 	err    error
 }
 
+func TestRuntimeIntentPromptDoesNotReintroduceShortenedIndependentQueries(t *testing.T) {
+	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
+		Content: "合柴和艺林有免费停车吗？早餐几点？",
+	}}, adapter.HistoryBuildResult{}, nil)
+	for _, obsolete := range []string{
+		"房型、入住背景只留在 resolvedText，不写入 evidenceQuery",
+		"evidenceQuery='免费停车吗'",
+	} {
+		if strings.Contains(prompt, obsolete) {
+			t.Errorf("user prompt contradicts complete-question retrieval: %s", obsolete)
+		}
+	}
+	if !strings.Contains(prompt, "完整独立问题保留 text 原话") {
+		t.Fatal("each independent query must retain its own question and conditions")
+	}
+}
+
 func TestRuntimeIntentFeedbackRetainsTheActualAdjacentExchange(t *testing.T) {
 	history := adapter.HistoryBuildResult{RawItems: []models.Message{
 		{ID: 1, SenderType: enums.IMSenderTypeCustomer, Content: "你们这可以点外卖吗"},
@@ -112,7 +129,7 @@ func TestRuntimeIntentPromptKeepsActorAndEvidenceGoalDistinct(t *testing.T) {
 		"只有当前明确委托酒店替客户在第三方平台",
 		"询问酒店自身设备或服务的存在性、能力、范围、规则属于 hotel_info",
 		"resolvedText 不得添加原文未指定的酒店工作人员",
-		"房型、入住背景只留在 resolvedText，不写入 evidenceQuery",
+		"完整独立问题保留 text 原话",
 		"询问房型自身设施、房价或区域配置时，该对象就是检索目标，不能删掉",
 		"撤回人工接待意愿属于 interaction/acknowledgement，objective=cancel",
 		"客户原话决定本轮请求范围",
@@ -457,7 +474,7 @@ func TestRuntimeIntentDetectPromptCarriesImmediateBusinessClarification(t *testi
 	for _, expected := range []string{
 		"clarification_answer 只用于回答紧邻 AI 或人工客服正在追问的必要字段",
 		"附近餐饮推荐，偏好麻辣口味",
-		"不能从更早、非紧邻历史里挑一个旧主题强行续接",
+		"不能绕过新主题强行续接旧对象",
 		"answer_rejected 只有本轮用户提示明确启用",
 		"answer_rejected 不是关键词命中",
 	} {
