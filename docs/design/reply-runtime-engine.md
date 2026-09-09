@@ -1,5 +1,15 @@
 # Reply Runtime Engine
 
+## 2026-09-09 覆盖核对输入边界补全
+
+Judge的普通证据Task与coverageInput都不能携带派生objective，避免同一原话
+因availability/policy等标签漂移变成不同证据要求。覆盖核对仍保留原话、补全、
+来源、任务ID、intent、outputKind和needsKnowledge，逐题修复继续读取完整
+previousIntentTasks；外部代办证据Task仍保留明确subIntent/objective能力边界。
+只删除覆盖结构中的冗余字段，不改拆题权、检索、证据协议或语义门槛。
+其风首条真实出站已验证接口发送，但内容错误转人工，不能计为语义通过；
+发现过程、程序发布与复验状态见开发记录。
+
 ## 当前发布：2026-09-09 3c38150
 
 当前程序3c38150已提交、推送两个远端并部署，hotel Profile应用原计划11处说明。

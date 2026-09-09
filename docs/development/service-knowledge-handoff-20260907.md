@@ -1,6 +1,37 @@
 # 服务知识优先与发送关联修复
 
-## 当前结果：2026-09-09 3c38150已部署，投递验收待接收范围
+## 2026-09-09 其风真实出站验收与覆盖标签遗漏
+
+用户批准其风及南七门店通知。核实当前会话1889、客户1811、渠道3、
+Store1、实例7及实际单聊映射；未修改客户偏好、知识、模型或路由配置。
+按官方企微11010文本回调格式在服务器模拟输入，使用独立测试消息ID；
+这不是客户手机真实上行，但客户回复和门店通知走真实Outbox及发送接口。
+
+首条18216“你们这可以点外卖吗”未通过语义验收：检索8192正常召回10条，
+门店第2/5条均含美团下外卖订单办法，Judge却返回两层insufficient，
+Generate跳过，18217转人工。Outbox2264门店通知和2265客户通知均sent；
+客户发送回执1016305/seq13557015，error_code=0、is_svr_fail=false。
+因此只能确认真实发送成功，不能把错转人工记成答案通过或设备已读。
+随后通过既有客户取消流程18218/18219恢复AI_SERVING，
+pendingAction为空、needHuman=false；2266及回执1016309成功。未直接写路由SQL。
+
+发现既有输入稳定性修复漏掉coverageInput.tasks.objective：主证据Task已不带
+普通分类标签，但覆盖核对仍重复发送它；成功样本18202/18207为policy，
+失败18216为availability。该差异是已证实的输入缺口，不足以单独证明所有随机
+失败的原因。只修改question_coverage.go，删除此冗余字段和赋值，原Task及
+previousIntentTasks保留完整标签，外部代办任务的明确能力边界不变。
+现有knowledge_evidence_judge_test.go扩展为同时核对tasks和coverageInput，
+旧代码先复现失败，修复后executor/replyintent完整通过（7.730/0.378秒）。
+无新增提示、语义判断、模型调用、API/DTO/WebSocket、权限、数据库/Migration、
+计费、知识、Outbox或人工状态机变化。原始脏工作区不动。
+
+本次备份目录为/opt/backups/agentdesk-20260909-coverage-label；
+只切程序，不更新Profile。回退只切3c38150，不恢复SQL或消息。
+目标文件在customer-audit/ai-billing无新增差异，无需rebase，建议在3c38150上合入。
+首条失败及取消原始记录在上一备份目录的acceptance-qifeng-*.jsonl。
+部署和复验结果待下次记录，不把本地输入一致性回归当作模型语义通过。
+
+## 上次结果：2026-09-09 3c38150已部署，投递验收待接收范围
 
 程序提交`3c38150a4b9e122f39f19dadb8acc311dce45668`已推送origin、weibao，
 release为`/opt/agentdesk/releases/20260907-request-answer-3c38150`，

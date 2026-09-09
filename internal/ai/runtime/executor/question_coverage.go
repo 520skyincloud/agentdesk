@@ -26,7 +26,6 @@ type runtimeQuestionCoverageSource struct {
 type runtimeQuestionCoverageTask struct {
 	TaskID         string   `json:"taskId"`
 	Intent         string   `json:"intent"`
-	Objective      string   `json:"objective"`
 	Text           string   `json:"text"`
 	ResolvedText   string   `json:"resolvedText"`
 	SourceRefs     []string `json:"sourceRefs"`
@@ -79,7 +78,7 @@ func buildRuntimeQuestionCoverageInput(req RunInput, plan callbacks.ReplyPlanTra
 	}
 	for _, task := range plan.TaskPlans {
 		input.Tasks = append(input.Tasks, runtimeQuestionCoverageTask{
-			TaskID: task.TaskID, Intent: task.Intent, Objective: task.Objective,
+			TaskID: task.TaskID, Intent: task.Intent,
 			Text: firstNonEmptyReplyTaskText(task.OriginalText, task.Text), ResolvedText: task.ResolvedText,
 			SourceRefs: task.SourceRefs, OutputKind: task.OutputKind, NeedsKnowledge: runtimeReplyTaskUsesKnowledge(task),
 		})

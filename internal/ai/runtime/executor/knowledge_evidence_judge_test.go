@@ -135,16 +135,23 @@ func TestJudgeQuestionDoesNotDriftWithInformationalRoutingLabels(t *testing.T) {
 		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "T1C1", Layer: "store",
 			Hit: judgeTestHit(3, 101, "酒店有本子吗？", "问题：酒店有本子吗？\n答案：酒店没有哈，建议您可以在美团上下个外卖订单。", .7691)}},
 	}
+	intent := coverageTestIntent(task.OriginalText)
+	req := RunInput{UserMessage: models.Message{Content: task.OriginalText}}
+	task.Coverage = buildRuntimeQuestionCoverageInput(req, buildReplyPlan(intent, selectIntentPromptPack(intent)))
 	original, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, label := range []string{"food_delivery", "supplies_self_help", "external_proxy_action"} {
-		task.SubIntent, task.Objective, task.RetrievalQuery = label, "availability", "可以点外卖吗"
-		task.Entities = []knowledgeEvidenceJudgeEntity{{Text: "外卖", Type: "service"}}
-		got, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}))
-		if err != nil || string(got) != string(original) {
-			t.Fatalf("routing metadata changed the same evidence question: label=%s got=%s err=%v", label, got, err)
+	for _, objective := range []string{"availability", "policy", "method"} {
+		for _, label := range []string{"food_delivery", "supplies_self_help", "external_proxy_action"} {
+			task.SubIntent, task.Objective, task.RetrievalQuery = label, objective, "可以点外卖吗"
+			task.Entities = []knowledgeEvidenceJudgeEntity{{Text: "外卖", Type: "service"}}
+			intent.IntentTasks[0].SubIntent, intent.IntentTasks[0].Objective = label, objective
+			task.Coverage = buildRuntimeQuestionCoverageInput(req, buildReplyPlan(intent, selectIntentPromptPack(intent)))
+			got, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt([]knowledgeEvidenceJudgeTask{task}))
+			if err != nil || string(got) != string(original) {
+				t.Fatalf("routing metadata changed the same evidence question through tasks or coverage: label=%s objective=%s got=%s err=%v", label, objective, got, err)
+			}
 		}
 	}
 	task.Intent, task.SubIntent, task.Objective = "service_request", "external_proxy_action", "action_request"
