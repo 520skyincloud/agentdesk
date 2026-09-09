@@ -1,5 +1,39 @@
 # 服务知识优先与发送关联修复
 
+## 2026-09-09 发布受存储阻塞影响，尚未实测
+
+代码418c5350a1e5ec103a10ba8373a163b620b903ad已推送两个远端，自动测试通过。
+二进制SHA256：7328a446fb9f6b58d8bde2965cfda10054bbb6f109c358e2fd318d5440a2bdb3。
+完整备份/opt/backups/agentdesk-20260909-intent-goals已通过gzip及SHA校验。
+Profile计划只替换11处相关说明并重排原有Schema字段；尚未写入生产。
+
+发布前备份异常缓慢，vmstat采样I/O wait为88%-89%，数据库出现几十秒
+waiting for handler commit；发布时8083未在原健康检查期限内就绪，脚本自动
+切回5b8ca94。旧程序systemd active/running、NRestarts=0，但端口仍未就绪，
+不能把systemd active当作应用健康。当前新代码尚未完成部署及模型验收，
+本轮真实模型输入数为0，不把自动测试或已push当作已解决。
+后续cgroup io.pressure full avg10接近97%，说明容器存在严重I/O等待；
+根因是否在宿主磁盘、共享负载或存储故障，现有证据尚不能进一步确定。
+没有重启MySQL、降低持久化保证、删除任务或覆盖消息；不继续反复切程序。
+临时发布助手增加I/O压力预检，在存储阻塞时拒绝重启生产；不属于产品代码修改。
+已向用户索取宿主机访问或运维协助。存储恢复后先确认5b8ca94的8083健康、
+原Profile及队列状态，再继续部署和同会话10输入验收，不能跳过备份/旧值校验。
+
+14:33（Asia/Shanghai）只读复核：current仍为5b8ca94，PID1003966，
+NRestarts=0，8083仍拒绝连接。旧程序卡在原有启动路径
+`bootstrap.InitMigrations -> AutoMigrate`，不是正在等待Intent或Judge。
+日志中原有decimal字段的初始化DDL单条耗时约74至224秒；当时
+`t_knowledge_retrieve_hit.score`的ALTER已在`waiting for handler commit`
+等待199秒。随后状态查询显示pending fsyncs=2，pending reads/writes=0。
+这些快照支持提交持久化受到阻塞，但不足以判定宿主磁盘故障或具体负载来源。
+本轮未新增或修改Migration/model；不能因此声称重启时没有执行原有自动DDL。
+未终止这些数据库语句，未跳过初始化，未再次重启应用或数据库。
+
+本次恢复检查仅补充上述两个文档，不增加产品代码、接口、权限或配置变更。
+重新fetch后，customer-audit与ai-billing在三个运行文件上无新增同文件差异；
+无需因此rebase，418c535保持独立可回滚提交。当前阻塞未解除前不发送真实模型
+测试输入，也不向任何未指定的企微客户发送测试消息。
+
 ## 2026-09-09 独立答案目标修复立项
 
 用户授权继续修复剩余拆题、覆盖核对、提示冲突及性能/验收问题。
