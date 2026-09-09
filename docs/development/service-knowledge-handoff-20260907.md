@@ -1,5 +1,42 @@
 # 服务知识优先与发送关联修复
 
+## 最新发布结果：5b8ca94直答修复已部署，保留拆题偏差记录
+
+2026-09-09程序5b8ca94b8233cc948773748e9a46f2a68b079940已推送origin、weibao，
+运行/opt/agentdesk/releases/20260907-request-answer-5b8ca94，未回滚。
+二进制SHA256：91d41d59ae498d2ee0e9ee8dcb658408fd17d7673d58212b6d634026b4a35f5e。
+新备份/opt/backups/agentdesk-20260909-judge-direct包含完整数据库、shared配置和
+独立Profile快照，gzip及SHA已验证。本轮Profile逐字/Schema/更新时间均未改变。
+回滚只切52b44f1程序，保持当前配置及全部消息，不回退数据库或旧Profile。
+
+服务器实际消息入口、隔离会话2125共两个连续客户输入，未追加测试：
+- 18170“你们这可以点外卖吗” -> 18171“您可以在美团上下个外卖订单。”
+  检索8171与前次失败8170的十条候选及分数完全一致；Judge选门店C2，
+  direct_single、method，不再以机器人存在性代替所问目标，也未带入本子否定。
+  完整用时11.727秒，Judge3.823秒，Generate1.205秒。
+- 18172“那外卖地址怎么填，你们有外卖机器人吗？” -> 18173
+  “外卖地址可填：丽斯未来酒店合肥南七店+对应楼层房间号。酒店有外卖机器人。”
+  检索8172门店C1/C2分别原文确认地址和机器人；Judge direct_combined，
+  两条事实按问题顺序进入答案，无重放上一轮下单建议或虚构送房能力。
+  完整用时12.733秒，Judge4.424秒，Generate1.066秒。
+
+第二条Intent将地址与机器人合成一个Task，objective=method，并未按两个独立
+答案目标拆题；脚本Task数量断言未通过，contractCheckedInputs=1/2如实保留。
+人工核对两项内容均完整准确，但不能把内容完整等同拆题协议或逐Task隔离实测通过。
+没有为通过断言临时改Intent/放宽生产校验，也没有第3次模型输入。
+本轮Judge直答目标已在原失败场景验证；两输入不证明跨问法重复稳定性。
+不因已有的Intent分题偏差丢弃本次正确Judge答复，也不宣称整体问题全部解决。
+原始记录/tmp/agentdesk-judge-direct-smoke-20260909.jsonl保留，不提交生成报告。
+
+两轮均completed、Generate一次，无协议恢复、事实兜底、空回复、内部泄漏或转接；
+沿现有Intent、并行检索、Judge、Generate运行，没有新增模型阶段。
+第二轮保留3条近期真实消息，不丢上下文。隔离路由/恢复任务已清理，消息保留。
+8083为200，systemd active/running、NRestarts=0，检查时无近期systemd错误；
+无pending/failed Outbox，原7条历史sending保留，消息5715/max18173、会话131。
+ChannelID=0验证服务器模型/知识链路，不代表企微收件设备最终投递验收。
+push后fetch复核customer-audit、ai-billing无本轮同文件新分歧，无需rebase；
+仍只一个运行文件及对应测试，发布结果文档提交无需重建程序。
+
 ## 2026-09-09 Judge 直接答案选择修复
 
 基线程序52b44f1，分支codex/intent-source-repair-20260907，原始脏工作区不动。
@@ -21,7 +58,7 @@ go test -p=1 ./internal/ai/runtime/executor ./internal/pkg/replyintent -count=1�
 部署前新备份当前数据库、配置和Profile；回滚仅切52b44f1程序，保留新旧消息和
 本轮开始时的现有Profile，不恢复旧SQL或a1d89e2配置。真实结果完成后追加。
 
-## 最新结果：52b44f1已部署，直答完整度仍未全部达标
+## 上次结果：52b44f1直答完整度仍未全部达标
 
 当前程序52b44f1d4f5fe8aedc31904d658c05e9718ffd76已推送origin、weibao并部署。
 二进制SHA256为44f15acd0466b088dbed6d36680b83a88725d1c9eb296700256c8489d70bb5a3，
