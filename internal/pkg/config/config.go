@@ -22,6 +22,7 @@ type Config struct {
 	Storage         StorageConfig         `yaml:"storage"`
 	VectorDB        VectorDBConfig        `yaml:"vectorDB"`
 	MCP             MCPConfig             `yaml:"mcp"`
+	PMS             PMSConfig             `yaml:"pms"`
 	WxWork          WxWorkConfig          `yaml:"wxWork"`
 	OIDC            OIDCConfig            `yaml:"oidc"`
 	CustomerSession CustomerSessionConfig `yaml:"customerSession"`
@@ -195,6 +196,20 @@ type MCPServerConfig struct {
 	Headers   map[string]string `yaml:"headers"`
 }
 
+// PMSConfig configures the read-only HPMS integration. Write operations are
+// intentionally represented by a separate explicit flag and remain disabled
+// by default.
+type PMSConfig struct {
+	Enabled       bool              `yaml:"enabled"`
+	BaseURL       string            `yaml:"baseUrl"`
+	APIKey        string            `yaml:"apiKey"`
+	Authorization string            `yaml:"authorization"`
+	HotelID       string            `yaml:"hotelId"`
+	TimeoutMS     int               `yaml:"timeoutMs"`
+	AllowWrite    bool              `yaml:"allowWrite"`
+	Headers       map[string]string `yaml:"headers"`
+}
+
 type OIDCConfig struct {
 	Enabled      bool     `yaml:"enabled"`
 	Issuer       string   `yaml:"issuer"`
@@ -259,7 +274,32 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	applyStoreCredentialEnv(cfg)
+	applyPMSEnv(cfg)
 	return cfg, nil
+}
+
+func applyPMSEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_ENABLED")); value != "" {
+		cfg.PMS.Enabled = strings.EqualFold(value, "true") || value == "1"
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_BASE_URL")); value != "" {
+		cfg.PMS.BaseURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_API_KEY")); value != "" {
+		cfg.PMS.APIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_AUTHORIZATION")); value != "" {
+		cfg.PMS.Authorization = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_HOTEL_ID")); value != "" {
+		cfg.PMS.HotelID = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_ALLOW_WRITE")); value != "" {
+		cfg.PMS.AllowWrite = strings.EqualFold(value, "true") || value == "1"
+	}
 }
 
 func applyStoreCredentialEnv(cfg *Config) {

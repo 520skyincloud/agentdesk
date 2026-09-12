@@ -48,6 +48,8 @@ func NewRuntimeStaticTool(toolCode string) registry.Tool {
 		return NewHandoffGraphTool()
 	case toolx.BuiltinWeather.Code:
 		return NewWeatherTool()
+	case toolx.BuiltinPMSQuery.Code:
+		return NewPMSQueryTool()
 	default:
 		return nil
 	}

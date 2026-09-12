@@ -108,10 +108,10 @@ func TestIntentSemanticGateInformationObjectiveReclassifiesServiceRequest(t *tes
 	if task.Intent != "hotel_info" || !task.NeedsKnowledge {
 		t.Fatalf("information request should become hotel_info knowledge, got %#v", task)
 	}
-	if task.NeedsResource || task.NeedsTool || task.NeedsHumanRoute || task.ResourceAction != "" {
+	if task.NeedsResource || task.NeedsHumanRoute || task.ResourceAction != "" {
 		t.Fatalf("information request must not execute real-world actions, got %#v", task)
 	}
-	if got.Intent.PrimaryIntent != "hotel_info" || got.Intent.NeedsResource || got.Intent.NeedsTool || got.Intent.NeedsHumanRoute {
+	if got.Intent.PrimaryIntent != "hotel_info" || got.Intent.NeedsResource || got.Intent.NeedsHumanRoute {
 		t.Fatalf("top-level summary must be recomputed from repaired task, got %#v", got.Intent)
 	}
 }

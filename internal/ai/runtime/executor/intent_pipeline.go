@@ -93,7 +93,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 	}
 	switch intent.PrimaryIntent {
 	case "hotel_info":
-		instructions = append(instructions, "酒店规则、设施、WiFi、发票、用品、停车、早餐等都属于酒店信息大分类。", "必须使用当前门店知识库或门店资料，不编造门店规则。")
+		instructions = append(instructions, "酒店规则、设施、WiFi、发票、用品、停车、早餐等都属于酒店信息大分类。", "必须使用当前门店知识库或门店资料，不编造门店规则。", "涉及订单状态、入住/离店实时信息、房态、库存、可售房间或实名核验时，必须将 needsTool=true 并使用 pms_query 只读查询；普通静态规则仍优先知识库。")
 		if intent.SubIntent == "checkin_process" || intent.SubIntent == "check_in" {
 			instructions = append(instructions, "入住流程问题要优先说明小程序/证件/订单核验等知识库写明的办理步骤；不要只反问到店了吗，也不要把它当作小程序变量发送请求。")
 		}

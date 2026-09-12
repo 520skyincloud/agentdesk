@@ -221,7 +221,6 @@ func applyRuntimeIntentSemanticConsistencyGate(
 			task.Intent = "hotel_info"
 			task.NeedsKnowledge = true
 			task.NeedsResource = false
-			task.NeedsTool = false
 			task.NeedsHumanRoute = false
 			task.ResourceAction = ""
 			result.Violations = append(result.Violations, runtimeIntentSemanticViolation{
