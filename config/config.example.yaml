@@ -100,6 +100,19 @@ mcp:
       timeoutMs: 15000
       headers: {}
 
+# HPMS/PMS integration. Read-only queries are disabled until configured.
+# Write operations remain disabled unless explicitly enabled in a protected
+# non-production environment.
+pms:
+  enabled: false
+  baseUrl: ""
+  apiKey: ""
+  authorization: ""
+  hotelId: ""
+  timeoutMs: 12000
+  allowWrite: false
+  headers: {}
+
 oidc:
   # 是否启用 OIDC 登录；本系统作为 OIDC Client。
   enabled: false

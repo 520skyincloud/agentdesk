@@ -3,6 +3,8 @@ package tools
 import (
 	"testing"
 
+	"agent-desk/internal/ai/runtime/registry"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/toolx"
 )
 
@@ -14,6 +16,7 @@ func TestNewRuntimeStaticTool(t *testing.T) {
 		toolx.GraphCreateTicketConfirm.Code,
 		toolx.GraphHandoffConversation.Code,
 		toolx.BuiltinWeather.Code,
+		toolx.BuiltinPMSQuery.Code,
 	}
 	for _, item := range items {
 		tool := NewRuntimeStaticTool(item)
@@ -29,5 +32,13 @@ func TestNewRuntimeStaticTool(t *testing.T) {
 func TestNewRuntimeStaticToolReturnsNilForUnknownTool(t *testing.T) {
 	if tool := NewRuntimeStaticTool("builtin/unknown_tool"); tool != nil {
 		t.Fatalf("expected nil tool for unknown tool code")
+	}
+}
+
+func TestPMSQueryToolDisabledWithoutConfiguration(t *testing.T) {
+	config.SetCurrent(&config.Config{})
+	tool := NewPMSQueryTool()
+	if tool.Enabled(registry.Context{}) {
+		t.Fatal("PMS tool must be disabled without configuration")
 	}
 }

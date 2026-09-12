@@ -12,3 +12,7 @@ func Current() Config {
 	}
 	return *current
 }
+
+func CurrentOrNil() *Config {
+	return current
+}
