@@ -56,6 +56,7 @@ var Models = []any{
 	&ServiceRecoveryCase{},
 	&CustomerEngagementProfile{},
 	&ProactiveReachout{},
+	&PMSOperation{},
 	&TicketNoSequence{},
 	&Notification{},
 	&AIAgent{},
@@ -1311,4 +1312,24 @@ type ConversationInterrupt struct {
 	ExpiresAt           *time.Time `gorm:"type:datetime;index"`
 	CreatedAt           time.Time  `gorm:"type:datetime;not null;index"`
 	UpdatedAt           time.Time  `gorm:"type:datetime;not null;index"`
+}
+
+// PMSOperation stores a customer-facing PMS operation draft and its single
+// confirmation/execution result. It is intentionally separate from route
+// pending actions so it cannot affect human handoff state.
+type PMSOperation struct {
+	ID                    int64      `gorm:"primaryKey;autoIncrement"`
+	ConversationID        int64      `gorm:"type:bigint;not null;index"`
+	SourceMessageID       int64      `gorm:"type:bigint;not null;index"`
+	ConfirmationMessageID int64      `gorm:"type:bigint;not null;default:0;index"`
+	OperationType         string     `gorm:"type:varchar(40);not null;index"`
+	Status                string     `gorm:"type:varchar(30);not null;index"`
+	IdempotencyKey        string     `gorm:"type:varchar(128);not null;uniqueIndex"`
+	RequestData           string     `gorm:"type:text;not null"`
+	PreviewText           string     `gorm:"type:text;not null"`
+	ResultData            string     `gorm:"type:text"`
+	ErrorMessage          string     `gorm:"type:text"`
+	ExpiresAt             *time.Time `gorm:"type:datetime;index"`
+	CreatedAt             time.Time  `gorm:"type:datetime;not null;index"`
+	UpdatedAt             time.Time  `gorm:"type:datetime;not null;index"`
 }

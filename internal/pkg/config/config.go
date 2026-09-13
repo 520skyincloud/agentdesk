@@ -196,9 +196,8 @@ type MCPServerConfig struct {
 	Headers   map[string]string `yaml:"headers"`
 }
 
-// PMSConfig configures the read-only HPMS integration. Write operations are
-// intentionally represented by a separate explicit flag and remain disabled
-// by default.
+// PMSConfig configures the HPMS integration. Write operations remain disabled
+// by default and are only available in an explicitly enabled test environment.
 type PMSConfig struct {
 	Enabled       bool              `yaml:"enabled"`
 	BaseURL       string            `yaml:"baseUrl"`

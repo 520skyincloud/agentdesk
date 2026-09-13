@@ -1047,3 +1047,25 @@ release、shared及systemd，gzip与SHA均验证。配置SHA及业务环境逐�
 sending7、cancelled2均未变。8083返回200，active/running、NRestarts=0，
 启动以来未发现ERROR/panic；先前已有的后台同步WARN不作为此次已解决项。
 未向其风补发旧消息或注入新测试消息，企微收件端实际收卡仍待用户发送入住请求验证。
+
+### PMS 查询与测试环境续住接入（待发布）
+### PMS 查询与测试环境续住接入（待发布）
+
+2026-09-13 基于当前分支继续接入 HPMS 补充文档确认的手机号查单、换单续住候选
+和续住接口。改动集中在 PMS client、`builtin/pms_query` 工具、Intent 工具路由、
+续住操作 service/repository/model，以及对应测试；不修改“薇薇”备份、消息表、
+企微协议、Outbox、计费或普通回复状态机。
+
+查询能力：预订单/接待单详情、手机号当前有效订单、续住候选、实时房态和房情库存。
+续住先写入独立 `PMSOperation` 预览记录，客户明确确认后才提交；默认
+`pms.allowWrite=false`，提交后必须回读接待单，重复确认复用原结果，回读失败不报成功。
+会员 ID 综合查单、渠道订单号综合搜索、普通改房型/排房/换房/延迟退房仍仅保留未执行边界。
+
+已通过：
+
+```text
+go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime ./internal/services -count=1
+```
+
+当前尚未部署，待提交后在测试 PMS 做只读查单/房态和专用测试订单续住验收；
+真实代表对话控制在 12 个 AI 轮次以内，不运行 30/50 轮。

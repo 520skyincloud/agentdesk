@@ -619,13 +619,14 @@ func semanticGateClarificationTask(task callbacks.IntentTaskTraceData) callbacks
 
 func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbacks.IntentTaskTraceData {
 	task.Intent = canonicalIntentCode(task.Intent)
+	pmsTask := task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent)
 	switch task.Intent {
 	case "hotel_info":
 		task.NeedsKnowledge = true
-		task.NeedsTool = false
+		task.NeedsTool = pmsTask
 	case "service_request":
 		task.NeedsKnowledge = true
-		task.NeedsTool = false
+		task.NeedsTool = pmsTask
 	case "interaction":
 		task.NeedsKnowledge = false
 		if task.SubIntent != "weather_query" {
@@ -649,6 +650,17 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 		task.NeedsHumanRoute = true
 	}
 	return task
+}
+
+func isPMSRuntimeSubIntent(subIntent string) bool {
+	switch strings.ToLower(strings.TrimSpace(subIntent)) {
+	case "pms", "pms_query", "order_query", "order_detail", "order_status",
+		"room_status", "room_inventory", "inventory", "renew", "renewal",
+		"check_in_status", "check_out_status":
+		return true
+	default:
+		return false
+	}
 }
 
 func semanticGateAllowedResourceAction(action string) bool {

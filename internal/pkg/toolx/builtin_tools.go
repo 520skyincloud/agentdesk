@@ -75,13 +75,13 @@ var (
 		ServerCode:    "builtin",
 		Name:          "pms_query",
 		Title:         "查询 PMS",
-		Description:   "只读查询 PMS 中的预订单、接待单、实时房态和库存信息。生产环境不执行改价、排房、换房或其他写操作；其他能力需先取得接口文档。",
+		Description:   "受控查询和续住 PMS 中的预订单、接待单、手机号订单、实时房态、库存及续住候选。续住提交只保存待确认操作，必须由服务端在客户明确确认后执行。",
 		SourceType:    enums.ToolSourceTypeBuiltin,
 		DirectAccess:  true,
 		RuntimeStatic: true,
 		Appendix: strings.TrimSpace(`
 当用户询问订单、入住状态、实时房态、可售库存或需要核对实名信息时，优先调用 pms_query。
-只允许只读查询；不要把可售库存说成已经排房，不要把空价格说成免费。涉及改房、换房、延退、改价或占房时，必须交给人工授权流程。
+只允许调用文档已提供的查询和续住能力；不要把可售库存说成已经排房，不要把空价格说成免费。续住必须先生成预览并等待客户明确确认，改房、换房、延退、改价或占房不在当前可执行范围。
 `),
 	}
 	GraphTriageServiceRequest = ToolSpec{

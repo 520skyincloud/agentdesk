@@ -93,7 +93,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 	}
 	switch intent.PrimaryIntent {
 	case "hotel_info":
-		instructions = append(instructions, "酒店规则、设施、WiFi、发票、用品、停车、早餐等都属于酒店信息大分类。", "必须使用当前门店知识库或门店资料，不编造门店规则。", "涉及订单状态、入住/离店实时信息、房态、库存、可售房间或实名核验时，必须将 needsTool=true 并使用 pms_query 只读查询；普通静态规则仍优先知识库。")
+		instructions = append(instructions, "酒店规则、设施、WiFi、发票、用品、停车、早餐等都属于酒店信息大分类。", "必须使用当前门店知识库或门店资料，不编造门店规则。", "涉及订单状态、入住/离店实时信息、房态、库存、可售房间或续住候选时，必须将 needsTool=true 并使用 pms_query；普通静态规则仍优先知识库。")
 		if intent.SubIntent == "checkin_process" || intent.SubIntent == "check_in" {
 			instructions = append(instructions, "入住流程问题要优先说明小程序/证件/订单核验等知识库写明的办理步骤；不要只反问到店了吗，也不要把它当作小程序变量发送请求。")
 		}
@@ -103,7 +103,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "本轮同时包含酒店信息问题时，Generate 阶段只回答知识问题；变量消息由系统按 resourceActions 另行提交。")
 		}
 	case "service_request":
-		instructions = append(instructions, "服务请求先看知识库是否有自助路径。", "无法解决时追问一个必要字段或按人工意图/接待路由处理；没有工具或路由结果时，不能表达动作已执行、已转告、现场查看或后续有人处理。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
+		instructions = append(instructions, "服务请求先看知识库是否有自助路径。", "订单、入住状态、续住等实时请求必须标记 needsTool=true 并使用 pms_query；其他服务问题仍先查知识库。无法解决时追问一个必要字段或按人工意图/接待路由处理；没有工具或路由结果时，不能表达动作已执行、已转告、现场查看或后续有人处理。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
 			instructions = append(instructions, "突发安全/受伤风险必须按接待路由转人工。", "先安抚、提醒不要移动；如停不下来或流血严重，提示先拨打 120/报警。", "缺房号/位置时追问当前位置，但不要因此阻断人工路由。")
