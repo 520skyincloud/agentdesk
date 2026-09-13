@@ -1050,7 +1050,7 @@ multi_reply_output.go、generate_recovery.go。前两者整理现有提示及记
 不提交生成报告。ChannelID=0验证服务器真实模型链路，不代表企微收件设备投递验收。
 推送后fetch复核两个并行分支，四个运行文件无新同文件分歧，无需rebase。
 
-### PMS 查询与测试环境续住接入（待发布）
+### PMS 查询与测试环境续住接入
 
 2026-09-13 基于当前分支继续接入 HPMS 补充文档确认的手机号查单、换单续住候选
 和续住接口。改动集中在 PMS client、`builtin/pms_query` 工具、Intent 工具路由、
@@ -1068,5 +1068,18 @@ multi_reply_output.go、generate_recovery.go。前两者整理现有提示及记
 go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime ./internal/services -count=1
 ```
 
-当前尚未部署，待提交后在测试 PMS 做只读查单/房态和专用测试订单续住验收；
-真实代表对话控制在 12 个 AI 轮次以内，不运行 30/50 轮。
+提交 `2b5fd2b` 已推送 `origin` 与 `weibao`，Linux amd64 二进制 SHA256 为
+`cd85a9a665ddce11361bf2993fe71091588abfef375425804380f2001d86c2a6`。
+已在 `test-2`（36.138.68.47:2301）发布到
+`/opt/agentdesk/releases/20260913-pms-2b5fd2b`，原子切换前 release 为
+`20260907-request-answer-5cfc219`。部署前备份位于
+`/opt/backups/agentdesk-20260913-2015-pms`，正确运行库
+`cs_ai_agent_ai_billing_4db7993` 的 gzip 数据库备份 SHA256 为
+`c6adaf8a1056f6f117988c4ff8e4d250270bb23853c03937a0d68934e5175501`。
+备份同时保存旧 release、运行环境和 AI Billing 配置。
+
+部署后 `agentdesk.service=active`、8083 返回 200、`NRestarts=0`，
+数据库已创建 `t_pms_operation`。测试机当前配置没有 `pms` 段，因此 PMS
+查询与续住写开关均保持关闭，未伪造接口认证，也未执行真实续住。待 PMS
+服务端提供可用于 Adapter 的认证/酒店绑定后，再在测试订单上执行只读查询和
+不超过 12 个 AI 轮次的代表性真实会话；不运行 30/50 轮。
