@@ -214,8 +214,57 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		replyCtx.PendingInterrupt = pendingInterrupt
 		return s.resumePendingInterrupt(ctx, replyCtx)
 	}
+	if pendingRenew := svc.PMSOperationService.FindPendingRenew(conversation.ID); pendingRenew != nil {
+		if isPMSRenewCancellation(message.Content) {
+			_ = svc.PMSOperationService.CancelRenew(conversation.ID, pendingRenew.ID)
+			_, err := s.commit.CommitAIReply(replyCommitInput{
+				Conversation: conversation,
+				Message:      message,
+				AIAgent:      aiAgent,
+				ReplyText:    "好的，这次续住先不办理了。",
+				Trace:        trace,
+				ClientPrefix: "pms_renew_cancel",
+			})
+			return err
+		}
+		if isPMSRenewConfirmation(message.Content) {
+			outcome, err := svc.PMSOperationService.ConfirmRenew(ctx, conversation.ID, pendingRenew.ID, message.ID)
+			if err != nil {
+				return err
+			}
+			_, err = s.commit.CommitAIReply(replyCommitInput{
+				Conversation: conversation,
+				Message:      message,
+				AIAgent:      aiAgent,
+				ReplyText:    outcome.ReplyText,
+				Trace:        trace,
+				ClientPrefix: "pms_renew_confirm",
+			})
+			return err
+		}
+	}
 	replyCtx.Message = s.mergeRecentCustomerBurstMessage(conversation.ID, message)
 	return s.executeReply(ctx, replyCtx)
+}
+
+func isPMSRenewConfirmation(text string) bool {
+	compact := strings.TrimSpace(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "。", "", "！", "", "!", "", "？", "", "?", "").Replace(text))
+	switch compact {
+	case "确认", "确认续住", "好的", "可以", "同意", "继续", "是的", "是":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPMSRenewCancellation(text string) bool {
+	compact := strings.TrimSpace(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "。", "", "！", "", "!", "", "？", "", "?").Replace(text))
+	switch compact {
+	case "取消", "不用了", "不续了", "算了", "不需要":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *aiReplyService) waitForConversationToSettle(ctx context.Context, conversationID int64, messageID int64) (bool, string) {
