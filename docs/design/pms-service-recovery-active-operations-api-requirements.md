@@ -24,6 +24,8 @@
 | --- | --- |
 | 预订单详情 | `GET /admin-api/hpms/orderManage/reserveOrder/detail` |
 | 接待单详情 | `GET /admin-api/hpms/orderManage/receptOrder/detail` |
+| 当前有效预订单（手机号或 customerNo） | `GET /admin-api/hpms/orderManage/reserveOrder/detailByPhone` |
+| 当前有效接待单（手机号或 customerNo） | `GET /admin-api/hpms/orderManage/receptOrder/detailByPhone` |
 | 实时房态 | `GET /admin-api/hpms/roomDetails/realTimeRoomStatus/select` |
 | 房型库存/房情 | `GET /admin-api/hpms/changeInventory/query` |
 
@@ -547,6 +549,7 @@ PMS 写操作额外要求：
 
 - 预订单详情
 - 接待单详情
+- 按手机号或 `customerNo` 查询当前有效预订单/接待单
 - 实时房态
 - 房型库存/房情
 

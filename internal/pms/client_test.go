@@ -71,13 +71,16 @@ func TestClientQueryByPhoneUsesDocumentedPathAndFiltersArgs(t *testing.T) {
 		if r.URL.Query().Get("memberId") != "" {
 			t.Fatal("unsupported memberId must not be forwarded")
 		}
+		if r.URL.Query().Get("customerNo") != "MEMBER-001" {
+			t.Fatalf("legacy memberId must map to customerNo: %s", r.URL.RawQuery)
+		}
 		_, _ = w.Write([]byte(`{"code":0,"data":{"receptOrderId":9007199254740993}}`))
 	}))
 	defer server.Close()
 
 	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
 	result, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{
-		"phone": "13800000000", "memberId": "not-supported",
+		"phone": "13800000000", "memberId": "MEMBER-001",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +88,140 @@ func TestClientQueryByPhoneUsesDocumentedPathAndFiltersArgs(t *testing.T) {
 	data, ok := result.Data.(map[string]any)
 	if !ok || data["receptOrderId"].(json.Number).String() != "9007199254740993" {
 		t.Fatalf("long id precision was lost: %#v", result.Data)
+	}
+}
+
+func TestClientCurrentOrderLookupSupportsCustomerNoAndCombinedFilters(t *testing.T) {
+	tests := []struct {
+		name           string
+		action         string
+		path           string
+		args           map[string]string
+		wantPhone      string
+		wantCustomerNo string
+	}{
+		{
+			name:           "recept customer number",
+			action:         "recept_order_by_phone",
+			path:           receptOrderByPhonePath,
+			args:           map[string]string{"customerNo": "MEMBER-001"},
+			wantCustomerNo: "MEMBER-001",
+		},
+		{
+			name:           "reserve combined",
+			action:         "reserve_order_by_phone",
+			path:           reserveOrderByPhonePath,
+			args:           map[string]string{"phone": "13800000000", "customerNo": "MEMBER-001"},
+			wantPhone:      "13800000000",
+			wantCustomerNo: "MEMBER-001",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tt.path {
+					t.Fatalf("unexpected path: %s", r.URL.Path)
+				}
+				q := r.URL.Query()
+				if q.Get("hotelId") != "hotel-1" ||
+					q.Get("phone") != tt.wantPhone ||
+					q.Get("customerNo") != tt.wantCustomerNo {
+					t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+				}
+				if q.Get("memberId") != "" {
+					t.Fatalf("legacy memberId must not be forwarded: %s", r.URL.RawQuery)
+				}
+				_, _ = w.Write([]byte(`{"code":0,"data":{"orderId":101}}`))
+			}))
+			defer server.Close()
+
+			client := NewClient(config.PMSConfig{
+				Enabled: true,
+				BaseURL: server.URL,
+				HotelID: "hotel-1",
+			})
+			if _, err := client.Query(context.Background(), tt.action, tt.args); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestClientCurrentOrderLookupPrefersCustomerNoOverLegacyMemberID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("customerNo"); got != "MEMBER-NEW" {
+			t.Fatalf("customerNo must take precedence, got %q", got)
+		}
+		if r.URL.Query().Get("memberId") != "" {
+			t.Fatal("legacy memberId must not be forwarded")
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	if _, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{
+		"customerNo": "MEMBER-NEW",
+		"memberId":   "MEMBER-OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientCurrentOrderLookupRequiresHotelAndIdentifier(t *testing.T) {
+	t.Run("hotel id", func(t *testing.T) {
+		client := NewClient(config.PMSConfig{Enabled: true, BaseURL: "http://example.com"})
+		_, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{
+			"phone": "13800000000",
+		})
+		if err == nil || !strings.Contains(err.Error(), "酒店ID不能为空") {
+			t.Fatalf("expected hotel id validation error, got %v", err)
+		}
+	})
+
+	t.Run("phone or customer number", func(t *testing.T) {
+		client := NewClient(config.PMSConfig{
+			Enabled: true,
+			BaseURL: "http://example.com",
+			HotelID: "hotel-1",
+		})
+		_, err := client.Query(context.Background(), "reserve_order_by_phone", nil)
+		if err == nil || !strings.Contains(err.Error(), "手机号码和会员编号/协议公司编号必须要有一个") {
+			t.Fatalf("expected identifier validation error, got %v", err)
+		}
+	})
+}
+
+func TestClientQueryRejectsSuccessFalseResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":false,"message":"检测到多条匹配订单"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	_, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{
+		"phone": "13800000000",
+	})
+	if err == nil || !strings.Contains(err.Error(), "检测到多条匹配订单") {
+		t.Fatalf("expected PMS business error, got %v", err)
+	}
+}
+
+func TestClientQueryAcceptsRespInfoSuccessResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":{"receptOrderId":101}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	result, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{
+		"phone": "13800000000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != "hpms" {
+		t.Fatalf("unexpected source: %#v", result)
 	}
 }
 
