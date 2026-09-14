@@ -1089,3 +1089,48 @@ go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime ./
 查询与续住写开关均保持关闭，未伪造接口认证，也未执行真实续住。待 PMS
 服务端提供可用于 Adapter 的认证/酒店绑定后，再在测试订单上执行只读查询和
 不超过 12 个 AI 轮次的代表性真实会话；不运行 30/50 轮。
+
+### 2026-09-14 当前有效订单补充发布与六项能力实核
+
+用户授权部署后，将代码提交 `7da0e990d5714d9ed1a0ec18a92532dba4d2942b`
+发布到 test-2：
+
+- 新 release：`/opt/agentdesk/releases/20260914-pms-customer-number-7da0e99`
+- 上一 release：`/opt/agentdesk/releases/20260914-da086b4`
+- 回滚备份：`/opt/backups/agentdesk-20260914-113141-before-7da0e99`
+- 后端 SHA256：`42d7471708f6fc4729d55f51406b995f47527c624dee5b441df660e71e82bd62`
+- 数据库 gzip、旧 release、shared 配置/运行环境均已备份并校验 SHA256。
+- 原子切换后 8083 正常，systemd active/running，NRestarts=0。
+- 切换前后消息 5784 条、最大 ID 18242、会话 133 条均一致；
+  Outbox sent=2156、sending=7、cancelled=2，无 pending/failed。历史记录和路由没有重置。
+
+本轮不改运行代码、配置结构、模型、Migration、DTO、接口、WebSocket、Outbox、
+计费或人工状态机，只部署已提交程序并追加核验记录；未跟踪的本地二进制保留。
+现场配置已是 PMS enabled=true、allowWrite=true、自动转人工=false，部署前后未改动。
+此前“PMS 尚未开启”的交接只代表 2026-09-13 当时情况，不是当前运行状态。
+
+聚焦测试再次通过：
+
+```text
+go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/services -count=1
+```
+
+真实只读联调与代码审查：
+
+1. 房态接口成功；接待单详情及按真实入住人手机号查同一接待单成功。
+2. 预订单详情成功；用已入住关联订单的手机号查“当前有效预订单”返回不存在，
+   不能据此宣称客户没有预订。
+3. 两个 `detailByPhone` 仅传 `customerNo` 均返回“手机号码不能为空”。
+   手机号加不匹配的 `customerNo` 查接待单仍返回原订单；说明测试 PMS 的新契约未生效，
+   不是本地客户端没有传参，需上游对照文档修复/发布后复测。
+4. 当前库存工具参数缺 `tenantId`，实际返回业务码 400。
+   诊断请求补上配置中现有租户值后返回 200、9 条数据，归类为内部绑定缺口。
+5. 企微员工号运行时工具白名单仅包含 `get_weather`，PMS 会被注册器过滤。
+   其风现有运行记录 7939（查订单）、7940（续住）显示知识检索而无工具执行。
+6. 续住回读当前仅校验查询成功，未比较订单日期/房号/状态/费用或识别原单续住新单；
+   也缺超时核实和中断恢复。不得沿用此前“续住完整闭环已完成”的结论。
+
+六项能力表及用户范围见 `docs/design/pms-service-recovery-active-operations.md`。
+本次未新发客户消息、未做 PMS 写操作、未自动营销，未进行 30/50 轮测试。
+本轮无新增并行分支运行文件修改，无需 rebase；文档记录可独立合并。
+回滚只需切回上述上一 release，保留当前数据库和操作记录，不恢复“薇薇”备份。
