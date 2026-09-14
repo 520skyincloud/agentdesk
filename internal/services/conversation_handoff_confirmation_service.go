@@ -49,6 +49,7 @@ type handoffConfirmationPayload struct {
 	HandoffToken    string   `json:"handoffToken"`
 	AwaitingField   string   `json:"awaitingField,omitempty"`
 	RoomNumber      string   `json:"roomNumber,omitempty"`
+	ExplicitHandoff bool     `json:"explicitHandoff,omitempty"`
 	CreatedAt       string   `json:"createdAt"`
 }
 
@@ -105,18 +106,22 @@ func (s *conversationHandoffConfirmationService) RequestByAIWithOriginMessage(co
 }
 
 func (s *conversationHandoffConfirmationService) DispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true, "", nil)
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true, "", nil, false)
+}
+
+func (s *conversationHandoffConfirmationService) DispatchExplicitByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, true, "", nil, true)
 }
 
 func (s *conversationHandoffConfirmationService) DispatchByAIWithRoomNumberPolicy(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string, noticeSubjects ...string) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, applyRoomNumberPolicy, roomNumberText, noticeSubjects)
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, applyRoomNumberPolicy, roomNumberText, noticeSubjects, false)
 }
 
 func (s *conversationHandoffConfirmationService) DispatchEmergencyByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64) (*HandoffDispatchResult, error) {
-	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false, "", nil)
+	return s.dispatchByAIWithOriginMessage(conversationID, aiAgent, reason, requestID, originMessageID, false, "", nil, false)
 }
 
-func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string, noticeSubjects []string) (*HandoffDispatchResult, error) {
+func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(conversationID int64, aiAgent models.AIAgent, reason string, requestID string, originMessageID int64, applyRoomNumberPolicy bool, roomNumberText string, noticeSubjects []string, explicitHandoff bool) (*HandoffDispatchResult, error) {
 	conversation := ConversationService.Get(conversationID)
 	if conversation == nil {
 		return nil, fmt.Errorf("会话不存在")
@@ -177,6 +182,7 @@ func (s *conversationHandoffConfirmationService) dispatchByAIWithOriginMessage(c
 		AIAgentID:       aiAgent.ID,
 		OriginMessageID: originMessageID,
 		HandoffToken:    handoffToken,
+		ExplicitHandoff: explicitHandoff,
 		CreatedAt:       time.Now().Format(time.RFC3339),
 	}
 	if applyRoomNumberPolicy && handoffNeedsRoomNumber(originCustomerText) {
@@ -287,13 +293,13 @@ func (s *conversationHandoffConfirmationService) HandleCustomerMessage(conversat
 	if state == nil || state.PendingAction != string(enums.ConversationPendingActionHumanHandoff) {
 		return false, nil
 	}
-	if !WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabled(conversation.CustomerID, state.WxWorkInstanceID) {
-		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
-		return false, nil
-	}
 	text := strings.TrimSpace(utils.BuildRuntimeMessageTextWithPayload(message.MessageType, message.Content, message.Payload))
 	payload := handoffConfirmationPayload{}
 	_ = json.Unmarshal([]byte(state.PendingActionPayload), &payload)
+	if !payload.ExplicitHandoff && !WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabled(conversation.CustomerID, state.WxWorkInstanceID) {
+		_ = ConversationRouteService.ClearPendingAction(conversation.ID)
+		return false, nil
+	}
 	if payload.AwaitingField == "room_number" {
 		return s.handleRoomNumberReply(conversation, message, payload, text)
 	}
