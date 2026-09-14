@@ -46,7 +46,7 @@ func (t *PMSQueryTool) Build(ctx registry.Context) (einotool.BaseTool, error) {
 func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: toolx.BuiltinPMSQuery.Name,
-		Desc: "受控查询和续住 PMS。支持预订单/接待单详情、手机号查当前有效订单、换单续住候选、实时房态和房情库存；续住仅在测试环境显式开启且客户确认后执行。",
+		Desc: "受控查询和续住 PMS。支持预订单/接待单详情、按手机号或会员编号/协议公司编号查当前有效订单、换单续住候选、实时房态和房情库存；续住仅在测试环境显式开启且客户确认后执行。",
 		ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&einojsonschema.Schema{
 			Version:  einojsonschema.Version,
 			Type:     "object",
@@ -55,11 +55,12 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "action", Value: &einojsonschema.Schema{Type: "string", Description: "reserve_order_detail、reserve_order_by_phone、recept_order_detail、recept_order_by_phone、renew_candidates、room_status、inventory 或 renew。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "预订单 ID。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "receptOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "接待订单 ID。"}},
-				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "keyword", Value: &einojsonschema.Schema{Type: "string", Description: "房号、住客、手机号或订单号。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "keyword", Value: &einojsonschema.Schema{Type: "string", Description: "房号、住客或订单号；按手机号查询时请使用 phone，不要把订单号放入 phone。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "phone", Value: &einojsonschema.Schema{Type: "string", Description: "手机号查当前有效预订单或接待单。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "startDate", Value: &einojsonschema.Schema{Type: "string", Description: "库存开始日期，YYYY-MM-DD。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "endDate", Value: &einojsonschema.Schema{Type: "string", Description: "库存结束日期，YYYY-MM-DD。"}},
-				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "memberId", Value: &einojsonschema.Schema{Type: "string", Description: "会员 ID（若 PMS 支持）。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "customerNo", Value: &einojsonschema.Schema{Type: "string", Description: "会员编号或协议公司编号；可与 phone 同时传入以缩小当前有效订单范围。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "memberId", Value: &einojsonschema.Schema{Type: "string", Description: "兼容旧调用的会员编号别名，内部按 customerNo 传递。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "currentReceptOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选查询的当前接待单 ID。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveOrderNo", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的预订单号。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveName", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的预订人。"}},
@@ -80,6 +81,7 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		StartDate            string            `json:"startDate"`
 		EndDate              string            `json:"endDate"`
 		MemberID             string            `json:"memberId"`
+		CustomerNo           string            `json:"customerNo"`
 		Phone                string            `json:"phone"`
 		CurrentReceptOrderID string            `json:"currentReceptOrderId"`
 		ReserveOrderNo       string            `json:"reserveOrderNo"`
@@ -96,12 +98,12 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		"keyword":              input.Keyword,
 		"startDate":            input.StartDate,
 		"endDate":              input.EndDate,
-		"memberId":             input.MemberID,
+		"customerNo":           firstNonEmpty(input.CustomerNo, input.MemberID),
 		"currentReceptOrderId": input.CurrentReceptOrderID,
 		"reserveOrderNo":       input.ReserveOrderNo,
 		"reserveName":          input.ReserveName,
 		"reservePhone":         input.ReservePhone,
-		"phone":                firstNonEmpty(input.Phone, input.Keyword),
+		"phone":                phoneArgForAction(input.Action, input.Phone, input.Keyword),
 	}
 	client := pms.NewClient(config.Current().PMS)
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -180,4 +182,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func phoneArgForAction(action, phone, keyword string) string {
+	if action == "reserve_order_by_phone" || action == "recept_order_by_phone" {
+		return phone
+	}
+	return firstNonEmpty(phone, keyword)
 }

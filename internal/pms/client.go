@@ -96,8 +96,9 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 		return QueryResult{}, fmt.Errorf("PMS 接口文档尚未提供查询类型: %s", action)
 	}
 
+	normalizedArgs := normalizeQueryArgs(action, args)
 	query := url.Values{}
-	for key, value := range allowedQueryArgs(action, normalizeQueryArgs(action, args)) {
+	for key, value := range allowedQueryArgs(action, normalizedArgs) {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if key != "" && value != "" {
@@ -106,6 +107,9 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	}
 	if c.hotelID != "" && query.Get("hotelId") == "" {
 		query.Set("hotelId", c.hotelID)
+	}
+	if err := validateCurrentOrderLookup(action, query); err != nil {
+		return QueryResult{}, err
 	}
 	requestURL := c.baseURL + endpoint
 	if encoded := query.Encode(); encoded != "" {
@@ -144,7 +148,7 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	if err := decoder.Decode(&payload); err != nil {
 		return QueryResult{}, fmt.Errorf("PMS 返回格式无法解析: %w", err)
 	}
-	if code := firstString(payload, "code", "status"); !isSuccessfulCode(code) {
+	if code := firstString(payload, "code", "status"); !isSuccessfulCode(code) || !isSuccessfulResponse(payload) {
 		message := firstString(payload, "msg", "message", "error")
 		if message == "" {
 			message = "PMS 返回失败"
@@ -245,7 +249,7 @@ func (c *Client) Renew(ctx context.Context, input RenewRequest) (RenewResult, er
 	}
 	code := firstString(payload, "code", "status")
 	message := firstString(payload, "msg", "message", "error")
-	if !isSuccessfulCode(code) {
+	if !isSuccessfulCode(code) || !isSuccessfulResponse(payload) {
 		if message == "" {
 			message = "PMS 续住失败"
 		}
@@ -280,9 +284,9 @@ func (c *Client) applyHeaders(request *http.Request) {
 func allowedQueryArgs(action string, args map[string]string) map[string]string {
 	allowed := map[string]map[string]struct{}{
 		"reserve_order_detail":   {"reserveOrderId": {}, "hotelId": {}, "tenantId": {}},
-		"reserve_order_by_phone": {"phone": {}, "hotelId": {}, "tenantId": {}},
+		"reserve_order_by_phone": {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
 		"recept_order_detail":    {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
-		"recept_order_by_phone":  {"phone": {}, "hotelId": {}, "tenantId": {}},
+		"recept_order_by_phone":  {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
 		"renew_candidates":       {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}, "tenantId": {}},
 		"room_status":            {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "tenantId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
 		"inventory":              {"beginTime": {}, "endTime": {}, "metrics": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}, "tenantId": {}},
@@ -302,6 +306,9 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 	for key, value := range args {
 		ret[key] = value
 	}
+	if strings.TrimSpace(ret["customerNo"]) == "" && strings.TrimSpace(ret["memberId"]) != "" {
+		ret["customerNo"] = ret["memberId"]
+	}
 	if action == "inventory" {
 		if strings.TrimSpace(ret["beginTime"]) == "" {
 			ret["beginTime"] = ret["startDate"]
@@ -314,6 +321,19 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 		}
 	}
 	return ret
+}
+
+func validateCurrentOrderLookup(action string, query url.Values) error {
+	if action != "reserve_order_by_phone" && action != "recept_order_by_phone" {
+		return nil
+	}
+	if strings.TrimSpace(query.Get("hotelId")) == "" {
+		return fmt.Errorf("酒店ID不能为空")
+	}
+	if strings.TrimSpace(query.Get("phone")) == "" && strings.TrimSpace(query.Get("customerNo")) == "" {
+		return fmt.Errorf("手机号码和会员编号/协议公司编号必须要有一个")
+	}
+	return nil
 }
 
 func firstString(payload map[string]any, keys ...string) string {
@@ -338,6 +358,15 @@ func isSuccessfulCode(code string) bool {
 	code = strings.TrimSpace(code)
 	return code == "" || code == "0" || code == "200" ||
 		strings.EqualFold(code, "success") || strings.EqualFold(code, "ok")
+}
+
+func isSuccessfulResponse(payload map[string]any) bool {
+	value, ok := payload["success"]
+	if !ok {
+		return true
+	}
+	success, ok := value.(bool)
+	return ok && success
 }
 
 func sanitizeValue(value any) any {
