@@ -88,6 +88,34 @@ func TestClientQueryByPhoneUsesDocumentedPathAndFiltersArgs(t *testing.T) {
 	}
 }
 
+func TestClientInventoryMapsToolDatesToHPMSParameters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != inventoryPath {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("beginTime") != "2026-09-14" || q.Get("endTime") != "2026-09-15" {
+			t.Fatalf("unexpected date query: %s", r.URL.RawQuery)
+		}
+		if q.Get("metrics") != "sold,sellable,occupied,maintenance" {
+			t.Fatalf("unexpected metrics query: %s", r.URL.RawQuery)
+		}
+		if q.Get("startDate") != "" || q.Get("endDate") != "" {
+			t.Fatalf("legacy date names must not be forwarded: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"code":200,"data":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	if _, err := client.Query(context.Background(), "inventory", map[string]string{
+		"startDate": "2026-09-14",
+		"endDate":   "2026-09-15",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientRenewRequiresExplicitWriteEnablement(t *testing.T) {
 	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: "http://example.com"})
 	_, err := client.Renew(context.Background(), RenewRequest{ReceptOrderID: 1})

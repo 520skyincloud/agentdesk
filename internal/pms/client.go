@@ -97,7 +97,7 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	}
 
 	query := url.Values{}
-	for key, value := range allowedQueryArgs(action, args) {
+	for key, value := range allowedQueryArgs(action, normalizeQueryArgs(action, args)) {
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
 		if key != "" && value != "" {
@@ -144,7 +144,7 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	if err := decoder.Decode(&payload); err != nil {
 		return QueryResult{}, fmt.Errorf("PMS 返回格式无法解析: %w", err)
 	}
-	if code := firstString(payload, "code", "status"); code != "" && code != "0" && !strings.EqualFold(code, "success") && !strings.EqualFold(code, "ok") {
+	if code := firstString(payload, "code", "status"); !isSuccessfulCode(code) {
 		message := firstString(payload, "msg", "message", "error")
 		if message == "" {
 			message = "PMS 返回失败"
@@ -245,7 +245,7 @@ func (c *Client) Renew(ctx context.Context, input RenewRequest) (RenewResult, er
 	}
 	code := firstString(payload, "code", "status")
 	message := firstString(payload, "msg", "message", "error")
-	if code != "" && code != "0" && !strings.EqualFold(code, "success") && !strings.EqualFold(code, "ok") {
+	if !isSuccessfulCode(code) {
 		if message == "" {
 			message = "PMS 续住失败"
 		}
@@ -279,19 +279,38 @@ func (c *Client) applyHeaders(request *http.Request) {
 
 func allowedQueryArgs(action string, args map[string]string) map[string]string {
 	allowed := map[string]map[string]struct{}{
-		"reserve_order_detail":   {"reserveOrderId": {}, "hotelId": {}},
-		"reserve_order_by_phone": {"phone": {}, "hotelId": {}},
-		"recept_order_detail":    {"receptOrderId": {}, "hotelId": {}},
-		"recept_order_by_phone":  {"phone": {}, "hotelId": {}},
-		"renew_candidates":       {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}},
-		"room_status":            {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
-		"inventory":              {"startDate": {}, "endDate": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}},
+		"reserve_order_detail":   {"reserveOrderId": {}, "hotelId": {}, "tenantId": {}},
+		"reserve_order_by_phone": {"phone": {}, "hotelId": {}, "tenantId": {}},
+		"recept_order_detail":    {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
+		"recept_order_by_phone":  {"phone": {}, "hotelId": {}, "tenantId": {}},
+		"renew_candidates":       {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}, "tenantId": {}},
+		"room_status":            {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "tenantId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
+		"inventory":              {"beginTime": {}, "endTime": {}, "metrics": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}, "tenantId": {}},
 	}
 	set := allowed[action]
 	ret := make(map[string]string, len(set))
 	for key, value := range args {
 		if _, ok := set[key]; ok {
 			ret[key] = value
+		}
+	}
+	return ret
+}
+
+func normalizeQueryArgs(action string, args map[string]string) map[string]string {
+	ret := make(map[string]string, len(args)+4)
+	for key, value := range args {
+		ret[key] = value
+	}
+	if action == "inventory" {
+		if strings.TrimSpace(ret["beginTime"]) == "" {
+			ret["beginTime"] = ret["startDate"]
+		}
+		if strings.TrimSpace(ret["endTime"]) == "" {
+			ret["endTime"] = ret["endDate"]
+		}
+		if strings.TrimSpace(ret["metrics"]) == "" {
+			ret["metrics"] = "sold,sellable,occupied,maintenance"
 		}
 	}
 	return ret
@@ -313,6 +332,12 @@ func firstString(payload map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func isSuccessfulCode(code string) bool {
+	code = strings.TrimSpace(code)
+	return code == "" || code == "0" || code == "200" ||
+		strings.EqualFold(code, "success") || strings.EqualFold(code, "ok")
 }
 
 func sanitizeValue(value any) any {
