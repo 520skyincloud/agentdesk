@@ -587,7 +587,15 @@ func resolveReplyExecutionActions(summary *applicationruntime.Summary, hasStruct
 }
 
 func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, replyCtx aiReplyContext, summary *applicationruntime.Summary) error {
-	if summary == nil || !svc.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(replyCtx.Conversation.ID) {
+	if summary == nil {
+		return nil
+	}
+	explicitOnly := svc.WxWorkCustomerHandoffSettingService.ExplicitHandoffOnlyMode()
+	if explicitOnly {
+		if !traceContainsExplicitHandoffTask(summary.TraceData) {
+			return nil
+		}
+	} else if !svc.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(replyCtx.Conversation.ID) {
 		return nil
 	}
 	reason, ok := deferredKnowledgeHandoffFromTrace(summary.TraceData)
@@ -626,6 +634,31 @@ func (s *aiReplyService) dispatchDeferredKnowledgeHandoff(ctx context.Context, r
 		}
 	}
 	return lastErr
+}
+
+func traceContainsExplicitHandoffTask(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	var trace struct {
+		Pipeline struct {
+			ReplyPlan struct {
+				TaskPlans []struct {
+					SubIntent  string `json:"subIntent"`
+					OutputKind string `json:"outputKind"`
+				} `json:"taskPlans"`
+			} `json:"replyPlan"`
+		} `json:"pipeline"`
+	}
+	if err := json.Unmarshal([]byte(raw), &trace); err != nil {
+		return false
+	}
+	for _, task := range trace.Pipeline.ReplyPlan.TaskPlans {
+		if strings.TrimSpace(task.SubIntent) == "explicit_handoff" && strings.TrimSpace(task.OutputKind) == "handoff" {
+			return true
+		}
+	}
+	return false
 }
 
 func committedDeferredReplyMessageIDs(trace *aiReplyTraceData) ([]int64, error) {

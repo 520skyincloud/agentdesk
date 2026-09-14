@@ -1,6 +1,9 @@
 package services
 
 import (
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"agent-desk/internal/models"
@@ -17,6 +20,17 @@ var WxWorkCustomerHandoffSettingService = newWxWorkCustomerHandoffSettingService
 
 type wxWorkCustomerHandoffSettingService struct{}
 
+const aiAutoHandoffEnabledEnv = "AGENT_DESK_AI_AUTO_HANDOFF_ENABLED"
+
+func (s *wxWorkCustomerHandoffSettingService) ExplicitHandoffOnlyMode() bool {
+	raw := strings.TrimSpace(os.Getenv(aiAutoHandoffEnabledEnv))
+	if raw == "" {
+		return false
+	}
+	enabled, err := strconv.ParseBool(raw)
+	return err == nil && !enabled
+}
+
 func newWxWorkCustomerHandoffSettingService() *wxWorkCustomerHandoffSettingService {
 	return &wxWorkCustomerHandoffSettingService{}
 }
@@ -24,6 +38,12 @@ func newWxWorkCustomerHandoffSettingService() *wxWorkCustomerHandoffSettingServi
 // IsAutoHandoffEnabled returns the account-scoped customer preference.
 // Missing settings intentionally default to enabled, preserving current behavior.
 func (s *wxWorkCustomerHandoffSettingService) IsAutoHandoffEnabled(customerID, wxWorkInstanceID int64) bool {
+	if raw := strings.TrimSpace(os.Getenv(aiAutoHandoffEnabledEnv)); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err == nil && !enabled {
+			return false
+		}
+	}
 	if customerID <= 0 || wxWorkInstanceID <= 0 {
 		return true
 	}

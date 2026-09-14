@@ -10,6 +10,18 @@ import (
 	"agent-desk/internal/services"
 )
 
+func TestExplicitHandoffOnlyModeFromEnvironment(t *testing.T) {
+	t.Setenv("AGENT_DESK_AI_AUTO_HANDOFF_ENABLED", "false")
+	if !services.WxWorkCustomerHandoffSettingService.ExplicitHandoffOnlyMode() {
+		t.Fatal("expected explicit-handoff-only mode when automatic handoff is disabled")
+	}
+
+	t.Setenv("AGENT_DESK_AI_AUTO_HANDOFF_ENABLED", "true")
+	if services.WxWorkCustomerHandoffSettingService.ExplicitHandoffOnlyMode() {
+		t.Fatal("automatic handoff should remain enabled when env is true")
+	}
+}
+
 func TestCustomerAutoHandoffSettingIsScopedToWxWorkInstance(t *testing.T) {
 	db := setupConversationHumanDispatchTestDB(t)
 	aiAgent := createHumanDispatchAIAgent(t, db, enums.IMConversationServiceModeAIFirst, "")

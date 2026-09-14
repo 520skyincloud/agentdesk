@@ -37,7 +37,9 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+	explicitOnly := services.WxWorkCustomerHandoffSettingService.ExplicitHandoffOnlyMode()
+	if (explicitOnly && strings.TrimSpace(intent.SubIntent) != "explicit_handoff") ||
+		(!explicitOnly && !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,
@@ -46,8 +48,8 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 				"subIntent": intent.SubIntent,
 			},
 			Status:            "skipped",
-			RecommendedAction: "customer_auto_handoff_disabled",
-			ResultPreview:     "当前客户在此企微员工号下已关闭自动转人工；继续由 AI 直接回复",
+			RecommendedAction: "non_explicit_handoff_disabled",
+			ResultPreview:     "测试环境仅允许客户明确提出转人工时执行人工路由；其他人工标记继续由 AI 处理",
 		})
 		return false, nil
 	}
