@@ -658,7 +658,7 @@ func isPMSRuntimeSubIntent(subIntent string) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(subIntent)) {
 	case "pms", "pms_query", "order_query", "order_detail", "order_status",
-		"room_status", "room_inventory", "inventory", "renew", "renewal",
+		"room_status", "room_inventory", "room_availability", "inventory", "renew", "renewal",
 		"check_in_status", "check_out_status":
 		return true
 	default:
@@ -668,7 +668,7 @@ func isPMSRuntimeSubIntent(subIntent string) bool {
 
 func isMemberRuntimeSubIntent(subIntent string) bool {
 	switch strings.ToLower(strings.TrimSpace(subIntent)) {
-	case "member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade":
+	case "member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
 		return true
 	default:
 		return false

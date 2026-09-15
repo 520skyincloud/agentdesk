@@ -9,7 +9,7 @@ import (
 
 func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
 	for _, intent := range []string{"hotel_info", "service_request"} {
-		for _, subIntent := range []string{"member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade"} {
+		for _, subIntent := range []string{"member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone"} {
 			t.Run(intent+"/"+subIntent, func(t *testing.T) {
 				task := callbacks.IntentTaskTraceData{
 					Intent: intent, SubIntent: subIntent, Text: "查一下我的会员权益",

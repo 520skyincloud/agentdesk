@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/runtime/registry"
 	"agent-desk/internal/models"
@@ -17,7 +18,7 @@ import (
 )
 
 func TestPhoneArgForActionDoesNotUseKeywordForPhoneLookup(t *testing.T) {
-	for _, action := range []string{"reserve_order_by_phone", "recept_order_by_phone", "member_info_by_phone"} {
+	for _, action := range []string{"reserve_order_by_phone", "recept_order_by_phone", "member_info_by_phone", "member_benefits_by_phone"} {
 		if got := phoneArgForAction(action, "", "ORDER-001"); got != "" {
 			t.Fatalf("%s must not use keyword as phone, got %q", action, got)
 		}
@@ -45,17 +46,17 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 			t.Fatalf("schema exposed an unsupported action: %#v", value)
 		}
 	}
-	for _, name := range []string{"phone", "gradeId", "gradeCode"} {
+	for _, name := range []string{"phone"} {
 		if _, ok := schema.Properties.Get(name); !ok {
 			t.Fatalf("member query parameter missing: %s", name)
 		}
 	}
-	for _, name := range []string{"renewPayload", "hotelId", "tenantId", "baseUrl", "authorization"} {
+	for _, name := range []string{"renewPayload", "hotelId", "tenantId", "baseUrl", "authorization", "gradeId", "gradeCode"} {
 		if _, ok := schema.Properties.Get(name); ok {
 			t.Fatalf("runtime must not expose protected parameter: %s", name)
 		}
 	}
-	for _, instruction := range []string{"真实 gradeId", "不能用中文等级名称", "gradeAvailable=false", "冻结/挂失", "不代表已升房"} {
+	for _, instruction := range []string{"member_benefits_by_phone", "工具内部先查会员", "不需要模型提供等级 ID", "gradeAvailable=false", "冻结/挂失", "不代表已升房"} {
 		if !strings.Contains(info.Desc, instruction) {
 			t.Errorf("member usage boundary missing: %s", instruction)
 		}
@@ -86,7 +87,7 @@ func TestPMSQueryToolRejectsWritesEvenWhenWriteConfigIsEnabled(t *testing.T) {
 	}
 }
 
-func TestPMSQueryToolMemberInfoThenBenefitsUsesReturnedGradeID(t *testing.T) {
+func TestPMSQueryToolBenefitsByPhoneUsesReturnedGradeIDInOneCall(t *testing.T) {
 	const gradeID = "90071992547409931"
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,29 +120,120 @@ func TestPMSQueryToolMemberInfoThenBenefitsUsesReturnedGradeID(t *testing.T) {
 	})
 
 	tool := NewPMSQueryTool()
-	infoJSON, err := tool.InvokableRun(context.Background(), `{"action":"member_info_by_phone","phone":"13800138000"}`)
+	infoJSON, err := tool.InvokableRun(context.Background(), `{"action":"member_benefits_by_phone","phone":"13800138000","gradeId":"wrong","gradeCode":"金卡"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var info struct {
 		Status string `json:"status"`
 		Data   struct {
-			GradeID string `json:"gradeId"`
+			Member struct {
+				GradeID string `json:"gradeId"`
+			} `json:"member"`
+			Grade struct {
+				GradeID string `json:"gradeId"`
+			} `json:"grade"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(infoJSON), &info); err != nil {
 		t.Fatal(err)
 	}
-	if info.Status != "ok" || info.Data.GradeID != gradeID || strings.Contains(infoJSON, "13800138000") {
+	if info.Status != "ok" || info.Data.Member.GradeID != gradeID || info.Data.Grade.GradeID != gradeID ||
+		strings.Contains(infoJSON, "13800138000") || !strings.Contains(infoJSON, "8.5折") {
 		t.Fatalf("unexpected normalized member result: %s", infoJSON)
-	}
-	args, _ := json.Marshal(map[string]string{"action": "member_benefits_by_grade", "gradeId": info.Data.GradeID})
-	benefitsJSON, err := tool.InvokableRun(context.Background(), string(args))
-	if err != nil || !strings.Contains(benefitsJSON, `"status":"ok"`) || !strings.Contains(benefitsJSON, "8.5折") {
-		t.Fatalf("benefit lookup failed: %s, %v", benefitsJSON, err)
 	}
 	if requests.Load() != 2 {
 		t.Fatalf("expected exactly two reads, got %d", requests.Load())
+	}
+}
+
+func TestPMSQueryToolRejectsModelSuppliedDirectGradeLookup(t *testing.T) {
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1"})
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"member_benefits_by_grade","gradeId":"猜测等级"}`)
+	if err != nil || !strings.Contains(got, `"status":"unsupported"`) {
+		t.Fatalf("direct grade lookup must not be exposed to model calls: %s %v", got, err)
+	}
+}
+
+func TestPMSQueryToolBenefitsKeepMemberFactsWhenGradeIsMissingOrFails(t *testing.T) {
+	for _, tc := range []struct {
+		name, gradeID string
+		wantRequests  int32
+	}{
+		{name: "missing grade", wantRequests: 1},
+		{name: "grade query failure", gradeID: "GRADE-1", wantRequests: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.URL.Path == "/admin-api/member/open/members/info/by-phone" {
+					_, _ = w.Write([]byte(`{"code":200,"data":{"tenantId":"2","memberGuestId":"MEMBER-001","memberNo":"MG-001","gradeId":"` + tc.gradeID + `","gradeAvailable":false,"status":2,"statusName":"冻结"}}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"code":512,"msg":"private-data 13800138000"}`))
+			}))
+			defer server.Close()
+			usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL})
+			got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"member_benefits_by_phone","phone":"13800138000"}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range []string{`"status":"partial"`, `"member":`, `"grade":null`, `"gradeAvailable":false`, `"statusName":"冻结"`, `"status":2`} {
+				if !strings.Contains(got, expected) {
+					t.Fatalf("partial member facts missing %s: %s", expected, got)
+				}
+			}
+			if strings.Contains(got, "private-data") || strings.Contains(got, "13800138000") {
+				t.Fatalf("private error leaked: %s", got)
+			}
+			if requests.Load() != tc.wantRequests {
+				t.Fatalf("unexpected repeated or speculative reads: %d", requests.Load())
+			}
+		})
+	}
+}
+
+func TestPMSQueryToolBenefitsStopsWhenMemberLookupFails(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/admin-api/member/open/members/info/by-phone" {
+			t.Errorf("must not query a grade without member facts: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"code":563,"msg":"private-member 13800138000"}`))
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL})
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"member_benefits_by_phone","phone":"13800138000"}`)
+	if err != nil || !strings.Contains(got, `"status":"unavailable"`) || requests.Load() != 1 {
+		t.Fatalf("member failure must stop the lookup: %s %v reads=%d", got, err, requests.Load())
+	}
+	if strings.Contains(got, "private-member") || strings.Contains(got, "13800138000") {
+		t.Fatalf("member error leaked sensitive data: %s", got)
+	}
+}
+
+func TestPMSQueryToolBenefitsShareCallerDeadlineWithoutRetry(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path == "/admin-api/member/open/members/info/by-phone" {
+			_, _ = w.Write([]byte(`{"code":200,"data":{"tenantId":"2","memberGuestId":"MEMBER-001","memberNo":"MG-001","gradeId":"GRADE-1","gradeAvailable":true}}`))
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got, err := NewPMSQueryTool().InvokableRun(ctx, `{"action":"member_benefits_by_phone","phone":"13800138000"}`)
+	if err != nil || !strings.Contains(got, `"status":"partial"`) || !strings.Contains(got, `"grade":null`) {
+		t.Fatalf("timed-out grade lookup must retain known member facts: %s %v", got, err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("expected two bounded reads without retry, got %d", requests.Load())
 	}
 }
 
@@ -164,9 +256,11 @@ func TestPMSQueryToolPreservesUnavailableGradeAndFrozenStatus(t *testing.T) {
 
 func TestPMSQueryToolDoesNotTreatKeywordAsMemberPhone(t *testing.T) {
 	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1"})
-	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"member_info_by_phone","keyword":"13800138000"}`)
-	if err != nil || !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "手机号") {
-		t.Fatalf("missing explicit phone must not invoke a member lookup: %s %v", got, err)
+	for _, action := range []string{"member_info_by_phone", "member_benefits_by_phone"} {
+		got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"`+action+`","keyword":"13800138000"}`)
+		if err != nil || !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "手机号") {
+			t.Fatalf("missing explicit phone must not invoke a member lookup: %s %v", got, err)
+		}
 	}
 }
 
