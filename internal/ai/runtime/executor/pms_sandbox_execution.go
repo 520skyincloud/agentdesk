@@ -34,7 +34,6 @@ func executeSandboxSceneTasksWithService(ctx context.Context, scope sandbox.Scop
 		return
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	writeIndexes := make([]int, 0, 3)
 	for index := range plan.TaskPlans {
 		task := &plan.TaskPlans[index]
 		if !isSandboxScene(task.SandboxScene) {
@@ -42,11 +41,6 @@ func executeSandboxSceneTasksWithService(ctx context.Context, scope sandbox.Scop
 		}
 		if scope.StoreID <= 0 || scope.ConversationID <= 0 || scope.CustomerID <= 0 || scope.SourceMessageID <= 0 {
 			setSandboxFixedReply(task, "【测试 PMS】当前会话还未绑定有效测试门店，暂时不能查询或办理。")
-			continue
-		}
-		switch task.SandboxScene {
-		case "B", "C", "D":
-			writeIndexes = append(writeIndexes, index)
 			continue
 		}
 		input := sandboxInputForTask(*task)
@@ -69,9 +63,6 @@ func executeSandboxSceneTasksWithService(ctx context.Context, scope sandbox.Scop
 				DatasetID: result.State.Dataset.ID, ResourceID: result.Resource.ID,
 			})
 		}
-	}
-	if len(writeIndexes) > 0 {
-		executeSandboxChangeTasks(ctx, scope, &plan, writeIndexes, summary, collector, service)
 	}
 	collector.Data.Pipeline.ReplyPlan = plan
 }

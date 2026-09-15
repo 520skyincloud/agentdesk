@@ -191,7 +191,7 @@ func TestSandboxFixedQueriesExecuteEvenWhenSiblingFails(t *testing.T) {
 	}
 }
 
-func TestSandboxCombinesUpgradeRoomAndCheckoutBeforeOnePrepare(t *testing.T) {
+func TestSandboxShowcaseScenesReplyWithoutPreparing(t *testing.T) {
 	enableSandboxRuntimeTest(t)
 	service, scope, collector := sandboxRuntimeFixture()
 	collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{
@@ -200,19 +200,12 @@ func TestSandboxCombinesUpgradeRoomAndCheckoutBeforeOnePrepare(t *testing.T) {
 		{TaskID: "T3", SandboxScene: "D", Text: "延迟到两点", SandboxParams: &callbacks.SandboxTaskParams{Actions: []string{"late_checkout"}, CheckoutAt: "14:00"}},
 	}
 	executeSandboxSceneTasksWithService(context.Background(), scope, &RunResult{}, collector, service)
-	if len(service.changes) != 1 {
-		t.Fatalf("expected one atomic proposal, got %#v", service.changes)
-	}
-	change := service.changes[0]
-	if !change.Upgrade || !change.ChangeRoom || !change.LateCheckout || change.Recovery || change.TargetRoomID != 5 || change.CheckOut == nil || change.CheckOut.Hour() != 14 {
-		t.Fatalf("combined change lost a customer request: %#v", change)
-	}
-	if len(collector.Data.SandboxOperationIDs) != 1 || collector.Data.SandboxOperationIDs[0] != 77 {
-		t.Fatalf("preview audit hook missing: %#v", collector.Data.SandboxOperationIDs)
+	if len(service.changes) != 0 || len(collector.Data.SandboxOperationIDs) != 0 {
+		t.Fatalf("showcase reply unexpectedly prepared an operation: changes=%#v ops=%#v", service.changes, collector.Data.SandboxOperationIDs)
 	}
 	summary := &RunResult{}
-	if !completeSandboxFixedReply(summary, collector) || !strings.Contains(summary.ReplyText, "完整方案") {
-		t.Fatalf("fixed preview cannot be committed: %#v", summary)
+	if !completeSandboxFixedReply(summary, collector) || strings.TrimSpace(summary.ReplyText) == "" {
+		t.Fatalf("fixed showcase replies cannot be committed: %#v", summary)
 	}
 }
 
