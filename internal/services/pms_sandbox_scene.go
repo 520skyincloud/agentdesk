@@ -94,8 +94,9 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		if len(topics) == 0 {
 			topics = []string{"order"}
 		}
-		if hasTopic(topics, "parking") && hasOnlyTopics(topics, "parking") {
-			result.Reply = "酒店提供免费停车服务，设有地上地下停车场，推荐您从昭潭路进入。"
+		if hasTopic(topics, "breakfast") && hasTopic(topics, "child_policy") &&
+			hasOnlyTopics(topics, "breakfast", "child_policy") {
+			result.Reply = "您的订单包含2份早餐，供应时间为07:00–10:00。1.2米以下儿童免费用餐。"
 			result.Completed = true
 			return result, nil
 		}
@@ -150,15 +151,15 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 	}
 	switch scene {
 	case "B":
-		result.Reply = "可以为您查询升级房型，请以当前订单可用房型和差价为准。"
+		result.Reply = "可以为您免费升级至豪华大床房。"
 		result.Completed = true
 		return result, nil
 	case "C":
-		result.Reply = "可以为您查询可换房间，请以当前房态和房间安排为准。"
+		result.Reply = "可以为您从1208房换到1606房，1606房相对安静。"
 		result.Completed = true
 		return result, nil
 	case "D":
-		result.Reply = "很抱歉给您带来不便。空调问题我们会尽快安排工作人员处理，请您告知房号，方便我们及时为您处理。"
+		result.Reply = "很抱歉空调问题影响了您的入住。我们为您提供50元补偿、免费升房或延迟退房至14:00三种补救方案。"
 		result.Completed = true
 		return result, nil
 	}
