@@ -68,6 +68,22 @@ cd web && pnpm exec eslint \
 
 ## test-2 发布记录
 
+- 程序提交：`1ce3581d0a7f671851cd352472e773f5cc3490e0`，已推送 `origin` 和 `weibao`。
+- 发布 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-1ce3581`。
+- 原 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-a0ba8ce054e7`。
+- 新二进制 SHA-256：`79cb12edc0dcc860c5b10e4bc1cc4f41af3a80b339b723d0ba91d7078a01d173`。
+- 发布前备份：`/opt/agentdesk/shared/backups/pms-sandbox-six-scenes-20260915-final-predeploy`。
+- 数据库备份 SHA-256：`2083fd6dfd1aa53186e2b9c559acd7971a20ca24080a2845ad122c139e7ff7c2`。
+- 切换后服务 active/running、8083 返回 200、`NRestarts=0`；数据库迁移 77 已成功。
+- test-2 已使用 `provider=sandbox`、`environment=test-2`、`sandboxEnabled=true`、`allowWrite=true`。
+- 服务器当前已初始化 1 个测试批次和 1 笔测试订单；当前绑定仍是客户 ID `6`，最新“其风”客户 ID `1811` 尚未绑定。
+- 枕头资源当前没有真实历史商品卡片（`sourceMessageID=0`、无 `cardPayload`），因此枕头卡片收件端验收尚未通过。
+- 服务器既有企微坐席过期告警（错误码 9003）与本次程序发布无关；未修改企微登录状态。
+
+本记录只证明程序发布和数据库备份完成，不代表六场景真实消息验收已经完成。绑定最新测试客户、导入同门店历史枕头商品卡片并完成不超过 12 轮的隔离真实验证后，才更新上方五项验收状态。
+
+## test-2 发布记录
+
 - 发布日期：2026-09-15。
 - 新 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-a0ba8ce054e7`。
 - 二进制 SHA-256：`a0ba8ce054e76d679c3f3dd09172cfcc1a8ea51dd7a10adb8afcd0f642312bd0`。
