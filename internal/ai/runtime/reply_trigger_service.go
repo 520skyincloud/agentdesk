@@ -346,7 +346,7 @@ func isPMSRenewConfirmation(text string) bool {
 }
 
 func isPMSRenewCancellation(text string) bool {
-	compact := strings.TrimSpace(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "。", "", "！", "", "!", "", "？", "", "?").Replace(text))
+	compact := strings.TrimSpace(strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "。", "", "！", "", "!", "", "？", "", "?", "").Replace(text))
 	switch compact {
 	case "取消", "不用了", "不续了", "算了", "不需要":
 		return true
