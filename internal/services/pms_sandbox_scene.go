@@ -92,6 +92,11 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		if len(topics) == 0 {
 			topics = []string{"order"}
 		}
+		if hasTopic(topics, "parking") && hasOnlyTopics(topics, "parking") {
+			result.Reply = "酒店提供免费停车服务，设有地上地下停车场，推荐您从昭潭路进入。"
+			result.Completed = true
+			return result, nil
+		}
 		if hasTopic(topics, "breakfast") && hasTopic(topics, "child_policy") &&
 			hasOnlyTopics(topics, "breakfast", "child_policy") {
 			// Keep the showcase question as one reply instead of concatenating
