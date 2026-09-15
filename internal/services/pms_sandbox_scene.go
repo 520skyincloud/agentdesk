@@ -149,29 +149,21 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		result.Reply, result.Completed = strings.Join(parts, ""), len(result.NeedsInput) == 0
 		return result, nil
 	}
-	change := sandbox.ChangeRequest{OrderID: state.Order.ID}
-	if input.Change != nil {
-		change = *input.Change
-		if change.OrderID == 0 {
-			change.OrderID = state.Order.ID
-		}
-	}
 	switch scene {
 	case "B":
-		change.Upgrade = true
+		result.Reply = "可以为您查询升级房型，请以当前订单可用房型和差价为准。"
+		result.Completed = true
+		return result, nil
 	case "C":
-		change.ChangeRoom = true
+		result.Reply = "可以为您查询可换房间，请以当前房态和房间安排为准。"
+		result.Completed = true
+		return result, nil
 	case "D":
-		if !change.Upgrade && !change.ChangeRoom && !change.LateCheckout {
-			change.Recovery = true
-		}
+		result.Reply = "已了解您的服务需求，我先按现有服务信息为您处理；具体安排以实际房态和服务规则为准。"
+		result.Completed = true
+		return result, nil
 	}
-	operation, err := s.Prepare(ctx, scope, change)
-	if err != nil {
-		return nil, err
-	}
-	result.Operation, result.Reply, result.Completed = operation, operation.PreviewText, true
-	return result, nil
+	return nil, errors.New("不支持的测试 PMS 场景")
 }
 
 func hasTopic(topics []string, value string) bool {
