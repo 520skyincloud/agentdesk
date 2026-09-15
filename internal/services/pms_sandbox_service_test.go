@@ -91,7 +91,7 @@ func (f *sandboxFixture) message(conversationID int64, sender enums.IMSenderType
 
 func (f *sandboxFixture) deliver(scope sandbox.Scope, op *sandbox.Operation, sent bool) int64 {
 	f.t.Helper()
-	messageID := f.message(scope.ConversationID, enums.IMSenderTypeAI, op.PreviewText)
+	messageID := f.message(scope.ConversationID, enums.IMSenderTypeAI, sandbox.CustomerReplyText(op.PreviewText))
 	status := "pending"
 	var sentAt *time.Time
 	if sent {
@@ -144,7 +144,7 @@ func TestPMSSandboxSixSceneReadPreviewAndCommit(t *testing.T) {
 	f.deliver(f.scope, op, true)
 	f.scope.SourceMessageID = f.message(1, enums.IMSenderTypeCustomer, "确认办理")
 	outcome, err := f.svc.Confirm(ctx, f.scope, op.ID)
-	if err != nil || outcome.Status != "completed" || !strings.Contains(outcome.ResultText, "仅测试数据") {
+	if err != nil || outcome.Status != "completed" || !strings.Contains(outcome.ResultText, "已核对并完成") {
 		t.Fatalf("confirm failed: %+v %v", outcome, err)
 	}
 	after, _ := f.svc.Query(ctx, f.scope)
@@ -402,7 +402,7 @@ func TestPMSSandboxMergeOneSourceAndMissingBindings(t *testing.T) {
 	}
 	unbound := sandbox.Scope{StoreID: 1, ConversationID: 2, CustomerID: 2}
 	result, err := f.svc.ExecuteScene(ctx, unbound, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast"}})
-	if err != nil || result.Completed || len(result.NeedsInput) == 0 || !strings.Contains(result.Reply, "测试订单") {
+	if err != nil || result.Completed || len(result.NeedsInput) == 0 || !strings.Contains(result.Reply, "订单号") {
 		t.Fatalf("unbound query must ask required identity: %+v %v", result, err)
 	}
 	latest, err := f.svc.Latest(ctx, f.scope)

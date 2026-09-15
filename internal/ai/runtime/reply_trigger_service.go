@@ -16,6 +16,7 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
 	"agent-desk/internal/pkg/utils"
+	"agent-desk/internal/pms/sandbox"
 	svc "agent-desk/internal/services"
 	"github.com/mlogclub/simple/sqls"
 )
@@ -269,7 +270,7 @@ func (s *aiReplyService) handlePendingSandboxOperation(ctx context.Context, repl
 		}
 		text := strings.TrimSpace(latest.ResultText)
 		if text == "" {
-			text = "【测试 PMS】该测试办理已完成，订单结果已回查。"
+			text = "该办理已完成，订单结果已回查。"
 		}
 		_, commitErr := s.commit.CommitAIReply(replyCommitInput{
 			Conversation: replyCtx.Conversation,
@@ -286,9 +287,9 @@ func (s *aiReplyService) handlePendingSandboxOperation(ctx context.Context, repl
 		if cancelErr != nil {
 			return true, s.commitSandboxOperationFailure(replyCtx, "这份测试办理方案未能取消，测试订单未修改。")
 		}
-		text := "【测试 PMS】已取消该办理方案，测试订单未修改。"
+		text := "已取消该办理方案，订单未修改。"
 		if outcome != nil && strings.TrimSpace(outcome.ResultText) != "" {
-			text = outcome.ResultText
+			text = sandbox.CustomerReplyText(outcome.ResultText)
 		}
 		_, commitErr := s.commit.CommitAIReply(replyCommitInput{
 			Conversation: replyCtx.Conversation,
@@ -307,9 +308,9 @@ func (s *aiReplyService) handlePendingSandboxOperation(ctx context.Context, repl
 	if confirmErr != nil {
 		return true, s.commitSandboxOperationFailure(replyCtx, "这份测试办理方案未执行，测试订单未修改；请重新查询并生成方案。")
 	}
-	text := "【测试 PMS】测试办理已完成，但未读取到结果。"
+	text := "办理已完成，但未读取到结果。"
 	if outcome != nil && strings.TrimSpace(outcome.ResultText) != "" {
-		text = outcome.ResultText
+		text = sandbox.CustomerReplyText(outcome.ResultText)
 	}
 	_, commitErr := s.commit.CommitAIReply(replyCommitInput{
 		Conversation: replyCtx.Conversation,
@@ -327,7 +328,7 @@ func (s *aiReplyService) commitSandboxOperationFailure(replyCtx aiReplyContext, 
 		Conversation: replyCtx.Conversation,
 		Message:      replyCtx.Message,
 		AIAgent:      replyCtx.AIAgent,
-		ReplyText:    "【测试 PMS】" + strings.TrimSpace(text),
+		ReplyText:    sandbox.CustomerReplyText(text),
 		Trace:        replyCtx.Trace,
 		ClientPrefix: "pms_sandbox_operation_failure",
 	})

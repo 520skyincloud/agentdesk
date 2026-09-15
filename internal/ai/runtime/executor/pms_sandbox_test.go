@@ -178,7 +178,8 @@ func TestSandboxFixedQueriesExecuteEvenWhenSiblingFails(t *testing.T) {
 	}
 	for index := 0; index < 3; index++ {
 		task := collector.Data.Pipeline.ReplyPlan.TaskPlans[index]
-		if !task.FixedReply || task.AnswerText == nil || !strings.Contains(*task.AnswerText, "测试 PMS") {
+		if !task.FixedReply || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
+			strings.Contains(*task.AnswerText, "测试") || strings.Contains(*task.AnswerText, "Sandbox") {
 			t.Fatalf("task has no deterministic outcome: %#v", task)
 		}
 	}
@@ -228,7 +229,8 @@ func TestSandboxMissingOrderPromptsWithoutPreparing(t *testing.T) {
 		t.Fatal("missing order created a proposal")
 	}
 	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
-		if task.AnswerText == nil || !strings.Contains(*task.AnswerText, "请提供测试手机号") {
+		if task.AnswerText == nil || !strings.Contains(*task.AnswerText, "请提供手机号") ||
+			strings.Contains(*task.AnswerText, "测试") || strings.Contains(*task.AnswerText, "Sandbox") {
 			t.Fatalf("missing required detail was not asked: %#v", task)
 		}
 	}

@@ -356,7 +356,7 @@ func (s *pmsSandboxService) MarkPreviewMessage(ctx context.Context, scope sandbo
 		}
 		message, err := repositories.PMSSandboxRepository.Message(tx, messageID)
 		if err != nil || message.ConversationID != scope.ConversationID || message.SenderType != enums.IMSenderTypeAI ||
-			message.ID <= item.SourceMessageID || !strings.Contains(message.Content, item.PreviewText) {
+			message.ID <= item.SourceMessageID || !sandboxPreviewMatches(message.Content, item.PreviewText) {
 			return errors.New("预览消息必须为当前方案实际提交的完整 AI 回复")
 		}
 		return repositories.PMSSandboxRepository.UpdateOperation(tx, item.ID, map[string]any{"preview_message_id": messageID})
@@ -493,7 +493,7 @@ func (s *pmsSandboxService) validateConfirmation(db *gorm.DB, scope sandbox.Scop
 		return errors.New("方案尚未发送给客户，不能确认执行")
 	}
 	preview, err := repositories.PMSSandboxRepository.Message(db, operation.PreviewMessageID)
-	if err != nil || preview.ConversationID != scope.ConversationID || preview.SenderType != enums.IMSenderTypeAI || !strings.Contains(preview.Content, operation.PreviewText) {
+	if err != nil || preview.ConversationID != scope.ConversationID || preview.SenderType != enums.IMSenderTypeAI || !sandboxPreviewMatches(preview.Content, operation.PreviewText) {
 		return errors.New("未找到完整的已发送办理预览")
 	}
 	source, err := repositories.PMSSandboxRepository.Message(db, scope.SourceMessageID)
@@ -519,6 +519,19 @@ func (s *pmsSandboxService) validateConfirmation(db *gorm.DB, scope sandbox.Scop
 		return errors.New("预览之后客户消息已变化，请重新生成方案再确认")
 	}
 	return nil
+}
+
+func sandboxPreviewMatches(customerText, storedPreview string) bool {
+	customerText = strings.TrimSpace(customerText)
+	storedPreview = strings.TrimSpace(storedPreview)
+	if customerText == "" || storedPreview == "" {
+		return false
+	}
+	if strings.Contains(customerText, storedPreview) {
+		return true
+	}
+	safePreview := strings.TrimSpace(sandbox.CustomerReplyText(storedPreview))
+	return safePreview != "" && strings.Contains(customerText, safePreview)
 }
 
 func (s *pmsSandboxService) Cancel(ctx context.Context, scope sandbox.Scope, operationID int64) (*sandbox.Operation, error) {

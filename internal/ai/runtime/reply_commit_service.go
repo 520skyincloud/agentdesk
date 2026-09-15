@@ -510,18 +510,14 @@ func (s *replyCommitService) buildSandboxResourceReplies(input replyCommitInput)
 			})
 			continue
 		}
-		source := svc.MessageService.Get(result.Resource.SourceMessageID)
-		sourceRoute := (*models.ConversationRouteState)(nil)
-		if source != nil {
-			sourceRoute = svc.ConversationRouteService.GetByConversationID(source.ConversationID)
-		}
-		if source == nil || sourceRoute == nil || sourceRoute.StoreID != scope.StoreID {
+		source, sourceErr := svc.ResolvePMSSandboxCardSource(scope.StoreID, result.Resource.SourceMessageID)
+		if sourceErr != nil {
 			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
-				buildResourceActionLedgerItem("pillow_product", result.Resource.MessageType, 0, "missing", "测试商品原始卡片不属于当前门店"),
+				buildResourceActionLedgerItem("pillow_product", result.Resource.MessageType, 0, "missing", sourceErr.Error()),
 			})
 			continue
 		}
-		messageType := enums.IMMessageType(result.Resource.MessageType)
+		messageType := source.MessageType
 		if messageType != enums.IMMessageTypeMiniProgram && messageType != enums.IMMessageTypeShopProduct {
 			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
 				buildResourceActionLedgerItem("pillow_product", result.Resource.MessageType, 0, "missing", "测试商品资源不是可发送的商品卡片"),
@@ -536,7 +532,7 @@ func (s *replyCommitService) buildSandboxResourceReplies(input replyCommitInput)
 			ResourceType: "pillow_product",
 			MessageType:  messageType,
 			Content:      content,
-			Payload:      result.Resource.CardPayload,
+			Payload:      source.Payload,
 			TaskIDs:      []string{strings.TrimSpace(item.TaskID)},
 		}
 		appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{

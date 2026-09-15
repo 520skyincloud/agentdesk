@@ -891,6 +891,9 @@ func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageT
 }
 
 func (s *wxWorkProtocolService) resolveInboundMessageType(msg request.WxProtocolChatMsg) enums.IMMessageType {
+	if msg.ContentType == 597 {
+		return enums.IMMessageTypeShopProduct
+	}
 	if msg.ContentType == 6 || msg.Longitude != 0 || msg.Latitude != 0 {
 		return enums.IMMessageTypeLocation
 	}

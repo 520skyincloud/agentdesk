@@ -284,10 +284,7 @@ func parseSandboxCheckout(value string, order *sandbox.Order) (time.Time, error)
 }
 
 func setSandboxFixedReply(task *callbacks.ReplyTaskPlanTraceData, reply string) {
-	reply = strings.TrimSpace(reply)
-	if !strings.Contains(reply, sandbox.Label) {
-		reply = "【测试 PMS】" + reply
-	}
+	reply = sandbox.CustomerReplyText(reply)
 	task.FixedReply, task.AnswerText = true, &reply
 	task.OutputKind, task.Output, task.ReplyRequired = "text", "text_reply", true
 	task.NeedsKnowledge, task.NeedsTool, task.NeedsResource, task.NeedsHumanRoute = false, false, false, false

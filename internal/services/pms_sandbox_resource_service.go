@@ -9,6 +9,9 @@ import (
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/errorsx"
 	"agent-desk/internal/pms/sandbox"
+	"agent-desk/internal/repositories"
+
+	"github.com/mlogclub/simple/sqls"
 )
 
 // ImportPMSSandboxResource derives card data exclusively from a scoped source
@@ -22,27 +25,91 @@ func ImportPMSSandboxResource(storeID int64, resource *sandbox.Resource) error {
 	if resource.SourceMessageID <= 0 {
 		return nil
 	}
-	message := MessageService.Get(resource.SourceMessageID)
-	if message == nil {
-		return errorsx.InvalidParam("原商品卡片消息不存在")
-	}
-	route := ConversationRouteService.GetByConversationID(message.ConversationID)
-	if route == nil || route.StoreID != storeID {
-		return errorsx.Forbidden("原商品卡片不属于当前门店")
-	}
-	payload, err := SanitizePMSSandboxCard(string(message.MessageType), message.Payload)
+	source, err := ResolvePMSSandboxCardSource(storeID, resource.SourceMessageID)
 	if err != nil {
 		return err
 	}
-	if message.MessageType == enums.IMMessageTypeMiniProgram && route.WxWorkInstanceID > 0 {
-		instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
-		if instance != nil && samePMSSandboxMiniProgramTarget(payload, instance.DefaultMiniProgramPayload) {
-			return errorsx.InvalidParam("该消息是入住小程序，不能绑定为枕头商品")
-		}
-	}
-	resource.CardPayload = payload
-	resource.MessageType = string(message.MessageType)
+	resource.CardPayload = source.Payload
+	resource.MessageType = string(source.MessageType)
 	return nil
+}
+
+// PMSSandboxCardSource is the sanitized, store-scoped source used to bind and
+// send a rich customer card. Historical protocol cards may live only in the
+// sync log when the inbound message was not previously persisted.
+type PMSSandboxCardSource struct {
+	MessageType    enums.IMMessageType
+	Content        string
+	Payload        string
+	ConversationID int64
+}
+
+// ResolvePMSSandboxCardSource accepts either a persisted message ID or a
+// message-sync-log ID. Sync-log fallback is intentionally limited to the
+// real WeChat shop-product content type and the instance's current store.
+func ResolvePMSSandboxCardSource(storeID, sourceID int64) (*PMSSandboxCardSource, error) {
+	if storeID <= 0 || sourceID <= 0 {
+		return nil, errorsx.InvalidParam("缺少商品卡片来源")
+	}
+	if message := MessageService.Get(sourceID); message != nil {
+		route := ConversationRouteService.GetByConversationID(message.ConversationID)
+		if route == nil || route.StoreID != storeID {
+			return nil, errorsx.Forbidden("原商品卡片不属于当前门店")
+		}
+		payload, err := SanitizePMSSandboxCard(string(message.MessageType), message.Payload)
+		if err != nil {
+			return nil, err
+		}
+		if message.MessageType == enums.IMMessageTypeMiniProgram && route.WxWorkInstanceID > 0 {
+			instance := WxWorkProtocolInstanceService.Get(route.WxWorkInstanceID)
+			if instance != nil && samePMSSandboxMiniProgramTarget(payload, instance.DefaultMiniProgramPayload) {
+				return nil, errorsx.InvalidParam("该消息是入住小程序，不能绑定为枕头商品")
+			}
+		}
+		return &PMSSandboxCardSource{
+			MessageType:    message.MessageType,
+			Content:        strings.TrimSpace(message.Content),
+			Payload:        payload,
+			ConversationID: message.ConversationID,
+		}, nil
+	}
+
+	logItem := repositories.MessageSyncLogRepository.Take(sqls.DB(), "id = ?", sourceID)
+	if logItem == nil {
+		return nil, errorsx.InvalidParam("原商品卡片消息不存在")
+	}
+	var envelope struct {
+		GUID string `json:"guid"`
+		Data struct {
+			ContentType int             `json:"content_type"`
+			Sender      string          `json:"sender"`
+			Content     json.RawMessage `json:"content"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(logItem.Payload), &envelope); err != nil {
+		return nil, errorsx.InvalidParam("原商品卡片内容不是有效对象")
+	}
+	if envelope.Data.ContentType != 597 || len(envelope.Data.Content) == 0 || string(envelope.Data.Content) == "null" {
+		return nil, errorsx.InvalidParam("原消息不是可绑定的微信小店商品卡片")
+	}
+	instance := WxWorkProtocolInstanceService.Take("guid = ?", strings.TrimSpace(envelope.GUID))
+	if instance == nil || instance.StoreID != storeID {
+		return nil, errorsx.Forbidden("原商品卡片不属于当前门店")
+	}
+	rawPayload := `{"content":` + string(envelope.Data.Content) + `}`
+	payload, err := SanitizePMSSandboxCard(string(enums.IMMessageTypeShopProduct), rawPayload)
+	if err != nil {
+		return nil, err
+	}
+	var content struct {
+		ProductTitle string `json:"product_title"`
+	}
+	_ = json.Unmarshal(envelope.Data.Content, &content)
+	return &PMSSandboxCardSource{
+		MessageType: enums.IMMessageTypeShopProduct,
+		Content:     strings.TrimSpace(content.ProductTitle),
+		Payload:     payload,
+	}, nil
 }
 
 // Fields follow the employee-account send_weapp/send_finder_product contracts.
