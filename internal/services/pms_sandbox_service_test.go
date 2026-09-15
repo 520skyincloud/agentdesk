@@ -121,12 +121,16 @@ func (f *sandboxFixture) prepare(change sandbox.ChangeRequest) *sandbox.Operatio
 func TestPMSSandboxSixSceneReadPreviewAndCommit(t *testing.T) {
 	f := newSandboxFixture(t)
 	ctx := context.Background()
-	result, err := f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast", "child_policy", "checkout"}})
-	if err != nil || !result.Completed || !strings.Contains(result.Reply, "包含早餐") || !strings.Contains(result.Reply, "28元") || !strings.Contains(result.Reply, "12:00") {
+	result, err := f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast", "child_policy"}})
+	if err != nil || !result.Completed || result.Reply != "您的订单包含 2 份早餐，供应时间为 07:00–10:00。1.2 米以下儿童免费用餐。" {
 		t.Fatalf("A incomplete: result=%+v err=%v", result, err)
 	}
+	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast", "child_policy", "checkout"}})
+	if err != nil || !result.Completed || !strings.Contains(result.Reply, "12:00") {
+		t.Fatalf("A multi-topic reply lost checkout: result=%+v err=%v", result, err)
+	}
 	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "E", Topics: []string{"birthday", "benefits"}})
-	if err != nil || !result.Completed || !strings.Contains(result.Reply, "生日") || !strings.Contains(result.Reply, "免费升级") {
+	if err != nil || !result.Completed || result.Reply != "您当前是钻石会员，已入住 16 次。生日可享 100 元礼遇，有效期 30 天。" {
 		t.Fatalf("E incomplete: %+v %v", result, err)
 	}
 	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "F"})

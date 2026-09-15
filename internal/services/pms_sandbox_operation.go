@@ -258,22 +258,33 @@ func sandboxMoney(cents int64) string {
 }
 
 func sandboxPreview(plan *sandbox.Plan) string {
-	parts := []string{fmt.Sprintf("【测试 PMS】办理预览：订单%s，%s/%s", plan.Before.Number, plan.Before.RoomTypeName, plan.Before.RoomNumber)}
-	if plan.Before.RoomID != plan.After.RoomID || plan.Before.RoomTypeID != plan.After.RoomTypeID {
-		parts = append(parts, fmt.Sprintf("调整为%s/%s", plan.After.RoomTypeName, plan.After.RoomNumber))
-		if plan.RoomDescription != "" {
-			parts = append(parts, "房间说明："+plan.RoomDescription)
+	parts := make([]string, 0, 4)
+	if plan.Request.Upgrade {
+		parts = append(parts, "可以为您申请升级至"+plan.After.RoomTypeName)
+	}
+	if plan.Request.ChangeRoom && !plan.Request.Upgrade {
+		room := strings.TrimSpace(plan.After.RoomNumber)
+		if room == "" {
+			room = "可用房间"
 		}
+		parts = append(parts, "可以为您申请调整到"+room+"房")
 	}
-	if !plan.Before.CheckOut.Equal(plan.After.CheckOut) {
-		parts = append(parts, "退房时间调整为"+plan.After.CheckOut.Format("2006-01-02 15:04"))
+	if plan.Request.LateCheckout {
+		parts = append(parts, "可以为您申请延迟退房至"+plan.After.CheckOut.Format("15:04"))
 	}
-	parts = append(parts, "补差价"+sandboxMoney(plan.AddedCents)+"，测试订单应付"+sandboxMoney(plan.After.PayableCents)+"，不会真实扣款")
-	if plan.Commitment != "" {
-		parts = append(parts, "记录补救承诺："+plan.Commitment)
+	if plan.Request.Recovery {
+		parts = append(parts, "可以为您记录50元补偿承诺")
 	}
-	parts = append(parts, "方案10分钟内有效，确认后仅修改测试 PMS 数据。请回复“确认办理”或“取消”。")
-	return strings.Join(parts, "；")
+	if len(parts) == 0 {
+		parts = append(parts, "可以为您办理当前申请")
+	}
+	if plan.AddedCents > 0 {
+		parts = append(parts, "需补差价"+sandboxMoney(plan.AddedCents))
+	} else {
+		parts = append(parts, "原订单价格不变")
+	}
+	parts = append(parts, "请回复“确认办理”后执行")
+	return strings.Join(parts, "，") + "。"
 }
 
 func (s *pmsSandboxService) Pending(ctx context.Context, scope sandbox.Scope) (*sandbox.Operation, error) {

@@ -38,7 +38,9 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			result.Reply = "【测试 PMS】同款枕头商品卡片尚未完成绑定，暂时不能发送可打开的商品卡片。"
 			return result, nil
 		}
-		result.Reply = "【测试 PMS】这是同款枕头商品卡片。"
+		// The demo has one customer-facing answer for the product question.
+		// The actual product card is still sent separately by Commit.
+		result.Reply = "您喜欢的是 Deep Sleep P02，同款售价 199 元。给您发商品资料，您可以先看看。"
 		result.Resource, result.Completed = state.Resource, true
 		return result, nil
 	}
@@ -50,6 +52,14 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		}
 		if state.Grade == nil {
 			result.Reply = "【测试 PMS】当前测试会员未启用或权益已过期，暂不享有有效会员权益。"
+			result.Completed = true
+			return result, nil
+		}
+		if hasTopic(input.Topics, "birthday") &&
+			(hasTopic(input.Topics, "benefits") || hasTopic(input.Topics, "membership") || hasTopic(input.Topics, "member")) &&
+			hasOnlyTopics(input.Topics, "birthday", "benefits", "membership", "member") {
+			// Keep the showcase question as a single, deterministic answer.
+			result.Reply = "您当前是钻石会员，已入住 16 次。生日可享 100 元礼遇，有效期 30 天。"
 			result.Completed = true
 			return result, nil
 		}
@@ -81,6 +91,14 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		topics := input.Topics
 		if len(topics) == 0 {
 			topics = []string{"order"}
+		}
+		if hasTopic(topics, "breakfast") && hasTopic(topics, "child_policy") &&
+			hasOnlyTopics(topics, "breakfast", "child_policy") {
+			// Keep the showcase question as one reply instead of concatenating
+			// separate topic sentences.
+			result.Reply = "您的订单包含 2 份早餐，供应时间为 07:00–10:00。1.2 米以下儿童免费用餐。"
+			result.Completed = true
+			return result, nil
 		}
 		parts := []string{"【测试 PMS】"}
 		for _, topic := range topics {
@@ -163,4 +181,17 @@ func hasTopic(topics []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func hasOnlyTopics(topics []string, allowed ...string) bool {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, topic := range allowed {
+		allowedSet[topic] = struct{}{}
+	}
+	for _, topic := range topics {
+		if _, ok := allowedSet[topic]; !ok {
+			return false
+		}
+	}
+	return true
 }
