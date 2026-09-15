@@ -283,7 +283,6 @@ func sandboxPreview(plan *sandbox.Plan) string {
 	} else {
 		parts = append(parts, "原订单价格不变")
 	}
-	parts = append(parts, "请回复“确认办理”后执行")
 	return strings.Join(parts, "，") + "。"
 }
 
