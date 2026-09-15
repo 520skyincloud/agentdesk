@@ -619,7 +619,7 @@ func semanticGateClarificationTask(task callbacks.IntentTaskTraceData) callbacks
 
 func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbacks.IntentTaskTraceData {
 	task.Intent = canonicalIntentCode(task.Intent)
-	pmsTask := task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent)
+	pmsTask := isPMSRuntimeSubIntent(task.SubIntent)
 	switch task.Intent {
 	case "hotel_info":
 		task.NeedsKnowledge = !pmsTask

@@ -63,13 +63,13 @@ func TestNormalizeModelIntentTracePreservesPMSKnowledgeBoundary(t *testing.T) {
 		Intent: "hotel_info", SubIntent: "member_benefits", Objective: "policy",
 		RelationToPrevious: "follow_up", ResolutionState: "resolved_from_context",
 		Text: "那这个会员的升级条件和保级规则是什么", ResolvedText: "该客户会员等级的升级条件和保级规则是什么",
-		SourceRefs: []string{"U1"}, NeedsTool: true,
+		SourceRefs: []string{"U1"}, NeedsTool: false, NeedsKnowledge: true,
 	}
 	inventory := callbacks.IntentTaskTraceData{
 		Intent: "hotel_info", SubIntent: "room_availability", Objective: "availability",
 		RelationToPrevious: "independent", ResolutionState: "clear",
 		Text: "今天入住明天退房还有哪些房型可售", ResolvedText: "今天入住明天退房还有哪些房型可售",
-		SourceRefs: []string{"U1"}, NeedsTool: true,
+		SourceRefs: []string{"U1"}, NeedsTool: false, NeedsKnowledge: true,
 	}
 	water := callbacks.IntentTaskTraceData{
 		Intent: "hotel_info", SubIntent: "mineral_water", Objective: "price",

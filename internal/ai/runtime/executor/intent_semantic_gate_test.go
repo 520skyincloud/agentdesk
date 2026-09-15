@@ -20,8 +20,8 @@ func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
 					t.Fatalf("member query tool was cleared or rerouted: %#v", got)
 				}
 				task.NeedsTool = false
-				if got := semanticGateRestrictTaskActions(task); got.NeedsTool {
-					t.Fatal("local validation must not create a tool action absent from Intent")
+				if got := semanticGateRestrictTaskActions(task); !got.NeedsTool || got.NeedsKnowledge {
+					t.Fatal("a model-classified PMS query must not fall back to FAQ when its redundant tool flag is missing")
 				}
 			})
 		}
