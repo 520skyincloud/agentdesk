@@ -1209,3 +1209,39 @@ Trace 同时区分业务成功与返回了失败 JSON，不再将失败调用记
 Judge 输入。保留既有 `TestJudgeQuestionDoesNotDriftWithInformationalRoutingLabels` 的断言。
 该文件与两个并行分支均无 incoming 同文件差异；保留既有修复流程。
 本轮真实输入已经达到5次，不追加模型测试；不能以自动测试宣布混合场景已实测通过。
+
+### 2026-09-15 会员接入最终部署记录
+
+- 程序提交：`6633836ee7f480859758171eef26401b3a9f0546`，已推送 origin、weibao。
+- 当前 release：`/opt/agentdesk/releases/20260915-member-query-6633836`。
+- 二进制 SHA256：`150d1a8cbdbb85a97a6ea1ffdece33295d30dd5117dd576ab80bb04b99ad9e9e`。
+- 最后备份：`/opt/backups/agentdesk-20260915-064616-before-6633836`。
+  数据库 gzip、shared配置/环境和旧release均完成SHA校验。
+- 最后补丁的上一 release：`/opt/agentdesk/releases/20260915-member-query-4a0d71e`。
+  整个会员接入任务的原始程序回滚点仍为
+  `/opt/agentdesk/releases/20260914-pms-customer-number-7da0e99`，
+  对应备份 `/opt/backups/agentdesk-20260915-060753-before-a5c9304`。
+- 回滚只切程序，保留当前消息和PMS操作记录，不恢复旧SQL、不改“薇薇”。
+
+最终校验：active/running、8083=200、NRestarts=0，启动后告警/错误日志0；
+消息5795、最大ID18253、会话134在切换前后相同。
+Outbox sent2156、sending7、cancelled2，无pending/failed；历史sending不变。
+PMSOperation共0条，无新增写入；shared配置及runtime环境与切换前备份逐字节相同。
+
+自动验证：
+
+```text
+go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime/executor ./internal/ai/runtime/internal/impl/callbacks ./internal/ai/application/runtime ./internal/ai/runtime ./internal/services -count=1
+go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime -count=1
+```
+
+第一组已在接口/路由修复阶段通过，第二组在最终补丁后通过，gofmt和diff检查通过。
+首轮单题会员问答通过，其余四次隔离输入失败，结果详见设计文档的分版本表；
+不得写成“最终版本真实会话全部通过”。本轮没有企微手机投递、PMS写入或营销测试。
+最终补丁只做自动回归，未追加第6次真实输入，混合会话仍需后续验收。
+
+每次push后已fetch origin并复核：customer-audit仍仅在此前注明的企微instance
+service有同文件差异，需保留其租户隔离逻辑；question_coverage无并行同文件差异，
+ai-billing对本次文件无新增分歧。无需本轮rebase；接口接入、组合查询、
+分类派生工具需求和覆盖字段修复按提交顺序合并，文档提交在后。
+原client_test.go的两个未提交用例及未跟踪agent-desk-linux-amd64保留。
