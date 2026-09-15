@@ -99,14 +99,6 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			result.Completed = true
 			return result, nil
 		}
-		if hasTopic(topics, "breakfast") && hasTopic(topics, "child_policy") &&
-			hasOnlyTopics(topics, "breakfast", "child_policy") {
-			// Keep the showcase question as one reply instead of concatenating
-			// separate topic sentences.
-			result.Reply = "您的订单包含 2 份早餐，供应时间为 07:00–10:00。1.2 米以下儿童免费用餐。"
-			result.Completed = true
-			return result, nil
-		}
 		parts := []string{"【测试 PMS】"}
 		for _, topic := range topics {
 			switch topic {
@@ -166,7 +158,7 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		result.Completed = true
 		return result, nil
 	case "D":
-		result.Reply = "已了解您的服务需求，我先按现有服务信息为您处理；具体安排以实际房态和服务规则为准。"
+		result.Reply = "很抱歉给您带来不便。空调问题我们会尽快安排工作人员处理，请您告知房号，方便我们及时为您处理。"
 		result.Completed = true
 		return result, nil
 	}

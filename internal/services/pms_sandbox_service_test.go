@@ -121,8 +121,8 @@ func (f *sandboxFixture) prepare(change sandbox.ChangeRequest) *sandbox.Operatio
 func TestPMSSandboxSixSceneReadPreviewAndCommit(t *testing.T) {
 	f := newSandboxFixture(t)
 	ctx := context.Background()
-	result, err := f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast", "child_policy"}})
-	if err != nil || !result.Completed || result.Reply != "您的订单包含 2 份早餐，供应时间为 07:00–10:00。1.2 米以下儿童免费用餐。" {
+	result, err := f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"parking"}})
+	if err != nil || !result.Completed || result.Reply != "酒店提供免费停车服务，设有地上地下停车场，推荐您从昭潭路进入。" {
 		t.Fatalf("A incomplete: result=%+v err=%v", result, err)
 	}
 	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "A", Topics: []string{"breakfast", "child_policy", "checkout"}})
