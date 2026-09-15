@@ -7,6 +7,33 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
 
+func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
+	for _, intent := range []string{"hotel_info", "service_request"} {
+		for _, subIntent := range []string{"member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade"} {
+			t.Run(intent+"/"+subIntent, func(t *testing.T) {
+				task := callbacks.IntentTaskTraceData{
+					Intent: intent, SubIntent: subIntent, Text: "查一下我的会员权益",
+					NeedsTool: true, NeedsKnowledge: true,
+				}
+				got := semanticGateRestrictTaskActions(task)
+				if !got.NeedsTool || got.NeedsHumanRoute || got.SubIntent != subIntent {
+					t.Fatalf("member query tool was cleared or rerouted: %#v", got)
+				}
+				task.NeedsTool = false
+				if got := semanticGateRestrictTaskActions(task); got.NeedsTool {
+					t.Fatal("local validation must not create a tool action absent from Intent")
+				}
+			})
+		}
+	}
+	ordinary := semanticGateRestrictTaskActions(callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "breakfast", NeedsTool: true,
+	})
+	if ordinary.NeedsTool {
+		t.Fatal("ordinary knowledge query must not gain member tool access")
+	}
+}
+
 func TestIntentSemanticGateLegacyContractLeavesCurrentBehaviorUntouched(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:    "service_request",

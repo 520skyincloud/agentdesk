@@ -2,7 +2,10 @@ package callbacks
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
+
+	"agent-desk/internal/pkg/toolx"
 )
 
 type RuntimeTraceCollector struct {
@@ -212,6 +215,24 @@ func (c *RuntimeTraceCollector) SetActionLedger(data ActionLedgerTraceData) {
 }
 
 func (c *RuntimeTraceCollector) AddToolItem(item ToolTraceItem) {
+	if strings.TrimSpace(item.ToolCode) == toolx.BuiltinPMSQuery.Code || strings.TrimSpace(item.ToolName) == toolx.BuiltinPMSQuery.Name {
+		// PMS trace keeps operation identity, never customer lookup values or raw responses.
+		arguments := make(map[string]any)
+		if action, ok := item.Arguments["action"].(string); ok {
+			switch action {
+			case "reserve_order_detail", "recept_order_detail", "reserve_order_by_phone", "recept_order_by_phone",
+				"room_status", "inventory", "renew_candidates", "renew", "member_info_by_phone", "member_benefits_by_grade":
+				arguments["action"] = action
+			}
+		}
+		item.Arguments = arguments
+		if item.ResultPreview != "" {
+			item.ResultPreview = "[PMS result omitted]"
+		}
+		if item.ErrorMessage != "" {
+			item.ErrorMessage = "[PMS error omitted]"
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.Data.Tools.Count++

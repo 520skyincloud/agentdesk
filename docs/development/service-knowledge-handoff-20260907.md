@@ -1134,3 +1134,46 @@ go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/services -cou
 本次未新发客户消息、未做 PMS 写操作、未自动营销，未进行 30/50 轮测试。
 本轮无新增并行分支运行文件修改，无需 rebase；文档记录可独立合并。
 回滚只需切回上述上一 release，保留当前数据库和操作记录，不恢复“薇薇”备份。
+
+### 2026-09-15 会员开放查询接入
+
+目标：按新《会员开放查询 API》接通手机号查会员、按等级查权益/升级保级规则，
+并修复真实企微 PMS 工具入口。继续在 `codex/intent-source-repair-20260907`
+独立工作树开发，不修改原客服审计脏工作区或“薇薇”备份。
+
+运行改动限于 PMS 客户端及其查询数据投影、现有 `pms_query` 工具、工具说明、
+Intent 的会员路由提示和工具保留、企微运行时工具允许列表、PMS 工具 Trace 脱敏，
+对应测试及本设计/交接文档。没有模型、Migration、DTO、外部 API、WebSocket、
+企微协议、Outbox、计费、知识库或人工状态机变更；不建设独立会员后台或新 Agent。
+
+两条会员接口不传 `hotelId/tenantId` Query，租户来自配置的认证上下文；只返回
+文档已知字段，保留长 ID、金额精度和空值。等级停用、冻结/挂失仅陈述真实状态。
+库存接口则按既有协议从服务端 `tenant-id` 补齐 `tenantId`，不接受模型跨租户覆盖。
+原始查询手机号、响应和异常不进入 PMS 工具 Trace，保留操作名、状态及耗时。
+
+重要安全边界：原续住 service 的执行后核对、超时/中断恢复尚未完善。因此本次
+放行企微 PMS 查询时，同步在工具 Schema 和执行入口限定只读 action，不创建新的
+续住草案、排房、换房、延退、改价或发券。保持既有续住 service、操作记录及运行配置，
+不以开放查询入口间接启用不完整写操作，也不把权益配置称为已履约。
+
+只读实接口核验已通过：测试 PMS 返回 HTTP 200、业务码 200，手机号查得启用银卡
+会员、`gradeAvailable=true`；第二接口以响应真实 `gradeId` 查到同等级和结构化规则；
+两个响应租户与当前配置一致。`benefits=[]`，当前后台各权益为空，与接口一致。
+不将早期截图中的会员权益填入回答。新接口没有生日日期、历史消费或入住记录。
+实际成功码为 200，会员/等级返回的租户 ID 是十进制字符串；兼容文档示例中的
+code=0 和数字 ID，不经过浮点转换。复核发现的 FAQ 前置门槛仅对
+`NeedsTool=true` 的既有 PMS 实时 Task 解除，混合消息中的独立知识 Task 仍正常检索和裁决。
+
+开始时已 fetch origin。`customer-audit` 对 `wx_work_protocol_instance_service.go`
+有租户隔离改动，本次在该文件仅新增允许列表中的 `builtin/pms_query`，不合并/覆盖
+其他租户功能；整合到审计分支时需保留双方逻辑。`ai-billing` 对本次文件无新增分歧。
+独立 PMS/运行接入提交可 cherry-pick；无需为本轮测试发布 rebase 整个审计分支。
+原未提交 `client_test.go` 两个订单筛选用例与未跟踪二进制保留，不并入本轮提交。
+
+聚焦验证：PMS、tools、Executor、services、callbacks 及 application/runtime。
+客户端、工具、Executor、services 和 Trace 单元测试已分别通过；发布前统一再跑一次。
+实模型只做会员查询、上下文规则追问、库存与知识混合三次隔离输入，不做30/50轮。
+隔离会话 ChannelID=0 只代表服务器真实模型链路，不能冒充企微手机端投递验收。
+发布前备份当前数据库、shared 配置/环境、旧 release 并校验 SHA；程序回滚点为
+`20260914-pms-customer-number-7da0e99`，不回退数据库或覆盖“薇薇”。
+发布身份及实模型结果完成后另行追加。

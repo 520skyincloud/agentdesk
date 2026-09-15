@@ -428,7 +428,7 @@ func knowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []string 
 	ret := make([]string, 0, len(intent.IntentTasks))
 	seen := map[string]bool{}
 	for _, task := range intent.IntentTasks {
-		if task.Intent != "hotel_info" && !task.NeedsKnowledge {
+		if !runtimeIntentTaskUsesKnowledge(task) {
 			continue
 		}
 		query := strings.TrimSpace(task.ResolvedText)
@@ -451,7 +451,7 @@ func knowledgeSourceQueriesFromIntentTasks(intent callbacks.IntentTraceData) []s
 	ret := make([]string, 0, len(intent.IntentTasks))
 	seen := map[string]bool{}
 	for _, task := range intent.IntentTasks {
-		if task.Intent != "hotel_info" && !task.NeedsKnowledge {
+		if !runtimeIntentTaskUsesKnowledge(task) {
 			continue
 		}
 		query := strings.TrimSpace(task.Text)
@@ -469,7 +469,7 @@ func nonKnowledgeQueriesFromIntentTasks(intent callbacks.IntentTraceData) []stri
 	ret := make([]string, 0, len(intent.IntentTasks))
 	seen := map[string]bool{}
 	for _, task := range intent.IntentTasks {
-		if task.NeedsKnowledge || task.Intent == "hotel_info" {
+		if runtimeIntentTaskUsesKnowledge(task) {
 			continue
 		}
 		if !task.NeedsResource && !task.NeedsTool && !task.NeedsHumanRoute && task.Intent != "hotel_variable" && task.Intent != "human_complaint_risk" {
@@ -1020,7 +1020,7 @@ func runtimeKnowledgeIntentTaskForQuery(intent callbacks.IntentTraceData, query 
 	}
 	for index := range intent.IntentTasks {
 		task := &intent.IntentTasks[index]
-		if task.Intent != "hotel_info" && !task.NeedsKnowledge {
+		if !runtimeIntentTaskUsesKnowledge(*task) {
 			continue
 		}
 		for _, candidate := range []string{task.ResolvedText, task.Text, task.SubIntent} {
@@ -2366,7 +2366,17 @@ func matchKnowledgeEvidenceTraceTask(planTask callbacks.ReplyTaskPlanTraceData, 
 	return callbacks.KnowledgeEvidenceJudgeTaskTraceData{}, false
 }
 
+func runtimeIntentTaskUsesKnowledge(task callbacks.IntentTaskTraceData) bool {
+	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
+		return false
+	}
+	return task.NeedsKnowledge || task.Intent == "hotel_info"
+}
+
 func runtimeReplyTaskUsesKnowledge(task callbacks.ReplyTaskPlanTraceData) bool {
+	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
+		return false
+	}
 	output := strings.TrimSpace(task.Output)
 	intent := strings.TrimSpace(task.Intent)
 	if output == "structured_resource_commit" || output == "human_route_confirmation_or_dispatch" || intent == "hotel_variable" {

@@ -622,10 +622,10 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 	pmsTask := task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent)
 	switch task.Intent {
 	case "hotel_info":
-		task.NeedsKnowledge = true
+		task.NeedsKnowledge = !pmsTask
 		task.NeedsTool = pmsTask
 	case "service_request":
-		task.NeedsKnowledge = true
+		task.NeedsKnowledge = !pmsTask
 		task.NeedsTool = pmsTask
 	case "interaction":
 		task.NeedsKnowledge = false
@@ -653,10 +653,22 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 }
 
 func isPMSRuntimeSubIntent(subIntent string) bool {
+	if isMemberRuntimeSubIntent(subIntent) {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(subIntent)) {
 	case "pms", "pms_query", "order_query", "order_detail", "order_status",
 		"room_status", "room_inventory", "inventory", "renew", "renewal",
 		"check_in_status", "check_out_status":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMemberRuntimeSubIntent(subIntent string) bool {
+	switch strings.ToLower(strings.TrimSpace(subIntent)) {
+	case "member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade":
 		return true
 	default:
 		return false
@@ -699,7 +711,7 @@ func semanticGateRecomputeIntent(intent callbacks.IntentTraceData, semantics []r
 		if task.Intent == "hotel_variable" {
 			hasVariable = true
 		}
-		if task.Intent == "hotel_info" || task.NeedsKnowledge {
+		if runtimeIntentTaskUsesKnowledge(*task) {
 			hasKnowledge = true
 		}
 		if task.Intent == "hotel_info" && isCheckinProcessSubIntent(task.SubIntent) {

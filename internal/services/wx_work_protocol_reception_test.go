@@ -1,12 +1,25 @@
 package services
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/toolx"
 )
+
+func TestBuildRuntimeAIAgentAllowsWeatherAndPMSOnly(t *testing.T) {
+	agent := WxWorkProtocolInstanceService.BuildRuntimeAIAgent(&models.WxWorkProtocolInstance{})
+	var codes []string
+	if err := json.Unmarshal([]byte(agent.AllowedGraphTools), &codes); err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) != 2 || codes[0] != toolx.BuiltinWeather.Code || codes[1] != toolx.BuiltinPMSQuery.Code {
+		t.Fatalf("unexpected runtime static tool allowlist: %#v", codes)
+	}
+}
 
 func TestAppendWxWorkReceptionContextUnmanned(t *testing.T) {
 	text := appendWxWorkReceptionContext("基础人设", &models.WxWorkProtocolInstance{

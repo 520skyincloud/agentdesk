@@ -58,6 +58,83 @@ func (r *fakeKnowledgeContextRetriever) RetrieveContextByOptions(ctx context.Con
 	}, nil
 }
 
+func TestPMSOnlyTaskBypassesFAQRequirement(t *testing.T) {
+	for _, subIntent := range []string{"member_info", "member_benefits", "order_query", "room_status", "inventory"} {
+		t.Run(subIntent, func(t *testing.T) {
+			task := semanticGateRestrictTaskActions(callbacks.IntentTaskTraceData{
+				Intent: "hotel_info", SubIntent: subIntent, NeedsKnowledge: true, NeedsTool: true,
+				Text: "查询当前资料", ResolvedText: "查询当前资料", SourceRefs: []string{"U1"},
+			})
+			intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{task}})
+			intent = semanticGateRecomputeIntent(intent, nil)
+			if intent.NeedsKnowledge || intent.IntentTasks[0].NeedsKnowledge || !intent.NeedsTool {
+				t.Fatalf("PMS facts must not require FAQ evidence: %#v", intent)
+			}
+			plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+			if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != "text_reply" || !plan.TaskPlans[0].NeedsTool {
+				t.Fatalf("PMS task must remain a tool-backed text reply: %#v", plan.TaskPlans)
+			}
+			if queries := knowledgeQueriesFromIntentTasks(intent); len(queries) != 0 {
+				t.Fatalf("PMS task became a FAQ query: %#v", queries)
+			}
+			if blocked := ungroundedKnowledgeReplyTaskIDs(plan); len(blocked) != 0 {
+				t.Fatalf("PMS task was blocked before its tool call: %#v", blocked)
+			}
+			retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+			state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+				Request: newKnowledgePolicyRunInput(task.Text, ""),
+				Summary: &RunResult{},
+				Intent:  intent,
+			})
+			if err != nil || !state.SkipGate || retriever.called {
+				t.Fatalf("PMS-only task must bypass missing FAQ configuration: state=%#v err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestMixedMemberAndKnowledgeTasksOnlyRetrieveKnowledgeAndKeepBothReplies(t *testing.T) {
+	tasks := []callbacks.IntentTaskTraceData{
+		{Intent: "hotel_info", SubIntent: "member_benefits", NeedsTool: true, Text: "我有哪些会员权益", ResolvedText: "我有哪些会员权益", SourceRefs: []string{"U1"}},
+		{Intent: "hotel_info", SubIntent: "breakfast", Text: "早餐几点", ResolvedText: "早餐几点", SourceRefs: []string{"U2"}},
+	}
+	for index := range tasks {
+		tasks[index] = semanticGateRestrictTaskActions(tasks[index])
+	}
+	intent := semanticGateRecomputeIntent(deriveModelIntentFromTasks(callbacks.IntentTraceData{IntentTasks: tasks}), nil)
+	intent = retainRuntimeMemberQueryTool(intent)
+	plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+	if !intent.NeedsKnowledge || !intent.NeedsTool || len(plan.TaskPlans) != 2 {
+		t.Fatalf("mixed tasks lost independent execution requirements: %#v %#v", intent, plan)
+	}
+	for _, queries := range [][]string{knowledgeQueriesFromIntentTasks(intent), knowledgeSourceQueriesFromIntentTasks(intent)} {
+		if len(queries) != 1 || queries[0] != "早餐几点" {
+			t.Fatalf("only the static question may reach FAQ: %#v", queries)
+		}
+	}
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+	batch, err := retrieveContextForRuntimeQuestions(context.Background(), retriever,
+		retrievers.DefaultKnowledgeRetrieveOptions(), "我有哪些会员权益？早餐几点？", intent, plan)
+	if err != nil || len(batch.Questions) != 1 || batch.Questions[0].TaskID != "task-2" ||
+		len(retriever.queries) != 1 || retriever.queries[0] != "早餐几点" {
+		t.Fatalf("member task leaked into FAQ retrieval: batch=%#v queries=%#v err=%v", batch, retriever.queries, err)
+	}
+	plan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan, callbacks.KnowledgeEvidenceJudgeTraceData{
+		Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: "task-2", SelectedLayer: "store",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "F1", Aspect: "time", Statement: "早餐七点开始"}},
+		}},
+	}, batch.Questions)
+	plan, isolated := isolateUngroundedKnowledgeReplyTasks(plan)
+	if len(isolated) != 0 || len(plan.TaskPlans) != 2 || countReplyRequiredTasks(plan.TaskPlans) != 2 {
+		t.Fatalf("mixed replies were isolated or dropped: %#v %#v", isolated, plan)
+	}
+	if plan.TaskPlans[0].TaskID != "task-1" || !plan.TaskPlans[0].NeedsTool ||
+		plan.TaskPlans[1].TaskID != "task-2" || plan.TaskPlans[1].SupportedFacts[0].Statement != "早餐七点开始" {
+		t.Fatalf("task order or FAQ facts changed: %#v", plan.TaskPlans)
+	}
+}
+
 func TestKnowledgePolicyRetrievesEachBurstQuestion(t *testing.T) {
 	retriever := &fakeKnowledgeContextRetriever{
 		knowledgeBaseIDs: []int64{1},

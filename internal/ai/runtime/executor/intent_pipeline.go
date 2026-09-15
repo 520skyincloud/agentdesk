@@ -9,7 +9,9 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/utils"
 )
 
@@ -36,6 +38,8 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 		intent = intentDetectUnavailableIntent("IntentDetect model unavailable; entering interaction")
 		promptPack = selectIntentPromptPack(intent)
 	}
+	intent = retainRuntimeMemberQueryTool(intent)
+	promptPack = appendMemberQueryRuntimeInstruction(promptPack, intent)
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
 	replyPlan := buildReplyPlan(intent, promptPack)
@@ -130,6 +134,41 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		prompt.Instructions = append(prompt.Instructions, externalProxyActionGenerationInstruction())
 	}
 	return prompt
+}
+
+func memberQueryRuntimeInstruction() string {
+	return "会员状态、等级、权益和等级规则必须使用只读 pms_query，不用知识库猜客户身份或权益。查询会员信息使用 member_info_by_phone，先取得准确手机号；查询当前客户权益时，随后使用实际返回的 gradeId 调用 member_benefits_by_grade。gradeCode 只是 gradeId 的兼容别名，不得用中文等级名称猜编码。会员冻结/挂失或 gradeAvailable=false 时如实回答，不能承诺权益可用；权益配置不是实际订单报价，也不代表已升房、延退、发券或执行其他办理。"
+}
+
+func hasRuntimeMemberQueryTask(intent callbacks.IntentTraceData) bool {
+	memberTask := intent.NeedsTool && isMemberRuntimeSubIntent(intent.SubIntent)
+	for _, task := range intent.IntentTasks {
+		memberTask = memberTask || (task.NeedsTool && isMemberRuntimeSubIntent(task.SubIntent))
+	}
+	return memberTask
+}
+
+func retainRuntimeMemberQueryTool(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	if hasRuntimeMemberQueryTask(intent) {
+		intent.NeedsTool = true
+		intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinPMSQuery.Code)
+	}
+	return intent
+}
+
+func appendMemberQueryRuntimeInstruction(prompt callbacks.IntentPromptTraceData, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {
+	if hasRuntimeMemberQueryTask(intent) {
+		prompt.Instructions = append(prompt.Instructions, memberQueryRuntimeInstruction())
+	}
+	return prompt
+}
+
+func memberQueryIntentInstruction() string {
+	current := config.CurrentOrNil()
+	if current == nil || !current.PMS.Enabled || strings.TrimSpace(current.PMS.BaseURL) == "" {
+		return ""
+	}
+	return "\n当前已启用 PMS 会员只读查询：查当前客户会员状态/等级归 hotel_info/member_info；查会员权益、升级或保级规则归 hotel_info/member_benefits。对应 Task 与顶层 needsTool=true，使用 pms_query。缺少手机号时保留真实会员查询目标，由回复阶段追问，不猜手机号或等级编码；客户随后补充手机号时继承会员查询主题。静态酒店政策仍查知识库，实际升房/延退办理不能因权益配置而视作已执行。\n"
 }
 
 func isExternalProxyActionClassification(intent string, subIntent string, objective string) bool {
@@ -497,7 +536,7 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 
 func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.ReplyTaskPlanTraceData {
 	output := "text_reply"
-	if task.NeedsKnowledge || task.Intent == "hotel_info" {
+	if runtimeIntentTaskUsesKnowledge(task) {
 		output = "knowledge_text_reply"
 	}
 	if task.NeedsResource || task.Intent == "hotel_variable" || strings.TrimSpace(task.ResourceAction) != "" {
