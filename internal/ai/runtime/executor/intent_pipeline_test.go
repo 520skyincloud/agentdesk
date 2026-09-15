@@ -40,6 +40,65 @@ type recordingRuntimeIntentModelDetector struct {
 	err    error
 }
 
+func TestRuntimeMemberIntentPromptOnlyAdvertisesEnabledPMS(t *testing.T) {
+	previous := config.CurrentOrNil()
+	t.Cleanup(func() { config.SetCurrent(previous) })
+	req := RunInput{UserMessage: models.Message{Content: "帮我查查会员是什么等级，有哪些权益"}}
+	config.SetCurrent(&config.Config{PMS: config.PMSConfig{Enabled: true, BaseURL: "http://pms.test"}})
+	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
+	for _, required := range []string{"hotel_info/member_info", "hotel_info/member_benefits", "needsTool=true", "使用 pms_query", "客户随后补充手机号时继承会员查询主题"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("member tool classification instruction missing: %s", required)
+		}
+	}
+	config.SetCurrent(&config.Config{})
+	disabled := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
+	if strings.Contains(disabled, "当前已启用 PMS 会员只读查询") {
+		t.Fatal("disabled PMS must not be advertised to Intent")
+	}
+}
+
+func TestRuntimeMemberToolSelectionKeepsMixedWeatherAndMemberQuery(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "interaction", SubIntent: "weather_query", NeedsTool: true,
+		ToolCodes: []string{toolx.BuiltinWeather.Code},
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{Intent: "interaction", SubIntent: "weather_query", NeedsTool: true},
+			{Intent: "hotel_info", SubIntent: "member_benefits", NeedsTool: true},
+		},
+	}
+	got := retainRuntimeMemberQueryTool(intent)
+	want := []string{toolx.BuiltinWeather.Code, toolx.BuiltinPMSQuery.Code}
+	if !reflect.DeepEqual(got.ToolCodes, want) || !got.NeedsTool {
+		t.Fatalf("member query must not be lost when weather is already selected: %#v", got)
+	}
+	again := retainRuntimeMemberQueryTool(got)
+	if !reflect.DeepEqual(again.ToolCodes, want) {
+		t.Fatalf("tool binding must be idempotent: %#v", again.ToolCodes)
+	}
+}
+
+func TestRuntimeMemberPromptPreservesConfiguredInstructionsAndScopesGuidance(t *testing.T) {
+	base := callbacks.IntentPromptTraceData{PackName: "configured", Instructions: []string{"保留门店原有配置"}}
+	member := callbacks.IntentTraceData{PrimaryIntent: "hotel_info", NeedsTool: true, IntentTasks: []callbacks.IntentTaskTraceData{{
+		Intent: "hotel_info", SubIntent: "member_benefits", NeedsTool: true,
+	}}}
+	got := appendMemberQueryRuntimeInstruction(base, member)
+	if len(got.Instructions) != 2 || got.Instructions[0] != base.Instructions[0] {
+		t.Fatalf("member guidance must supplement configured prompts: %#v", got)
+	}
+	prompt := strings.Join(got.Instructions, "\n")
+	for _, required := range []string{"member_info_by_phone", "member_benefits_by_grade", "实际返回的 gradeId", "不得用中文等级名称", "冻结/挂失", "gradeAvailable=false", "不是实际订单报价"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("member response boundary missing: %s", required)
+		}
+	}
+	ordinary := appendMemberQueryRuntimeInstruction(base, callbacks.IntentTraceData{PrimaryIntent: "hotel_info", SubIntent: "breakfast"})
+	if !reflect.DeepEqual(ordinary, base) {
+		t.Fatal("ordinary knowledge prompts must not receive member-specific guidance")
+	}
+}
+
 func TestRuntimeIntentPromptDoesNotReintroduceShortenedIndependentQueries(t *testing.T) {
 	prompt := buildRuntimeIntentDetectUserPrompt(RunInput{UserMessage: models.Message{
 		Content: "合柴和艺林有免费停车吗？早餐几点？",

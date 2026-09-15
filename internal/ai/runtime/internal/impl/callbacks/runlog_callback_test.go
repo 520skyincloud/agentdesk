@@ -1,6 +1,55 @@
 package callbacks
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"agent-desk/internal/pkg/toolx"
+)
+
+func TestRuntimeTraceCollectorRedactsPMSLookupData(t *testing.T) {
+	for _, status := range []string{"ok", "error", "blocked"} {
+		t.Run(status, func(t *testing.T) {
+			collector := NewRuntimeTraceCollector()
+			args := map[string]any{"action": "member_info_by_phone", "phone": "13800138000", "gradeId": "private-grade"}
+			collector.AddToolItem(ToolTraceItem{
+				ToolCode: toolx.BuiltinPMSQuery.Code, Arguments: args,
+				Status: status, Blocked: status == "blocked", LatencyMs: 12,
+				ResultPreview: `{"name":"private-name","phone":"13800138000"}`,
+				ErrorMessage:  "GET /?phone=13800138000&token=private-token: failed",
+			})
+			for _, sensitive := range []string{"13800138000", "private-grade", "private-name", "private-token"} {
+				if strings.Contains(collector.Marshal(), sensitive) {
+					t.Fatalf("PMS trace leaked %q", sensitive)
+				}
+			}
+			item := collector.Data.Tools.Items[0]
+			if item.Arguments["action"] != "member_info_by_phone" || item.Status != status || item.LatencyMs != 12 {
+				t.Fatalf("lost non-sensitive diagnostics: %#v", item)
+			}
+			if args["phone"] != "13800138000" {
+				t.Fatal("redaction mutated actual tool arguments")
+			}
+		})
+	}
+}
+
+func TestRuntimeTraceCollectorPMSNameFallbackAndOtherTools(t *testing.T) {
+	collector := NewRuntimeTraceCollector()
+	collector.AddToolItem(ToolTraceItem{
+		ToolName: toolx.BuiltinPMSQuery.Name, Arguments: map[string]any{"action": "13800138000", "phone": "13800138000"},
+	})
+	if strings.Contains(collector.Marshal(), "13800138000") {
+		t.Fatal("name-only PMS trace leaked invalid arguments")
+	}
+	collector.AddToolItem(ToolTraceItem{
+		ToolCode: "builtin/get_weather", Arguments: map[string]any{"city": "Hefei"}, ResultPreview: "rain",
+	})
+	item := collector.Data.Tools.Items[1]
+	if item.Arguments["city"] != "Hefei" || item.ResultPreview != "rain" {
+		t.Fatal("PMS privacy rule changed unrelated tool traces")
+	}
+}
 
 func TestRuntimeTraceCollectorDeepCopiesEvidenceAndReplyPlanFacts(t *testing.T) {
 	collector := NewRuntimeTraceCollector()

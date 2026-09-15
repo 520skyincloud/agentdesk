@@ -92,10 +92,15 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 		endpoint = roomStatusPath
 	case "inventory":
 		endpoint = inventoryPath
+	case "member_info_by_phone":
+		endpoint = memberInfoByPhonePath
+	case "member_benefits_by_grade":
+		endpoint = memberBenefitsByGradePath
 	default:
-		return QueryResult{}, fmt.Errorf("PMS 接口文档尚未提供查询类型: %s", action)
+		return QueryResult{}, fmt.Errorf("PMS 接口文档尚未提供该查询类型")
 	}
 
+	memberQuery := isMemberQuery(action)
 	normalizedArgs := normalizeQueryArgs(action, args)
 	query := url.Values{}
 	for key, value := range allowedQueryArgs(action, normalizedArgs) {
@@ -105,8 +110,16 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 			query.Set(key, value)
 		}
 	}
-	if c.hotelID != "" && query.Get("hotelId") == "" {
+	if !memberQuery && c.hotelID != "" && query.Get("hotelId") == "" {
 		query.Set("hotelId", c.hotelID)
+	}
+	if action == "inventory" {
+		if err := c.bindInventoryTenant(query); err != nil {
+			return QueryResult{}, err
+		}
+	}
+	if err := validateMemberQuery(action, query); err != nil {
+		return QueryResult{}, err
 	}
 	if err := validateCurrentOrderLookup(action, query); err != nil {
 		return QueryResult{}, err
@@ -117,27 +130,19 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, fmt.Errorf("PMS 查询地址配置无效")
 	}
-	for key, value := range c.headers {
-		request.Header.Set(key, value)
-	}
-	if c.apiKey != "" {
-		request.Header.Set("X-API-Key", c.apiKey)
-	}
-	if c.authorization != "" {
-		request.Header.Set("Authorization", c.authorization)
-	}
+	c.applyHeaders(request)
 	request.Header.Set("Accept", "application/json")
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return QueryResult{}, fmt.Errorf("PMS 查询失败: %w", err)
+		return QueryResult{}, fmt.Errorf("PMS 查询请求失败，请稍后重试")
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {
-		return QueryResult{}, err
+		return QueryResult{}, fmt.Errorf("PMS 查询响应读取失败，请稍后重试")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return QueryResult{}, fmt.Errorf("PMS 查询失败，HTTP %d", response.StatusCode)
@@ -146,22 +151,37 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.UseNumber()
 	if err := decoder.Decode(&payload); err != nil {
-		return QueryResult{}, fmt.Errorf("PMS 返回格式无法解析: %w", err)
+		return QueryResult{}, fmt.Errorf("PMS 返回格式无法解析")
+	}
+	if memberQuery {
+		if err := validateMemberResponseEnvelope(payload); err != nil {
+			return QueryResult{}, err
+		}
 	}
 	if code := firstString(payload, "code", "status"); !isSuccessfulCode(code) || !isSuccessfulResponse(payload) {
-		message := firstString(payload, "msg", "message", "error")
-		if message == "" {
-			message = "PMS 返回失败"
+		if memberQuery {
+			return QueryResult{}, memberQueryBusinessError(code)
 		}
-		return QueryResult{}, fmt.Errorf("%s", message)
+		return QueryResult{}, safeQueryBusinessError(payload)
 	}
 	var data any = payload
 	if nested, ok := payload["data"]; ok {
 		data = nested
 	}
+	if memberQuery {
+		if _, ok := payload["data"]; !ok {
+			return QueryResult{}, fmt.Errorf("会员查询返回缺少数据字段")
+		}
+		data, err = sanitizeMemberQueryData(action, data)
+		if err != nil {
+			return QueryResult{}, err
+		}
+	} else {
+		data = sanitizeValue(data)
+	}
 	return QueryResult{
 		Action: action,
-		Data:   sanitizeValue(data),
+		Data:   data,
 		Source: "hpms",
 		AsOf:   time.Now().Format(time.RFC3339),
 	}, nil
@@ -283,13 +303,15 @@ func (c *Client) applyHeaders(request *http.Request) {
 
 func allowedQueryArgs(action string, args map[string]string) map[string]string {
 	allowed := map[string]map[string]struct{}{
-		"reserve_order_detail":   {"reserveOrderId": {}, "hotelId": {}, "tenantId": {}},
-		"reserve_order_by_phone": {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
-		"recept_order_detail":    {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
-		"recept_order_by_phone":  {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
-		"renew_candidates":       {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}, "tenantId": {}},
-		"room_status":            {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "tenantId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
-		"inventory":              {"beginTime": {}, "endTime": {}, "metrics": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}, "tenantId": {}},
+		"reserve_order_detail":     {"reserveOrderId": {}, "hotelId": {}, "tenantId": {}},
+		"reserve_order_by_phone":   {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
+		"recept_order_detail":      {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
+		"recept_order_by_phone":    {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
+		"renew_candidates":         {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}, "tenantId": {}},
+		"room_status":              {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "tenantId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
+		"inventory":                {"beginTime": {}, "endTime": {}, "metrics": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}, "tenantId": {}},
+		"member_info_by_phone":     {"phone": {}},
+		"member_benefits_by_grade": {"gradeId": {}, "gradeCode": {}},
 	}
 	set := allowed[action]
 	ret := make(map[string]string, len(set))
@@ -299,6 +321,23 @@ func allowedQueryArgs(action string, args map[string]string) map[string]string {
 		}
 	}
 	return ret
+}
+
+func (c *Client) bindInventoryTenant(query url.Values) error {
+	tenantID := ""
+	for key, value := range c.headers {
+		if strings.EqualFold(strings.TrimSpace(key), "tenant-id") {
+			tenantID = strings.TrimSpace(value)
+			break
+		}
+	}
+	if requested := query.Get("tenantId"); requested != "" && requested != tenantID {
+		return fmt.Errorf("PMS 库存查询不能覆盖服务端租户")
+	}
+	if tenantID != "" {
+		query.Set("tenantId", tenantID)
+	}
+	return nil
 }
 
 func normalizeQueryArgs(action string, args map[string]string) map[string]string {
@@ -367,6 +406,25 @@ func isSuccessfulResponse(payload map[string]any) bool {
 	}
 	success, ok := value.(bool)
 	return ok && success
+}
+
+func safeQueryBusinessError(payload map[string]any) error {
+	message := firstString(payload, "msg", "message", "error")
+	for _, known := range []string{
+		"检测到多条匹配订单", "接待单不存在", "预订单不存在",
+		"酒店ID不能为空", "租户ID不能为空", "租户id不能为空",
+		"手机号码和会员编号/协议公司编号必须要有一个",
+	} {
+		if strings.Contains(message, known) {
+			return fmt.Errorf("%s", known)
+		}
+	}
+	switch firstString(payload, "code", "status") {
+	case "401", "403":
+		return fmt.Errorf("PMS 查询认证或权限不足")
+	default:
+		return fmt.Errorf("PMS 查询暂时不可用，请稍后重试")
+	}
 }
 
 func sanitizeValue(value any) any {

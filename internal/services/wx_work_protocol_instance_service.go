@@ -80,7 +80,7 @@ func (s *wxWorkProtocolInstanceService) BuildRuntimeAIAgent(instance *models.WxW
 		HandoffMode:         enums.AIAgentHandoffModeWaitPool,
 		FallbackMode:        enums.AIAgentFallbackModeNoAnswer,
 		KnowledgeIDs:        knowledgeIDs,
-		AllowedGraphTools:   `["builtin/get_weather"]`,
+		AllowedGraphTools:   `["builtin/get_weather","builtin/pms_query"]`,
 	}
 }
 
