@@ -26,11 +26,13 @@ type runtimeQuestionCoverageSource struct {
 type runtimeQuestionCoverageTask struct {
 	TaskID         string   `json:"taskId"`
 	Intent         string   `json:"intent"`
+	SubIntent      string   `json:"subIntent,omitempty"`
 	Text           string   `json:"text"`
 	ResolvedText   string   `json:"resolvedText"`
 	SourceRefs     []string `json:"sourceRefs"`
 	OutputKind     string   `json:"outputKind"`
 	NeedsKnowledge bool     `json:"needsKnowledge"`
+	NeedsTool      bool     `json:"needsTool"`
 }
 
 type runtimeQuestionCoverage struct {
@@ -77,10 +79,15 @@ func buildRuntimeQuestionCoverageInput(req RunInput, plan callbacks.ReplyPlanTra
 		input.Sources = append(input.Sources, runtimeQuestionCoverageSource{Ref: source.Ref, Text: source.Text})
 	}
 	for _, task := range plan.TaskPlans {
+		subIntent := ""
+		if task.NeedsTool {
+			subIntent = task.SubIntent
+		}
 		input.Tasks = append(input.Tasks, runtimeQuestionCoverageTask{
-			TaskID: task.TaskID, Intent: task.Intent,
+			TaskID: task.TaskID, Intent: task.Intent, SubIntent: subIntent,
 			Text: firstNonEmptyReplyTaskText(task.OriginalText, task.Text), ResolvedText: task.ResolvedText,
 			SourceRefs: task.SourceRefs, OutputKind: task.OutputKind, NeedsKnowledge: runtimeReplyTaskUsesKnowledge(task),
+			NeedsTool: task.NeedsTool,
 		})
 	}
 	return input
@@ -171,6 +178,7 @@ func validateRuntimeQuestionCoverage(coverage *runtimeQuestionCoverage, input *r
 func runtimeQuestionCoverageInstruction() string {
 	return `【先核对客户问题覆盖，再裁决证据】
 输入含 coverageInput 时，必须先独立阅读 sources 的完整本轮原话，结合 tasks.resolvedText 理解已补全的回指对象，对照全部任务（包括资源、互动、转接），不要把已有 Task 数当成客户问题数。
+coverageInput.tasks 是本轮全部客户任务；根对象 tasks 只是本次需要知识证据裁决的任务子集，二者数量可以不同。needsTool=true 的任务将在后续 Generate 阶段查询 PMS 等工具，subIntent 标明查询类型；它们没有 FAQ 候选、未出现在本次知识裁决 tasks 中或工具尚未执行，都不属于漏题或路由错误。仍按客户原话核对工具任务的目标和来源，不因工具存在放行真正的遗漏、错误合题或对象替换；不要为工具任务补造知识裁决。
 先逐一找出客户所求的独立结果，再核对 Task 归属，不受现有分类和候选答案影响。不论 objective 是 method、availability 还是 compound_information，多个独立对象或办理结果塞进一个 Task 都是 merged_questions。方法和设施存在性即使属于同一话题也不是一个结果，例如“发票在哪申请，有打印机吗”应有两个 Task；部分物品没召回不是合题合理的理由。
 回指后的多个对象共问位置、方法或费用时也按对象核对；即使当前 sources 只有一句“这些在哪里拿”，resolvedText 已列出多个独立对象却仍共用一条检索任务，也属于 merged_questions。issue.text 仍引用当前 sources 的回指原话，不编造历史来源；不要因候选只覆盖其中几个对象，就把其余对象从本轮目标中删除。
 同一对象紧密相关的数量和费用可以是一个任务；比较、交集、条件筛选是一个整体目标，不得拆坏。背景、礼貌、否定排除的对象不是新增待答问题。明确回指允许结合已经提供的上下文，不能重做历史已答题。

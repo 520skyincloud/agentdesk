@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -29,6 +30,149 @@ func coverageTestIntent(texts ...string) callbacks.IntentTraceData {
 		})
 	}
 	return intent
+}
+
+func coverageMixedPMSTestIntent() callbacks.IntentTraceData {
+	intent := coverageTestIntent("我的会员权益有哪些", "今天入住明天退房还有哪些房型可售", "房间矿泉水收费吗")
+	intent.NeedsTool = true
+	for index, subIntent := range []string{"member_benefits", "room_inventory"} {
+		intent.IntentTasks[index].SubIntent = subIntent
+		intent.IntentTasks[index].NeedsTool = true
+		intent.IntentTasks[index].NeedsKnowledge = false
+	}
+	intent.IntentTasks[2].SubIntent = "mineral_water"
+	intent.IntentTasks[2].Objective = "price"
+	return intent
+}
+
+func TestQuestionCoverageSerializesToolTasksSeparatelyFromKnowledgeSubset(t *testing.T) {
+	intent := coverageMixedPMSTestIntent()
+	plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+	req := RunInput{UserMessage: models.Message{Content: "我的会员权益有哪些？今天入住明天退房还有哪些房型可售？房间矿泉水收费吗？"}}
+	input := buildRuntimeQuestionCoverageInput(req, plan)
+	hit := rag.RetrieveResult{KnowledgeBaseID: 1, Content: "问题：房间矿泉水收费吗\n答案：房间矿泉水免费。", Score: .95}
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}, result: &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{hit}}}
+	batch, err := retrieveContextForRuntimeQuestions(context.Background(), retriever,
+		retrievers.DefaultKnowledgeRetrieveOptions(), req.UserMessage.Content, intent, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(retriever.queries, []string{"房间矿泉水收费吗"}) {
+		t.Fatalf("tool tasks must not require FAQ retrieval: %#v", retriever.queries)
+	}
+	tasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, req.UserMessage.Content, intent)
+	tasks = appendRuntimeCoverageOnlyJudgeTasks(tasks, plan, nil)
+	if len(tasks) != 1 || tasks[0].TaskID != plan.TaskPlans[2].TaskID {
+		t.Fatalf("only the water task belongs to knowledge judgment: %#v", tasks)
+	}
+	tasks[0].Coverage = input
+	raw, err := json.Marshal(buildKnowledgeEvidenceJudgePrompt(tasks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Coverage struct {
+			Sources []runtimeQuestionCoverageSource `json:"sources"`
+			Tasks   []map[string]any                `json:"tasks"`
+		} `json:"coverageInput"`
+		Tasks []knowledgeEvidenceJudgePromptTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Coverage.Tasks) != 3 || len(wire.Tasks) != 1 || wire.Tasks[0].TaskID != plan.TaskPlans[2].TaskID {
+		t.Fatalf("serialized task universes were conflated: %s", raw)
+	}
+	if !reflect.DeepEqual(wire.Coverage.Sources, input.Sources) {
+		t.Fatal("coverage serialization changed customer sources")
+	}
+	for index, task := range wire.Coverage.Tasks {
+		expected := plan.TaskPlans[index]
+		if expected.NeedsTool {
+			if task["subIntent"] != expected.SubIntent {
+				t.Fatalf("tool task %d lost its query classification: %#v", index, task)
+			}
+		} else if _, exists := task["subIntent"]; exists {
+			t.Fatalf("knowledge task must not regain irrelevant routing labels: %#v", task)
+		}
+		if task["taskId"] != expected.TaskID ||
+			task["needsTool"] != expected.NeedsTool || task["needsKnowledge"] != runtimeReplyTaskUsesKnowledge(expected) ||
+			task["text"] != expected.OriginalText || task["resolvedText"] != expected.ResolvedText ||
+			!reflect.DeepEqual(task["sourceRefs"], []any{"U1"}) {
+			t.Fatalf("task %d lost routing, source, or order: %#v", index, task)
+		}
+	}
+	if len(ungroundedKnowledgeReplyTaskIDs(callbacks.ReplyPlanTraceData{TaskPlans: plan.TaskPlans[:2]})) != 0 {
+		t.Fatal("tool-only tasks must not be rejected for missing knowledge evidence")
+	}
+}
+
+func TestQuestionCoverageMissingKnowledgeBesideToolsStillRepairsOrFails(t *testing.T) {
+	for _, repairedStatus := range []string{"complete", "repair_required"} {
+		t.Run(repairedStatus, func(t *testing.T) {
+			fullIntent := coverageMixedPMSTestIntent()
+			oldIntent := fullIntent
+			oldIntent.IntentTasks = append([]callbacks.IntentTaskTraceData(nil), fullIntent.IntentTasks[:2]...)
+			oldIntent.NeedsKnowledge = false
+			oldPlan := buildReplyPlan(oldIntent, selectIntentPromptPack(oldIntent))
+			req := RunInput{UserMessage: models.Message{Content: "我的会员权益有哪些？今天入住明天退房还有哪些房型可售？房间矿泉水收费吗？"}}
+			input := buildRuntimeQuestionCoverageInput(req, oldPlan)
+			issue := runtimeQuestionCoverageIssue{
+				Kind: "missing_question", SourceRef: "U1", Text: "房间矿泉水收费吗", Reason: "矿泉水费用问题没有对应任务",
+			}
+			outcome := knowledgeEvidenceJudgeOutcome{Applied: true, Coverage: &runtimeQuestionCoverage{
+				Status: "repair_required", Issues: []runtimeQuestionCoverageIssue{issue},
+			}}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(oldPlan)
+			collector.Data.Pipeline.Intent = oldIntent
+			state := &answerabilityGateState{Input: answerabilityGateInput{Request: req, Intent: oldIntent, Collector: collector}}
+			hit := rag.RetrieveResult{KnowledgeBaseID: 1, Content: "问题：房间矿泉水收费吗\n答案：房间矿泉水免费。", Score: .95}
+			retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}, result: &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{hit}}}
+			intentCalls, judgeCalls := 0, 0
+			gate := &KnowledgeAnswerabilityGate{
+				repairIntent: func(_ context.Context, _ RunInput, _ callbacks.IntentTraceData, got *runtimeQuestionCoverageInput, issues []runtimeQuestionCoverageIssue) (callbacks.IntentTraceData, error) {
+					intentCalls++
+					if !reflect.DeepEqual(got, input) || !reflect.DeepEqual(issues, []runtimeQuestionCoverageIssue{issue}) {
+						t.Fatal("the real missing question was suppressed because sibling tasks use tools")
+					}
+					return fullIntent, nil
+				},
+				judge: coverageTestJudge(func(_ context.Context, _ RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+					judgeCalls++
+					if len(tasks) != 1 || tasks[0].Query != "房间矿泉水收费吗" || len(tasks[0].Coverage.Tasks) != 3 {
+						t.Fatalf("repair must judge only new water evidence with all tasks visible: %#v", tasks)
+					}
+					coverage := &runtimeQuestionCoverage{Status: repairedStatus}
+					if repairedStatus == "repair_required" {
+						coverage.Issues = []runtimeQuestionCoverageIssue{issue}
+					}
+					return knowledgeEvidenceJudgeOutcome{Applied: true, Coverage: coverage}
+				}),
+			}
+			_, _, _, err := gate.repairQuestionCoverageOnce(context.Background(), state, retriever,
+				retrievers.DefaultKnowledgeRetrieveOptions(), &runtimeKnowledgeRetrieveBatch{},
+				[]knowledgeEvidenceJudgeTask{{TaskID: oldPlan.TaskPlans[0].TaskID, Coverage: input}}, outcome, []int64{1}, []int64{1})
+			if intentCalls != 1 || judgeCalls != 1 || !reflect.DeepEqual(retriever.queries, []string{"房间矿泉水收费吗"}) {
+				t.Fatalf("missing-question repair must remain bounded: intent=%d judge=%d queries=%v", intentCalls, judgeCalls, retriever.queries)
+			}
+			if repairedStatus == "repair_required" {
+				if err == nil || !strings.Contains(err.Error(), "remains incomplete after one repair") {
+					t.Fatalf("unrepaired omission was accepted: %v", err)
+				}
+				if !reflect.DeepEqual(collector.Data.Pipeline.ReplyPlan, oldPlan) {
+					t.Fatal("failed repair must not publish a partial replacement plan")
+				}
+				return
+			}
+			if err != nil || len(collector.Data.Pipeline.ReplyPlan.TaskPlans) != 3 {
+				t.Fatalf("the missing water question was not restored: %v", err)
+			}
+			if !reflect.DeepEqual(collector.Data.Pipeline.ReplyPlan.TaskPlans[:2], oldPlan.TaskPlans) {
+				t.Fatal("repair changed the already represented tool tasks")
+			}
+		})
+	}
 }
 
 func TestQuestionCoverageValidatesOnlyProtocolAndSource(t *testing.T) {
