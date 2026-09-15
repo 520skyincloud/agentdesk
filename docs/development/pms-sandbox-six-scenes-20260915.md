@@ -125,3 +125,12 @@ cd web && pnpm exec eslint \
 已 fetch origin；customer-audit 与 ai-billing 没有上述文件的并行新增修改，无需先 rebase，本次独立文案提交可单独合并或回退。
 验证命令：`go test -p=1 ./internal/services ./internal/ai/runtime/executor -count=1`。
 回退仅切回发布前 test-2 release，保留消息、卡片资源与审计，不恢复旧数据库。
+
+发布结果：
+
+- 程序提交 `ba6e7c4`，已推送 origin、weibao；上述服务与 Executor 测试均通过。
+- test-2 当前 release：`/opt/agentdesk/releases/20260915-pms-demo-copy-ba6e7c4`。
+- 回滚 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-9455e36`，未改动。
+- Linux amd64 二进制 SHA-256：`92bd27e7a6781950ad067f8558173c92f78eafe00c4d07d5ce4bfa8f9da98fae`，上传、安装和运行文件一致。
+- 服务 active/running，8083 HTTP 200，后台鉴权接口返回预期未登录 JSON；重启次数0，启动日志未发现 panic。
+- 本轮未额外发送真实客户消息；固定文本和卡片引用保留已通过自动测试，不将其描述为收件端实测。
