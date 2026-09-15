@@ -123,6 +123,16 @@ func DefaultHotelIntentJSONSchema() string {
       "needsTool": false,
       "needsHumanRoute": false,
       "resourceAction": "",
+      "sandboxScene": "",
+      "sandboxParams": {
+        "phone": "",
+        "topics": [],
+        "actions": [],
+        "roomTypeName": "",
+        "roomNumber": "",
+        "checkoutAt": "",
+        "remedyCode": ""
+      },
       "reason": "一句话说明"
     }
   ],
@@ -141,7 +151,7 @@ func DefaultHotelIntentJSONSchema() string {
   "reason": "一句话说明整体判断"
 }
 不要输出 mixedSubTasks；不要把任务藏在 reason 里。
-intentTasks 中每个对象字段固定为 intent、subIntent、objective、relationToPrevious、resolutionState、entities、text、resolvedText、sourceRefs、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction、reason，字段必须全部出现；sourceRefs 只能是字符串数组，entities 只能是由 text、type 构成的对象数组，不得输出未声明字段。
+intentTasks 中每个对象字段固定为 intent、subIntent、objective、relationToPrevious、resolutionState、entities、text、resolvedText、sourceRefs、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction、sandboxScene、sandboxParams、reason，字段必须全部出现；sandboxScene 仅在测试 PMS 六场景适用时填写 A-F，否则留空；sandboxParams 只能包含 phone、topics、actions、roomTypeName、roomNumber、checkoutAt、remedyCode；sourceRefs 只能是字符串数组，entities 只能是由 text、type 构成的对象数组，不得输出其他未声明字段。
 不要 Markdown，不要解释，不要输出 JSON 外文本。`)
 }
 

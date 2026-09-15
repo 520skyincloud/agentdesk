@@ -56,7 +56,7 @@ func NewClient(cfg config.PMSConfig) *Client {
 		}
 	}
 	return &Client{
-		enabled:       cfg.Enabled,
+		enabled:       cfg.Enabled && config.PMSProvider(cfg) == "hpms",
 		baseURL:       strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		apiKey:        strings.TrimSpace(cfg.APIKey),
 		authorization: strings.TrimSpace(cfg.Authorization),

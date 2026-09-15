@@ -199,14 +199,17 @@ type MCPServerConfig struct {
 // PMSConfig configures the HPMS integration. Write operations remain disabled
 // by default and are only available in an explicitly enabled test environment.
 type PMSConfig struct {
-	Enabled       bool              `yaml:"enabled"`
-	BaseURL       string            `yaml:"baseUrl"`
-	APIKey        string            `yaml:"apiKey"`
-	Authorization string            `yaml:"authorization"`
-	HotelID       string            `yaml:"hotelId"`
-	TimeoutMS     int               `yaml:"timeoutMs"`
-	AllowWrite    bool              `yaml:"allowWrite"`
-	Headers       map[string]string `yaml:"headers"`
+	Enabled        bool              `yaml:"enabled"`
+	Provider       string            `yaml:"provider"`
+	Environment    string            `yaml:"environment"`
+	SandboxEnabled bool              `yaml:"sandboxEnabled"`
+	BaseURL        string            `yaml:"baseUrl"`
+	APIKey         string            `yaml:"apiKey"`
+	Authorization  string            `yaml:"authorization"`
+	HotelID        string            `yaml:"hotelId"`
+	TimeoutMS      int               `yaml:"timeoutMs"`
+	AllowWrite     bool              `yaml:"allowWrite"`
+	Headers        map[string]string `yaml:"headers"`
 }
 
 type OIDCConfig struct {
@@ -283,6 +286,15 @@ func applyPMSEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_ENABLED")); value != "" {
 		cfg.PMS.Enabled = strings.EqualFold(value, "true") || value == "1"
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_PROVIDER")); value != "" {
+		cfg.PMS.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_ENVIRONMENT")); value != "" {
+		cfg.PMS.Environment = value
+	}
+	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_SANDBOX_ENABLED")); value != "" {
+		cfg.PMS.SandboxEnabled = strings.EqualFold(value, "true") || value == "1"
 	}
 	if value := strings.TrimSpace(os.Getenv("AGENT_DESK_PMS_BASE_URL")); value != "" {
 		cfg.PMS.BaseURL = value

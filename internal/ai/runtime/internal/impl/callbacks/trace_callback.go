@@ -151,11 +151,13 @@ type CurrentTurnSourceTraceData struct {
 }
 
 type RuntimeTraceData struct {
-	Version   string         `json:"version"`
-	Status    string         `json:"status"`
-	RunID     string         `json:"runId,omitempty"`
-	Skill     SkillTraceData `json:"skill,omitempty"`
-	Interrupt struct {
+	Version             string                     `json:"version"`
+	Status              string                     `json:"status"`
+	RunID               string                     `json:"runId,omitempty"`
+	Skill               SkillTraceData             `json:"skill,omitempty"`
+	SandboxResources    []SandboxResourceTraceData `json:"sandboxResources,omitempty"`
+	SandboxOperationIDs []int64                    `json:"sandboxOperationIds,omitempty"`
+	Interrupt           struct {
 		CheckPointID string                  `json:"checkPointId,omitempty"`
 		Items        []InterruptTraceContext `json:"items,omitempty"`
 	} `json:"interrupt"`
@@ -292,6 +294,28 @@ type IntentTaskTraceData struct {
 	NeedsHumanRoute    bool                    `json:"needsHumanRoute,omitempty"`
 	ResourceAction     string                  `json:"resourceAction,omitempty"`
 	Reason             string                  `json:"reason,omitempty"`
+	SandboxScene       string                  `json:"sandboxScene,omitempty"`
+	SandboxParams      *SandboxTaskParams      `json:"sandboxParams,omitempty"`
+}
+
+// SandboxTaskParams contains customer-selected values only. Provider, store,
+// dataset, order ownership and all prices are resolved by the server.
+type SandboxTaskParams struct {
+	Phone        string   `json:"phone,omitempty"`
+	OrderNumber  string   `json:"orderNumber,omitempty"`
+	Topics       []string `json:"topics,omitempty"`
+	Actions      []string `json:"actions,omitempty"`
+	RoomTypeName string   `json:"roomTypeName,omitempty"`
+	RoomNumber   string   `json:"roomNumber,omitempty"`
+	CheckoutAt   string   `json:"checkoutAt,omitempty"`
+	RemedyCode   string   `json:"remedyCode,omitempty"`
+}
+
+type SandboxResourceTraceData struct {
+	TaskID     string `json:"taskId"`
+	StoreID    int64  `json:"storeId"`
+	DatasetID  int64  `json:"datasetId"`
+	ResourceID int64  `json:"resourceId"`
 }
 
 type IntentEntityTraceData struct {
@@ -390,6 +414,9 @@ type ReplyTaskPlanTraceData struct {
 	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                         `json:"missingAspects,omitempty"`
 	AnswerText           *string                          `json:"answerText,omitempty"`
+	SandboxScene         string                           `json:"sandboxScene,omitempty"`
+	SandboxParams        *SandboxTaskParams               `json:"sandboxParams,omitempty"`
+	FixedReply           bool                             `json:"fixedReply,omitempty"`
 }
 
 func (d ReplyPlanTraceData) HasMultipleTasks() bool {

@@ -602,3 +602,27 @@ type fakeErr string
 func (e fakeErr) Error() string {
 	return string(e)
 }
+
+func TestSandboxOperationTraceIDsDeduplicatedAndPositive(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: []byte(`{"sandboxOperationIds":[3,0,3,-1,8]}`)}
+	got := sandboxOperationIDsFromTrace(trace)
+	if strings.Join(int64Strings(got), ",") != "3,8" {
+		t.Fatalf("unexpected sandbox operation ids: %#v", got)
+	}
+}
+
+func TestSandboxResourceTraceRejectsUnscopedReferences(t *testing.T) {
+	trace := &aiReplyTraceData{Runtime: []byte(`{"sandboxResources":[{"taskId":"T1","storeId":1,"datasetId":2,"resourceId":3},{"taskId":"T1","storeId":1,"datasetId":2,"resourceId":3},{"taskId":"T2","storeId":0,"datasetId":2,"resourceId":4},{"taskId":"T3","storeId":1,"datasetId":2,"resourceId":0}]}`)}
+	got := sandboxResourcesFromTrace(trace)
+	if len(got) != 1 || got[0].TaskID != "T1" || got[0].ResourceID != 3 {
+		t.Fatalf("unexpected sandbox resource refs: %#v", got)
+	}
+}
+
+func int64Strings(values []int64) []string {
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		ret = append(ret, fmt.Sprint(value))
+	}
+	return ret
+}

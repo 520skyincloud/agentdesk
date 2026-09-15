@@ -17,7 +17,7 @@ func TestDefaultHotelIntentSchemaDescribesQuestionsBeforeClassification(t *testi
 	if err := json.Unmarshal(example["intentTasks"], &tasks); err != nil || len(tasks) != 1 {
 		t.Fatalf("invalid task example: %v", err)
 	}
-	if len(example) != 14 || len(tasks[0]) != 15 {
+	if len(example) != 14 || len(tasks[0]) != 17 {
 		t.Fatalf("reordering must not add or remove contract fields: %d/%d", len(example), len(tasks[0]))
 	}
 	if strings.Index(schema, `"intentTasks"`) > strings.Index(schema, `"primaryIntent"`) ||
@@ -114,7 +114,7 @@ func TestDefaultHotelIntentSchemaFixesSemanticTaskFields(t *testing.T) {
 		`"resolutionState": "clear|resolved_from_context|ambiguous|unresolved"`,
 		`"entities": [`,
 		`"type": "facility|supply|room_type|room|service|location|order|resource|person|company|other"`,
-		"字段固定为 intent、subIntent、objective、relationToPrevious、resolutionState、entities、text、resolvedText、sourceRefs、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction、reason",
+		"字段固定为 intent、subIntent、objective、relationToPrevious、resolutionState、entities、text、resolvedText、sourceRefs、needsKnowledge、needsResource、needsTool、needsHumanRoute、resourceAction、sandboxScene、sandboxParams、reason",
 		"entities 只能是由 text、type 构成的对象数组",
 	} {
 		if !strings.Contains(schema, expected) {

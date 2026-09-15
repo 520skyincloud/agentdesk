@@ -14,6 +14,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/replyruntime"
 	"agent-desk/internal/pkg/utils"
@@ -2367,6 +2368,9 @@ func matchKnowledgeEvidenceTraceTask(planTask callbacks.ReplyTaskPlanTraceData, 
 }
 
 func runtimeIntentTaskUsesKnowledge(task callbacks.IntentTaskTraceData) bool {
+	if config.PMSSandboxEnabled() && isSandboxScene(task.SandboxScene) {
+		return false
+	}
 	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
 		return false
 	}
@@ -2374,6 +2378,9 @@ func runtimeIntentTaskUsesKnowledge(task callbacks.IntentTaskTraceData) bool {
 }
 
 func runtimeReplyTaskUsesKnowledge(task callbacks.ReplyTaskPlanTraceData) bool {
+	if config.PMSSandboxEnabled() && isSandboxScene(task.SandboxScene) {
+		return false
+	}
 	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
 		return false
 	}
@@ -2721,7 +2728,8 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		Reason:        "no retrieved candidates required evidence judging",
 	}
 	checkCoverage := gate.coverageEnabled && intent.SemanticContractExpected &&
-		state.Input.Collector != nil && !strings.HasPrefix(req.UserMessage.RequestID, "manual_resume_")
+		state.Input.Collector != nil && !strings.HasPrefix(req.UserMessage.RequestID, "manual_resume_") &&
+		!runtimeIntentHasSandboxScene(intent)
 	if checkCoverage {
 		judgeTasks = appendRuntimeCoverageOnlyJudgeTasks(judgeTasks, state.Input.Collector.Data.Pipeline.ReplyPlan, nil)
 		if len(judgeTasks) > 0 {

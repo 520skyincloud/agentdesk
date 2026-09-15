@@ -39,6 +39,7 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 		promptPack = selectIntentPromptPack(intent)
 	}
 	intent = retainRuntimeMemberQueryTool(intent)
+	intent = normalizeSandboxSceneIntent(intent)
 	promptPack = appendMemberQueryRuntimeInstruction(promptPack, intent)
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
@@ -157,13 +158,16 @@ func retainRuntimeMemberQueryTool(intent callbacks.IntentTraceData) callbacks.In
 }
 
 func appendMemberQueryRuntimeInstruction(prompt callbacks.IntentPromptTraceData, intent callbacks.IntentTraceData) callbacks.IntentPromptTraceData {
-	if hasRuntimeMemberQueryTask(intent) {
+	if hasRuntimeMemberQueryTask(intent) && !config.PMSSandboxEnabled() {
 		prompt.Instructions = append(prompt.Instructions, memberQueryRuntimeInstruction())
 	}
 	return prompt
 }
 
 func pmsQueryIntentInstruction() string {
+	if config.PMSSandboxEnabled() {
+		return ""
+	}
 	current := config.CurrentOrNil()
 	if current == nil || !current.PMS.Enabled || strings.TrimSpace(current.PMS.BaseURL) == "" {
 		return ""
@@ -562,6 +566,8 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		NeedsHumanRoute:    task.NeedsHumanRoute,
 		Output:             output,
 		ResourceAction:     task.ResourceAction,
+		SandboxScene:       task.SandboxScene,
+		SandboxParams:      task.SandboxParams,
 	}
 }
 

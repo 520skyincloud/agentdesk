@@ -11,6 +11,7 @@ import (
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	runtimeexecutor "agent-desk/internal/ai/runtime/executor"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/tracex"
@@ -214,6 +215,9 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 		replyCtx.PendingInterrupt = pendingInterrupt
 		return s.resumePendingInterrupt(ctx, replyCtx)
 	}
+	if handled, err := s.handlePendingSandboxOperation(ctx, replyCtx); handled || err != nil {
+		return err
+	}
 	if pendingRenew := svc.PMSOperationService.FindPendingRenew(conversation.ID); pendingRenew != nil {
 		if isPMSRenewCancellation(message.Content) {
 			_ = svc.PMSOperationService.CancelRenew(conversation.ID, pendingRenew.ID)
@@ -245,6 +249,89 @@ func (s *aiReplyService) TriggerReply(ctx context.Context, conversation models.C
 	}
 	replyCtx.Message = s.mergeRecentCustomerBurstMessage(conversation.ID, message)
 	return s.executeReply(ctx, replyCtx)
+}
+
+func (s *aiReplyService) handlePendingSandboxOperation(ctx context.Context, replyCtx aiReplyContext) (bool, error) {
+	if !config.PMSSandboxEnabled() || replyCtx.Conversation.ID <= 0 {
+		return false, nil
+	}
+	scope, err := svc.PMSSandboxScopeForConversation(replyCtx.Conversation.ID, replyCtx.Message.ID)
+	if err != nil || scope.StoreID <= 0 {
+		return false, nil
+	}
+	pending, err := svc.PMSSandboxService.Pending(ctx, scope)
+	if err != nil || pending == nil || pending.ID <= 0 {
+		latest, latestErr := svc.PMSSandboxService.Latest(ctx, scope)
+		if latestErr != nil || latest == nil || latest.Status != "completed" ||
+			latest.ConfirmationMessageID <= 0 || latest.ConfirmationMessageID >= replyCtx.Message.ID ||
+			!isPMSRenewConfirmation(replyCtx.Message.Content) {
+			return false, nil
+		}
+		text := strings.TrimSpace(latest.ResultText)
+		if text == "" {
+			text = "【测试 PMS】该测试办理已完成，订单结果已回查。"
+		}
+		_, commitErr := s.commit.CommitAIReply(replyCommitInput{
+			Conversation: replyCtx.Conversation,
+			Message:      replyCtx.Message,
+			AIAgent:      replyCtx.AIAgent,
+			ReplyText:    text,
+			Trace:        replyCtx.Trace,
+			ClientPrefix: "pms_sandbox_confirm_repeat",
+		})
+		return true, commitErr
+	}
+	if isPMSRenewCancellation(replyCtx.Message.Content) {
+		outcome, cancelErr := svc.PMSSandboxService.Cancel(ctx, scope, pending.ID)
+		if cancelErr != nil {
+			return true, s.commitSandboxOperationFailure(replyCtx, "这份测试办理方案未能取消，测试订单未修改。")
+		}
+		text := "【测试 PMS】已取消该办理方案，测试订单未修改。"
+		if outcome != nil && strings.TrimSpace(outcome.ResultText) != "" {
+			text = outcome.ResultText
+		}
+		_, commitErr := s.commit.CommitAIReply(replyCommitInput{
+			Conversation: replyCtx.Conversation,
+			Message:      replyCtx.Message,
+			AIAgent:      replyCtx.AIAgent,
+			ReplyText:    text,
+			Trace:        replyCtx.Trace,
+			ClientPrefix: "pms_sandbox_cancel",
+		})
+		return true, commitErr
+	}
+	if !isPMSRenewConfirmation(replyCtx.Message.Content) {
+		return false, nil
+	}
+	outcome, confirmErr := svc.PMSSandboxService.Confirm(ctx, scope, pending.ID)
+	if confirmErr != nil {
+		return true, s.commitSandboxOperationFailure(replyCtx, "这份测试办理方案未执行，测试订单未修改；请重新查询并生成方案。")
+	}
+	text := "【测试 PMS】测试办理已完成，但未读取到结果。"
+	if outcome != nil && strings.TrimSpace(outcome.ResultText) != "" {
+		text = outcome.ResultText
+	}
+	_, commitErr := s.commit.CommitAIReply(replyCommitInput{
+		Conversation: replyCtx.Conversation,
+		Message:      replyCtx.Message,
+		AIAgent:      replyCtx.AIAgent,
+		ReplyText:    text,
+		Trace:        replyCtx.Trace,
+		ClientPrefix: "pms_sandbox_confirm",
+	})
+	return true, commitErr
+}
+
+func (s *aiReplyService) commitSandboxOperationFailure(replyCtx aiReplyContext, text string) error {
+	_, err := s.commit.CommitAIReply(replyCommitInput{
+		Conversation: replyCtx.Conversation,
+		Message:      replyCtx.Message,
+		AIAgent:      replyCtx.AIAgent,
+		ReplyText:    "【测试 PMS】" + strings.TrimSpace(text),
+		Trace:        replyCtx.Trace,
+		ClientPrefix: "pms_sandbox_operation_failure",
+	})
+	return err
 }
 
 func isPMSRenewConfirmation(text string) bool {

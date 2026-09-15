@@ -57,6 +57,16 @@ var Models = []any{
 	&CustomerEngagementProfile{},
 	&ProactiveReachout{},
 	&PMSOperation{},
+	&PMSSandboxStore{},
+	&PMSSandboxDataset{},
+	&PMSSandboxRoomType{},
+	&PMSSandboxRoom{},
+	&PMSSandboxOrder{},
+	&PMSSandboxGrade{},
+	&PMSSandboxMember{},
+	&PMSSandboxRule{},
+	&PMSSandboxResource{},
+	&PMSSandboxBinding{},
 	&TicketNoSequence{},
 	&Notification{},
 	&AIAgent{},
@@ -1319,6 +1329,13 @@ type ConversationInterrupt struct {
 // pending actions so it cannot affect human handoff state.
 type PMSOperation struct {
 	ID                    int64      `gorm:"primaryKey;autoIncrement"`
+	Provider              string     `gorm:"type:varchar(30);not null;default:'hpms';index"`
+	StoreID               int64      `gorm:"type:bigint;not null;default:0;index"`
+	DatasetID             int64      `gorm:"type:bigint;not null;default:0;index"`
+	OrderID               int64      `gorm:"type:bigint;not null;default:0;index"`
+	OrderVersion          int64      `gorm:"type:bigint;not null;default:0"`
+	PreviewMessageID      int64      `gorm:"type:bigint;not null;default:0;index"`
+	OperatorID            int64      `gorm:"type:bigint;not null;default:0;index"`
 	ConversationID        int64      `gorm:"type:bigint;not null;index"`
 	SourceMessageID       int64      `gorm:"type:bigint;not null;index"`
 	ConfirmationMessageID int64      `gorm:"type:bigint;not null;default:0;index"`

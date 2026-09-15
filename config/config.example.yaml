@@ -101,10 +101,14 @@ mcp:
       headers: {}
 
 # HPMS/PMS integration. Queries are disabled until configured.
-# The only currently implemented write operation is renew; it remains disabled
-# unless explicitly enabled in a protected non-production environment.
+# The sandbox is only available when environment is exactly "test-2" and
+# sandboxEnabled is true. Select provider=sandbox to switch test-2 to the
+# local test PMS; it never falls back to HPMS when the sandbox is unavailable.
 pms:
   enabled: false
+  provider: hpms
+  environment: ""
+  sandboxEnabled: false
   baseUrl: ""
   apiKey: ""
   authorization: ""

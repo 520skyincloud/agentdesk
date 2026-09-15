@@ -27,7 +27,7 @@ func (r *pmsOperationRepository) Get(db *gorm.DB, id int64) *models.PMSOperation
 func (r *pmsOperationRepository) FindPendingByConversationID(db *gorm.DB, conversationID int64) *models.PMSOperation {
 	item := &models.PMSOperation{}
 	if db == nil || conversationID <= 0 ||
-		db.Where("conversation_id = ? AND status = ?", conversationID, "pending").
+		db.Where("conversation_id = ? AND status = ? AND operation_type = ? AND (provider = ? OR provider = ?)", conversationID, "pending", "renew", "hpms", "").
 			Order("id DESC").Take(item).Error != nil {
 		return nil
 	}

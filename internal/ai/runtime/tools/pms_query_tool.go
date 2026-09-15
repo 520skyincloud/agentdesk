@@ -28,7 +28,7 @@ func (t *PMSQueryTool) Code() string         { return toolx.BuiltinPMSQuery.Code
 
 func (t *PMSQueryTool) Enabled(ctx registry.Context) bool {
 	current := config.CurrentOrNil()
-	return current != nil && current.PMS.Enabled && strings.TrimSpace(current.PMS.BaseURL) != ""
+	return !config.PMSSandboxEnabled() && current != nil && current.PMS.Enabled && strings.TrimSpace(current.PMS.BaseURL) != ""
 }
 
 func (t *PMSQueryTool) Build(ctx registry.Context) (einotool.BaseTool, error) {
@@ -76,6 +76,9 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...einotool.Option) (string, error) {
+	if config.PMSSandboxEnabled() {
+		return `{"status":"unsupported","source":"测试 PMS","message":"当前使用测试 PMS，业务查询由对应场景执行，未查询外部酒店系统。"}`, nil
+	}
 	var input struct {
 		Action               string `json:"action"`
 		ReserveOrderID       string `json:"reserveOrderId"`

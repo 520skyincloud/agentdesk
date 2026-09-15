@@ -33,6 +33,7 @@ type textReplyTaskGroup struct {
 	EvidenceLocked      bool
 	SelectedLayer       string
 	AnswerText          *string
+	FixedReply          bool
 }
 
 type replyFactRequirement struct {
@@ -121,6 +122,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、合并、重复或增加 taskId。每个 content 只回答对应任务，只使用该任务列出的事实，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只能填写该任务下列出的事实 ID；存在必答事实时必须全部覆盖。同一句事实对应多个事实 ID 时，coveredFactIds 必须全部列出，但 content 只自然表达一次。严格遵守事实维度：existence 只证明存在或不存在，不能扩写为配送范围、使用方法、地点、时间或已执行的服务承诺。程序会按任务顺序合并为最多三条客户消息。\n")
 	b.WriteString("自然改写必须保留原事实的主体、条件、范围和确定程度：权益不同不等于价格不同，需要或建议驾车不等于不能步行，已确认包括某些房型不等于只有这些房型。不得把未知属性写成肯定或否定结论；不要用‘因此、所以’补出证据没有确认的能力或限制。\n")
 	b.WriteString("标注‘已锁定证据’的知识任务由程序使用 Judge 的 answerText，content 留空，coveredFactIds 列出该任务全部 FactID，不再重新改写事实。普通互动自然接话；其中明确的常识或建议问题要直接回答本题所问的方面，建议应给出具体选择，不能用另一题的工具结果或‘随您喜欢’代替本题答案。标注‘仅澄清’的任务只提出一个针对真实歧义的简短问题，不得擅自回答酒店有或没有、能或不能提供，也不得使用其他任务的事实替它作结论。\n")
+	b.WriteString("标注‘测试 PMS 固定结果’的任务已由服务端查询或准备方案，content 留空，程序保留原结果及测试标记；不得改写成外部酒店真实办理成功，也不得替客户确认方案。\n")
 	if hasExternalProxyAction {
 		b.WriteString("外部代执行任务由程序直接使用固定能力边界和 Judge 选中的自助事实合成；该任务的 content 留空且省略 coveredFactIds，不要自行补充能否代办、地址、电话、入口或步骤。\n")
 	}
@@ -132,7 +134,9 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 		if group.ClarificationOnly {
 			b.WriteString("（仅澄清：请客户明确对象或必要条件，不是普通事实问答）")
 		}
-		if group.EvidenceLocked {
+		if group.FixedReply {
+			b.WriteString("（测试 PMS 固定结果，content 留空）")
+		} else if group.EvidenceLocked {
 			b.WriteString("（已锁定证据，content 留空）")
 		}
 		b.WriteString("\n")
@@ -368,7 +372,7 @@ func applyExternalProxyActionCapabilityBoundary(group textReplyTaskGroup, conten
 // Validate fixed input separately: Generate cannot repair a Judge-owned answer.
 func renderLockedReplyContent(group textReplyTaskGroup) (string, error) {
 	content, err := validateLockedReplyContent(group)
-	if err == nil || group.AnswerText == nil {
+	if err == nil || group.AnswerText == nil || group.FixedReply {
 		return content, err
 	}
 	// Repair only this answer, using the same Judge-selected facts without rewriting them.
@@ -1040,9 +1044,10 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 			StructuredRequired:  task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
 			ExternalProxyAction: isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective),
 			ClarificationOnly:   task.Intent == "interaction" && task.SubIntent == "clarify",
-			EvidenceLocked:      task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0,
+			EvidenceLocked:      task.FixedReply || (task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0),
 			SelectedLayer:       task.SelectedLayer,
 			AnswerText:          task.AnswerText,
+			FixedReply:          task.FixedReply,
 		})
 	}
 	// Optional proxy self-help must not repeat facts owned by explicit questions.

@@ -41,6 +41,9 @@ type Permission struct {
 
 // 权限常量定义
 var (
+	PermissionPMSSandboxView    = Permission{Name: "查看测试 PMS", Code: "pmsSandbox.view", Type: "api", GroupName: "pmsSandbox", Method: "GET", APIPath: "/api/dashboard/pms-sandbox/list", SortNo: 1720}
+	PermissionPMSSandboxManage  = Permission{Name: "管理测试 PMS", Code: "pmsSandbox.manage", Type: "api", GroupName: "pmsSandbox", Method: "POST", APIPath: "/api/dashboard/pms-sandbox/update", SortNo: 1730}
+	PermissionPMSSandboxExecute = Permission{Name: "办理测试 PMS", Code: "pmsSandbox.execute", Type: "api", GroupName: "pmsSandbox", Method: "POST", APIPath: "/api/dashboard/pms-sandbox/confirm", SortNo: 1740}
 	// 用户相关权限
 	PermissionUserView       = Permission{Name: "查看用户", Code: "user.view", Type: "api", GroupName: "user", Method: "ANY", APIPath: "/api/dashboard/user/list", SortNo: 10}
 	PermissionUserCreate     = Permission{Name: "创建用户", Code: "user.create", Type: "api", GroupName: "user", Method: "POST", APIPath: "/api/dashboard/user/create", SortNo: 20}
@@ -183,6 +186,9 @@ var (
 
 // Permissions 内置权限列表
 var Permissions = []Permission{
+	PermissionPMSSandboxView,
+	PermissionPMSSandboxManage,
+	PermissionPMSSandboxExecute,
 	PermissionUserView,
 	PermissionUserCreate,
 	PermissionUserUpdate,
@@ -307,6 +313,7 @@ var Roles = []RoleSpec{
 var RolePermissions = map[string][]Permission{
 	RoleCodeSuperAdmin: Permissions,
 	RoleCodeAdmin: {
+		PermissionPMSSandboxView, PermissionPMSSandboxManage, PermissionPMSSandboxExecute,
 		PermissionUserView, PermissionUserCreate, PermissionUserUpdate, PermissionUserAssignRole,
 		PermissionRoleView, PermissionRoleCreate, PermissionRoleUpdate, PermissionRoleAssignPermission,
 		PermissionPermissionView, PermissionPermissionSync,
@@ -328,6 +335,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionSkillDefinitionView, PermissionSkillDefinitionCreate, PermissionSkillDefinitionUpdate, PermissionSkillDefinitionDelete,
 	},
 	RoleCodeCsTeamLeader: {
+		PermissionPMSSandboxView, PermissionPMSSandboxManage, PermissionPMSSandboxExecute,
 		PermissionUserView,
 		PermissionRoleView,
 		PermissionPermissionView,
@@ -369,6 +377,7 @@ var RolePermissions = map[string][]Permission{
 		PermissionSkillDefinitionView,
 	},
 	RoleCodeStoreStaff: {
+		PermissionPMSSandboxView, PermissionPMSSandboxManage, PermissionPMSSandboxExecute,
 		PermissionConversationView, PermissionConversationSend, PermissionCustomerTag, PermissionConversationHandover,
 		PermissionNotificationView, PermissionNotificationUpdate,
 		PermissionQuickReplyView,

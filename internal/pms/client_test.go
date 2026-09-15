@@ -108,6 +108,21 @@ func TestClientCurrentOrderLookupSupportsCustomerNoAndCombinedFilters(t *testing
 			wantCustomerNo: "MEMBER-001",
 		},
 		{
+			name:           "reserve customer number",
+			action:         "reserve_order_by_phone",
+			path:           reserveOrderByPhonePath,
+			args:           map[string]string{"customerNo": "MEMBER-001"},
+			wantCustomerNo: "MEMBER-001",
+		},
+		{
+			name:           "recept combined",
+			action:         "recept_order_by_phone",
+			path:           receptOrderByPhonePath,
+			args:           map[string]string{"phone": "13800000000", "customerNo": "MEMBER-001"},
+			wantPhone:      "13800000000",
+			wantCustomerNo: "MEMBER-001",
+		},
+		{
 			name:           "reserve combined",
 			action:         "reserve_order_by_phone",
 			path:           reserveOrderByPhonePath,

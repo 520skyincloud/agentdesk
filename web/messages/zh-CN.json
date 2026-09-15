@@ -2313,6 +2313,7 @@
     "changePassword": "修改密码",
     "signOut": "退出登录",
     "storeWorkbench": "门店工作台",
+    "pmsSandbox": "测试 PMS",
     "billingQuery": "计费查询"
   },
   "theme": {

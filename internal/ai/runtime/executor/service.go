@@ -101,6 +101,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 			return summary, nil
 		}
 	}
+	if completeSandboxFixedReply(summary, collector) {
+		return summary, nil
+	}
 	if prepareHotelVariableDirectCommit(req, summary, collector) {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName

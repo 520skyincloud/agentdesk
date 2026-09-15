@@ -29,6 +29,7 @@ const DASHBOARD_ROLE_CS_USER = "cs_user";
 const DASHBOARD_ROLE_CS_TEAM_LEADER = "cs_team_leader";
 const DASHBOARD_ROLE_STORE_STAFF = "store_staff";
 const STORE_STAFF_ALLOWED_URLS = new Set([
+  "/dashboard/pms-sandbox",
   "/dashboard/store-workbench",
   "/dashboard/billing-query",
 ]);
@@ -40,6 +41,7 @@ const CS_USER_ALLOWED_URLS = new Set([
   "/dashboard/quick-replies",
 ]);
 const CS_LEADER_ALLOWED_URLS = new Set([
+  "/dashboard/pms-sandbox",
   ...CS_USER_ALLOWED_URLS,
   "/dashboard/tags",
   "/dashboard/conversation-monitor",
@@ -153,6 +155,12 @@ export const dashboardNavSections: DashboardNavSectionConfig[] = [
     titleKey: "nav.receptionCenter",
     icon: <BotMessageSquareIcon />,
     items: [
+      {
+        titleKey: "nav.pmsSandbox",
+        url: "/dashboard/pms-sandbox",
+        icon: <Building2Icon />,
+        requiredPermission: "pmsSandbox.view",
+      },
       {
         titleKey: "nav.storeWorkbench",
         url: "/dashboard/store-workbench",

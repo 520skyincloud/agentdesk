@@ -2313,6 +2313,7 @@
     "changePassword": "Change Password",
     "signOut": "Sign Out",
     "storeWorkbench": "Store Workbench",
+    "pmsSandbox": "Test PMS",
     "billingQuery": "Billing Query"
   },
   "theme": {

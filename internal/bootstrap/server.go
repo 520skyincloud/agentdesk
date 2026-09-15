@@ -169,6 +169,7 @@ func addRouter(app *gin.Engine) {
 	wsGroup.GET("/open", services.WsService.HandleOpenWS)
 
 	dashboardGroup := app.Group("/api/dashboard", middleware.AuthMiddleware)
+	registerDashboardPMSSandboxRoutes(dashboardGroup.Group("/pms-sandbox"))
 	registerDashboardDashboardRoutes(dashboardGroup.Group("/dashboard"))
 	registerDashboardUserRoutes(dashboardGroup.Group("/user"))
 	registerDashboardCompanyRoutes(dashboardGroup.Group("/company"))

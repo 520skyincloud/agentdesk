@@ -50,6 +50,9 @@ type PMSRenewOutcome struct {
 }
 
 func (s *pmsOperationService) CreateRenewDraft(conversationID, sourceMessageID int64, request pms.RenewRequest, preview string) (*PMSRenewDraft, error) {
+	if cfg := config.CurrentOrNil(); cfg != nil && config.PMSProvider(cfg.PMS) != "hpms" {
+		return nil, fmt.Errorf("当前 PMS 数据源不支持外部续住")
+	}
 	if conversationID <= 0 || sourceMessageID <= 0 {
 		return nil, fmt.Errorf("续住操作缺少会话或消息")
 	}
@@ -66,7 +69,7 @@ func (s *pmsOperationService) CreateRenewDraft(conversationID, sourceMessageID i
 	err = sqls.WithTransaction(func(tx *sqls.TxContext) error {
 		locked := &models.PMSOperation{}
 		if err := tx.Tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("conversation_id = ? AND operation_type = ? AND status = ?", conversationID, PMSOperationTypeRenew, PMSOperationPending).
+			Where("conversation_id = ? AND operation_type = ? AND status = ? AND (provider = ? OR provider = ?)", conversationID, PMSOperationTypeRenew, PMSOperationPending, "hpms", "").
 			Order("id DESC").Take(locked).Error; err == nil {
 			item = locked
 			return nil
@@ -96,10 +99,16 @@ func (s *pmsOperationService) CreateRenewDraft(conversationID, sourceMessageID i
 }
 
 func (s *pmsOperationService) FindPendingRenew(conversationID int64) *models.PMSOperation {
+	if cfg := config.CurrentOrNil(); cfg != nil && config.PMSProvider(cfg.PMS) != "hpms" {
+		return nil
+	}
 	return repositories.PMSOperationRepository.FindPendingByConversationID(sqls.DB(), conversationID)
 }
 
 func (s *pmsOperationService) ConfirmRenew(ctx context.Context, conversationID, operationID, confirmationMessageID int64) (PMSRenewOutcome, error) {
+	if cfg := config.CurrentOrNil(); cfg != nil && config.PMSProvider(cfg.PMS) != "hpms" {
+		return PMSRenewOutcome{}, fmt.Errorf("当前 PMS 数据源不能执行外部续住")
+	}
 	if conversationID <= 0 || operationID <= 0 {
 		return PMSRenewOutcome{}, fmt.Errorf("续住操作不存在")
 	}
@@ -111,6 +120,9 @@ func (s *pmsOperationService) ConfirmRenew(ctx context.Context, conversationID, 
 		}
 		if item.ConversationID != conversationID {
 			return fmt.Errorf("续住操作不属于当前会话")
+		}
+		if item.OperationType != PMSOperationTypeRenew || (item.Provider != "" && item.Provider != "hpms") {
+			return fmt.Errorf("该操作不是当前 PMS 的续住方案")
 		}
 		if item.Status != PMSOperationPending {
 			return nil
@@ -187,7 +199,7 @@ func (s *pmsOperationService) CancelRenew(conversationID, operationID int64) err
 		return fmt.Errorf("续住操作不存在")
 	}
 	item := repositories.PMSOperationRepository.Get(sqls.DB(), operationID)
-	if item == nil || item.ConversationID != conversationID {
+	if item == nil || item.ConversationID != conversationID || item.OperationType != PMSOperationTypeRenew || (item.Provider != "" && item.Provider != "hpms") {
 		return fmt.Errorf("续住操作不存在")
 	}
 	if item.Status != PMSOperationPending {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"agent-desk/internal/pkg/dto"
 	"agent-desk/internal/pkg/enums"
 	"agent-desk/internal/pkg/replyruntime"
+	"agent-desk/internal/pms/sandbox"
 	"agent-desk/internal/repositories"
 	svc "agent-desk/internal/services"
 
@@ -50,12 +52,15 @@ func newReplyCommitService() *replyCommitService {
 }
 
 func (s *replyCommitService) HasStructuredVariableReply(trace *aiReplyTraceData) bool {
-	return len(structuredVariableResourceTypesFromTrace(trace)) > 0 || len(knowledgeResourceItemsFromTrace(trace)) > 0
+	return len(structuredVariableResourceTypesFromTrace(trace)) > 0 ||
+		len(knowledgeResourceItemsFromTrace(trace)) > 0 ||
+		len(sandboxResourcesFromTrace(trace)) > 0
 }
 
 func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Message, error) {
 	structuredReplies := s.buildStructuredVariableReplies(input)
 	structuredReplies = append(structuredReplies, s.buildKnowledgeResourceReplies(input)...)
+	structuredReplies = append(structuredReplies, s.buildSandboxResourceReplies(input)...)
 	replyText := strings.TrimSpace(input.ReplyText)
 	var err error
 	replyText, err = runtimeexecutor.SanitizeGeneratedReplyText(replyText)
@@ -92,6 +97,10 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 			}
 			replyMessage = message
 		}
+	}
+	if err := s.bindSandboxPreviewMessages(input, commitMessages); err != nil {
+		s.updateCommitTrace(input, commitStartedAt, replyMessage, commitMessages, err)
+		return replyMessage, err
 	}
 	for index, structured := range structuredReplies {
 		message, err := s.sendAIMessage(
@@ -430,6 +439,195 @@ func (s *replyCommitService) buildKnowledgeResourceReplies(input replyCommitInpu
 		ret = append(ret, reply)
 	}
 	return ret
+}
+
+type sandboxResourceTraceItem struct {
+	TaskID     string `json:"taskId"`
+	StoreID    int64  `json:"storeId"`
+	DatasetID  int64  `json:"datasetId"`
+	ResourceID int64  `json:"resourceId"`
+}
+
+func sandboxResourcesFromTrace(trace *aiReplyTraceData) []sandboxResourceTraceItem {
+	if trace == nil || len(trace.Runtime) == 0 {
+		return nil
+	}
+	var data struct {
+		SandboxResources []sandboxResourceTraceItem `json:"sandboxResources"`
+	}
+	if json.Unmarshal(trace.Runtime, &data) != nil {
+		return nil
+	}
+	ret := make([]sandboxResourceTraceItem, 0, len(data.SandboxResources))
+	seen := make(map[string]struct{}, len(data.SandboxResources))
+	for _, item := range data.SandboxResources {
+		key := fmt.Sprintf("%d:%d:%d:%s", item.StoreID, item.DatasetID, item.ResourceID, strings.TrimSpace(item.TaskID))
+		if item.StoreID <= 0 || item.DatasetID <= 0 || item.ResourceID <= 0 || key == "0:0:0:" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
+}
+
+func (s *replyCommitService) buildSandboxResourceReplies(input replyCommitInput) []structuredVariableReply {
+	items := sandboxResourcesFromTrace(input.Trace)
+	if len(items) == 0 {
+		return nil
+	}
+	scope, err := svc.PMSSandboxScopeForConversation(input.Conversation.ID, input.Message.ID)
+	if err != nil || scope.StoreID <= 0 {
+		appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
+			buildResourceActionLedgerItem("pillow_product", string(enums.IMMessageTypeShopProduct), 0, "missing", "当前会话未绑定测试 PMS 门店"),
+		})
+		return nil
+	}
+	ret := make([]structuredVariableReply, 0, len(items))
+	for _, item := range items {
+		if item.StoreID != scope.StoreID {
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
+				buildResourceActionLedgerItem("pillow_product", "", 0, "missing", "测试商品资源门店不匹配"),
+			})
+			continue
+		}
+		result, queryErr := svc.PMSSandboxService.ExecuteScene(
+			context.Background(),
+			scope,
+			sandbox.SceneInput{Scene: "F", Question: "发送同款枕头商品"},
+		)
+		if queryErr != nil || result == nil || result.Resource == nil ||
+			result.Resource.ID != item.ResourceID || strings.TrimSpace(result.Resource.CardPayload) == "" {
+			reason := "测试商品卡片资源不存在或未绑定"
+			if queryErr != nil {
+				reason = queryErr.Error()
+			}
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
+				buildResourceActionLedgerItem("pillow_product", "", 0, "missing", reason),
+			})
+			continue
+		}
+		source := svc.MessageService.Get(result.Resource.SourceMessageID)
+		sourceRoute := (*models.ConversationRouteState)(nil)
+		if source != nil {
+			sourceRoute = svc.ConversationRouteService.GetByConversationID(source.ConversationID)
+		}
+		if source == nil || sourceRoute == nil || sourceRoute.StoreID != scope.StoreID {
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
+				buildResourceActionLedgerItem("pillow_product", result.Resource.MessageType, 0, "missing", "测试商品原始卡片不属于当前门店"),
+			})
+			continue
+		}
+		messageType := enums.IMMessageType(result.Resource.MessageType)
+		if messageType != enums.IMMessageTypeMiniProgram && messageType != enums.IMMessageTypeShopProduct {
+			appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{
+				buildResourceActionLedgerItem("pillow_product", result.Resource.MessageType, 0, "missing", "测试商品资源不是可发送的商品卡片"),
+			})
+			continue
+		}
+		content := strings.TrimSpace(source.Content)
+		if content == "" {
+			content = "同款枕头商品卡片"
+		}
+		reply := structuredVariableReply{
+			ResourceType: "pillow_product",
+			MessageType:  messageType,
+			Content:      content,
+			Payload:      result.Resource.CardPayload,
+			TaskIDs:      []string{strings.TrimSpace(item.TaskID)},
+		}
+		appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{
+			buildResourceActionLedgerItem(reply.ResourceType, string(reply.MessageType), 0, "prepared", ""),
+		})
+		ret = append(ret, reply)
+	}
+	return ret
+}
+
+func (s *replyCommitService) bindSandboxPreviewMessages(input replyCommitInput, commitMessages []map[string]any) error {
+	operationIDs := sandboxOperationIDsFromTrace(input.Trace)
+	if len(operationIDs) == 0 {
+		return nil
+	}
+	scope, err := svc.PMSSandboxScopeForConversation(input.Conversation.ID, input.Message.ID)
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for _, operationID := range operationIDs {
+		bound := false
+		for _, item := range commitMessages {
+			if strings.TrimSpace(fmt.Sprint(item["status"])) != "sent" {
+				continue
+			}
+			messageID := commitTraceMessageID(item)
+			if messageID <= 0 {
+				continue
+			}
+			if err := svc.PMSSandboxService.MarkPreviewMessage(context.Background(), scope, operationID, messageID); err == nil {
+				bound = true
+				break
+			} else {
+				lastErr = err
+			}
+		}
+		if !bound {
+			if lastErr == nil {
+				lastErr = fmt.Errorf("测试 PMS 办理方案 %d 未找到完整预览消息", operationID)
+			}
+			return lastErr
+		}
+	}
+	return nil
+}
+
+func sandboxOperationIDsFromTrace(trace *aiReplyTraceData) []int64 {
+	if trace == nil || len(trace.Runtime) == 0 {
+		return nil
+	}
+	var data struct {
+		SandboxOperationIDs []int64 `json:"sandboxOperationIds"`
+	}
+	if json.Unmarshal(trace.Runtime, &data) != nil {
+		return nil
+	}
+	ret := make([]int64, 0, len(data.SandboxOperationIDs))
+	seen := make(map[int64]struct{}, len(data.SandboxOperationIDs))
+	for _, id := range data.SandboxOperationIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ret = append(ret, id)
+	}
+	return ret
+}
+
+func commitTraceMessageID(item map[string]any) int64 {
+	if item == nil {
+		return 0
+	}
+	switch value := item["messageId"].(type) {
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	default:
+		var parsed int64
+		_, _ = fmt.Sscan(strings.TrimSpace(fmt.Sprint(value)), &parsed)
+		return parsed
+	}
 }
 
 func (s *replyCommitService) resolveWxWorkInstance(conversationID int64) *models.WxWorkProtocolInstance {

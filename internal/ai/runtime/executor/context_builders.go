@@ -58,6 +58,7 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		}
 		return messages
 	}
+	executeSandboxSceneTasks(ctx, req, summary, collector)
 	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
 	if collector != nil {
 		plan.Intent = collector.Data.Pipeline.Intent
