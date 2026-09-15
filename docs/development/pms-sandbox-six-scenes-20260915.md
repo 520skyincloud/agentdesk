@@ -86,6 +86,14 @@ cd web && pnpm exec eslint \
 
 本记录只证明程序发布和数据库备份完成，不代表六场景真实消息验收已经完成。绑定最新测试客户、导入同门店历史枕头商品卡片并完成不超过 12 轮的隔离真实验证后，才更新上方五项验收状态。
 
+## 2026-09-15 一问一答版本发布
+
+- 程序提交：`63a1c89`，已推送 `origin` 和 `weibao`。
+- test-2 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-63a1c89`。
+- Linux amd64 二进制 SHA-256：`378f14197dfd0cf23b8c2e0491688ee1eac773e55739731192963084d5de6ead`。
+- 切换前 release：`/opt/agentdesk/releases/20260915-pms-sandbox-six-scenes-1ce3581`，保留为回滚点。
+- 切换后 `agentdesk.service=active`、8083 返回 200、`NRestarts=0`；仅更新演示答复文案和测试断言，数据库与外部 HPMS 未修改。
+
 ## test-2 发布记录
 
 - 发布日期：2026-09-15。
