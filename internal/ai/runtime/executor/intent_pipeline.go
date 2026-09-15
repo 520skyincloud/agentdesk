@@ -137,7 +137,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 }
 
 func memberQueryRuntimeInstruction() string {
-	return "会员状态、等级、权益和等级规则必须使用只读 pms_query，不用知识库猜客户身份或权益。查询会员信息使用 member_info_by_phone，先取得准确手机号；查询当前客户权益时，随后使用实际返回的 gradeId 调用 member_benefits_by_grade。gradeCode 只是 gradeId 的兼容别名，不得用中文等级名称猜编码。会员冻结/挂失或 gradeAvailable=false 时如实回答，不能承诺权益可用；权益配置不是实际订单报价，也不代表已升房、延退、发券或执行其他办理。"
+	return "会员状态、等级、权益和等级规则必须使用只读 pms_query，不用知识库猜客户身份或权益。只查基础信息使用 member_info_by_phone；查询权益、升级或保级规则使用 member_benefits_by_phone，由工具自动取得当前会员的真实等级并查询规则。跨轮追问沿用会话中客户提供的准确手机号，不要求客户提供等级 ID，不得用中文等级名称猜编码；缺少手机号才追问。会员冻结/挂失或 gradeAvailable=false 时如实回答，不能承诺权益可用；权益配置不是实际订单报价，也不代表已升房、延退、发券或执行其他办理。"
 }
 
 func hasRuntimeMemberQueryTask(intent callbacks.IntentTraceData) bool {
@@ -163,12 +163,12 @@ func appendMemberQueryRuntimeInstruction(prompt callbacks.IntentPromptTraceData,
 	return prompt
 }
 
-func memberQueryIntentInstruction() string {
+func pmsQueryIntentInstruction() string {
 	current := config.CurrentOrNil()
 	if current == nil || !current.PMS.Enabled || strings.TrimSpace(current.PMS.BaseURL) == "" {
 		return ""
 	}
-	return "\n当前已启用 PMS 会员只读查询：查当前客户会员状态/等级归 hotel_info/member_info；查会员权益、升级或保级规则归 hotel_info/member_benefits。对应 Task 与顶层 needsTool=true，使用 pms_query。缺少手机号时保留真实会员查询目标，由回复阶段追问，不猜手机号或等级编码；客户随后补充手机号时继承会员查询主题。静态酒店政策仍查知识库，实际升房/延退办理不能因权益配置而视作已执行。\n"
+	return "\n当前已启用 PMS 只读查询：订单、房态、库存、客户会员事实不能只走静态知识库。查当前有效订单、订单详情、入住离店日期、房型房号、订单金额或状态归 hotel_info/order_query，可按客户提供的手机号或会员编号定位订单；实时房间状态归 hotel_info/room_status；指定入住离店日期的可售房型、余房或库存归 hotel_info/room_inventory（兼容 room_availability）。例如‘今天入住明天退房还有哪些房型可售’必须调用库存工具，不是门店设施 FAQ；库存不代表已锁房或已排房。查当前客户会员状态/等级归 hotel_info/member_info；查会员权益、等级升级条件或保级规则归 hotel_info/member_benefits，会员等级升级条件不是执行房间升房。以上对应 Task 的 needsTool=true、needsKnowledge=false，顶层 needsTool=true，使用 pms_query；顶层 needsKnowledge 只汇总同轮真正需要知识库的其他 Task。缺少手机号时保留真实查询目标，由回复阶段追问，不猜手机号、订单或等级编码；客户随后补充手机号或追问‘那这个会员的升级条件和保级规则’时继承相关查询主题。静态酒店政策仍查知识库；‘还有哪些房型可售，另外矿泉水收费吗’需保留库存工具任务和矿泉水知识任务，分别回答。实际升房/延退办理不能因权益配置而视作已执行。\n"
 }
 
 func isExternalProxyActionClassification(intent string, subIntent string, objective string) bool {

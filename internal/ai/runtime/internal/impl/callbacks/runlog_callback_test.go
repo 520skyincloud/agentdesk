@@ -51,6 +51,21 @@ func TestRuntimeTraceCollectorPMSNameFallbackAndOtherTools(t *testing.T) {
 	}
 }
 
+func TestRuntimeTraceCollectorKeepsCompositeMemberQueryAction(t *testing.T) {
+	collector := NewRuntimeTraceCollector()
+	collector.AddToolItem(ToolTraceItem{
+		ToolCode: toolx.BuiltinPMSQuery.Code,
+		Arguments: map[string]any{
+			"action": "member_benefits_by_phone",
+			"phone":  "13800138000",
+		},
+	})
+	if collector.Data.Tools.Items[0].Arguments["action"] != "member_benefits_by_phone" ||
+		strings.Contains(collector.Marshal(), "13800138000") {
+		t.Fatal("composite member query identity or privacy was lost")
+	}
+}
+
 func TestRuntimeTraceCollectorDeepCopiesEvidenceAndReplyPlanFacts(t *testing.T) {
 	collector := NewRuntimeTraceCollector()
 	fact := KnowledgeEvidenceFactTraceData{

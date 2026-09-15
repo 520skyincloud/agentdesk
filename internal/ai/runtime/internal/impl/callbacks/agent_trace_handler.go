@@ -102,6 +102,13 @@ func (h *RuntimeTraceHandler) WrapInvokableToolCall(_ context.Context, endpoint 
 		if err != nil {
 			item.Status = "error"
 			item.ErrorMessage = err.Error()
+		} else if item.ToolCode == toolx.BuiltinPMSQuery.Code || item.ToolName == toolx.BuiltinPMSQuery.Name {
+			var outcome struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal([]byte(result), &outcome) != nil || outcome.Status != "ok" {
+				item.Status = "error"
+			}
 		}
 		h.collector.AddToolItem(item)
 		if metadata, ok := h.resolveToolMetadata(item.ToolName); ok && metadata.SourceType == enums.ToolSourceTypeGraph {

@@ -1,10 +1,43 @@
 package callbacks
 
 import (
+	"context"
 	"testing"
 
 	"agent-desk/internal/pkg/toolx"
+
+	"github.com/cloudwego/eino/adk"
+	einotool "github.com/cloudwego/eino/components/tool"
 )
+
+func TestPMSTraceReflectsBusinessStatusWithoutChangingToolResult(t *testing.T) {
+	for _, status := range []string{"ok", "unavailable", "unsupported"} {
+		t.Run(status, func(t *testing.T) {
+			collector := NewRuntimeTraceCollector()
+			handler := NewRuntimeTraceHandler(collector, map[string]ToolMetadata{
+				toolx.BuiltinPMSQuery.Name: {ToolCode: toolx.BuiltinPMSQuery.Code, ToolName: toolx.BuiltinPMSQuery.Name},
+			}, nil)
+			result := `{"status":"` + status + `"}`
+			endpoint, err := handler.WrapInvokableToolCall(context.Background(),
+				func(context.Context, string, ...einotool.Option) (string, error) { return result, nil },
+				&adk.ToolContext{Name: toolx.BuiltinPMSQuery.Name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := endpoint(context.Background(), `{"action":"member_benefits_by_phone","phone":"13800138000"}`)
+			if err != nil || got != result {
+				t.Fatalf("trace changed the tool result: %q %v", got, err)
+			}
+			want := "error"
+			if status == "ok" {
+				want = "ok"
+			}
+			if collector.Data.Tools.Items[0].Status != want {
+				t.Fatalf("business outcome incorrectly reported: %#v", collector.Data.Tools.Items[0])
+			}
+		})
+	}
+}
 
 func TestParseGraphToolOutcome(t *testing.T) {
 	action, risk, ready := parseGraphToolOutcome(toolx.GraphAnalyzeConversation.Code, `{"recommendedNextAction":"handoff_to_human","riskLevel":"high"}`)

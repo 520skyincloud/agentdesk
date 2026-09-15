@@ -46,15 +46,71 @@ func TestRuntimeMemberIntentPromptOnlyAdvertisesEnabledPMS(t *testing.T) {
 	req := RunInput{UserMessage: models.Message{Content: "帮我查查会员是什么等级，有哪些权益"}}
 	config.SetCurrent(&config.Config{PMS: config.PMSConfig{Enabled: true, BaseURL: "http://pms.test"}})
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	for _, required := range []string{"hotel_info/member_info", "hotel_info/member_benefits", "needsTool=true", "使用 pms_query", "客户随后补充手机号时继承会员查询主题"} {
+	for _, required := range []string{"hotel_info/member_info", "hotel_info/member_benefits", "hotel_info/order_query", "hotel_info/room_status", "hotel_info/room_inventory", "room_availability", "needsTool=true", "needsKnowledge=false", "使用 pms_query", "客户随后补充手机号", "升级条件和保级规则", "矿泉水知识任务"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("member tool classification instruction missing: %s", required)
 		}
 	}
 	config.SetCurrent(&config.Config{})
 	disabled := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	if strings.Contains(disabled, "当前已启用 PMS 会员只读查询") {
+	if strings.Contains(disabled, "当前已启用 PMS 只读查询") {
 		t.Fatal("disabled PMS must not be advertised to Intent")
+	}
+}
+
+func TestNormalizeModelIntentTracePreservesPMSKnowledgeBoundary(t *testing.T) {
+	member := callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "member_benefits", Objective: "policy",
+		RelationToPrevious: "follow_up", ResolutionState: "resolved_from_context",
+		Text: "那这个会员的升级条件和保级规则是什么", ResolvedText: "该客户会员等级的升级条件和保级规则是什么",
+		SourceRefs: []string{"U1"}, NeedsTool: true,
+	}
+	inventory := callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "room_availability", Objective: "availability",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Text: "今天入住明天退房还有哪些房型可售", ResolvedText: "今天入住明天退房还有哪些房型可售",
+		SourceRefs: []string{"U1"}, NeedsTool: true,
+	}
+	water := callbacks.IntentTaskTraceData{
+		Intent: "hotel_info", SubIntent: "mineral_water", Objective: "price",
+		RelationToPrevious: "independent", ResolutionState: "clear",
+		Text: "另外房间矿泉水收费吗", ResolvedText: "房间矿泉水收费吗",
+		SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+	}
+	for _, tc := range []struct {
+		name      string
+		tasks     []callbacks.IntentTaskTraceData
+		knowledge bool
+	}{
+		{name: "member_followup", tasks: []callbacks.IntentTaskTraceData{member}},
+		{name: "inventory_only", tasks: []callbacks.IntentTaskTraceData{inventory}},
+		{name: "inventory_and_water", tasks: []callbacks.IntentTaskTraceData{inventory, water}, knowledge: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			texts := make([]string, 0, len(tc.tasks))
+			for _, task := range tc.tasks {
+				texts = append(texts, task.Text)
+			}
+			req := RunInput{UserMessage: models.Message{Content: strings.Join(texts, "？")}}
+			intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.95,
+				SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: append([]callbacks.IntentTaskTraceData(nil), tc.tasks...),
+			}, req, adapter.HistoryBuildResult{}, nil)
+			if !intent.NeedsTool || intent.NeedsKnowledge != tc.knowledge || len(intent.IntentTasks) != len(tc.tasks) {
+				t.Fatalf("top-level PMS knowledge boundary changed: %#v", intent)
+			}
+			if intent.IntentTasks[0].NeedsKnowledge || !intent.IntentTasks[0].NeedsTool {
+				t.Fatalf("PMS task lost its tool-only route: %#v", intent.IntentTasks[0])
+			}
+			plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+			if plan.TaskPlans[0].Output != "text_reply" || runtimeReplyTaskUsesKnowledge(plan.TaskPlans[0]) {
+				t.Fatalf("PMS task regained FAQ requirement: %#v", plan.TaskPlans[0])
+			}
+			if tc.knowledge && (!runtimeReplyTaskUsesKnowledge(plan.TaskPlans[1]) || plan.TaskPlans[1].OriginalText != water.Text) {
+				t.Fatalf("independent mineral water question was lost: %#v", plan)
+			}
+		})
 	}
 }
 
@@ -88,7 +144,7 @@ func TestRuntimeMemberPromptPreservesConfiguredInstructionsAndScopesGuidance(t *
 		t.Fatalf("member guidance must supplement configured prompts: %#v", got)
 	}
 	prompt := strings.Join(got.Instructions, "\n")
-	for _, required := range []string{"member_info_by_phone", "member_benefits_by_grade", "实际返回的 gradeId", "不得用中文等级名称", "冻结/挂失", "gradeAvailable=false", "不是实际订单报价"} {
+	for _, required := range []string{"member_info_by_phone", "member_benefits_by_phone", "真实等级", "不得用中文等级名称", "冻结/挂失", "gradeAvailable=false", "不是实际订单报价"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("member response boundary missing: %s", required)
 		}
