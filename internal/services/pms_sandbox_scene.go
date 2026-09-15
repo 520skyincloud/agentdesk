@@ -94,9 +94,8 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		if len(topics) == 0 {
 			topics = []string{"order"}
 		}
-		if hasTopic(topics, "breakfast") && hasTopic(topics, "child_policy") &&
-			hasOnlyTopics(topics, "breakfast", "child_policy") {
-			result.Reply = "您的订单包含2份早餐，供应时间为07:00–10:00。1.2米以下儿童免费用餐。"
+		if hasTopic(topics, "parking") && hasOnlyTopics(topics, "parking") {
+			result.Reply = "酒店提供免费停车服务，设有地上地下停车场，推荐您从昭潭路进入。"
 			result.Completed = true
 			return result, nil
 		}
