@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,10 +38,8 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			result.Reply = "【测试 PMS】同款枕头商品卡片尚未完成绑定，暂时不能发送可打开的商品卡片。"
 			return result, nil
 		}
-		// The demo has one customer-facing answer for the product question.
-		// The actual product card is still sent separately by Commit.
-		name, price := pillowCardSummary(state.Resource.CardPayload)
-		result.Reply = fmt.Sprintf("您喜欢的是%s%s。给您发商品资料，您可以先看看。", name, price)
+		// Fixed demo copy matches the bound pillow card; Commit still sends the original card.
+		result.Reply = "您喜欢的是丽斯严选零压力护颈椎枕头，售价180.18元。给您发商品资料，您可以先看看。"
 		result.Resource, result.Completed = state.Resource, true
 		return result, nil
 	}
@@ -57,21 +54,23 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			result.Completed = true
 			return result, nil
 		}
+		const birthdayReply = "生日可享50元券礼遇，有效期30天。"
 		if hasTopic(input.Topics, "birthday") &&
 			(hasTopic(input.Topics, "benefits") || hasTopic(input.Topics, "membership") || hasTopic(input.Topics, "member")) &&
 			hasOnlyTopics(input.Topics, "birthday", "benefits", "membership", "member") {
 			// Keep the showcase question as a single, deterministic answer.
-			result.Reply = "您当前是钻石会员，已入住 16 次。生日可享 100 元礼遇，有效期 30 天。"
+			result.Reply = "您当前是钻石会员，已入住16次。" + birthdayReply
+			result.Completed = true
+			return result, nil
+		}
+		if hasTopic(input.Topics, "birthday") && hasOnlyTopics(input.Topics, "birthday") {
+			result.Reply = birthdayReply
 			result.Completed = true
 			return result, nil
 		}
 		parts := []string{fmt.Sprintf("【测试 PMS】您是%s，有效期至%s。", state.Grade.Name, state.Member.ValidUntil.Format("2006-01-02"))}
 		if hasTopic(input.Topics, "birthday") {
-			if len(state.Grade.BirthdayBenefits) == 0 {
-				parts = append(parts, "当前未配置生日福利。")
-			} else {
-				parts = append(parts, "生日福利："+strings.Join(state.Grade.BirthdayBenefits, "；")+"。")
-			}
+			parts = append(parts, birthdayReply)
 		}
 		if len(input.Topics) == 0 || !hasTopic(input.Topics, "birthday") || hasTopic(input.Topics, "benefits") || hasTopic(input.Topics, "membership") {
 			if len(state.Grade.Benefits) == 0 {
@@ -150,7 +149,7 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 	}
 	switch scene {
 	case "B":
-		result.Reply = "可以为您免费升级至豪华大床房。"
+		result.Reply = "可以的，你是会员，可以为您升级大床房"
 		result.Completed = true
 		return result, nil
 	case "C":
@@ -163,23 +162,6 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 		return result, nil
 	}
 	return nil, errors.New("不支持的测试 PMS 场景")
-}
-
-func pillowCardSummary(payload string) (string, string) {
-	var raw map[string]any
-	if json.Unmarshal([]byte(payload), &raw) != nil {
-		return "这款枕头", ""
-	}
-	content, _ := raw["content"].(map[string]any)
-	name, _ := content["product_title"].(string)
-	if name == "" {
-		name = "这款枕头"
-	}
-	price, _ := content["product_price"].(string)
-	if price != "" {
-		return name, "，售价 " + price + " 元"
-	}
-	return name, ""
 }
 
 func hasTopic(topics []string, value string) bool {

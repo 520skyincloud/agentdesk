@@ -130,7 +130,7 @@ func TestPMSSandboxSixSceneReadPreviewAndCommit(t *testing.T) {
 		t.Fatalf("A multi-topic reply lost checkout: result=%+v err=%v", result, err)
 	}
 	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "E", Topics: []string{"birthday", "benefits"}})
-	if err != nil || !result.Completed || result.Reply != "您当前是钻石会员，已入住 16 次。生日可享 100 元礼遇，有效期 30 天。" {
+	if err != nil || !result.Completed || result.Reply != "您当前是钻石会员，已入住16次。生日可享50元券礼遇，有效期30天。" {
 		t.Fatalf("E incomplete: %+v %v", result, err)
 	}
 	result, err = f.svc.ExecuteScene(ctx, f.scope, sandbox.SceneInput{Scene: "F"})
@@ -163,6 +163,55 @@ func TestPMSSandboxSixSceneReadPreviewAndCommit(t *testing.T) {
 	f.db.Model(&models.ServiceRecoveryCase{}).Count(&recoveryCount)
 	if recoveryCount != 1 {
 		t.Fatalf("commitment must be recorded once: %d", recoveryCount)
+	}
+}
+
+func TestPMSSandboxDemoReplyCopy(t *testing.T) {
+	f := newSandboxFixture(t)
+	for _, tc := range []struct {
+		name  string
+		input sandbox.SceneInput
+		want  string
+	}{
+		{"upgrade", sandbox.SceneInput{Scene: "B"}, "可以的，你是会员，可以为您升级大床房"},
+		{"birthday", sandbox.SceneInput{Scene: "E", Topics: []string{"birthday"}}, "生日可享50元券礼遇，有效期30天。"},
+		{"birthday_and_benefits", sandbox.SceneInput{Scene: "E", Topics: []string{"birthday", "benefits"}}, "您当前是钻石会员，已入住16次。生日可享50元券礼遇，有效期30天。"},
+		{"member_and_birthday", sandbox.SceneInput{Scene: "E", Topics: []string{"member", "birthday"}}, "您当前是钻石会员，已入住16次。生日可享50元券礼遇，有效期30天。"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := f.svc.ExecuteScene(context.Background(), f.scope, tc.input)
+			if err != nil || result == nil || !result.Completed || result.Reply != tc.want {
+				t.Fatalf("unexpected fixed reply: result=%+v err=%v want=%q", result, err, tc.want)
+			}
+			if result.Operation != nil {
+				t.Fatal("fixed demo reply must not prepare an operation")
+			}
+		})
+	}
+}
+
+func TestPMSSandboxPillowDemoReplyKeepsOriginalCard(t *testing.T) {
+	f := newSandboxFixture(t)
+	const payload = `{"content":{"product_title":"丽斯严选零压力护颈椎枕头","product_price":"18018","product_id":"fixture-pillow"}}`
+	resourceID := f.snap.Resources[0].ID
+	sourceID := f.message(f.scope.ConversationID, enums.IMSenderTypeCustomer, "商品卡片")
+	if err := f.db.Model(&models.PMSSandboxResource{}).Where("id = ?", resourceID).Updates(map[string]any{
+		"card_payload": payload, "message_type": "shop_product", "source_message_id": sourceID,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.svc.ExecuteScene(context.Background(), f.scope, sandbox.SceneInput{Scene: "F"})
+	const want = "您喜欢的是丽斯严选零压力护颈椎枕头，售价180.18元。给您发商品资料，您可以先看看。"
+	if err != nil || result == nil || !result.Completed || result.Reply != want {
+		t.Fatalf("unexpected pillow reply: result=%+v err=%v", result, err)
+	}
+	if result.Resource == nil || result.Resource.ID != resourceID ||
+		result.Resource.CardPayload != payload || result.Resource.SourceMessageID != sourceID ||
+		result.Resource.MessageType != "shop_product" {
+		t.Fatalf("original product card changed or was dropped: %+v", result.Resource)
+	}
+	if result.Operation != nil || strings.Contains(result.Reply, "确认办理") {
+		t.Fatal("pillow reply must only reply and retain its card")
 	}
 }
 
