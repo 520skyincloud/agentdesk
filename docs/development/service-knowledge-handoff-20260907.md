@@ -1034,3 +1034,16 @@ Generate/Commit/Outbox，不写客户消息，不算企微收件端验收；临�
 合入时需保留各自Intent逻辑，禁止整文件覆盖。发布仅test-2，沿用原嵌入前端，
 先备份当前数据与配置；回滚只切回20260907-request-answer-5cfc219，不恢复旧库。
 “薇薇”命名备份保持只读，PMS保持关闭，历史sending/interrupt不重发、不改状态。
+
+### 发布结果
+
+2026-09-16 16:38（北京时间）已部署程序提交`f94f64a7412b755f3ce27db954f5443f1814c3bd`，
+两个远端均已推送，推送后fetch复核无新的目标文件分歧。
+运行目录`/opt/agentdesk/releases/20260916-checkin-resource-f94f64a`；
+二进制SHA256为`5463de250defd0e984ef54e71154f9d818887b1bbb6e526f9af3cb8c6b8cb663`。
+备份`/opt/backups/agentdesk-before-checkin-resource-20260916`包含当前数据库、
+release、shared及systemd，gzip与SHA均验证。配置SHA及业务环境逐项未变；
+切换前后消息5774条、最大ID18232，会话133条，Outbox sent2151、
+sending7、cancelled2均未变。8083返回200，active/running、NRestarts=0，
+启动以来未发现ERROR/panic；先前已有的后台同步WARN不作为此次已解决项。
+未向其风补发旧消息或注入新测试消息，企微收件端实际收卡仍待用户发送入住请求验证。
