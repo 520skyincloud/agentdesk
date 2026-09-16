@@ -134,3 +134,17 @@ cd web && pnpm exec eslint \
 - Linux amd64 二进制 SHA-256：`92bd27e7a6781950ad067f8558173c92f78eafe00c4d07d5ce4bfa8f9da98fae`，上传、安装和运行文件一致。
 - 服务 active/running，8083 HTTP 200，后台鉴权接口返回预期未登录 JSON；重启次数0，启动日志未发现 panic。
 - 本轮未额外发送真实客户消息；固定文本和卡片引用保留已通过自动测试，不将其描述为收件端实测。
+
+## 六个原句逐字命中
+
+- 原因：之前仍依赖 Intent 模型先分类，A 的停车原句可能未进入 Sandbox，E 也可能被拆成两个不同回复。
+- 新增 `internal/pms/sandbox/demo.go` 作为六组批准问答的唯一文本来源。六个完整原句只归一化输入空白及中英文常见标点，不用关键词/子串吞掉其他问题；输出不归一化、不改写。
+- Executor 在 `buildRunMessages` 前命中原句，直接构建固定文本 Task，跳过 Intent/Judge/Generate。A-E 不要求订单或会员绑定；F 只读取当前门店已绑定商品资源，仍由原 Commit/Outbox 发送。
+- 命中但商品卡片缺失时返回可追踪错误，不回退让模型编写不同话术，也不把文本口令当卡片成功。
+- 仅 `config.PMSSandboxEnabled()` 的 test-2 生效。未命中的问题、员工接管、来源消息、历史记录、稳定消息 ID 和 Outbox 契约不变。
+- 不增加 model/migration、DTO、enum、接口或运行配置；共享入口 `executor/service.go` 仅增加命中即返回的调用，不改模型配置、token统计与计费语义。
+- 已 fetch origin，customer-audit 与 ai-billing 在本次文件没有并行新增修改；本次可独立合并/回退，无需前置 rebase。
+- 验证：六个原句逐字相等、无模型调用、F 原资源引用、未绑定订单/会员可答、额外问题不被整轮拦截、非 test-2 不启用。
+- 命令：`go test -p=1 ./internal/pms/sandbox ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`。
+- 2026-09-16 上述四个包全部通过；连续消息先按现有来源解析去除内部包络，E 分两条输入仍逐字命中，附加问题或图片不被忽略。`git diff --check` 通过。
+- 发送链只读复核：固定文本经 Commit/Outbox 不增加前后缀，商品仍发送原 `shop_product`；员工接管与现有人工恢复通知逻辑不变。本轮不新增业务写入，也不替代收件端实测。

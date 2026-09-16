@@ -45,6 +45,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 
 	checkPointID := resolveCheckPointID(req.CheckPointID, summary.RunID)
 	summary.CheckPointID = checkPointID
+	if handled, err := tryCompleteSandboxExactDemoReply(ctx, req, summary, collector); handled {
+		return summary, err
+	}
 	messages := buildRunMessages(ctx, req, summary, collector, s.answerabilityGate)
 	if collector.Data.Error.Stage == "question_coverage" {
 		return completeGeneratedReplyProtocolFailure(summary, collector, fmt.Errorf("question coverage failed: %s", collector.Data.Error.Message), "question_coverage")

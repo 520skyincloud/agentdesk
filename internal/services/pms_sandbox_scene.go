@@ -39,7 +39,7 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			return result, nil
 		}
 		// Fixed demo copy matches the bound pillow card; Commit still sends the original card.
-		result.Reply = "您喜欢的是丽斯严选零压力护颈椎枕头，售价180.18元。给您发商品资料，您可以先看看。"
+		result.Reply = sandbox.DemoReply("F")
 		result.Resource, result.Completed = state.Resource, true
 		return result, nil
 	}
@@ -59,7 +59,7 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			(hasTopic(input.Topics, "benefits") || hasTopic(input.Topics, "membership") || hasTopic(input.Topics, "member")) &&
 			hasOnlyTopics(input.Topics, "birthday", "benefits", "membership", "member") {
 			// Keep the showcase question as a single, deterministic answer.
-			result.Reply = "您当前是钻石会员，已入住16次。" + birthdayReply
+			result.Reply = sandbox.DemoReply("E")
 			result.Completed = true
 			return result, nil
 		}
@@ -94,7 +94,7 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 			topics = []string{"order"}
 		}
 		if hasTopic(topics, "parking") && hasOnlyTopics(topics, "parking") {
-			result.Reply = "酒店提供免费停车服务，设有地上地下停车场，推荐您从昭潭路进入。"
+			result.Reply = sandbox.DemoReply("A")
 			result.Completed = true
 			return result, nil
 		}
@@ -149,15 +149,15 @@ func (s *pmsSandboxService) ExecuteScene(ctx context.Context, scope sandbox.Scop
 	}
 	switch scene {
 	case "B":
-		result.Reply = "可以的，你是会员，可以为您升级大床房"
+		result.Reply = sandbox.DemoReply("B")
 		result.Completed = true
 		return result, nil
 	case "C":
-		result.Reply = "可以为您从1208房换到1606房，1606房相对安静。"
+		result.Reply = sandbox.DemoReply("C")
 		result.Completed = true
 		return result, nil
 	case "D":
-		result.Reply = "很抱歉空调问题影响了您的入住。我们为您提供50元补偿、免费升房或延迟退房至14:00三种补救方案。"
+		result.Reply = sandbox.DemoReply("D")
 		result.Completed = true
 		return result, nil
 	}
