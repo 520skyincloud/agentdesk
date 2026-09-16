@@ -1003,3 +1003,34 @@ multi_reply_output.go、generate_recovery.go。前两者整理现有提示及记
 结果原始文件 `/tmp/agentdesk-task-answer-live-20260907.jsonl` 位于服务器，
 不提交生成报告。ChannelID=0验证服务器真实模型链路，不代表企微收件设备投递验收。
 推送后fetch复核两个并行分支，四个运行文件无新同文件分歧，无需rebase。
+
+## 2026-09-16 薇薇基线入住卡片修复
+
+目标：修复其风会话1889、消息18231“给我办个入住”只有正文没有入住卡片的问题。
+RunLog7935显示初始预期含provide_mini_program，覆盖修复后变为
+service_request/checkin_action，最终资源动作为空；仅有正文Outbox，未尝试发送卡片。
+第一轮Judge原始coverage问题未持久化，不能断言当时具体反馈文字。
+逐项对照原备份已确认程序SHA、systemd、业务环境、Intent/模型配置及实例7入住
+小程序配置一致，不以此问题断言恢复不完整；历史成功不能证明该边界稳定。
+
+运行文件限定intent_model_detector.go、intent_pipeline.go、question_coverage.go；
+回归位于intent_pipeline_test.go、question_coverage_test.go。复用既有资源动作：
+入住流程和明确入住办理均附卡；覆盖核对标明父目标及附属交付，修复保持资源ID与
+当前来源，并同步最终提交计划。取消、未解歧、历史原话、独立资源、重复原话、
+混合早餐题及修正为非入住目标均有边界测试，不扩展为关键词业务拆题。
+无model/migration、数据库、DTO/enum、外部API、WebSocket、权限、计费、
+企微协议、Outbox、PMS、运行配置或知识库变更；不增加模型阶段。
+
+验证：新增关键测试在原代码失败，补丁后
+`go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`通过。
+仅一次只读真实模型诊断，共Intent/Judge两次调用，使用消息18231的原有上下文
+和一条已知门店入住知识，得到hotel_info/checkin_process、一个目标一个附属卡片、
+coverage=complete、direct_single，耗时7.47秒。不是完整召回重放，不运行
+Generate/Commit/Outbox，不写客户消息，不算企微收件端验收；临时诊断文件不提交。
+
+独立分支codex/weiwei-checkin-resource-20260916，基于5cfc219，不动其他脏工作区。
+提交前fetch已核对customer-audit与ai-billing；两分支相对共同祖先在目标文件无新增
+未合入改动。该补丁可独立review/cherry-pick，不需要重排共享契约；其他分支后续
+合入时需保留各自Intent逻辑，禁止整文件覆盖。发布仅test-2，沿用原嵌入前端，
+先备份当前数据与配置；回滚只切回20260907-request-answer-5cfc219，不恢复旧库。
+“薇薇”命名备份保持只读，PMS保持关闭，历史sending/interrupt不重发、不改状态。

@@ -956,6 +956,118 @@ func TestV2CheckinMiniProgramUsesTopLevelActionWithSourceBoundReplyPlan(t *testi
 	}
 }
 
+func TestV2CheckinActionKeepsBoundMiniProgram(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: text}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", IntentConfidence: 0.9,
+		SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "checkin_action", Objective: "action_request",
+			Text: text, ResolvedText: text, SourceRefs: []string{"U1"},
+			RelationToPrevious: "independent", ResolutionState: "clear", NeedsKnowledge: true,
+		}},
+	}, req, adapter.HistoryBuildResult{}, nil)
+	if intent.PrimaryIntent != "service_request" || len(intent.IntentTasks) != 1 {
+		t.Fatalf("resource binding must not reclassify or split the model-owned request: %+v", intent)
+	}
+	if !intent.NeedsResource || !containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("recognized check-in action lost its configured entry: %+v", intent)
+	}
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 {
+		t.Fatalf("expected knowledge reply and attached card: %+v", plan.TaskPlans)
+	}
+	card := plan.TaskPlans[1]
+	if card.ResourceAction != "provide_mini_program" || card.OriginalText != text ||
+		!reflect.DeepEqual(card.SourceRefs, []string{"U1"}) {
+		t.Fatalf("card lost the current check-in source: %+v", card)
+	}
+}
+
+func TestV2CheckinMiniProgramKeepsValidatedRepeatedSources(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"[文字] " + text, "[文字] " + text,
+	})}}
+	for _, ref := range []string{"U1", "U2"} {
+		t.Run(ref, func(t *testing.T) {
+			intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9,
+				SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "checkin_process", Objective: "method",
+					Text: text, ResolvedText: text, SourceRefs: []string{ref},
+					RelationToPrevious: "independent", ResolutionState: "clear", NeedsKnowledge: true,
+				}},
+			}, req, adapter.HistoryBuildResult{}, nil)
+			if !containsString(intent.ResourceActions, "provide_mini_program") {
+				t.Fatal("a repeated message must not invalidate its verified source binding")
+			}
+			plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+			if len(plan.TaskPlans) != 2 || !reflect.DeepEqual(plan.TaskPlans[1].SourceRefs, []string{ref}) {
+				t.Fatalf("card must keep the model-bound source: %+v", plan)
+			}
+			intent.IntentTasks[0].SourceRefs = []string{"U3"}
+			if shouldAttachCheckinMiniProgramTask(intent, req) {
+				t.Fatal("an unknown source must not authorize a card")
+			}
+		})
+	}
+}
+
+func TestV2CheckinMiniProgramRejectsUnrelatedOrUnresolvedGoals(t *testing.T) {
+	for _, tc := range []struct {
+		name, text, intent, subIntent, objective, resolution string
+	}{
+		{"already checked in", "我已经入住了", "interaction", "acknowledgement", "social", "clear"},
+		{"cancel", "不办入住了", "service_request", "checkin_action", "cancel", "clear"},
+		{"time", "几点可以入住", "hotel_info", "checkin_time", "time", "clear"},
+		{"deposit", "入住押金多少", "hotel_info", "deposit", "price", "clear"},
+		{"unknown service", "帮我办入住", "service_request", "unknown_service", "action_request", "clear"},
+		{"ambiguous", "入住那个帮我弄下", "service_request", "checkin_action", "action_request", "ambiguous"},
+		{"unresolved", "入住那个帮我弄下", "hotel_info", "checkin_process", "method", "unresolved"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := RunInput{UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: tc.text}}
+			intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+				PrimaryIntent: tc.intent, IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: tc.intent, SubIntent: tc.subIntent, Objective: tc.objective, ResolutionState: tc.resolution,
+					RelationToPrevious: "independent", Text: tc.text, ResolvedText: tc.text, SourceRefs: []string{"U1"},
+				}},
+			}, req, adapter.HistoryBuildResult{}, nil)
+			if containsString(intent.ResourceActions, "provide_mini_program") {
+				t.Fatalf("unrelated or unresolved goal must not send a check-in card: %+v", intent)
+			}
+		})
+	}
+}
+
+func TestV2CheckinActionUsesResolvedCurrentSource(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{Content: "那帮我办一下"}}
+	intent := normalizeModelIntentTrace(callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "checkin_action", Objective: "action_request",
+			ResolutionState: "resolved_from_context", RelationToPrevious: "follow_up",
+			Text: "那帮我办一下", ResolvedText: "帮我办理入住", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+		}},
+	}, req, adapter.HistoryBuildResult{}, nil)
+	if !containsString(intent.ResourceActions, "provide_mini_program") {
+		t.Fatalf("resolved current check-in request lost its resource: %+v", intent)
+	}
+	intent.IntentTasks[0].RelationToPrevious = "cancel_previous"
+	if shouldAttachCheckinMiniProgramTask(intent, req) {
+		t.Fatal("an explicit cancellation relation must not resend the check-in entry")
+	}
+	intent.IntentTasks[0].RelationToPrevious = "follow_up"
+	intent.IntentTasks[0].Text = "上次帮我办理入住"
+	if shouldAttachCheckinMiniProgramTask(intent, req) {
+		t.Fatal("historical text must not authorize a new check-in card")
+	}
+}
+
 func TestBuildReplyTaskPlansPreservesV2ModelTaskCount(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent:            "hotel_info",

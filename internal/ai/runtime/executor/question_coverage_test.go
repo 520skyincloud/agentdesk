@@ -2,16 +2,191 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"agent-desk/internal/ai/rag"
+	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/utils"
 )
+
+func TestQuestionCoverageTreatsCheckinCardAsAttachedDelivery(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{Content: text}}
+	intent := coverageTestIntent(text)
+	intent.IntentTasks[0].SubIntent = "checkin_process"
+	intent.IntentTasks[0].Objective = "method"
+	intent = normalizeModelIntentTrace(intent, req, adapter.HistoryBuildResult{}, nil)
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 {
+		t.Fatalf("fixture must retain the original knowledge and resource execution tasks: %+v", plan)
+	}
+	input := buildRuntimeQuestionCoverageInput(req, plan)
+	if len(input.Tasks) != 1 {
+		t.Fatalf("one check-in request must remain one coverage goal, not %d output tasks", len(input.Tasks))
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"attachedResources"`) ||
+		!strings.Contains(string(raw), `"resourceAction":"provide_mini_program"`) ||
+		!strings.Contains(string(raw), `"taskId":"`+plan.TaskPlans[1].TaskID+`"`) {
+		t.Fatalf("coverage must identify the attached card without hiding its execution: %s", raw)
+	}
+}
+
+func TestQuestionCoverageKeepsExplicitResourcesIndependent(t *testing.T) {
+	const text = "给我办个入住"
+	intent := coverageTestIntent(text)
+	intent.IntentTasks[0].SubIntent = "checkin_process"
+	intent.IntentTasks[0].Objective = "method"
+	intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{
+		Intent: "hotel_variable", SubIntent: "mini_program", Objective: "resource",
+		Text: "小程序发我", ResolvedText: "小程序发我", SourceRefs: []string{"U1"},
+		ResolutionState: "clear", RelationToPrevious: "independent",
+		NeedsResource: true, ResourceAction: "provide_mini_program",
+	})
+	req := RunInput{UserMessage: models.Message{Content: text + "，小程序发我"}}
+	intent = normalizeModelIntentTrace(intent, req, adapter.HistoryBuildResult{}, nil)
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	input := buildRuntimeQuestionCoverageInput(req, plan)
+	if len(input.Tasks) != 2 || input.Tasks[1].ResourceAction != "provide_mini_program" {
+		t.Fatalf("shared U1 alone must not absorb a distinct resource request: %+v", input)
+	}
+	if len(input.Tasks[0].AttachedResources) != 0 {
+		t.Fatal("explicit resource must retain its own source and question")
+	}
+	repaired := intent
+	repaired.IntentTasks = append([]callbacks.IntentTaskTraceData(nil), intent.IntentTasks...)
+	repaired.IntentTasks[0].Objective = "action_request"
+	repaired.IntentTasks[1].ResolvedText = "打开另一个小程序"
+	_, _, err := reconcileRuntimeQuestionRepairPlan(plan,
+		buildReplyPlan(repaired, callbacks.IntentPromptTraceData{}), input,
+		[]runtimeQuestionCoverageIssue{{TaskID: plan.TaskPlans[0].TaskID}})
+	if err == nil {
+		t.Fatal("repair must not rewrite an unaffected independent resource request")
+	}
+}
+
+func TestQuestionCoverageRepairKeepsCardIDAndCustomerSourceOrder(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{Content: utils.BuildRuntimeCustomerBurstEnvelope([]string{
+		"[文字] " + text, "[文字] 早餐几点",
+	})}}
+	old := coverageTestIntent(text, "早餐几点")
+	old.IntentTasks[0].SubIntent, old.IntentTasks[0].Objective = "checkin_process", "method"
+	old.IntentTasks[1].SubIntent, old.IntentTasks[1].Objective = "breakfast", "time"
+	old.IntentTasks[1].SourceRefs = []string{"U2"}
+	old = normalizeModelIntentTrace(old, req, adapter.HistoryBuildResult{}, nil)
+	oldPlan := buildReplyPlan(old, callbacks.IntentPromptTraceData{})
+	if len(oldPlan.TaskPlans) != 3 {
+		t.Fatalf("fixture must contain two questions and an appended card: %+v", oldPlan)
+	}
+	input := buildRuntimeQuestionCoverageInput(req, oldPlan)
+	if len(input.Tasks) != 2 || len(input.Tasks[0].AttachedResources) != 1 {
+		t.Fatalf("card must belong to the first question: %+v", input)
+	}
+	repaired := old
+	repaired.IntentTasks = append([]callbacks.IntentTaskTraceData(nil), old.IntentTasks...)
+	repaired.IntentTasks[0].Intent = "service_request"
+	repaired.IntentTasks[0].SubIntent, repaired.IntentTasks[0].Objective = "checkin_action", "action_request"
+	repaired.IntentTasks[0].ResolvedText = "请帮我办理酒店入住"
+	repaired.IntentTasks[0].Entities = []callbacks.IntentEntityTraceData{{Text: "入住", Type: "service"}}
+	repaired = normalizeModelIntentTrace(repaired, req, adapter.HistoryBuildResult{}, nil)
+	issues := []runtimeQuestionCoverageIssue{{TaskID: oldPlan.TaskPlans[0].TaskID}}
+	got, changed, err := reconcileRuntimeQuestionRepairPlan(oldPlan,
+		buildReplyPlan(repaired, callbacks.IntentPromptTraceData{}), input, issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || len(got.TaskPlans) != 3 ||
+		got.TaskPlans[2].TaskID != oldPlan.TaskPlans[2].TaskID ||
+		!reflect.DeepEqual(got.TaskPlans[1], oldPlan.TaskPlans[1]) {
+		t.Fatalf("reclassification must retain card identity and untouched breakfast: changed=%v plan=%+v", changed, got)
+	}
+	if got.TaskPlans[2].ResolvedText != repaired.IntentTasks[0].ResolvedText {
+		t.Fatal("stable card identity must not preserve stale parent context")
+	}
+	allChanged := map[string]bool{}
+	for _, task := range got.TaskPlans {
+		allChanged[task.TaskID] = true
+	}
+	if tasks := appendRuntimeCoverageOnlyJudgeTasks(nil, got, allChanged); len(tasks) != 2 {
+		t.Fatalf("attached card must not become another no-evidence Judge task: %+v", tasks)
+	}
+
+	// A corrected non-check-in goal must remove its implicit card, not union old actions.
+	repaired.IntentTasks[0].Intent = "hotel_info"
+	repaired.IntentTasks[0].SubIntent, repaired.IntentTasks[0].Objective = "checkin_time", "time"
+	repaired = normalizeModelIntentTrace(repaired, req, adapter.HistoryBuildResult{}, nil)
+	got, _, err = reconcileRuntimeQuestionRepairPlan(oldPlan,
+		buildReplyPlan(repaired, callbacks.IntentPromptTraceData{}), input, issues)
+	if err != nil || len(got.TaskPlans) != 2 || repaired.NeedsResource {
+		t.Fatalf("obsolete implicit card must follow its corrected parent: plan=%+v err=%v", got, err)
+	}
+}
+
+func TestQuestionCoverageRepairPublishesCheckinResourceToCommit(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{Content: text}}
+	old := coverageTestIntent(text)
+	old.IntentTasks[0].SubIntent, old.IntentTasks[0].Objective = "checkin_process", "method"
+	old = normalizeModelIntentTrace(old, req, adapter.HistoryBuildResult{}, nil)
+	oldPlan := buildReplyPlan(old, callbacks.IntentPromptTraceData{})
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = old
+	collector.SetReplyPlan(oldPlan)
+	state := &answerabilityGateState{Input: answerabilityGateInput{Request: req, Intent: old, Collector: collector}}
+	input := buildRuntimeQuestionCoverageInput(req, oldPlan)
+	taskID := oldPlan.TaskPlans[0].TaskID
+	outcome := knowledgeEvidenceJudgeOutcome{Applied: true, Coverage: &runtimeQuestionCoverage{
+		Status: "repair_required",
+		Issues: []runtimeQuestionCoverageIssue{{
+			Kind: "misdirected_query", TaskID: taskID, SourceRef: "U1", Text: text, Reason: "需保留客户办理请求",
+		}},
+	}}
+	hit := rag.RetrieveResult{KnowledgeBaseID: 1, Content: "问题：如何办理入住\n答案：通过入住机或小程序办理入住。", Score: .9}
+	retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1},
+		result: &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{hit}}}
+	gate := &KnowledgeAnswerabilityGate{
+		repairIntent: func(context.Context, RunInput, callbacks.IntentTraceData, *runtimeQuestionCoverageInput, []runtimeQuestionCoverageIssue) (callbacks.IntentTraceData, error) {
+			repaired := coverageTestIntent(text)
+			repaired.IntentTasks[0].Intent = "service_request"
+			repaired.IntentTasks[0].SubIntent, repaired.IntentTasks[0].Objective = "checkin_action", "action_request"
+			return normalizeModelIntentTrace(repaired, req, adapter.HistoryBuildResult{}, nil), nil
+		},
+		judge: coverageTestJudge(func(_ context.Context, _ RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+			if len(tasks) != 1 || len(tasks[0].Coverage.Tasks) != 1 || len(tasks[0].Coverage.Tasks[0].AttachedResources) != 1 {
+				t.Fatalf("repair must judge one goal with its attached delivery: %+v", tasks)
+			}
+			return knowledgeEvidenceJudgeOutcome{Applied: true, Coverage: &runtimeQuestionCoverage{Status: "complete"},
+				Selections: map[string]map[string]knowledgeEvidenceLayerSelection{tasks[0].TaskID: {"store": {Decision: "direct_single"}}}}
+		}),
+	}
+	_, _, _, err := gate.repairQuestionCoverageOnce(context.Background(), state, retriever,
+		retrievers.DefaultKnowledgeRetrieveOptions(),
+		&runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: taskID, Query: text}}},
+		[]knowledgeEvidenceJudgeTask{{TaskID: taskID, Coverage: input}}, outcome, []int64{1}, []int64{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !collector.Data.Pipeline.Intent.NeedsResource ||
+		!containsString(collector.Data.Pipeline.Intent.ResourceActions, "provide_mini_program") ||
+		!containsString(collector.Data.Pipeline.ContextBuild.IntentResourcesExpected, "resource action:provide_mini_program") {
+		t.Fatalf("final Commit-facing intent and context must keep the card: %+v", collector.Data.Pipeline)
+	}
+	if len(collector.Data.Pipeline.ReplyPlan.TaskPlans) != 2 ||
+		collector.Data.Pipeline.ReplyPlan.TaskPlans[1].TaskID != oldPlan.TaskPlans[1].TaskID {
+		t.Fatal("repair did not publish the stable resource task")
+	}
+}
 
 type coverageTestJudge func(context.Context, RunInput, []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome
 

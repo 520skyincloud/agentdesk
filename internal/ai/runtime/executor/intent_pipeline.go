@@ -475,7 +475,8 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 	}
 	for _, task := range intent.IntentTasks {
 		matchesAction := strings.TrimSpace(task.ResourceAction) == action
-		matchesCheckin := action == "provide_mini_program" && task.Intent == "hotel_info" && isCheckinProcessSubIntent(task.SubIntent)
+		matchesCheckin := action == "provide_mini_program" &&
+			isCheckinMiniProgramRequest(task.Intent, task.SubIntent, task.Objective, task.ResolutionState, task.RelationToPrevious)
 		if !matchesAction && !matchesCheckin {
 			continue
 		}

@@ -1417,19 +1417,26 @@ func intentHasMixedHotelInfoTask(intent callbacks.IntentTraceData) bool {
 }
 
 func shouldAttachCheckinMiniProgramTask(intent callbacks.IntentTraceData, req RunInput) bool {
-	if intent.PrimaryIntent != "hotel_info" {
+	if intent.PrimaryIntent == "human_complaint_risk" {
 		return false
 	}
 	currentText := currentRuntimeIntentSemanticText(req)
-	if isCheckinProcessSubIntent(intent.SubIntent) && runtimeIntentTextMentionsCheckin(currentText) {
-		return true
+	if len(intent.IntentTasks) == 0 {
+		return intent.PrimaryIntent == "hotel_info" && isCheckinProcessSubIntent(intent.SubIntent) &&
+			runtimeIntentTextMentionsCheckin(currentText)
 	}
 	sourceTexts := currentTurnIntentSourceTexts(currentText)
 	for _, task := range intent.IntentTasks {
-		if task.Intent != "hotel_info" || !isCheckinProcessSubIntent(task.SubIntent) {
+		if !isCheckinMiniProgramRequest(task.Intent, task.SubIntent, task.Objective, task.ResolutionState, task.RelationToPrevious) {
 			continue
 		}
-		if uniqueRuntimeIntentTaskSourceRef(task, sourceTexts) == "" {
+		grounded := false
+		if intent.SemanticContractExpected && intent.SourceRefsValidated {
+			grounded = runtimeIntentProtocolCandidateMatchesTaskSource(task.Text, runtimeIntentSourceRefList(task.SourceRefs), sourceTexts)
+		} else {
+			grounded = uniqueRuntimeIntentTaskSourceRef(task, sourceTexts) != ""
+		}
+		if !grounded {
 			continue
 		}
 		if runtimeIntentTextMentionsCheckin(task.Text) {
@@ -1442,6 +1449,20 @@ func shouldAttachCheckinMiniProgramTask(intent callbacks.IntentTraceData, req Ru
 		}
 	}
 	return false
+}
+
+func isCheckinMiniProgramRequest(intent, subIntent, objective, resolution, relation string) bool {
+	if relation == "cancel_previous" || resolution == runtimeIntentResolutionAmbiguous || resolution == runtimeIntentResolutionUnresolved {
+		return false
+	}
+	switch objective {
+	case "cancel", "confirm", "status", "time", "price":
+		return false
+	}
+	if intent == "hotel_info" {
+		return isCheckinProcessSubIntent(subIntent)
+	}
+	return intent == "service_request" && subIntent == "checkin_action" && objective == "action_request"
 }
 
 func runtimeIntentTextMentionsCheckin(text string) bool {
@@ -1485,8 +1506,11 @@ func ensureCheckinProcessMiniProgramTask(intent callbacks.IntentTraceData, req R
 	hasMiniProgramTask := false
 	checkinSourceRefs := make([]string, 0)
 	for i := range intent.IntentTasks {
-		if intent.IntentTasks[i].Intent == "hotel_info" && isCheckinProcessSubIntent(intent.IntentTasks[i].SubIntent) {
-			intent.IntentTasks[i].SubIntent = "checkin_process"
+		task := &intent.IntentTasks[i]
+		if isCheckinMiniProgramRequest(task.Intent, task.SubIntent, task.Objective, task.ResolutionState, task.RelationToPrevious) {
+			if task.Intent == "hotel_info" {
+				task.SubIntent = "checkin_process"
+			}
 			intent.IntentTasks[i].NeedsKnowledge = true
 			if intent.IntentTasks[i].Objective == "" {
 				intent.IntentTasks[i].Objective = "method"
