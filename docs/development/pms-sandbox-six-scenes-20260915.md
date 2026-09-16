@@ -148,3 +148,13 @@ cd web && pnpm exec eslint \
 - 命令：`go test -p=1 ./internal/pms/sandbox ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services -count=1`。
 - 2026-09-16 上述四个包全部通过；连续消息先按现有来源解析去除内部包络，E 分两条输入仍逐字命中，附加问题或图片不被忽略。`git diff --check` 通过。
 - 发送链只读复核：固定文本经 Commit/Outbox 不增加前后缀，商品仍发送原 `shop_product`；员工接管与现有人工恢复通知逻辑不变。本轮不新增业务写入，也不替代收件端实测。
+
+### 逐字问答发布结果
+
+- 2026-09-16 已提交并推送两个远端，程序提交 `0720750`。
+- test-2 原子切换至 `/opt/agentdesk/releases/20260916-pms-demo-exact-0720750`；回退点保留 `/opt/agentdesk/releases/20260915-pms-demo-copy-ba6e7c4`，未修改其文件。
+- Linux amd64 二进制 SHA-256：`c3b6cb96e70f595073d411e06ff235e81037f76c30e6fc8d051295e5b3315547`，本地、上传、安装后校验一致；进程实际执行文件指向新 release。
+- 服务 active/running，8083 HTTP 200，后台接口返回预期未登录 `3000`，NRestarts=0；启动日志无 panic/fatal 或监听失败。
+- 配置仍为 test-2/sandbox，PMS 与 sandbox 开关均已启用；未改配置、数据库结构、PMS 数据、会话路由或历史消息。原商品资源仍为 sourceMessageID=10863 的 `shop_product`。
+- 发布后 fetch origin 复核相关文件，customer-audit/ai-billing 无新增同文件变更，无需 rebase。本次可独立回退程序，不恢复旧数据库。
+- 本轮没有额外向客户发送测试消息；六句逐字、零模型调用与原卡片引用通过自动回归，收件端展示留待用户实际发送验证。
