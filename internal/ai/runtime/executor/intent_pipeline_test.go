@@ -46,7 +46,7 @@ func TestRuntimeMemberIntentPromptOnlyAdvertisesEnabledPMS(t *testing.T) {
 	req := RunInput{UserMessage: models.Message{Content: "帮我查查会员是什么等级，有哪些权益"}}
 	config.SetCurrent(&config.Config{PMS: config.PMSConfig{Enabled: true, BaseURL: "http://pms.test"}})
 	prompt := buildRuntimeIntentDetectUserPrompt(req, adapter.HistoryBuildResult{}, nil)
-	for _, required := range []string{"hotel_info/member_info", "hotel_info/member_benefits", "hotel_info/order_query", "hotel_info/room_status", "hotel_info/room_inventory", "room_availability", "needsTool=true", "needsKnowledge=false", "使用 pms_query", "客户随后补充手机号", "升级条件和保级规则", "矿泉水知识任务"} {
+	for _, required := range []string{"hotel_info/member_info", "hotel_info/member_benefits", "hotel_info/order_query", "hotel_info/room_status", "hotel_info/room_inventory", "room_availability", "needsTool=true", "needsKnowledge 是否为 true", "pms_query", "客户随后补充手机号", "升级条件和保级规则", "矿泉水知识任务"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("member tool classification instruction missing: %s", required)
 		}
@@ -536,7 +536,7 @@ func TestRuntimeIntentDetectSystemPromptRoutesShortExplicitHandoffDirectly(t *te
 		"“转接”“人工”“找客服”“接同事”",
 		"human_complaint_risk/explicit_handoff",
 		"needsHumanRoute=true",
-		"直接进入已有接待路由",
+		"当前原话包含",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("intent prompt missing direct handoff rule %q: %s", expected, prompt)
@@ -705,8 +705,8 @@ func TestNormalizeAnswerRejectedRequiresAdjacentAIReply(t *testing.T) {
 			Content:     "可以走路过去。",
 		},
 	}}, nil)
-	if withAI.PrimaryIntent != "human_complaint_risk" || withAI.SubIntent != "answer_rejected" || !withAI.NeedsHumanRoute || withAI.HumanRoutePolicy != "managed_mode" {
-		t.Fatalf("expected adjacent AI answer rejection to use existing human route, got %#v", withAI)
+	if withAI.NeedsHumanRoute || withAI.HumanRoutePolicy != "" {
+		t.Fatalf("answer rejection must be re-answered without automatic human routing, got %#v", withAI)
 	}
 
 	withoutAI := normalizeModelIntentTrace(base, RunInput{}, adapter.HistoryBuildResult{RawItems: []models.Message{{
@@ -2978,7 +2978,7 @@ func TestRuntimePipelineInvoiceAttachmentFollowUpUsesKnowledge(t *testing.T) {
 		t.Fatal("invoice attachment follow-up should use knowledge")
 	}
 	instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent)
-	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "进入接待路由") || strings.Contains(instruction, "只能说当前资料没写明") {
+	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "不能因为未命中自动转人工") || strings.Contains(instruction, "只能说当前资料没写明") {
 		t.Fatalf("expected invoice follow-up to retain category-level action safety, got %q", instruction)
 	}
 }
@@ -3334,7 +3334,7 @@ func TestRuntimePipelineModelExplicitHandoffUsesHumanComplaintRiskRoute(t *testi
 	}
 }
 
-func TestRuntimePipelineKeepsModelHumanRouteWithoutKeywordRewrite(t *testing.T) {
+func TestRuntimePipelineRejectsModelHumanRouteWithoutExplicitRequest(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "human_complaint_risk", Name: "人工/投诉/风险", Priority: 100, MatchMode: "hybrid", NeedsHumanRoute: true, HumanRoutePolicy: "managed_mode", PromptPack: "按当前门店托管模式和排班路由。", Status: enums.StatusOk})
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "interaction", Name: "互动", Priority: 90, MatchMode: "hybrid", Status: enums.StatusOk})
@@ -3347,14 +3347,14 @@ func TestRuntimePipelineKeepsModelHumanRouteWithoutKeywordRewrite(t *testing.T) 
 		NeedsHumanRoute:  true,
 		Reason:           "模型把单纯辱骂误判为投诉风险",
 	}})
-	if plan.Intent.PrimaryIntent != "human_complaint_risk" || plan.Intent.SubIntent != "insult_complaint" {
-		t.Fatalf("expected model human intent to stay intact without keyword rewrite, got %#v", plan.Intent)
+	if plan.Intent.PrimaryIntent == "human_complaint_risk" || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("ordinary insult must not trigger human routing, got %#v", plan.Intent)
 	}
-	if !plan.Intent.NeedsHumanRoute || !plan.ToolKnowledge.ToolTriggered {
-		t.Fatalf("expected human route to follow the model result, intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
+	if !plan.Intent.NeedsKnowledge || !plan.ToolKnowledge.KnowledgeTriggered {
+		t.Fatalf("ordinary insult should remain on the answerable self-service path, intent=%#v tool=%#v", plan.Intent, plan.ToolKnowledge)
 	}
-	if strings.Contains(plan.Intent.Reason, "downgraded") {
-		t.Fatalf("unexpected keyword downgrade reason, got %q", plan.Intent.Reason)
+	if !strings.Contains(plan.Intent.Reason, "self-service") {
+		t.Fatalf("expected explicit self-service downgrade reason, got %q", plan.Intent.Reason)
 	}
 }
 

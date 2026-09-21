@@ -757,8 +757,8 @@ func buildAdjacentAIReplyRelationInstruction(history adapter.HistoryBuildResult)
 	b.WriteString("紧邻客服追问姓名、房号或其他必要字段后，客户只回复‘吴朝伟’‘1208’等字段值时，这是上一业务任务的槽位回答：继承原业务 intent/subIntent，relationToPrevious=clarification_answer；能唯一确定字段时 resolutionState=resolved_from_context，resolvedText 必须明确写成‘客户姓名为吴朝伟’‘房号为1208’这类完整语义，不能当作重新打招呼、普通数字或新闲聊。\n")
 	b.WriteString("紧邻已完成的业务答复仍然是合法上下文。省略追问、对象比较、复述或要求重新回答都要补全真实业务目标并重新进入该业务 Task；即使上一答复说没有资料、无法确认或需要同事处理，也不能按普通闲聊或 interaction/clarify 处理。例如上一轮回答附近餐饮后，客户说‘玩的呢/玩的勒’，应输出 hotel_info/surrounding_facilities、relationToPrevious=reference_previous、resolutionState=resolved_from_context，并补全 resolvedText。\n")
 	if senderType == enums.IMSenderTypeAI {
-		b.WriteString("只有以下语义关系输出 human_complaint_risk + answer_rejected，且 needsHumanRoute=true：客户当前消息明确否定上一答复；指出 AI 前后矛盾；明确指出答非所问；客户明确表示同一问题仍未解决；拒绝 AI 给出的能力边界方案并要求无法满足的例外；引用真人客服说法或现场事实反驳上一答复。单纯再次询问、要求复述、比较对象或补问细节，不等于拒绝上一答复，必须走 follow_up/reference_previous 并重新进入原业务 Task。\n")
-		b.WriteString("明确示例（必须结合此前问题与紧邻 AI 答复判断，不能只看单个词）：AI 前一条说走路几分钟就到，客户说‘你刚才不是说要开车吗’属于前后矛盾型 answer_rejected；AI 只回答用品去哪里领取，客户说‘我问的是房间里有没有’属于答非所问型 answer_rejected；AI 说不能微信转账，客户说‘客服说可以微信转账’属于事实反驳型 answer_rejected。以上都输出 human_complaint_risk + answer_rejected。\n")
+		b.WriteString("只有以下语义关系输出 human_complaint_risk + answer_rejected：客户当前消息明确否定上一答复；指出 AI 前后矛盾；明确指出答非所问；客户明确表示同一问题仍未解决；拒绝 AI 给出的能力边界方案并要求无法满足的例外；引用真人客服说法或现场事实反驳上一答复。answer_rejected 只表示需要重新理解并回答，必须 needsHumanRoute=false；除非客户当前原话同时明确要求转人工，不能调用人工路由。单纯再次询问、要求复述、比较对象或补问细节，不等于拒绝上一答复，必须走 follow_up/reference_previous 并重新进入原业务 Task。\n")
+		b.WriteString("明确示例（必须结合此前问题与紧邻 AI 答复判断，不能只看单个词）：AI 前一条说走路几分钟就到，客户说‘你刚才不是说要开车吗’属于前后矛盾型 answer_rejected；AI 只回答用品去哪里领取，客户说‘我问的是房间里有没有’属于答非所问型 answer_rejected；AI 说不能微信转账，客户说‘客服说可以微信转账’属于事实反驳型 answer_rejected。以上都先重新回答原业务问题，不自动转人工；只有当前原话另有‘转人工/找同事/找客服’等明确诉求时才同时进入人工路由。\n")
 		b.WriteString("以下不得输出 answer_rejected：提出独立新问题；正常补充收费、时间、支付等细节；正常回答 AI 刚才追问的房号、偏好、条件或选项；孤立的‘真的吗/为什么’但没有明确否定或矛盾；与上一业务答复无关的不满、吐槽或闲聊。此时按当前真实业务意图继续分类。")
 	}
 	return b.String()
@@ -1040,6 +1040,7 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 	}
 	intent = enforceAnswerRejectedAdjacency(intent, history)
 	intent = deriveModelIntentFromTasks(intent)
+	intent = enforceRuntimeHumanRoutePolicy(intent, currentRuntimeIntentSemanticText(req))
 	if intentHasHotelVariableTask(intent) {
 		intent.ResourceActions = normalizeHotelVariableResourceActions(intent.ResourceActions, intent.ResourceAction, intent.ResourceType, intent.SubIntent, intent.IntentTasks)
 	}
@@ -1101,16 +1102,23 @@ func normalizeModelIntentTrace(intent callbacks.IntentTraceData, req RunInput, h
 			intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinWeather.Code)
 		}
 	case "human_complaint_risk":
-		intent.NeedsKnowledge = false
 		intent.NeedsResource = false
-		intent.NeedsHumanRoute = true
-		if intent.SubIntent == "emergency_safety" {
-			intent.HumanRoutePolicy = "emergency_safety"
-		} else {
-			if strings.TrimSpace(intent.SubIntent) == "" {
-				intent.SubIntent = "explicit_handoff"
+		if intent.NeedsHumanRoute {
+			intent.NeedsKnowledge = false
+			if intent.SubIntent == "emergency_safety" {
+				intent.HumanRoutePolicy = "emergency_safety"
+			} else {
+				if strings.TrimSpace(intent.SubIntent) == "" {
+					intent.SubIntent = "explicit_handoff"
+				}
+				intent.HumanRoutePolicy = "managed_mode"
 			}
-			intent.HumanRoutePolicy = "managed_mode"
+		} else {
+			intent.NeedsKnowledge = intentHasMixedHotelInfoTask(intent) || !intent.NeedsTool
+			intent.HumanRoutePolicy = ""
+		}
+		if intent.NeedsHumanRoute && intent.SubIntent == "emergency_safety" {
+			intent.HumanRoutePolicy = "emergency_safety"
 		}
 	}
 	if shouldAttachCheckinMiniProgramTask(intent, req) {
@@ -1274,8 +1282,16 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 		}
 		switch task.Intent {
 		case "human_complaint_risk":
-			hasHuman = true
-			task.NeedsHumanRoute = true
+			if task.NeedsHumanRoute {
+				hasHuman = true
+			} else {
+				if isPMSRuntimeSubIntent(task.SubIntent) {
+					task.NeedsTool = true
+				} else {
+					task.NeedsKnowledge = true
+					task.NeedsTool = false
+				}
+			}
 		case "hotel_variable":
 			hasVariable = true
 			hasResource = true
@@ -1285,12 +1301,22 @@ func deriveModelIntentFromTasks(intent callbacks.IntentTraceData) callbacks.Inte
 				resourceActions = appendIfMissing(resourceActions, task.ResourceAction)
 			}
 		case "hotel_info":
-			task.NeedsKnowledge = !(task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent))
+			if isPMSRuntimeSubIntent(task.SubIntent) {
+				task.NeedsTool = true
+			} else {
+				task.NeedsKnowledge = true
+				task.NeedsTool = false
+			}
 			if isCheckinProcessSubIntent(task.SubIntent) {
 				hasCheckinKnowledge = true
 			}
 		case "service_request":
-			task.NeedsKnowledge = !(task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent))
+			if isPMSRuntimeSubIntent(task.SubIntent) {
+				task.NeedsTool = true
+			} else {
+				task.NeedsKnowledge = true
+				task.NeedsTool = false
+			}
 		}
 		if task.NeedsKnowledge {
 			hasKnowledge = true
@@ -1715,7 +1741,12 @@ func normalizeRuntimeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callba
 			task.ResourceAction = ""
 		}
 		if task.Intent == "hotel_info" || task.Intent == "service_request" {
-			task.NeedsKnowledge = true
+			if isPMSRuntimeSubIntent(task.SubIntent) {
+				task.NeedsTool = true
+			} else {
+				task.NeedsKnowledge = true
+				task.NeedsTool = false
+			}
 		}
 		if task.Intent == "hotel_variable" {
 			task.NeedsResource = true

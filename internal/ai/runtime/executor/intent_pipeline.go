@@ -107,12 +107,12 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 			instructions = append(instructions, "本轮同时包含酒店信息问题时，Generate 阶段只回答知识问题；变量消息由系统按 resourceActions 另行提交。")
 		}
 	case "service_request":
-		instructions = append(instructions, "服务请求先看知识库是否有自助路径。", "订单、入住状态、续住等实时请求必须标记 needsTool=true 并使用 pms_query；其他服务问题仍先查知识库。无法解决时追问一个必要字段或按人工意图/接待路由处理；没有工具或路由结果时，不能表达动作已执行、已转告、现场查看或后续有人处理。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
+		instructions = append(instructions, "服务请求先查当前门店知识库；涉及订单、当前房间、可售房型、升房/换房可行性、差价、会员权益或延迟退房条件时，同时使用只读 pms_query 获取事实。知识库或 PMS 能回答的内容直接回答，不因服务请求本身自动转人工；只有客户明确要求人工，或知识库明确写明转人工，才进入接待路由。没有真实写工具时，不得表达已经送达、已经换房、已经升房、已经延退或已经通知同事。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
-			instructions = append(instructions, "突发安全/受伤风险必须按接待路由转人工。", "先安抚、提醒不要移动；如停不下来或流血严重，提示先拨打 120/报警。", "缺房号/位置时追问当前位置，但不要因此阻断人工路由。")
+			instructions = append(instructions, "突发安全/受伤风险必须进入接待路由；同时先安抚并给出当前知识支持的立即安全建议。", "提醒不要移动；如停不下来或流血严重，提示先拨打 120/报警。", "缺房号/位置时追问当前位置，但不要编造已经派人。")
 		} else {
-			instructions = append(instructions, "按当前门店托管模式和排班处理人工、投诉和风险。", "不要口头假装已经通知或处理完成。", "普通设施/设备问题若知识库命中，知识库优先，不要反复诱导转人工。")
+			instructions = append(instructions, "投诉、赔偿、退款、订单或价格问题先查知识库和只读 PMS 事实，能回答就直接回答；不要把这些分类自动当作人工路由。只有客户明确要求人工，或知识库明确要求转人工，才调用人工路由。", "不要口头假装已经通知或处理完成。", "普通设施/设备问题若知识库命中，知识库优先，不要反复诱导转人工。")
 		}
 	case "interaction":
 		if intent.SubIntent == "media_context_follow_up" {
@@ -128,6 +128,12 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		}
 	default:
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")
+	}
+	instructions = append(instructions,
+		"人工路由最终约束：客户当前原话明确要求转人工/找同事/找客服/真人、知识库选中的答案明确要求转人工，或当前任务属于严重安全风险时，才允许调用人工路由；知识库未命中、普通服务请求、价格/赔偿问题和模型的不确定性都不能单独触发人工。",
+	)
+	if pmsInstruction := strings.TrimSpace(pmsQueryIntentInstruction()); pmsInstruction != "" {
+		instructions = append(instructions, pmsInstruction)
 	}
 	prompt := appendSpatialFactInstruction(callbacks.IntentPromptTraceData{PackName: name, Instructions: instructions}, intent)
 	if hasExternalProxyActionTask(intent) {
@@ -168,7 +174,7 @@ func pmsQueryIntentInstruction() string {
 	if current == nil || !current.PMS.Enabled || strings.TrimSpace(current.PMS.BaseURL) == "" {
 		return ""
 	}
-	return "\n当前已启用 PMS 只读查询：订单、房态、库存、客户会员事实不能只走静态知识库。查当前有效订单、订单详情、入住离店日期、房型房号、订单金额或状态归 hotel_info/order_query，可按客户提供的手机号或会员编号定位订单；实时房间状态归 hotel_info/room_status；指定入住离店日期的可售房型、余房或库存归 hotel_info/room_inventory（兼容 room_availability）。例如‘今天入住明天退房还有哪些房型可售’必须调用库存工具，不是门店设施 FAQ；库存不代表已锁房或已排房。查当前客户会员状态/等级归 hotel_info/member_info；查会员权益、等级升级条件或保级规则归 hotel_info/member_benefits，会员等级升级条件不是执行房间升房。以上对应 Task 的 needsTool=true、needsKnowledge=false，顶层 needsTool=true，使用 pms_query；顶层 needsKnowledge 只汇总同轮真正需要知识库的其他 Task。缺少手机号时保留真实查询目标，由回复阶段追问，不猜手机号、订单或等级编码；客户随后补充手机号或追问‘那这个会员的升级条件和保级规则’时继承相关查询主题。静态酒店政策仍查知识库；‘还有哪些房型可售，另外矿泉水收费吗’需保留库存工具任务和矿泉水知识任务，分别回答。实际升房/延退办理不能因权益配置而视作已执行。\n"
+	return "\n当前已启用 PMS 只读查询，旧的“不能办理所以转人工”限制不再适用于可查询事实：订单、房态、库存、会员、升房/换房/排房可行性、差价评估、会员减免资格和延迟退房条件不能只走静态知识库。查当前有效订单、订单详情、入住离店日期、房型房号、订单金额或状态归 hotel_info/order_query，可按客户提供的手机号或会员编号定位订单；实时房间状态归 hotel_info/room_status；指定入住离店日期的可售房型、余房或库存归 hotel_info/room_inventory（兼容 room_availability）；会员当前等级和状态归 hotel_info/member_info，会员权益、升级条件和保级规则归 hotel_info/member_benefits（按手机号或会员编号关联）。“能否升房、换房有没有空房、差价多少、会员能否免差价、延迟退房是否可行”分别使用 room_upgrade、room_change、room_assignment、price_difference、upgrade_eligibility、late_checkout 等具体子意图，并调用 pms_query 组合订单、库存、会员和规则事实。工具只读，能查询和评估方案，但不代表已经锁房、排房、改房型、升房或延迟退房。库存不代表已锁房或已排房，空价格不代表免费，查询失败不能宣称成功。以上对应 Task 的 needsTool=true；needsKnowledge 是否为 true 由该 Task 是否还需要门店政策、补偿规则或服务说明决定，不能强制清零。缺少手机号、订单号或日期时只追问一个能推进查询的关键字段，不猜手机号、订单或等级编码；客户随后补充手机号或追问“那这个会员的升级条件和保级规则”时继承相关查询主题。静态酒店政策、补偿规则和服务说明仍查知识库；“还有哪些房型可售，另外矿泉水收费吗”需保留库存工具任务和矿泉水知识任务，分别回答。旧提示中的价格争议、服务请求、赔偿或安全分类不等于人工路由；只有客户明确要求人工、知识库明确写明转人工或存在严重安全风险，才转接。\n"
 }
 
 func isExternalProxyActionClassification(intent string, subIntent string, objective string) bool {
@@ -292,12 +298,12 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 			goal = "按当前门店账号变量满足用户请求"
 		}
 	case "service_request":
-		goal = "给出自助路径或按策略引导人工，不承诺执行"
+		goal = "先用知识库或只读 PMS 给出当前问题的事实、条件和可行方案；没有真实写入能力时只说明尚未办理，不主动转人工"
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
-			goal = "处理突发安全/受伤风险并进入接待路由"
+			goal = "进入安全接待路由，并先给出有依据的立即安全处理建议"
 		} else {
-			goal = "按托管模式处理人工、投诉或风险诉求"
+			goal = "先查知识库或只读 PMS 回答投诉、赔偿、退款、订单和价格事实；仅在客户明确要求人工或知识库明确要求转人工时路由"
 		}
 	}
 	style := "自然微信口吻，1-3句"
@@ -543,7 +549,7 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 	if task.NeedsResource || task.Intent == "hotel_variable" || strings.TrimSpace(task.ResourceAction) != "" {
 		output = "structured_resource_commit"
 	}
-	if task.Intent == "human_complaint_risk" {
+	if task.NeedsHumanRoute {
 		output = "human_route_confirmation_or_dispatch"
 	}
 	return callbacks.ReplyTaskPlanTraceData{
@@ -707,7 +713,7 @@ func replyTaskOutputKind(task callbacks.ReplyTaskPlanTraceData) string {
 	if task.Output == "structured_resource_commit" || task.Intent == "hotel_variable" || strings.TrimSpace(task.ResourceAction) != "" {
 		return "resource"
 	}
-	if task.Output == "human_route_confirmation_or_dispatch" || task.Intent == "human_complaint_risk" {
+	if task.Output == "human_route_confirmation_or_dispatch" || task.NeedsHumanRoute {
 		return "handoff"
 	}
 	return "text"
@@ -733,10 +739,10 @@ func replyTaskRequiresText(task callbacks.ReplyTaskPlanTraceData) bool {
 	if task.ReplyRequired {
 		return true
 	}
-	if task.Output == "structured_resource_commit" || task.Output == "human_route_confirmation_or_dispatch" {
+	if task.Output == "structured_resource_commit" || task.Output == "human_route_confirmation_or_dispatch" || task.NeedsHumanRoute {
 		return false
 	}
-	return task.Output == "text_reply" || task.Output == "knowledge_text_reply" || task.Intent == "hotel_info" || task.Intent == "interaction"
+	return task.Output == "text_reply" || task.Output == "knowledge_text_reply" || task.Intent == "hotel_info" || task.Intent == "interaction" || task.NeedsKnowledge || task.NeedsTool
 }
 
 func expectedIntentResources(intent callbacks.IntentTraceData) []string {

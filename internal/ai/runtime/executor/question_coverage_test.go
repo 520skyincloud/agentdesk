@@ -188,6 +188,23 @@ func TestQuestionCoverageRepairPublishesCheckinResourceToCommit(t *testing.T) {
 	}
 }
 
+func TestRuntimeKnowledgeQuestionsExcludeAttachedCheckinResource(t *testing.T) {
+	const text = "给我办个入住"
+	req := RunInput{UserMessage: models.Message{Content: text}}
+	intent := coverageTestIntent(text)
+	intent.IntentTasks[0].SubIntent = "checkin_process"
+	intent.IntentTasks[0].Objective = "method"
+	intent = normalizeModelIntentTrace(intent, req, adapter.HistoryBuildResult{}, nil)
+	plan := buildReplyPlan(intent, callbacks.IntentPromptTraceData{})
+	if len(plan.TaskPlans) != 2 {
+		t.Fatalf("fixture must contain the check-in answer and attached card: %+v", plan.TaskPlans)
+	}
+	questions, ok := runtimeKnowledgeQuestionsFromReplyPlan(plan, intent)
+	if !ok || len(questions) != 1 || questions[0].TaskID != plan.TaskPlans[0].TaskID {
+		t.Fatalf("attached mini-program must not become a knowledge retrieval question: ok=%v questions=%+v plan=%+v", ok, questions, plan.TaskPlans)
+	}
+}
+
 type coverageTestJudge func(context.Context, RunInput, []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome
 
 func (judge coverageTestJudge) JudgeBatch(ctx context.Context, req RunInput, tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {

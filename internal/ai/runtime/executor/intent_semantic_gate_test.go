@@ -20,8 +20,8 @@ func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
 					t.Fatalf("member query tool was cleared or rerouted: %#v", got)
 				}
 				task.NeedsTool = false
-				if got := semanticGateRestrictTaskActions(task); got.NeedsTool {
-					t.Fatal("local validation must not create a tool action absent from Intent")
+				if got := semanticGateRestrictTaskActions(task); !got.NeedsTool {
+					t.Fatal("supported PMS/member sub-intents must retain the required read tool")
 				}
 			})
 		}

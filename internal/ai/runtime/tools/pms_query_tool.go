@@ -41,7 +41,7 @@ func (t *PMSQueryTool) Build(ctx registry.Context) (einotool.BaseTool, error) {
 func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: toolx.BuiltinPMSQuery.Name,
-		Desc: "只读查询 PMS 的订单、实时房态、库存和会员信息。查询会员权益、升级或保级规则时，用客户手机号调用 member_benefits_by_phone；工具内部先查会员，再用真实等级查询权益和规则，不需要模型提供等级 ID 或猜测等级名称。仅查会员基本信息时使用 member_info_by_phone。gradeAvailable=false 或会员冻结/挂失时如实说明，不承诺可使用权益；权益配置不代表已升房、延退、发券或已执行其他操作。",
+		Desc: "只读查询 PMS 的订单、实时房态、库存、会员信息和差价评估。查询会员权益、升级或保级规则时，用客户手机号调用 member_benefits_by_phone；工具内部先查会员，再用真实等级查询权益和规则，不需要模型提供等级 ID 或猜测等级名称。仅查会员基本信息时使用 member_info_by_phone。price_difference 只调用订单详情和库存 GET 接口，只有日期、每日金额、币种和相同计价口径齐全时才返回 exact；缺失或跨日期价格不完整时返回 quote_only/insufficient_data，不能把空价格当成免费或把估算说成最终差价。gradeAvailable=false 或会员冻结/挂失时如实说明，不承诺可使用权益；权益配置不代表已升房、延退、发券或已执行其他操作。",
 		ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&einojsonschema.Schema{
 			Version:  einojsonschema.Version,
 			Type:     "object",
@@ -53,9 +53,9 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 						"reserve_order_detail", "reserve_order_by_phone",
 						"recept_order_detail", "recept_order_by_phone",
 						"renew_candidates", "room_status", "inventory",
-						"member_info_by_phone", "member_benefits_by_phone",
+						"member_info_by_phone", "member_benefits_by_phone", "price_difference",
 					},
-					Description: "只读查询操作；不支持续住提交、改房、排房、换房、延迟退房、改价或会员权益履约。",
+					Description: "只读查询操作；price_difference 需要真实的 reserveOrderId 或 receptOrderId、目标 roomTypeId 和入住日期，服务端只调用已有详情/库存查询；不支持续住提交、改房、排房、换房、延迟退房、改价或会员权益履约。",
 				}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "预订单 ID。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "receptOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "接待订单 ID。"}},
@@ -63,6 +63,10 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "phone", Value: &einojsonschema.Schema{Type: "string", Description: "客户提供的准确手机号。member_info_by_phone 和 member_benefits_by_phone 必填，必须为大陆手机号；可沿用当前会话客户已提供的手机号，不要用订单号或 keyword 代替。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "startDate", Value: &einojsonschema.Schema{Type: "string", Description: "库存开始日期，YYYY-MM-DD。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "endDate", Value: &einojsonschema.Schema{Type: "string", Description: "库存结束日期，YYYY-MM-DD。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "beginTime", Value: &einojsonschema.Schema{Type: "string", Description: "库存开始日期，YYYY-MM-DD；与 startDate 二选一，优先使用 beginTime。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "endTime", Value: &einojsonschema.Schema{Type: "string", Description: "库存结束日期，YYYY-MM-DD；与 endDate 二选一，优先使用 endTime。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "roomTypeId", Value: &einojsonschema.Schema{Type: "string", Description: "只读筛选的房型 ID；只能使用 PMS 返回的真实房型 ID，不得猜测。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "metrics", Value: &einojsonschema.Schema{Type: "string", Description: "库存指标筛选，按 PMS 支持的逗号分隔值传入；不填写时由服务端使用默认指标。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "customerNo", Value: &einojsonschema.Schema{Type: "string", Description: "会员编号或协议公司编号；可与 phone 同时传入以缩小当前有效订单范围。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "memberId", Value: &einojsonschema.Schema{Type: "string", Description: "兼容旧调用的会员编号别名，内部按 customerNo 传递。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "currentReceptOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选查询的当前接待单 ID。"}},
@@ -83,6 +87,10 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		Keyword              string `json:"keyword"`
 		StartDate            string `json:"startDate"`
 		EndDate              string `json:"endDate"`
+		BeginTime            string `json:"beginTime"`
+		EndTime              string `json:"endTime"`
+		RoomTypeID           string `json:"roomTypeId"`
+		Metrics              string `json:"metrics"`
 		MemberID             string `json:"memberId"`
 		CustomerNo           string `json:"customerNo"`
 		Phone                string `json:"phone"`
@@ -104,6 +112,10 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		"keyword":              input.Keyword,
 		"startDate":            input.StartDate,
 		"endDate":              input.EndDate,
+		"beginTime":            input.BeginTime,
+		"endTime":              input.EndTime,
+		"roomTypeId":           input.RoomTypeID,
+		"metrics":              input.Metrics,
 		"customerNo":           firstNonEmpty(input.CustomerNo, input.MemberID),
 		"currentReceptOrderId": input.CurrentReceptOrderID,
 		"reserveOrderNo":       input.ReserveOrderNo,
@@ -119,6 +131,8 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	partialMessage := ""
 	if input.Action == "member_benefits_by_phone" {
 		result, partialMessage, err = queryMemberBenefitsByPhone(callCtx, client, args["phone"])
+	} else if input.Action == "price_difference" {
+		result, err = queryPriceDifference(callCtx, client, input.ReserveOrderID, input.ReceptOrderID, input.RoomTypeID, firstNonEmpty(input.BeginTime, input.StartDate), firstNonEmpty(input.EndTime, input.EndDate))
 	} else {
 		result, err = client.Query(callCtx, input.Action, args)
 		if err == nil {
@@ -188,11 +202,94 @@ func isPMSReadOnlyAction(action string) bool {
 	case "reserve_order_detail", "reserve_order_by_phone",
 		"recept_order_detail", "recept_order_by_phone",
 		"renew_candidates", "room_status", "inventory",
-		"member_info_by_phone", "member_benefits_by_phone":
+		"member_info_by_phone", "member_benefits_by_phone", "price_difference":
 		return true
 	default:
 		return false
 	}
+}
+
+func queryPriceDifference(ctx context.Context, client *pms.Client, reserveOrderID, receptOrderID, roomTypeID, startDate, endDate string) (pms.QueryResult, error) {
+	reserveOrderID = strings.TrimSpace(reserveOrderID)
+	receptOrderID = strings.TrimSpace(receptOrderID)
+	roomTypeID = strings.TrimSpace(roomTypeID)
+	if reserveOrderID == "" && receptOrderID == "" {
+		return pms.QueryResult{}, fmt.Errorf("差价评估需要先定位真实订单 ID")
+	}
+	if roomTypeID == "" {
+		return pms.QueryResult{}, fmt.Errorf("差价评估需要真实目标房型 ID")
+	}
+
+	orderAction := "reserve_order_detail"
+	orderArgs := map[string]string{"reserveOrderId": reserveOrderID}
+	if receptOrderID != "" {
+		orderAction = "recept_order_detail"
+		orderArgs = map[string]string{"receptOrderId": receptOrderID}
+	}
+	order, err := client.Query(ctx, orderAction, orderArgs)
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
+	orderData, err := pms.CustomerQueryData(order.Action, order.Data)
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
+	if strings.TrimSpace(startDate) == "" {
+		startDate = orderDate(orderData, "checkInTime", "checkInBusinessDate")
+	}
+	if strings.TrimSpace(endDate) == "" {
+		endDate = orderDate(orderData, "checkOutTime", "checkOutBusinessDate")
+	}
+	startDate = queryDate(startDate)
+	endDate = queryDate(endDate)
+	inventory, err := client.Query(ctx, "inventory", map[string]string{
+		"beginTime":  startDate,
+		"endTime":    endDate,
+		"roomTypeId": roomTypeID,
+		"metrics":    "sold,sellable",
+	})
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
+	inventoryData, err := pms.CustomerQueryData(inventory.Action, inventory.Data)
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
+	assessment, err := pms.AssessPriceDifference(orderData, inventoryData, roomTypeID, startDate, endDate)
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
+	return pms.QueryResult{
+		Action: "price_difference",
+		Data: map[string]any{
+			"order":      orderData,
+			"inventory":  inventoryData,
+			"assessment": assessment,
+		},
+		Source: inventory.Source,
+		AsOf:   inventory.AsOf,
+	}, nil
+}
+
+func orderDate(orderData any, keys ...string) string {
+	source, ok := orderData.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range keys {
+		if value, ok := source[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func queryDate(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= len("2006-01-02") {
+		return value[:len("2006-01-02")]
+	}
+	return value
 }
 
 func firstNonEmpty(values ...string) string {

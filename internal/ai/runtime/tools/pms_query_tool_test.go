@@ -38,7 +38,7 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	action, ok := schema.Properties.Get("action")
-	if !ok || len(action.Enum) != 9 {
+	if !ok || len(action.Enum) != 10 {
 		t.Fatalf("unexpected read-only action schema: %#v", action)
 	}
 	for _, value := range action.Enum {
@@ -46,7 +46,7 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 			t.Fatalf("schema exposed an unsupported action: %#v", value)
 		}
 	}
-	for _, name := range []string{"phone"} {
+	for _, name := range []string{"phone", "roomTypeId", "metrics", "beginTime", "endTime"} {
 		if _, ok := schema.Properties.Get(name); !ok {
 			t.Fatalf("member query parameter missing: %s", name)
 		}
@@ -60,6 +60,108 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 		if !strings.Contains(info.Desc, instruction) {
 			t.Errorf("member usage boundary missing: %s", instruction)
 		}
+	}
+}
+
+func TestPMSQueryToolPassesReadOnlyInventoryFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/admin-api/hpms/changeInventory/query" {
+			t.Fatalf("unexpected PMS request: %s %s", r.Method, r.URL.Path)
+		}
+		query := r.URL.Query()
+		for key, want := range map[string]string{
+			"beginTime":  "2026-09-21",
+			"endTime":    "2026-09-23",
+			"roomTypeId": "ROOM-TYPE-1",
+			"metrics":    "sold,sellable",
+		} {
+			if got := query.Get(key); got != want {
+				t.Errorf("unexpected %s: got %q want %q", key, got, want)
+			}
+		}
+		if query.Get("startDate") != "" || query.Get("endDate") != "" {
+			t.Errorf("tool date aliases must be normalized before forwarding: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"code":200,"data":[]}`))
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"inventory","beginTime":"2026-09-21","endTime":"2026-09-23","roomTypeId":"ROOM-TYPE-1","metrics":"sold,sellable"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"status":"ok"`) {
+		t.Fatalf("inventory query failed: %s", got)
+	}
+}
+
+func TestPMSQueryToolPriceDifferenceUsesOnlyReadQueries(t *testing.T) {
+	var writeRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeRequests.Add(1)
+			t.Fatalf("price assessment must never write to PMS: %s %s", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/admin-api/hpms/orderManage/receptOrder/detail":
+			if r.URL.Query().Get("receptOrderId") != "90071992547409931" {
+				t.Fatalf("unexpected order id: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{
+				"receptOrderId":"90071992547409931",
+				"checkInTime":"2026-09-21T14:00:00+08:00",
+				"checkOutTime":"2026-09-23T12:00:00+08:00",
+				"reserveProductList":[{"roomName":"标准大床房","productDetailPriceList":[
+					{"date":"2026-09-21","consumeAmount":"100.10","consumeAmountType":"ROOM_FEE","currency":"CNY"},
+					{"date":"2026-09-22","consumeAmount":"120.20","consumeAmountType":"ROOM_FEE","currency":"CNY"}
+				]}]}}`))
+		case "/admin-api/hpms/changeInventory/query":
+			query := r.URL.Query()
+			if query.Get("beginTime") != "2026-09-21" || query.Get("endTime") != "2026-09-23" ||
+				query.Get("roomTypeId") != "ROOM-TYPE-2" || query.Get("metrics") != "sold,sellable" {
+				t.Fatalf("unexpected inventory query: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":[{
+				"productId":"ROOM-TYPE-2",
+				"bookings":{
+					"2026-09-21":{"available":2,"price":"130.30","consumeAmountType":"ROOM_FEE","currency":"CNY"},
+					"2026-09-22":{"available":1,"price":"140.40","consumeAmountType":"ROOM_FEE","currency":"CNY"}
+				}
+			}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1", AllowWrite: false})
+
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{
+		"action":"price_difference",
+		"receptOrderId":"90071992547409931",
+		"roomTypeId":"ROOM-TYPE-2"
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"status":"ok"`, `"status":"exact"`, `"difference":"50.40"`, `"availability":"available"`} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("price assessment missing %s: %s", expected, got)
+		}
+	}
+	if writeRequests.Load() != 0 {
+		t.Fatalf("unexpected PMS write requests: %d", writeRequests.Load())
+	}
+}
+
+func TestPMSQueryToolPriceDifferenceRequiresRealIdentifiers(t *testing.T) {
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", AllowWrite: false})
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"price_difference","roomTypeId":"guess-room-type"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "真实订单 ID") {
+		t.Fatalf("missing order id must not trigger speculative queries: %s", got)
 	}
 }
 

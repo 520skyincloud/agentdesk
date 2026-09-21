@@ -619,14 +619,40 @@ func semanticGateClarificationTask(task callbacks.IntentTaskTraceData) callbacks
 
 func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbacks.IntentTaskTraceData {
 	task.Intent = canonicalIntentCode(task.Intent)
-	pmsTask := task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent)
+	pmsTask := isPMSRuntimeSubIntent(task.SubIntent)
 	switch task.Intent {
 	case "hotel_info":
-		task.NeedsKnowledge = !pmsTask
-		task.NeedsTool = pmsTask
+		if pmsTask {
+			task.NeedsTool = true
+		} else {
+			task.NeedsKnowledge = true
+			task.NeedsTool = false
+		}
 	case "service_request":
-		task.NeedsKnowledge = !pmsTask
-		task.NeedsTool = pmsTask
+		if pmsTask {
+			task.NeedsTool = true
+		} else {
+			task.NeedsKnowledge = true
+			task.NeedsTool = false
+		}
+	case "human_complaint_risk":
+		// Only an explicit handoff or an emergency safety task authorizes the
+		// human-route action. Other complaint/price/compensation tasks remain
+		// answerable through the knowledge/PMS read path.
+		if strings.TrimSpace(task.SubIntent) == "explicit_handoff" ||
+			strings.TrimSpace(task.SubIntent) == "emergency_safety" {
+			task.NeedsKnowledge = false
+			task.NeedsTool = false
+			task.NeedsHumanRoute = true
+		} else {
+			if pmsTask {
+				task.NeedsTool = true
+			} else {
+				task.NeedsKnowledge = true
+				task.NeedsTool = false
+			}
+			task.NeedsHumanRoute = false
+		}
 	case "interaction":
 		task.NeedsKnowledge = false
 		if task.SubIntent != "weather_query" {
@@ -646,8 +672,11 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 	}
 	if task.Intent != "human_complaint_risk" {
 		task.NeedsHumanRoute = false
-	} else {
+	} else if strings.TrimSpace(task.SubIntent) == "explicit_handoff" ||
+		strings.TrimSpace(task.SubIntent) == "emergency_safety" {
 		task.NeedsHumanRoute = true
+	} else {
+		task.NeedsHumanRoute = false
 	}
 	return task
 }
@@ -659,7 +688,13 @@ func isPMSRuntimeSubIntent(subIntent string) bool {
 	switch strings.ToLower(strings.TrimSpace(subIntent)) {
 	case "pms", "pms_query", "order_query", "order_detail", "order_status",
 		"room_status", "room_inventory", "room_availability", "inventory", "renew", "renewal",
-		"check_in_status", "check_out_status":
+		"check_in_status", "check_out_status",
+		"room_upgrade", "upgrade_room", "room_upgrade_eligibility", "upgrade_eligibility",
+		"room_change", "change_room", "room_change_eligibility",
+		"room_assignment", "assign_room", "room_availability_evaluation",
+		"price_difference", "upgrade_price", "room_change_price",
+		"late_checkout", "late_check_out", "late_checkout_eligibility",
+		"order_price_dispute":
 		return true
 	default:
 		return false
@@ -705,8 +740,9 @@ func semanticGateRecomputeIntent(intent callbacks.IntentTraceData, semantics []r
 			task.Intent = "interaction"
 		}
 		if task.Intent == "human_complaint_risk" {
-			hasHuman = true
-			task.NeedsHumanRoute = true
+			if task.NeedsHumanRoute {
+				hasHuman = true
+			}
 		}
 		if task.Intent == "hotel_variable" {
 			hasVariable = true

@@ -227,7 +227,7 @@ func TestKnowledgeEvidenceJudgeApplicablePartialAnswersPreserveRoutingBoundaries
 		{"delivery_information", "hotel_info", "外卖可以送上来吗", "你们家有外卖机器人吗？", "有外卖机器人的。", "外卖能否送上楼", false, false},
 		{"charging_information", "hotel_info", "充电桩怎么收费", "酒店有充电桩吗？", "酒店有充电桩。", "充电价格", false, false},
 		{"service_facility", "service_request", "我想洗衣服", "酒店有洗衣机吗？", "洗衣房有自助洗衣机。", "洗衣步骤", true, false},
-		{"onsite_service", "service_request", "洗衣机坏了，请同事来处理", "酒店有洗衣机吗？", "洗衣房有自助洗衣机。", "维修处理", false, true},
+		{"onsite_service", "service_request", "洗衣机坏了，请同事来处理", "酒店有洗衣机吗？", "洗衣房有自助洗衣机。", "维修处理", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			hit := judgeTestHit(1, 101, test.faq, "问题："+test.faq+"\n答案："+test.answer, 0.531)
@@ -270,7 +270,8 @@ func TestKnowledgeEvidenceJudgeApplicablePartialAnswersPreserveRoutingBoundaries
 			if state.RetrieveResult == nil || !strings.Contains(state.RetrieveResult.ContextText, test.answer) {
 				t.Fatal("selected existing knowledge was discarded")
 			}
-			if !test.handoff && (state.Input.Summary.handoffDirective || task.Disposition != runtimeKnowledgeDispositionAnswer) {
+			if !test.handoff && (state.Input.Summary.handoffDirective ||
+				(task.Disposition != runtimeKnowledgeDispositionAnswer && task.Disposition != runtimeKnowledgeDispositionAnswerThenHandoff)) {
 				t.Fatalf("an applicable information answer must not request handoff: %+v", task)
 			}
 			if text, err := renderLockedReplyContent(textReplyTaskGroup{TaskID: "T1", EvidenceLocked: true, AnswerText: task.AnswerText}); err != nil || text != test.answer {
@@ -1420,18 +1421,18 @@ func TestKnowledgeEvidenceJudgeDefersUnansweredQuestionWithoutDroppingAnsweredQu
 		t.Fatalf("unrelated evidence leaked into Generate: %q", state.RetrieveResult.ContextText)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T2" {
-		t.Fatalf("expected T2 deferred handoff, got %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("an unanswered knowledge task must remain active without automatic handoff, got %#v", trace)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
 	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "T1" || plan.TaskPlans[1].TaskID != "T2" {
-		t.Fatalf("answered and deferred sibling Tasks must both remain in ReplyPlan: %#v", plan.TaskPlans)
+		t.Fatalf("answered and unanswered sibling Tasks must both remain in ReplyPlan: %#v", plan.TaskPlans)
 	}
-	if plan.TaskPlans[1].OutputKind != "handoff" || plan.TaskPlans[1].ReplyRequired || plan.TaskPlans[1].Output != runtimeKnowledgeDeferredHandoffOutput {
-		t.Fatalf("T2 must remain as a non-text deferred Task for manual resume: %#v", plan.TaskPlans[1])
+	if plan.TaskPlans[1].OutputKind != "text" || !plan.TaskPlans[1].ReplyRequired || plan.TaskPlans[1].Output != "knowledge_text_reply" {
+		t.Fatalf("T2 must remain as an active text Task: %#v", plan.TaskPlans[1])
 	}
-	if active := activeGenerationTaskPlans(intent, plan); len(active) != 1 || active[0].TaskID != "T1" {
-		t.Fatalf("Generate must only receive the answered sibling: %#v", active)
+	if active := activeGenerationTaskPlans(intent, plan); len(active) != 2 || active[0].TaskID != "T1" || active[1].TaskID != "T2" {
+		t.Fatalf("Generate must preserve both Tasks in source order: %#v", active)
 	}
 }
 

@@ -84,14 +84,15 @@ func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeDirectDispatch(t *testi
 
 func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *testing.T) {
 	tests := []struct {
-		name      string
-		subIntent string
-		message   string
-		inquiry   bool
+		name        string
+		subIntent   string
+		message     string
+		inquiry     bool
+		expectRoute bool
 	}{
-		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工"},
-		{name: "answer rejected", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理"},
-		{name: "knowledge inquiry skips room collection", message: "外卖机器人能送到房间门口吗？", inquiry: true},
+		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工", expectRoute: true},
+		{name: "answer rejected with explicit handoff", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理", expectRoute: true},
+		{name: "knowledge inquiry does not handoff", message: "外卖机器人能送到房间门口吗？", inquiry: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,7 +190,19 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 			} else {
 				handled, err = executeIntentHumanRoute(t.Context(), req, summary, collector)
 			}
-			if err != nil || !handled {
+			if err != nil {
+				t.Fatalf("handoff evaluation failed, handled=%v err=%v", handled, err)
+			}
+			if !tt.expectRoute {
+				if handled {
+					t.Fatalf("knowledge inquiry must remain answerable without handoff")
+				}
+				if summary.handoffDispatchStatus != "" {
+					t.Fatalf("knowledge inquiry must not dispatch a handoff, got %q", summary.handoffDispatchStatus)
+				}
+				return
+			}
+			if !handled {
 				t.Fatalf("expected direct handoff, handled=%v err=%v", handled, err)
 			}
 			if summary.handoffDispatchStatus != string(services.HandoffDispatchStatusDispatched) {
@@ -317,6 +330,29 @@ func TestIsEmergencySafetyHandoff(t *testing.T) {
 				t.Fatalf("isEmergencySafetyHandoff() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnforceRuntimeHumanRoutePolicyNormalizesExplicitNoTaskIntent(t *testing.T) {
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent:   "human_complaint_risk",
+		NeedsKnowledge:  true,
+		NeedsHumanRoute: false,
+		Reason:          "model returned a top-level human-risk label without task details",
+	}
+
+	got := enforceRuntimeHumanRoutePolicy(intent, "我要找真人客服")
+	if got.PrimaryIntent != "human_complaint_risk" || got.SubIntent != "explicit_handoff" {
+		t.Fatalf("explicit handoff must remain a human-risk intent, got %#v", got)
+	}
+	if !got.NeedsHumanRoute || got.HumanRoutePolicy != "managed_mode" {
+		t.Fatalf("explicit handoff must restore the managed human route, got %#v", got)
+	}
+	if got.NeedsKnowledge || got.NeedsTool || got.NeedsResource {
+		t.Fatalf("explicit handoff must not retain self-service actions, got %#v", got)
+	}
+	if len(got.IntentTasks) != 0 {
+		t.Fatalf("normalization should not invent an intent task for a top-level handoff, got %#v", got.IntentTasks)
 	}
 }
 

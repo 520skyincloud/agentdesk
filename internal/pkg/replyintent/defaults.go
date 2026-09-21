@@ -29,7 +29,7 @@ func DefaultHotelIntentDetectPrompt() string {
 1. hotel_info：酒店信息咨询。包括酒店规则、设施、设备、用品、流程、费用、WiFi、发票、停车、早餐、入住/退房、电视投屏、空调、洗衣、周边，以及酒店、品牌、公司介绍和老板、创始人、董事长等公开身份或公开职务。任务 needsKnowledge=true。
 2. hotel_variable：当前企微员工号配置的变量。只包括酒店电话、酒店定位/地址/导航、入住小程序。任务 needsResource=true，resourceAction 只可为 provide_phone、provide_location、provide_mini_program。
 3. service_request：客户明确要求门店人员执行现实动作。比如送物、补用品、打扫、叫醒、搬运行李、上门维修、让同事过来、找人处理。普通服务请求仍可 needsKnowledge=true，用知识库判断自助路径或处理边界。
-4. human_complaint_risk：处理明确人工、明确投诉升级、赔偿退款、订单/价格严重争议、安全事件，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。任务必须 needsHumanRoute=true，并使用下列 subIntent 之一：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测。单纯骂人、吐槽、说你笨但没有人工/投诉/赔付/安全诉求，不能归此类。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
+4. human_complaint_risk：处理客户明确要求人工、明确要求投诉升级，以及本轮动态提示已确认客户明确否定紧邻 AI 答复的情况。只有 explicit_handoff 且客户当前原话明确要求人工，或 emergency_safety 安全风险时，任务才可 needsHumanRoute=true；投诉、赔偿、退款、订单/价格问题默认先走知识库或只读 PMS，不能仅因分类名称自动转人工。subIntent 可使用：explicit_handoff、complaint_escalation、refund_compensation、order_price_dispute、emergency_safety、answer_rejected。answer_rejected 只有本轮用户提示明确启用“上一答复关系判断”时才允许输出，不能根据更早历史猜测；它仍应先重新回答，不能仅凭该标签自动转人工。单纯骂人、吐槽、说你笨但没有人工诉求，不能自动转人工。设备、空调、电视、网络、入住等问题即使麻烦，只要是在问规则、步骤或自助处理，仍归 hotel_info；只有明确要求人工现场处理时才可进入 service_request。
 5. interaction：所有非业务互动、闲聊、感谢、确认、表情、玩笑、天气闲聊、纯纠错、单纯不满/辱骂但无明确人工/投诉/安全诉求、会话回顾，以及确实不明确的问题。询问 AI 客服“你是谁”属于 interaction，但询问酒店、品牌、公司或其老板、创始人、董事长的公开身份与公开职务不属于 interaction，必须归 hotel_info/company_profile。任务默认不查知识、不取变量、不转人工；天气查询例外，必须输出 interaction/weather_query、needsTool=true。其他不明确表达使用 subIntent=clarify 且 needsClarification=true，只追问一个关键点。客户明确问“刚刚都问了什么/刚才聊了什么/你刚才回答了哪些”时，使用 interaction/conversation_recap、relationToPrevious=reference_previous、resolutionState=resolved_from_context；这是有明确目标的会话回顾，不是 unresolved，也不能回答“没有具体问题”。
 明确的非酒店常识、解释和日常建议使用 interaction/chat，objective 按 identity、explanation、recommendation 等实际目标选择，needsClarification=false、needsKnowledge=false；由 Generate 正常回答，不需要客户说明与酒店有什么关系。只有答案确实依赖实时天气时才使用 weather_query，不能仅因上一轮聊过天气就让一般审美、配色或偏好建议依赖天气工具。酒店政策和门店事实仍必须走 hotel_info，不允许用普通常识编造酒店答案。
 
@@ -44,9 +44,9 @@ hotel_info 与 service_request 的硬边界：
 - “空调不制冷怎么办”“电视投屏怎么弄”“我要办理入住”都是 hotel_info；“帮我送拖鞋上来”“叫人来看看空调”才是 service_request。
 
 人工/投诉/风险边界：
-- 只有当前消息明确要求人工，或明确表达投诉升级、赔付退款、订单/价格争议、安全事件，才能输出 human_complaint_risk 和 needsHumanRoute=true；唯一例外是本轮用户提示已确认紧邻上一条消息为 AI 客服答复，并要求按“上一答复关系判断”识别为 answer_rejected。
+- 只有当前消息明确要求人工、知识库明确要求转人工或存在严重安全风险，才能执行人工路由。投诉升级、赔付退款、订单/价格争议本身不能授权 needsHumanRoute=true，必须先查知识库或只读 PMS；本轮用户提示确认紧邻上一条消息为 AI 客服答复并识别为 answer_rejected 时，先重新回答，不能仅凭 answer_rejected 自动转人工。
 - 客户单独或只用极短表达明确要求“转接”“人工”“找客服”“接同事”等人工接待时，必须输出 human_complaint_risk/explicit_handoff、needsHumanRoute=true；不能因为消息太短归为 interaction/clarify。
-- 所有 human_complaint_risk 都由系统直接进入已有接待路由。不要把普通服务请求、设备故障、知识库未命中、单纯不满自动升级成人工。
+- 只有 explicit_handoff 且当前原话包含“转人工、人工客服、找同事、找客服、真人”等明确诉求，或知识库选中的答案明确写“转人工/转接”，才进入已有接待路由。不要把普通服务请求、设备故障、知识库未命中、价格问题、赔偿问题或单纯不满自动升级成人工。
 
 hotel_info 与 hotel_variable 的硬边界：
 - “要当前酒店的门店变量”才 hotel_variable：电话多少/号码多少 -> provide_phone；酒店/门店/你们店的定位、地址、导航发我，或酒店在哪 -> provide_location；小程序发我/入住小程序 -> provide_mini_program。
@@ -77,7 +77,7 @@ resourceActions 字段纪律：
 - 禁止把电话、定位、小程序作为默认兜底一起输出。
 
 subIntent 字段纪律：
-- subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。
+- subIntent 必须写具体业务子意图，不要空泛写 store_knowledge。已启用只读 PMS 时，涉及订单详情、入住/离店状态、实时房态、库存、会员、升房/换房可行性、排房条件、差价、会员减免资格或延迟退房条件时，优先使用 order_query、order_detail、room_status、room_inventory、member_info、member_benefits、room_upgrade、room_change、room_assignment、price_difference、late_checkout 等具体子意图，并设置 needsTool=true；如果还需要门店政策、补救规则或服务说明，同时保留 needsKnowledge=true。它们只用于查询和评估，不代表已经写入或办理成功。
 - hotel_info 常用 subIntent：network_wifi、parking、breakfast、invoice、checkin_process、checkout_process、tv_cast、air_conditioner、supplies_self_help、laundry、food_delivery、location_info、surrounding_facilities、company_profile。
 - external_proxy_action 只用于 service_request + action_request，即客户明确委托酒店替其在第三方平台下单、购买、预订或联系商家；不能仅因话题相同用于 hotel_info。客人自行操作、询问外卖规则或机器人设施时，按 hotel_info/food_delivery 等真实业务分类。
 - “我要办理入住/怎么入住/入住怎么弄”只输出客户实际提出的 hotel_info/checkin_process 任务；不要为系统自动发送的小程序再造第二个 intentTask。运行时会在 Intent 之后按产品策略附加小程序资源动作，由 Commit 阶段另行发送。

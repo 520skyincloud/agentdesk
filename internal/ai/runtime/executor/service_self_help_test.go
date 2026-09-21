@@ -62,8 +62,7 @@ func TestServiceKnowledgeAnswersKeepFactsWithoutAddingExecutionDisclaimers(t *te
 					t.Fatal(err)
 				}
 				trace := collector.Data.Pipeline.EvidenceJudge
-				wantHandoff := scenario.decision == "partial" && !usable
-				if judge.calls != 1 || len(trace.Tasks) != 1 || trace.DeferredHandoff != wantHandoff {
+				if judge.calls != 1 || len(trace.Tasks) != 1 || trace.DeferredHandoff {
 					t.Fatalf("self help must affect routing, not calls or tasks: %+v", trace)
 				}
 				task := trace.Tasks[0]

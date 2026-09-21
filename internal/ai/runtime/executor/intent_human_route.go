@@ -12,6 +12,123 @@ import (
 	"agent-desk/internal/services"
 )
 
+// runtimeExplicitHumanHandoffRequest is intentionally narrow. A complaint,
+// price question, service request or safety topic is still answerable through
+// the knowledge/PMS read path; only a direct request for a person authorizes
+// the human-route action at Intent stage.
+func runtimeExplicitHumanHandoffRequest(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), "")
+	if normalized == "" || strings.Contains(normalized, "人工智能") {
+		return false
+	}
+	for _, phrase := range []string{
+		"转人工",
+		"转接人工",
+		"转真人",
+		"找人工",
+		"找真人",
+		"人工客服",
+		"真人客服",
+		"找客服",
+		"联系人工",
+		"联系同事",
+		"找同事",
+		"接人工",
+		"接同事",
+		"人工处理",
+		"人工介入",
+		"前台同事",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return normalized == "人工" || normalized == "真人" || normalized == "客服"
+}
+
+func runtimeSelfServiceIntentForHumanTask(task callbacks.IntentTaskTraceData) string {
+	if isPMSRuntimeSubIntent(task.SubIntent) || semanticGateInformationObjective(task.Objective) {
+		return "hotel_info"
+	}
+	if strings.TrimSpace(task.SubIntent) == "answer_rejected" {
+		return "interaction"
+	}
+	return "service_request"
+}
+
+// enforceRuntimeHumanRoutePolicy runs after model/semantic normalization. It
+// keeps explicit handoff tasks intact and turns every other human-risk label
+// back into an answerable task. Knowledge-driven handoff remains a separate
+// deterministic path in the answerability gate.
+func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentText string) callbacks.IntentTraceData {
+	explicitCurrent := runtimeExplicitHumanHandoffRequest(currentText)
+	changed := false
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		if task.Intent != "human_complaint_risk" {
+			continue
+		}
+		taskText := task.Text
+		if strings.TrimSpace(taskText) == "" {
+			taskText = task.ResolvedText
+		}
+		explicitTask := runtimeExplicitHumanHandoffRequest(taskText)
+		if strings.TrimSpace(task.SubIntent) == "emergency_safety" {
+			task.NeedsHumanRoute = true
+			task.NeedsKnowledge = false
+			task.NeedsTool = false
+			continue
+		}
+		if task.SubIntent == "explicit_handoff" && (explicitTask || explicitCurrent) {
+			task.NeedsHumanRoute = true
+			task.NeedsKnowledge = false
+			task.NeedsTool = false
+			continue
+		}
+
+		task.Intent = runtimeSelfServiceIntentForHumanTask(*task)
+		task.NeedsHumanRoute = false
+		task.NeedsResource = false
+		task.ResourceAction = ""
+		task.NeedsTool = isPMSRuntimeSubIntent(task.SubIntent)
+		task.NeedsKnowledge = task.Intent != "interaction" && !task.NeedsTool
+		if task.Intent == "interaction" {
+			task.SubIntent = "frustration"
+			task.Objective = "social"
+		}
+		changed = true
+	}
+	if len(intent.IntentTasks) == 0 && intent.PrimaryIntent == "human_complaint_risk" {
+		if explicitCurrent && strings.TrimSpace(intent.SubIntent) != "emergency_safety" {
+			intent.SubIntent = "explicit_handoff"
+			intent.NeedsHumanRoute = true
+			intent.HumanRoutePolicy = "managed_mode"
+			intent.NeedsKnowledge = false
+			intent.NeedsTool = false
+			intent.NeedsResource = false
+			intent.Reason = appendIntentReason(intent.Reason, "explicit handoff normalized from current customer message")
+			return intent
+		}
+		if strings.TrimSpace(intent.SubIntent) != "emergency_safety" {
+			intent.PrimaryIntent = "service_request"
+			intent.MatchedIntentCode = "service_request"
+			intent.SubIntent = "service_follow_up"
+			intent.NeedsHumanRoute = false
+			intent.HumanRoutePolicy = ""
+			intent.NeedsKnowledge = true
+			intent.NeedsTool = false
+			intent.Reason = appendIntentReason(intent.Reason, "non-explicit human-risk label returned to self-service path")
+			return intent
+		}
+	}
+	if !changed {
+		return intent
+	}
+	intent = deriveModelIntentFromTasks(intent)
+	intent.Reason = appendIntentReason(intent.Reason, "non-explicit human-risk task returned to knowledge/PMS self-service")
+	return intent
+}
+
 func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (bool, error) {
 	if strings.HasPrefix(strings.TrimSpace(req.UserMessage.RequestID), "manual_resume_") {
 		return false, nil
@@ -148,6 +265,20 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 	if summary == nil || collector == nil || !summary.handoffDirective {
 		return false, nil
 	}
+	if !runtimeHandoffDirectiveAllowed(req, collector, summary.handoffDirectiveSource) {
+		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"source":         summary.handoffDirectiveSource,
+				"conversationId": req.Conversation.ID,
+			},
+			Status:            "skipped",
+			RecommendedAction: "handoff_requires_explicit_customer_or_knowledge_directive",
+			ResultPreview:     "仅客户明确要求人工或知识库明确要求转接才允许人工路由",
+		})
+		return false, nil
+	}
 	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
@@ -213,6 +344,20 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 	summary.InvokedToolCodes = appendIfMissing(summary.InvokedToolCodes, toolx.GraphHandoffConversation.Code)
 	summary.ToolCallCount = len(summary.InvokedToolCodes)
 	return true, nil
+}
+
+func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTraceCollector, source string) bool {
+	switch strings.TrimSpace(source) {
+	case "knowledge_top_answer":
+		return true
+	case "generated_reply_guard":
+		return runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
+	default:
+		return collector != nil &&
+			collector.Data.Pipeline.Intent.NeedsHumanRoute &&
+			strings.TrimSpace(collector.Data.Pipeline.Intent.SubIntent) == "explicit_handoff" &&
+			runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
+	}
 }
 
 // HandoffRoomNumberPolicyFromTrace keeps post-commit handoffs on the same policy

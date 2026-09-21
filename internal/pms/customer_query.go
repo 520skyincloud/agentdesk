@@ -116,7 +116,8 @@ func customerInventoryData(data any) (any, error) {
 		return nil, err
 	}
 	result := customerQueryFields(source,
-		"productId", "productName", "roomTypeName", "roomId", "price", "roomCount", "rowType",
+		"productId", "productName", "roomTypeId", "roomTypeName", "roomId", "price",
+		"currency", "consumeAmountType", "roomCount", "rowType",
 	)
 	if value, exists := source["bookings"]; exists {
 		if value == nil {
@@ -136,7 +137,10 @@ func customerInventoryData(data any) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			dates[date] = customerQueryFields(values, "sold", "available", "occupied", "maintenance", "oversold")
+			dates[date] = customerQueryFields(values,
+				"sold", "available", "occupied", "maintenance", "oversold",
+				"price", "currency", "consumeAmountType",
+			)
 		}
 		result["bookings"] = dates
 	}

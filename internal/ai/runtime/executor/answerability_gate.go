@@ -1967,13 +1967,18 @@ func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) 
 			items = append(items, item)
 			continue
 		case runtimeKnowledgeDispositionNoEvidenceHandoff:
-			item.NeedsHandoff = true
+			// A retrieval/Judge miss is an answerability boundary, not a
+			// human-route authorization. Keep the Task active so Generate can
+			// explain the missing fact or ask for one key field.
 			items = append(items, item)
 			continue
 		case runtimeKnowledgeDispositionAnswerThenHandoff:
 			item.HasAnswer = true
-			item.NeedsHandoff = true
 			item.MissingAspects = append([]string(nil), question.MissingAspects...)
+			if hit, ok := topKnowledgeHandoffDirective(result); ok {
+				item.HandoffHit = hit
+				item.NeedsHandoff = true
+			}
 			items = append(items, item)
 			continue
 		case runtimeKnowledgeDispositionAnswer:
@@ -2367,19 +2372,25 @@ func matchKnowledgeEvidenceTraceTask(planTask callbacks.ReplyTaskPlanTraceData, 
 }
 
 func runtimeIntentTaskUsesKnowledge(task callbacks.IntentTaskTraceData) bool {
+	if task.NeedsKnowledge {
+		return true
+	}
 	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
 		return false
 	}
-	return task.NeedsKnowledge || task.Intent == "hotel_info"
+	return task.Intent == "hotel_info"
 }
 
 func runtimeReplyTaskUsesKnowledge(task callbacks.ReplyTaskPlanTraceData) bool {
-	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
-		return false
-	}
 	output := strings.TrimSpace(task.Output)
 	intent := strings.TrimSpace(task.Intent)
 	if output == "structured_resource_commit" || output == "human_route_confirmation_or_dispatch" || intent == "hotel_variable" {
+		return false
+	}
+	if task.NeedsKnowledge {
+		return true
+	}
+	if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
 		return false
 	}
 	return output == "knowledge_text_reply" || intent == "hotel_info"
@@ -2474,8 +2485,8 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 	parts := []string{"【部分问题处理边界】"}
 	if len(fullLabels) > 0 {
 		parts = append(parts,
-			"以下问题当前没有可靠直接知识，或胜出知识明确要求门店同事接手："+strings.Join(fullLabels, "；")+"。",
-			"本次只回答已经提供直接知识证据的其他问题；不得猜测这些待处理问题，不得把其他问题的答案挪过来。",
+			"以下问题当前没有可靠直接知识："+strings.Join(fullLabels, "；")+"。",
+			"这些问题仍属于本次回复任务，必须用自然短句说明当前暂时无法确认，或只追问一个能推进查询的关键字段；不得猜测、套用其他问题答案，也不得仅因资料不足转人工。",
 		)
 	}
 	if len(partialLabels) > 0 {
@@ -2487,6 +2498,26 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 	parts = append(parts, "不得声称已经记录、登记、受理、处理、联系、安排或转接。")
 	parts = append(parts, "当前会话不允许自动转人工；对这些问题只可自然说明暂时无法确认，不要承诺后续动作。")
 	return strings.Join(parts, "\n")
+}
+
+// appendKnowledgeDecisionInstruction keeps the answerability policy in one
+// system message. A retrieval miss may add task-specific guidance, but it
+// should not create a second competing prompt with duplicated fallback rules.
+func appendKnowledgeDecisionInstruction(decision *knowledgeGuardDecision, instruction string) {
+	instruction = strings.TrimSpace(instruction)
+	if decision == nil || instruction == "" {
+		return
+	}
+	if len(decision.Instructions) > 0 && decision.Instructions[0] != nil {
+		existing := strings.TrimSpace(decision.Instructions[0].Content)
+		if existing == "" {
+			decision.Instructions[0].Content = instruction
+		} else {
+			decision.Instructions[0].Content = existing + "\n" + instruction
+		}
+		return
+	}
+	decision.Instructions = append(decision.Instructions, schema.SystemMessage(instruction))
 }
 
 func buildRuntimeKnowledgeProtocolIsolationDecision(retry []runtimeKnowledgeQuestionDisposition) knowledgeGuardDecision {
@@ -2754,10 +2785,18 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	result = batch.Merged
 	answeredQuestionCount, pendingQuestions, retryQuestions := splitRuntimeKnowledgeQuestionDispositions(dispositions)
 	deferredInstruction := ""
+	unansweredQuestions := make([]runtimeKnowledgeQuestionDisposition, 0)
+	for _, item := range dispositions {
+		if item.NeedsRetry || item.NeedsHandoff || item.HasAnswer {
+			continue
+		}
+		if item.Disposition == runtimeKnowledgeDispositionNoEvidenceHandoff {
+			unansweredQuestions = append(unansweredQuestions, item)
+		}
+	}
 	independentNonKnowledgeWork := state.Input.Collector != nil &&
 		runtimeReplyPlanHasIndependentNonKnowledgeWork(state.Input.Collector.Data.Pipeline.ReplyPlan)
-	autoHandoffEnabled := len(pendingQuestions) > 0 &&
-		services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID)
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabled(req.Conversation.ID, pendingQuestions)
 	if len(retryQuestions) > 0 {
 		clearDeferredRuntimeKnowledgeQuestions(batch, retryQuestions)
 		result = batch.Merged
@@ -2829,6 +2868,14 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			}
 		}
 	}
+	if len(unansweredQuestions) > 0 {
+		noEvidenceInstruction := buildDeferredRuntimeKnowledgeInstruction(unansweredQuestions, false)
+		if deferredInstruction == "" {
+			deferredInstruction = noEvidenceInstruction
+		} else if noEvidenceInstruction != "" {
+			deferredInstruction += "\n" + noEvidenceInstruction
+		}
+	}
 	syncRetrieverTrace(result)
 	if state.Input.Collector != nil {
 		state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
@@ -2841,9 +2888,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		if len(retryQuestions) > 0 {
 			state.Decision = buildRuntimeKnowledgeProtocolIsolationDecision(retryQuestions)
 			state.prependDecisionInstruction(knowledgeActionInstruction)
-			if deferredInstruction != "" {
-				state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(deferredInstruction))
-			}
+			appendKnowledgeDecisionInstruction(&state.Decision, deferredInstruction)
 			state.ErrorMessage = "knowledge evidence judge protocol failed for isolated task(s)"
 			state.recordAnswerability(answerabilityStatusUnanswerable, "knowledge evidence judge protocol failure was isolated to affected task(s)", nil)
 			return state, nil
@@ -2852,15 +2897,14 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 			state.prependDecisionInstruction(knowledgeActionInstruction)
 			state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(buildExternalProxyCapabilityBoundaryInstruction(externalProxyBoundaryTaskIDs)))
-			if deferredInstruction != "" {
-				state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(deferredInstruction))
-			}
+			appendKnowledgeDecisionInstruction(&state.Decision, deferredInstruction)
 			state.recordAnswerability(answerabilityStatusNoContext, "external proxy action has no self-service evidence; capability boundary reply preserved", nil)
 			return state, nil
 		}
 		markKnowledgeNoContextHandoffDirective(state.Input, "当前酒店业务问题知识库没有可用答案")
 		state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 		state.prependDecisionInstruction(knowledgeActionInstruction)
+		appendKnowledgeDecisionInstruction(&state.Decision, deferredInstruction)
 		state.recordAnswerability(answerabilityStatusNoContext, "no retrieved context", nil)
 		return state, nil
 	}
@@ -2869,9 +2913,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	if len(externalProxyBoundaryTaskIDs) > 0 {
 		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(buildExternalProxyCapabilityBoundaryInstruction(externalProxyBoundaryTaskIDs)))
 	}
-	if deferredInstruction != "" {
-		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(deferredInstruction))
-	}
+	appendKnowledgeDecisionInstruction(&state.Decision, deferredInstruction)
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
 }
@@ -3142,7 +3184,7 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 	}
 	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
 
-	autoHandoffEnabled := services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(state.Input.Request.Conversation.ID)
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabled(state.Input.Request.Conversation.ID, pending)
 	if autoHandoffEnabled && len(pending) > 0 {
 		activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
 		state.Input.Collector.SetReplyPlan(activePlan)
@@ -3190,24 +3232,22 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 }
 
 func markKnowledgeNoContextHandoffDirective(input answerabilityGateInput, reason string) {
-	if current := strings.TrimSpace(currentTurnDisplayText(input.Request.UserMessage.Content)); current != "" {
-		reason += "；客户消息：" + preview(current, 180)
+	// A retrieval miss is not an authorization to route a customer to a human.
+	// Explicit knowledge directives use markKnowledgeHandoffDirective instead.
+	_ = input
+	_ = reason
+}
+
+func runtimeKnowledgeAutoHandoffEnabled(conversationID int64, pending []runtimeKnowledgeQuestionDisposition) bool {
+	if len(pending) == 0 || !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(conversationID) {
+		return false
 	}
-	if input.Summary != nil {
-		input.Summary.handoffDirective = true
-		input.Summary.handoffDirectiveReason = reason
-		input.Summary.handoffDirectiveSource = "knowledge_no_context"
+	for _, item := range pending {
+		if strings.TrimSpace(item.HandoffHit.Content) == "" {
+			return false
+		}
 	}
-	if input.Collector == nil {
-		return
-	}
-	ledger := input.Collector.Data.ActionLedger
-	ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
-		Action: "human_route",
-		Status: "requested",
-		Reason: reason,
-	})
-	input.Collector.SetActionLedger(ledger)
+	return true
 }
 
 func topKnowledgeHandoffDirective(result *retrievers.KnowledgeRetrieveResult) (rag.RetrieveResult, bool) {
@@ -3323,7 +3363,7 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 		if intent.SubIntent == "emergency_safety" {
 			parts = append(parts, "人工/投诉/风险-突发安全：这是受伤/摔倒/流血/报警等高风险场景，必须进入接待路由；先安抚并提醒用户不要移动，必要时拨打 120/报警。缺房号/位置时只追问当前位置，同时不得等待知识库。")
 		} else {
-			parts = append(parts, "人工/投诉/风险：按当前门店托管模式和排班处理；没有工具或路由结果时，不得表达人工动作、通知安排或处理结果已经发生。普通设施/设备问题若知识库命中，知识库优先于人工。")
+			parts = append(parts, "人工/投诉/风险：投诉、退款、赔偿、订单和价格问题先结合知识库与 PMS 只读事实回答或给出可确认方案；只有客户当前原话明确要求人工，或知识库明确要求转人工时，才进入接待路由。answer_rejected 只表示需要重新回答，不自动转人工。没有工具或路由结果时，不得表达人工动作、通知安排或处理结果已经发生。")
 		}
 	case "service_request":
 		parts = append(parts, "服务请求：按当前分类提示词处理；普通设施/设备/用品问题先使用知识库。没有知识库或工具结果时，不得承诺派人、送物、维修、叫醒或记录完成。")

@@ -62,7 +62,7 @@ func TestPMSOnlyTaskBypassesFAQRequirement(t *testing.T) {
 	for _, subIntent := range []string{"member_info", "member_benefits", "order_query", "room_status", "inventory"} {
 		t.Run(subIntent, func(t *testing.T) {
 			task := semanticGateRestrictTaskActions(callbacks.IntentTaskTraceData{
-				Intent: "hotel_info", SubIntent: subIntent, NeedsKnowledge: true, NeedsTool: true,
+				Intent: "hotel_info", SubIntent: subIntent, NeedsKnowledge: false, NeedsTool: true,
 				Text: "查询当前资料", ResolvedText: "查询当前资料", SourceRefs: []string{"U1"},
 			})
 			intent := deriveModelIntentFromTasks(callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{task}})
@@ -262,8 +262,9 @@ func TestKnowledgePolicyIsolatesPerTaskRetrievalFailure(t *testing.T) {
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
 	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[0].OutputKind != "text" ||
-		plan.TaskPlans[1].TaskID != "task-2" || plan.TaskPlans[1].OutputKind != "handoff" || plan.TaskPlans[1].ReplyRequired {
-		t.Fatalf("successful and failed Tasks must keep independent execution paths: %#v", plan.TaskPlans)
+		plan.TaskPlans[1].TaskID != "task-2" || plan.TaskPlans[1].OutputKind != "text" || !plan.TaskPlans[1].ReplyRequired ||
+		plan.TaskPlans[1].Output != "knowledge_text_reply" {
+		t.Fatalf("successful and failed Tasks must remain independently answerable: %#v", plan.TaskPlans)
 	}
 }
 
@@ -330,8 +331,9 @@ func TestKnowledgePolicyPersistsExplicitNoEvidenceForZeroCandidateSibling(t *tes
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
 	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].OutputKind != "text" ||
-		plan.TaskPlans[1].OutputKind != "handoff" || plan.TaskPlans[1].ReplyRequired {
-		t.Fatalf("answered and zero-candidate Tasks must keep independent execution paths: %#v", plan.TaskPlans)
+		plan.TaskPlans[1].OutputKind != "text" || !plan.TaskPlans[1].ReplyRequired ||
+		plan.TaskPlans[1].Output != "knowledge_text_reply" {
+		t.Fatalf("answered and zero-candidate Tasks must remain independently answerable: %#v", plan.TaskPlans)
 	}
 }
 
@@ -1832,11 +1834,11 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
 	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
-	if !strings.Contains(state.Decision.Instructions[0].Content, "否则进入接待路由") {
-		t.Fatalf("expected actionable no-context policy, got %q", state.Decision.Instructions[0].Content)
+	if !strings.Contains(state.Decision.Instructions[0].Content, "只有客户随后明确要求人工") {
+		t.Fatalf("expected no-context policy to avoid automatic handoff, got %q", state.Decision.Instructions[0].Content)
 	}
-	if state.Input.Summary == nil || !state.Input.Summary.handoffDirective || state.Input.Summary.handoffDirectiveSource != "knowledge_no_context" {
-		t.Fatalf("expected no-context business question to request handoff, got %#v", state.Input.Summary)
+	if state.Input.Summary == nil || state.Input.Summary.handoffDirective {
+		t.Fatalf("knowledge miss must not request automatic handoff, got %#v", state.Input.Summary)
 	}
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
@@ -1874,7 +1876,7 @@ func TestKnowledgePolicyRetrievesWifiInsteadOfSkippingAsAction(t *testing.T) {
 	if collector.Data.Answerability.Status != answerabilityStatusNoContext {
 		t.Fatalf("unexpected policy status: %q", collector.Data.Answerability.Status)
 	}
-	if len(state.Decision.Instructions) != 1 || !strings.Contains(state.Decision.Instructions[0].Content, "WiFi") {
+	if len(state.Decision.Instructions) != 1 || !strings.Contains(state.Decision.Instructions[0].Content, "房间网连不上") {
 		t.Fatalf("expected wifi-aware no-context instruction, got %#v", state.Decision.Instructions)
 	}
 }
@@ -1932,8 +1934,8 @@ func TestBuildRunMessagesMarksHandoffWhenNoContext(t *testing.T) {
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
 	}
-	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
-		t.Fatalf("expected no-context business question to enter handoff flow, got %#v", summary)
+	if summary.handoffDirective {
+		t.Fatalf("knowledge miss must not enter automatic handoff flow, got %#v", summary)
 	}
 	if !messagesContainContent(messages, "当前没有从知识库检索到可用资料") {
 		t.Fatalf("expected no-context instruction in messages: %#v", messages)
@@ -1969,8 +1971,8 @@ func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingIndependentSiblin
 		t.Fatalf("missing knowledge must not create a global handoff when an interaction sibling can still run: %#v", summary)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
-		t.Fatalf("knowledge task must be deferred independently, got %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("knowledge miss must not authorize an automatic handoff, got %#v", trace)
 	}
 	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
 		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
@@ -1982,12 +1984,12 @@ func TestKnowledgePolicyDefersMissingKnowledgeWithoutSwallowingIndependentSiblin
 		t.Fatalf("deferred knowledge and independent siblings must keep stable order, got %#v", plan.TaskPlans)
 	}
 	deferred := plan.TaskPlans[0]
-	if deferred.Output != runtimeKnowledgeDeferredHandoffOutput || deferred.OutputKind != "handoff" || deferred.ReplyRequired {
-		t.Fatalf("missing knowledge must remain as a non-text Deferred Task, got %#v", deferred)
+	if deferred.Output != "knowledge_text_reply" || deferred.OutputKind != "text" || !deferred.ReplyRequired {
+		t.Fatalf("missing knowledge must remain an active text Task, got %#v", deferred)
 	}
 	active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, plan)
-	if len(active) != 1 || active[0].TaskID != "task-2" {
-		t.Fatalf("Generate must see only the interaction sibling, got %#v", active)
+	if len(active) != 2 || active[0].TaskID != "task-1" || active[1].TaskID != "task-2" {
+		t.Fatalf("Generate must preserve the missing-knowledge task and its sibling, got %#v", active)
 	}
 }
 
@@ -2066,12 +2068,12 @@ func TestKnowledgePolicyKeepsPureMissingKnowledgeHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if state.AnswerabilityStatus != answerabilityStatusNoContext || !summary.handoffDirective {
-		t.Fatalf("pure knowledge request must keep the existing direct handoff behavior, state=%#v summary=%#v", state, summary)
+	if state.AnswerabilityStatus != answerabilityStatusNoContext || summary.handoffDirective {
+		t.Fatalf("pure knowledge miss must stay answerable without automatic handoff, state=%#v summary=%#v", state, summary)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
-		t.Fatalf("pure knowledge handoff must retain its Task for precise resume: %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("pure knowledge miss must not create a deferred handoff: %#v", trace)
 	}
 	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
 		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
@@ -2079,9 +2081,9 @@ func TestKnowledgePolicyKeepsPureMissingKnowledgeHandoff(t *testing.T) {
 		t.Fatalf("pure pre-judge handoff must retain an explicit Task disposition: %#v", trace.Tasks)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput ||
-		plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired {
-		t.Fatalf("pure knowledge task must remain as a non-text Deferred Task for resume: %#v", plan.TaskPlans)
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].Output != "knowledge_text_reply" ||
+		plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("pure knowledge task must remain an active text task: %#v", plan.TaskPlans)
 	}
 }
 
@@ -2156,8 +2158,8 @@ func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if state.AnswerabilityStatus != answerabilityStatusNoContext || !summary.handoffDirective {
-		t.Fatalf("all-pending knowledge must enter the existing handoff path, state=%#v summary=%#v", state, summary)
+	if state.AnswerabilityStatus != answerabilityStatusNoContext || summary.handoffDirective {
+		t.Fatalf("all-pending knowledge must remain answerable without automatic handoff, state=%#v summary=%#v", state, summary)
 	}
 	if summary.RetrieverCount != 3 || collector.Data.Retriever.Count != 3 || len(collector.Data.Retriever.Items) != 3 {
 		t.Fatalf("raw retrieval trace must survive all-pending early return, summary=%d retriever=%#v", summary.RetrieverCount, collector.Data.Retriever)
@@ -2174,13 +2176,13 @@ func TestKnowledgePolicyAllPendingPersistsRetrieverAndJudgeTrace(t *testing.T) {
 	if trace.Status != "completed" || trace.TaskCount != 1 || trace.CandidateCount != 3 || len(trace.Tasks) != 1 {
 		t.Fatalf("judge batch trace must survive all-pending early return: %#v", trace)
 	}
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 {
-		t.Fatalf("all-pending handoff must retain the exact deferred Task: %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("all-pending knowledge must not authorize a deferred handoff: %#v", trace)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != trace.DeferredTaskIDs[0] ||
-		plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput || plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired {
-		t.Fatalf("all-pending handoff must persist a recoverable non-text TaskPlan: plan=%#v trace=%#v", plan, trace)
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].TaskID != "task-1" ||
+		plan.TaskPlans[0].Output != "knowledge_text_reply" || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired {
+		t.Fatalf("all-pending knowledge must persist an active text TaskPlan: plan=%#v trace=%#v", plan, trace)
 	}
 	taskTrace := trace.Tasks[0]
 	if taskTrace.CandidateCount != 3 || taskTrace.Decision != knowledgeEvidenceDecisionInsufficient || taskTrace.DecisionSource != "model" || len(taskTrace.Layers) != 2 {
@@ -2294,8 +2296,8 @@ func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibli
 		t.Fatalf("unavailable retriever must not create a global handoff for a mixed resource run: %#v", summary)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "task-1" {
-		t.Fatalf("knowledge task must be deferred when the retriever is unavailable, got %#v", trace)
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 {
+		t.Fatalf("retriever failure must not authorize an automatic handoff, got %#v", trace)
 	}
 	if len(trace.Tasks) != 1 || trace.Tasks[0].TaskID != "task-1" ||
 		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
@@ -2303,13 +2305,13 @@ func TestKnowledgePolicyDefersUnavailableRetrieverWithoutSwallowingResourceSibli
 		t.Fatalf("unavailable retriever must persist an explicit Task disposition: %#v", trace.Tasks)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[0].Output != runtimeKnowledgeDeferredHandoffOutput ||
-		plan.TaskPlans[0].OutputKind != "handoff" || plan.TaskPlans[0].ReplyRequired || plan.TaskPlans[1].TaskID != "task-2" ||
+	if len(plan.TaskPlans) != 2 || plan.TaskPlans[0].TaskID != "task-1" || plan.TaskPlans[0].Output != "knowledge_text_reply" ||
+		plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired || plan.TaskPlans[1].TaskID != "task-2" ||
 		plan.TaskPlans[1].OutputKind != "resource" {
-		t.Fatalf("resource sibling and recoverable deferred knowledge Task must both remain, got %#v", plan.TaskPlans)
+		t.Fatalf("resource sibling and active knowledge Task must both remain, got %#v", plan.TaskPlans)
 	}
-	if active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, plan); len(active) != 0 {
-		t.Fatalf("resource-only sibling must not create a Generate text task: %#v", active)
+	if active := activeGenerationTaskPlans(callbacks.IntentTraceData{}, plan); len(active) != 1 || active[0].TaskID != "task-1" {
+		t.Fatalf("knowledge Task must remain in Generate while resource sibling stays separate: %#v", active)
 	}
 }
 
@@ -2670,14 +2672,14 @@ func TestKnowledgePolicyEvaluatePersistsSourceUnavailableDispositionOnRetrievalE
 	if collector.Data.Answerability.Reason != "knowledge retrieval failed" {
 		t.Fatalf("unexpected reason: %q", collector.Data.Answerability.Reason)
 	}
-	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
-		t.Fatalf("a pure knowledge source failure must enter the real handoff path: %#v", summary)
+	if summary.handoffDirective {
+		t.Fatalf("a pure knowledge source failure must not enter automatic handoff: %#v", summary)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || len(trace.Tasks) != 1 ||
+	if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 || len(trace.Tasks) != 1 ||
 		trace.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
 		trace.Tasks[0].DecisionSource != "source_unavailable" {
-		t.Fatalf("retrieval failure must persist an explicit per-task source disposition: %#v", trace)
+		t.Fatalf("retrieval failure must persist an explicit non-routing Task disposition: %#v", trace)
 	}
 }
 
@@ -2701,8 +2703,8 @@ func TestAppendRetrievedContextRequestsHandoffWhenRetrievalFails(t *testing.T) {
 	if summary.ReplyText != "" {
 		t.Fatalf("expected no early fallback reply, got %q", summary.ReplyText)
 	}
-	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_no_context" {
-		t.Fatalf("retrieval failure must not continue as an ungrounded hotel answer: %#v", summary)
+	if summary.handoffDirective {
+		t.Fatalf("retrieval failure must not auto-route to a human: %#v", summary)
 	}
 	if !messagesContainContent(messages, "知识库检索暂时不可用") {
 		t.Fatalf("expected retrieval-error instruction in messages: %#v", messages)
