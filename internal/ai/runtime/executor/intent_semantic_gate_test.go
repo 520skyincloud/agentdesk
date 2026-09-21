@@ -16,7 +16,7 @@ func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
 					NeedsTool: true, NeedsKnowledge: true,
 				}
 				got := semanticGateRestrictTaskActions(task)
-				if !got.NeedsTool || got.NeedsHumanRoute || got.SubIntent != subIntent {
+				if !got.NeedsTool || got.NeedsKnowledge || got.NeedsHumanRoute || got.SubIntent != subIntent {
 					t.Fatalf("member query tool was cleared or rerouted: %#v", got)
 				}
 				task.NeedsTool = false
@@ -31,6 +31,28 @@ func TestIntentSemanticGatePreservesMemberQueryToolActions(t *testing.T) {
 	})
 	if ordinary.NeedsTool {
 		t.Fatal("ordinary knowledge query must not gain member tool access")
+	}
+}
+
+func TestIntentSemanticGateClearsStaleKnowledgeForPMSQueries(t *testing.T) {
+	for _, tc := range []struct {
+		intent    string
+		subIntent string
+	}{
+		{intent: "hotel_info", subIntent: "order_query"},
+		{intent: "hotel_info", subIntent: "room_status"},
+		{intent: "service_request", subIntent: "room_upgrade"},
+		{intent: "human_complaint_risk", subIntent: "order_price_dispute"},
+	} {
+		t.Run(tc.intent+"/"+tc.subIntent, func(t *testing.T) {
+			got := semanticGateRestrictTaskActions(callbacks.IntentTaskTraceData{
+				Intent: tc.intent, SubIntent: tc.subIntent,
+				NeedsKnowledge: true, NeedsTool: false,
+			})
+			if got.NeedsKnowledge || !got.NeedsTool || got.NeedsHumanRoute {
+				t.Fatalf("stale FAQ routing must not block a PMS read task: %#v", got)
+			}
+		})
 	}
 }
 

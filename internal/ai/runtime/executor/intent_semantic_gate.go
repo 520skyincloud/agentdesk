@@ -623,6 +623,10 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 	switch task.Intent {
 	case "hotel_info":
 		if pmsTask {
+			// PMS read tasks are grounded by the live tool result. Keeping the
+			// model's stale NeedsKnowledge flag would let the FAQ evidence gate
+			// stop the task before pms_query gets a chance to run.
+			task.NeedsKnowledge = false
 			task.NeedsTool = true
 		} else {
 			task.NeedsKnowledge = true
@@ -630,6 +634,7 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 		}
 	case "service_request":
 		if pmsTask {
+			task.NeedsKnowledge = false
 			task.NeedsTool = true
 		} else {
 			task.NeedsKnowledge = true
@@ -646,6 +651,7 @@ func semanticGateRestrictTaskActions(task callbacks.IntentTaskTraceData) callbac
 			task.NeedsHumanRoute = true
 		} else {
 			if pmsTask {
+				task.NeedsKnowledge = false
 				task.NeedsTool = true
 			} else {
 				task.NeedsKnowledge = true
