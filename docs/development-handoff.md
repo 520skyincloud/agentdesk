@@ -1047,3 +1047,25 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   有回复及协议正常，不把区域范围正确性记为通过。模型轮次Trace未见新增模型阶段或额外Generate尝试。
 - 当前保留3cbee83 release及原回滚点，不追加运行代码、模型测试或配置修改。验收结论为核心房号分流已验证、
   表达边界及范围推断仍有问题；不能据此宣称回复质量全部修复。后续合并交接文档须保留customer-audit追加记录。
+
+## 2026-09-21 PMS 只读问答与人工路由收口
+
+- 修复提交：`0d91c98`，已推送 `origin` 和 `weibao` 分支
+  `codex/pms-live-from-weiwei-20260920`。并行检查确认 `customer-audit`、`ai-billing`
+  在本轮目标运行文件上没有新增同文件修改。
+- 运行链路调整为：PMS 只读任务保留 `needsTool=true`；同时需要门店政策时保留
+  `needsKnowledge=true` 并行检索。知识未命中、检索失败、Judge 不足和 `answer_rejected`
+  不再单独授权人工路由；只有客户明确要求人工、知识库明确写明转人工或严重安全风险才路由。
+  只读 PMS 结果不得表述为已换房、已升房、已锁房或已延退。
+- PMS 增加只读 `price_difference` 评估，使用真实订单详情、库存、日期、币种和计价口径；
+  空价格、跨日期缺失和口径不一致只返回待确认/无法确认，不把空值解释为免费。未开放任何 PMS 写操作。
+- 验证通过：
+  `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime/tools ./internal/pkg/replyintent ./internal/pkg/toolx ./internal/pms ./internal/services -count=1`
+  以及 `git diff --check`。
+- `test-2` release：`/opt/agentdesk/releases/20260921-pms-live-0d91c98`；
+  Server SHA-256：`2ebb61f1643cdd70c63650bd7b68988334269578c7f47653f88e84289052a769`。
+  切换前备份：`/opt/agentdesk/backups/20260921-1218-pms-readonly-0d91c98`；
+  回滚点：`/opt/agentdesk/releases/20260920-pms-live-d95f117`。
+- 部署后确认 `agentdesk.service=active`、`NRestarts=0`、`8083 HTTP 200`，
+  `AGENT_DESK_PMS_ENABLED=true`、`AGENT_DESK_PMS_ALLOW_WRITE=false`。未修改数据库、知识库、
+  运行配置或“薇薇”备份。现有企微坐席过期告警（`err_code=9003`）仍属环境问题，未在本轮改动。
