@@ -1069,3 +1069,20 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 部署后确认 `agentdesk.service=active`、`NRestarts=0`、`8083 HTTP 200`，
   `AGENT_DESK_PMS_ENABLED=true`、`AGENT_DESK_PMS_ALLOW_WRITE=false`。未修改数据库、知识库、
   运行配置或“薇薇”备份。现有企微坐席过期告警（`err_code=9003`）仍属环境问题，未在本轮改动。
+
+## 2026-09-21 人工路由与 PMS 优先级最小修复
+
+- 本轮只修改 `answerability_gate.go`、`intent_human_route.go`、`handoff_graph.go`、
+  `handoff_graph_tool.go`、`pkg/utils/handoff.go` 及对应回归测试。
+- 当前原话必须明确表达“转人工/找同事/人工客服”等诉求，Intent、Graph Tool 和
+  Handoff Graph 三层均执行守门；普通服务请求、投诉、价格/赔偿咨询、知识不足和
+  PMS 查询失败不再单独触发人工路由。
+- 知识库明确要求转人工时仍可转接；同一轮存在 PMS 只读任务时，PMS 查询优先，
+  知识库转接指令不能抢占订单、房态、会员或差价回答。
+- Judge/覆盖修复失败在消息仍可继续处理时不再吞掉原始 Task 或独立 PMS 任务；
+  仅在实时路由已失效时保留失败退出。
+- 无数据库、Migration、模型、知识库、外部 API、Outbox 或 PMS 写入变更。
+- 聚焦验证通过：
+  `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime/graphs ./internal/ai/runtime/tools ./internal/pkg/utils ./internal/services ./internal/pms -count=1`。
+- 提交前需保留 `0d91c98` release 作为回滚点；部署目标仅为 `test-2`，并保持
+  `AGENT_DESK_PMS_ENABLED=true`、`AGENT_DESK_PMS_ALLOW_WRITE=false`。

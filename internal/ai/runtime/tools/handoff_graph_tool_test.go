@@ -76,6 +76,21 @@ func TestHandoffGraphToolEnabledHonorsConversationSetting(t *testing.T) {
 	}
 }
 
+func TestHandoffGraphToolDisabledForNonExplicitCurrentMessage(t *testing.T) {
+	tool := NewHandoffGraphTool()
+	ctx := registry.Context{
+		Conversation: models.Conversation{ID: 901},
+		UserMessage:  models.Message{ID: 902, Content: "房间很冷，帮我处理一下"},
+	}
+	if tool.Enabled(ctx) {
+		t.Fatal("handoff tool must be unavailable when the current message has no explicit human request")
+	}
+	ctx.UserMessage.Content = "请转人工处理"
+	if !tool.Enabled(ctx) {
+		t.Fatal("explicit human request should keep the handoff tool available")
+	}
+}
+
 func TestHandoffGraphToolEnabledWithoutConversationMetadata(t *testing.T) {
 	tool := NewHandoffGraphTool()
 	ctx := registry.Context{}

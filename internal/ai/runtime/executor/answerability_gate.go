@@ -2765,13 +2765,23 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			batch, judgeTasks, judgeOutcome, err = gate.repairQuestionCoverageOnce(
 				ctx, state, retriever, retrieveOptions, batch, judgeTasks, judgeOutcome, storeKnowledgeBaseIDs, knowledgeIDs)
 			if err != nil {
+				if !canContinueGeneratedReply(req) {
+					judgeOutcome.Trace.Status = "coverage_failed"
+					judgeOutcome.Trace.Reason = "question coverage was superseded by a live route or source"
+					judgeOutcome.Trace.ErrorMessage = preview(err.Error(), 200)
+					state.Input.Collector.SetKnowledgeEvidenceJudge(judgeOutcome.Trace)
+					state.Input.Collector.Data.Error.Stage = "question_coverage"
+					state.Input.Collector.Data.Error.Message = err.Error()
+					return state, err
+				}
 				judgeOutcome.Trace.Status = "coverage_failed"
-				judgeOutcome.Trace.Reason = "question coverage was not completed; no knowledge handoff or partial completion authorized"
+				judgeOutcome.Trace.Reason = "question coverage repair was not applied; original tasks were preserved for normal answering"
 				judgeOutcome.Trace.ErrorMessage = preview(err.Error(), 200)
 				state.Input.Collector.SetKnowledgeEvidenceJudge(judgeOutcome.Trace)
-				state.Input.Collector.Data.Error.Stage = "question_coverage"
-				state.Input.Collector.Data.Error.Message = err.Error()
-				return state, err
+				state.Input.Collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+					state.Input.Collector.Data.Pipeline.Validate.Reason,
+					"question coverage repair was non-fatal; original tasks and independent PMS work were preserved",
+				)
 			}
 			rawCandidateCount = runtimeRetrieverRawCandidateCount(batch.Merged)
 		}
@@ -2796,7 +2806,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	independentNonKnowledgeWork := state.Input.Collector != nil &&
 		runtimeReplyPlanHasIndependentNonKnowledgeWork(state.Input.Collector.Data.Pipeline.ReplyPlan)
-	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabled(req.Conversation.ID, pendingQuestions)
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(req.Conversation.ID, pendingQuestions, state.Input.Collector)
 	if len(retryQuestions) > 0 {
 		clearDeferredRuntimeKnowledgeQuestions(batch, retryQuestions)
 		result = batch.Merged
@@ -2831,7 +2841,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			return state, nil
 		}
 		for _, pending := range pendingQuestions {
-			if pending.HandoffHit.Content != "" {
+			if pending.HandoffHit.Content != "" && !runtimeCollectorHasPMSReadTask(state.Input.Collector) {
 				markKnowledgeHandoffDirective(state.Input, pending.HandoffHit)
 				state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 				state.recordAnswerability(answerabilityStatusSkipped, "selected knowledge answer requested human handoff", nil)
@@ -3184,7 +3194,7 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 	}
 	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
 
-	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabled(state.Input.Request.Conversation.ID, pending)
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(state.Input.Request.Conversation.ID, pending, state.Input.Collector)
 	if autoHandoffEnabled && len(pending) > 0 {
 		activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
 		state.Input.Collector.SetReplyPlan(activePlan)
@@ -3248,6 +3258,17 @@ func runtimeKnowledgeAutoHandoffEnabled(conversationID int64, pending []runtimeK
 		}
 	}
 	return true
+}
+
+func runtimeKnowledgeAutoHandoffEnabledForCollector(
+	conversationID int64,
+	pending []runtimeKnowledgeQuestionDisposition,
+	collector *callbacks.RuntimeTraceCollector,
+) bool {
+	if runtimeCollectorHasPMSReadTask(collector) {
+		return false
+	}
+	return runtimeKnowledgeAutoHandoffEnabled(conversationID, pending)
 }
 
 func topKnowledgeHandoffDirective(result *retrievers.KnowledgeRetrieveResult) (rag.RetrieveResult, bool) {

@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/ai/runtime/tooling"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/tracex"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 )
 
@@ -27,13 +28,18 @@ var isAutoHandoffEnabledForConversation = func(conversationID int64) bool {
 type HandoffGraph struct {
 	conversation models.Conversation
 	aiAgent      models.AIAgent
+	userMessage  models.Message
 }
 
-func NewHandoffGraph(conversation models.Conversation, aiAgent models.AIAgent) *HandoffGraph {
-	return &HandoffGraph{
+func NewHandoffGraph(conversation models.Conversation, aiAgent models.AIAgent, currentMessage ...models.Message) *HandoffGraph {
+	graph := &HandoffGraph{
 		conversation: conversation,
 		aiAgent:      aiAgent,
 	}
+	if len(currentMessage) > 0 {
+		graph.userMessage = currentMessage[0]
+	}
+	return graph
 }
 
 func (g *HandoffGraph) Run(ctx context.Context, argumentsInJSON string) (string, error) {
@@ -42,6 +48,16 @@ func (g *HandoffGraph) Run(ctx context.Context, argumentsInJSON string) (string,
 			Handled:     false,
 			Terminal:    false,
 			Action:      "auto_handoff_disabled",
+			ReplySent:   false,
+			ShouldRetry: false,
+		}), nil
+	}
+	if (g.userMessage.ID > 0 || strings.TrimSpace(g.userMessage.Content) != "") &&
+		!utils.IsExplicitHumanHandoffRequest(g.userMessage.Content) {
+		return tooling.MarshalToolResult(tooling.ToolResult{
+			Handled:     false,
+			Terminal:    false,
+			Action:      "handoff_requires_explicit_customer_request",
 			ReplySent:   false,
 			ShouldRetry: false,
 		}), nil

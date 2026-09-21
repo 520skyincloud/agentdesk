@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 )
 
@@ -17,33 +18,7 @@ import (
 // the knowledge/PMS read path; only a direct request for a person authorizes
 // the human-route action at Intent stage.
 func runtimeExplicitHumanHandoffRequest(text string) bool {
-	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), "")
-	if normalized == "" || strings.Contains(normalized, "人工智能") {
-		return false
-	}
-	for _, phrase := range []string{
-		"转人工",
-		"转接人工",
-		"转真人",
-		"找人工",
-		"找真人",
-		"人工客服",
-		"真人客服",
-		"找客服",
-		"联系人工",
-		"联系同事",
-		"找同事",
-		"接人工",
-		"接同事",
-		"人工处理",
-		"人工介入",
-		"前台同事",
-	} {
-		if strings.Contains(normalized, phrase) {
-			return true
-		}
-	}
-	return normalized == "人工" || normalized == "真人" || normalized == "客服"
+	return utils.IsExplicitHumanHandoffRequest(text)
 }
 
 func runtimeSelfServiceIntentForHumanTask(task callbacks.IntentTaskTraceData) string {
@@ -168,6 +143,21 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
+	if !isEmergencySafetyHandoff(intent) &&
+		!runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) {
+		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
+			ToolCode: toolx.GraphHandoffConversation.Code,
+			ToolName: toolx.GraphHandoffConversation.Name,
+			Arguments: map[string]any{
+				"intent":    intent.PrimaryIntent,
+				"subIntent": intent.SubIntent,
+			},
+			Status:            "skipped",
+			RecommendedAction: "handoff_requires_explicit_customer_request",
+			ResultPreview:     "当前消息没有明确人工诉求，继续按知识库或 PMS 查询回答",
+		})
+		return false, nil
+	}
 	reason := buildIntentHumanRouteReason(intent, req.UserMessage.Content)
 	started := time.Now()
 	dispatch := services.ConversationHandoffConfirmationService.DispatchByAIWithOriginMessage
@@ -277,6 +267,7 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 			RecommendedAction: "handoff_requires_explicit_customer_or_knowledge_directive",
 			ResultPreview:     "仅客户明确要求人工或知识库明确要求转接才允许人工路由",
 		})
+		summary.handoffDirective = false
 		return false, nil
 	}
 	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
@@ -349,6 +340,9 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTraceCollector, source string) bool {
 	switch strings.TrimSpace(source) {
 	case "knowledge_top_answer":
+		if runtimeCollectorHasPMSReadTask(collector) {
+			return false
+		}
 		return true
 	case "generated_reply_guard":
 		return runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
@@ -358,6 +352,24 @@ func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTr
 			strings.TrimSpace(collector.Data.Pipeline.Intent.SubIntent) == "explicit_handoff" &&
 			runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
 	}
+}
+
+func runtimeCollectorHasPMSReadTask(collector *callbacks.RuntimeTraceCollector) bool {
+	if collector == nil {
+		return false
+	}
+	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
+		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
+			return true
+		}
+	}
+	for _, task := range collector.Data.Pipeline.Intent.IntentTasks {
+		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
+			return true
+		}
+	}
+	intent := collector.Data.Pipeline.Intent
+	return intent.NeedsTool && isPMSRuntimeSubIntent(intent.SubIntent)
 }
 
 // HandoffRoomNumberPolicyFromTrace keeps post-commit handoffs on the same policy

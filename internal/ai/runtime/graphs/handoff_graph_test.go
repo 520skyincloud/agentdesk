@@ -114,6 +114,40 @@ func TestHandoffGraphDoesNotDispatchWhenAutoHandoffDisabled(t *testing.T) {
 	}
 }
 
+func TestHandoffGraphRejectsNonExplicitCurrentMessage(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	previousDispatch := dispatchHandoffByAI
+	isAutoHandoffEnabledForConversation = func(int64) bool { return true }
+	dispatchCalled := false
+	dispatchHandoffByAI = func(_ int64, _ models.AIAgent, _ string, _ string) (*services.HandoffDispatchResult, error) {
+		dispatchCalled = true
+		return &services.HandoffDispatchResult{Status: services.HandoffDispatchStatusDispatched}, nil
+	}
+	t.Cleanup(func() {
+		isAutoHandoffEnabledForConversation = previousEnabled
+		dispatchHandoffByAI = previousDispatch
+	})
+
+	reply, err := NewHandoffGraph(
+		models.Conversation{ID: 101},
+		models.AIAgent{ID: 202},
+		models.Message{ID: 303, Content: "马桶堵了，帮我处理一下"},
+	).Run(context.Background(), `{"reason":"用户需要帮助"}`)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if dispatchCalled {
+		t.Fatal("non-explicit current message must not dispatch a human handoff")
+	}
+	result, ok := tooling.ParseToolResult(reply)
+	if !ok {
+		t.Fatalf("expected structured tool result, got %q", reply)
+	}
+	if result.Action != "handoff_requires_explicit_customer_request" || result.Handled || result.Terminal || result.ReplySent || result.ShouldRetry {
+		t.Fatalf("unexpected non-explicit handoff result: %+v", result)
+	}
+}
+
 func TestHandoffGraphUsesDefaultReason(t *testing.T) {
 	previousEnabled := isAutoHandoffEnabledForConversation
 	previous := dispatchHandoffByAI

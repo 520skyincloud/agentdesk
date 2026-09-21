@@ -563,6 +563,49 @@ func TestQuestionCoverageRetainsJudgeFailureReason(t *testing.T) {
 	}
 }
 
+func TestQuestionCoverageRepairFailurePreservesOriginalAndPMSWork(t *testing.T) {
+	intent := coverageTestIntent("早餐几点")
+	plan := buildReplyPlan(intent, selectIntentPromptPack(intent))
+	req := RunInput{UserMessage: models.Message{Content: "早餐几点，查一下我的订单"}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = intent
+	collector.SetReplyPlan(plan)
+	state := &answerabilityGateState{Input: answerabilityGateInput{Request: req, Intent: intent, Collector: collector}}
+	input := buildRuntimeQuestionCoverageInput(req, plan)
+	batch := &runtimeKnowledgeRetrieveBatch{Questions: []runtimeKnowledgeQuestionResult{{TaskID: plan.TaskPlans[0].TaskID, Query: "早餐几点"}}}
+	tasks := []knowledgeEvidenceJudgeTask{
+		{TaskID: plan.TaskPlans[0].TaskID, Coverage: input},
+		{TaskID: "pms-order-query", Intent: "hotel_info", SubIntent: "order_query", Query: "查一下我的订单"},
+	}
+	outcome := knowledgeEvidenceJudgeOutcome{
+		Applied: true,
+		Coverage: &runtimeQuestionCoverage{Status: "repair_required", Issues: []runtimeQuestionCoverageIssue{{
+			Kind: "merged_questions", TaskID: plan.TaskPlans[0].TaskID, SourceRef: "U1", Text: "早餐几点", Reason: "需修复",
+		}}},
+	}
+	originalTasks := append([]knowledgeEvidenceJudgeTask(nil), tasks...)
+	originalOutcome := outcome
+	g := &KnowledgeAnswerabilityGate{
+		repairIntent: func(context.Context, RunInput, callbacks.IntentTraceData, *runtimeQuestionCoverageInput, []runtimeQuestionCoverageIssue) (callbacks.IntentTraceData, error) {
+			return callbacks.IntentTraceData{}, errors.New("repair provider unavailable")
+		},
+	}
+	gotBatch, gotTasks, gotOutcome, err := g.repairQuestionCoverageOnce(context.Background(), state, nil,
+		retrievers.DefaultKnowledgeRetrieveOptions(), batch, tasks, outcome, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "repair provider unavailable") {
+		t.Fatalf("expected repair failure, got %v", err)
+	}
+	if gotBatch != batch || !reflect.DeepEqual(gotTasks, originalTasks) || !reflect.DeepEqual(gotOutcome, originalOutcome) {
+		t.Fatalf("repair failure must preserve original retrieval and judge work: batch=%p/%p tasks=%#v outcome=%#v", gotBatch, batch, gotTasks, gotOutcome)
+	}
+	if !reflect.DeepEqual(collector.Data.Pipeline.ReplyPlan, plan) {
+		t.Fatal("repair failure must not mutate the original reply plan")
+	}
+	if gotTasks[1].TaskID != "pms-order-query" {
+		t.Fatal("independent PMS task was dropped during failed coverage repair")
+	}
+}
+
 func TestQuestionCoverageClarificationRemainsAQuestionAtGeneration(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "T1", Intent: "hotel_info", SubIntent: "supplies_self_help", Text: "有用品吗", OutputKind: "text", ReplyRequired: true},
