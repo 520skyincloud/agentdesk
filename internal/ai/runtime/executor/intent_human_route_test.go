@@ -524,3 +524,23 @@ func TestDeferMixedExplicitIntentHumanRouteKeepsPureAndRejectedRoutesImmediate(t
 		})
 	}
 }
+
+func TestDeferMixedExplicitIntentHumanRouteDoesNotLetInteractionBlockExplicitRequest(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent:   "human_complaint_risk",
+		SubIntent:       "explicit_handoff",
+		NeedsHumanRoute: true,
+	}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "task-1", Intent: "interaction", SubIntent: "frustration", OutputKind: "text", ReplyRequired: true},
+		{TaskID: "task-2", Intent: "human_complaint_risk", SubIntent: "explicit_handoff", OutputKind: "handoff"},
+	}}
+
+	if deferMixedExplicitIntentHumanRoute(
+		RunInput{UserMessage: models.Message{Content: "我不满意，帮我转人工"}},
+		collector,
+	) {
+		t.Fatal("pure interaction context must not delay an explicit human request")
+	}
+}

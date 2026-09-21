@@ -210,7 +210,9 @@ func deferMixedExplicitIntentHumanRoute(req RunInput, collector *callbacks.Runti
 	for _, task := range plan.TaskPlans {
 		switch strings.TrimSpace(task.OutputKind) {
 		case "text", "resource":
-			hasNonHandoffTask = true
+			if mixedExplicitHandoffTaskNeedsAnswer(task) {
+				hasNonHandoffTask = true
+			}
 		case "handoff":
 			if strings.TrimSpace(task.Output) == runtimeKnowledgeDeferredHandoffOutput {
 				continue
@@ -246,6 +248,15 @@ func deferMixedExplicitIntentHumanRoute(req RunInput, collector *callbacks.Runti
 	})
 	collector.SetActionLedger(ledger)
 	return true
+}
+
+func mixedExplicitHandoffTaskNeedsAnswer(task callbacks.ReplyTaskPlanTraceData) bool {
+	switch canonicalIntentCode(task.Intent) {
+	case "interaction", "human_complaint_risk":
+		return false
+	default:
+		return true
+	}
 }
 
 func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (bool, error) {
