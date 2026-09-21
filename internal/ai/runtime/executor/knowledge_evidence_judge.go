@@ -7769,6 +7769,106 @@ func deterministicKnowledgeEvidenceHandoffSelection(task knowledgeEvidenceJudgeT
 	return knowledgeEvidenceLayerSelection{}, false
 }
 
+// deterministicKnowledgeEvidenceHandoffSelectionForModelMiss is the narrow
+// recovery path for a semantic Judge miss. A knowledge FAQ that explicitly
+// says "转接/转人工" is an executable routing instruction, not an answer
+// fact, so it must not be lost merely because the model classified the layer
+// as insufficient. The match is deliberately stricter than ordinary semantic
+// rescue: only a high-confidence candidate whose FAQ question matches after
+// removing a standard "怎么办/怎么处理" suffix is eligible, and a competing
+// same-layer answer still blocks the recovery.
+func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
+	exactQuery := strings.TrimSpace(task.RetrievalQuery)
+	if exactQuery == "" {
+		exactQuery = strings.TrimSpace(task.Query)
+	}
+	if exactQuery == "" {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+
+	type matchedCandidate struct {
+		candidate knowledgeEvidenceJudgeCandidate
+		question  string
+		answer    string
+		match     float64
+	}
+	matches := make([]matchedCandidate, 0, 2)
+	for _, candidate := range allKnowledgeEvidenceJudgeTaskCandidates(task) {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) ||
+			candidate.Hit.Score < knowledgeEvidenceJudgeReviewMinimumScore {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, exactQuery)
+		if !isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		match := knowledgeEvidenceFAQQuestionMatchScore(
+			trimKnowledgeEvidenceHandoffQuestionSuffix(question),
+			trimKnowledgeEvidenceHandoffQuestionSuffix(exactQuery),
+		)
+		if match < 0.94 {
+			continue
+		}
+		matches = append(matches, matchedCandidate{
+			candidate: candidate,
+			question:  question,
+			answer:    answer,
+			match:     match,
+		})
+	}
+	if len(matches) == 0 {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	answerKey := normalizeStrictKnowledgeEvidenceFAQAnswerText(matches[0].answer)
+	for _, match := range matches[1:] {
+		if normalizeStrictKnowledgeEvidenceFAQAnswerText(match.answer) != answerKey {
+			return knowledgeEvidenceLayerSelection{}, false
+		}
+	}
+	best := matches[0]
+	for _, match := range matches[1:] {
+		if match.match > best.match+0.02 ||
+			(match.match >= best.match-0.02 && match.candidate.Hit.Score > best.candidate.Hit.Score) {
+			best = match
+		}
+	}
+	selectedCandidateIDs := []string{best.candidate.CandidateID}
+	if knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(task, layer, selectedCandidateIDs) ||
+		knowledgeEvidenceLayerHasCompetingCompleteAnswer(task, layer, selectedCandidateIDs, best.question, best.answer) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	return knowledgeEvidenceLayerSelection{
+		Decision:             knowledgeEvidenceDecisionDirectSingle,
+		DecisionSource:       "deterministic_handoff_model_miss",
+		SelectedCandidateIDs: selectedCandidateIDs,
+	}, true
+}
+
+func repairModelMissKnowledgeHandoffSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {
+	repaired := 0
+	for _, task := range tasks {
+		taskSelections := selections[task.TaskID]
+		if taskSelections == nil {
+			continue
+		}
+		for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+			selection, ok := taskSelections[layer]
+			if !ok ||
+				(selection.Decision != knowledgeEvidenceDecisionInsufficient &&
+					selection.Decision != knowledgeEvidenceDecisionPartial) {
+				continue
+			}
+			repairedSelection, ok := deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task, layer)
+			if !ok {
+				continue
+			}
+			taskSelections[layer] = repairedSelection
+			repaired++
+		}
+	}
+	return repaired
+}
+
 func highConfidenceDirectFAQSelection(task knowledgeEvidenceJudgeTask, layer string) (knowledgeEvidenceLayerSelection, bool) {
 	return highConfidenceDirectFAQSelectionAtMinimum(task, layer, knowledgeEvidenceDirectFAQMinimumScore)
 }

@@ -5731,6 +5731,55 @@ func TestKnowledgeEvidenceJudgeStoreHandoffWinsGeneralCompleteAnswer(t *testing.
 	}
 }
 
+func TestKnowledgeEvidenceJudgeRecoversHandoffWhenModelReturnsInsufficient(t *testing.T) {
+	storeHandoff := judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7651)
+	generalNoise := judgeTestHit(2, 201, "客服联系方式", "问题：如何联系客服\n答案：可以在小程序中联系客服。", 0.5118)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		"空调不制冷怎么办": judgeTestRetrieveResult(storeHandoff, generalNoise),
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(_ []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return knowledgeEvidenceJudgeOutcome{
+			Applied: true,
+			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				"T1": {
+					knowledgeEvidenceLayerStore: {
+						Decision: knowledgeEvidenceDecisionInsufficient,
+					},
+					knowledgeEvidenceLayerGeneral: {
+						Decision: knowledgeEvidenceDecisionInsufficient,
+					},
+				},
+			},
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{
+				SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+				Status:        "completed",
+			},
+		}
+	}}
+	summary := &RunResult{}
+	collector := callbacks.NewRuntimeTraceCollector()
+	state, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request:   newKnowledgePolicyRunInput("空调不制冷怎么办", "1"),
+		Summary:   summary,
+		Collector: collector,
+		Intent:    hotelInfoIntent(),
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_top_answer" {
+		t.Fatalf("an exact knowledge transfer directive must survive a Judge insufficient result, got %#v", summary)
+	}
+	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 2 {
+		t.Fatalf("the selected transfer FAQ must remain traceable in raw retrieval, got %#v", state.RetrieveResult)
+	}
+	if len(collector.Data.Pipeline.EvidenceJudge.Tasks) != 1 ||
+		collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionDirectHandoff ||
+		collector.Data.Pipeline.EvidenceJudge.Tasks[0].DecisionSource != "deterministic_handoff_model_miss" {
+		t.Fatalf("unexpected recovered handoff trace: %#v", collector.Data.Pipeline.EvidenceJudge)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeOnlyExposesSelectedFAQUnit(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "入住与服务", `问题：怎么办理入住
 	答案：我们酒店没有传统前台，可以通过入住机或小程序线上办理入住。

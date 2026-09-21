@@ -1657,6 +1657,7 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		trace.Reason = strings.TrimSpace(trace.Reason + fmt.Sprintf("; invalid judge outcome preserved retrieval and recovered %d strict exact-FAQ selection(s)", repaired))
 	}
 	repairExactFAQFallbackSelections(tasks, outcome.Selections)
+	repairModelMissKnowledgeHandoffSelections(tasks, outcome.Selections)
 	questionByTaskID := make(map[string]*runtimeKnowledgeQuestionResult, len(batch.Questions))
 	for index := range batch.Questions {
 		questionByTaskID[batch.Questions[index].TaskID] = &batch.Questions[index]
