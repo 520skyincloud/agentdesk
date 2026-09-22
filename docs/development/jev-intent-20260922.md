@@ -98,7 +98,24 @@ git diff --check
 修复后同一模块集合再次全部通过。真实 JEV
 合成用例连续通过3轮，覆盖手机号补充与纠正、拒绝转人工、升房会员、多问题、
 无标点多问题、天气、入住小程序，以及“句号后补手机号再问停车场”的边界反例。
-部署和服务端隔离冒烟结果在发布后补充。
+部署和服务端隔离冒烟结果如下。
+
+## test-2 发布结果
+
+- 代码提交：`4669d87f49ebc8f90c29ff2ef1c7597b9ff8a971`。
+- Release：`/opt/agentdesk/releases/20260922-jev-slot-4669d87`。
+- Linux 二进制 SHA-256：
+  `85cf45e5ec4aa5ea1eaa104d40a1a4d4097f0831f2ebedbecd59a217474a5c19`。
+- 2026-09-22 发布后 `agentdesk.service` 为 `active/running`，`8083` 可用，
+  `NRestarts=0`；JEV provider 为 `typesafe_jev`，PMS 查询开启且
+  `allowWrite=false`。
+- 隔离冒烟报告：
+  `/opt/agentdesk/shared/live-tests/jev-runtime-smoke-20260922-092637-2e8f4c9e.json`，
+  3/3 通过，覆盖停车知识、缺手机号查订单、停车入口与入住小程序；缺手机号轮次
+  未调用 PMS，全部轮次无自动转人工、无 PMS 写操作。
+- 首次切换因健康检查未等待端口启动而自动回退到 `0ccd8a7`；确认新进程无启动错误后，
+  将发布脚本改为等待 `active + 8083` 再重新切换，最终发布成功。数据库、消息、运行配置、
+  “薇薇”和“薇薇2”备份均未修改。
 
 ## 并行协作与回滚
 
