@@ -3,11 +3,13 @@ package enums
 type AIProvider string
 
 const (
-	AIProviderOpenAI AIProvider = "openai"
+	AIProviderOpenAI      AIProvider = "openai"
+	AIProviderTypeSafeJev AIProvider = "typesafe_jev"
 )
 
 var aiProviderLabelMap = map[AIProvider]string{
-	AIProviderOpenAI: "OpenAI",
+	AIProviderOpenAI:      "OpenAI",
+	AIProviderTypeSafeJev: "TypeSafe Jev",
 }
 
 func GetAIProviderLabel(provider AIProvider) string {

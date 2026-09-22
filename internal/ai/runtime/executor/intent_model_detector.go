@@ -230,6 +230,15 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
+	providerMode, providerErr := runtimeIntentDetectProviderMode()
+	if providerErr != nil {
+		return callbacks.IntentTraceData{}, providerErr
+	}
+	if providerMode == "typesafe_jev" {
+		intentCtx, cancel := context.WithTimeout(ctx, runtimeIntentDetectTimeout)
+		defer cancel()
+		return (llmRuntimeIntentDetector{}).detectRuntimeIntentWithJev(intentCtx, req, history, applyJevIntentConfig(models.AIConfig{}))
+	}
 	intentConfig, credentialRevision, resolveErr := resolveRuntimeIntentDetectAIConfigWithRevision(req)
 	if resolveErr != nil {
 		return callbacks.IntentTraceData{}, resolveErr
