@@ -5795,6 +5795,55 @@ func TestKnowledgeEvidenceJudgeRecoversHandoffWhenModelReturnsInsufficient(t *te
 	}
 }
 
+func TestKnowledgeEvidenceJudgeRecoversExactHandoffBeforeHonoringCurrentRejection(t *testing.T) {
+	const current = "空调不制冷，我住1304，先告诉我可以怎么处理，不要转人工"
+	storeHandoff := judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7979)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		current: {
+			KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{storeHandoff}, Hits: []rag.RetrieveResult{storeHandoff},
+			ContextResults: []rag.RetrieveResult{storeHandoff}, ContextText: storeHandoff.Content,
+		},
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(_ []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return knowledgeEvidenceJudgeOutcome{
+			Applied: true,
+			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				"task-1": {knowledgeEvidenceLayerStore: {Decision: knowledgeEvidenceDecisionInsufficient}},
+			},
+			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{SchemaVersion: knowledgeEvidenceJudgeSchemaVersion, Status: "completed"},
+		}
+	}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "service_request", DetectedIntent: "service_request", NeedsKnowledge: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "service_request", SubIntent: "maintenance", Objective: "method", Text: current, ResolvedText: current, NeedsKnowledge: true,
+		}},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "service_request", SubIntent: "maintenance", Objective: "method", OriginalText: current,
+		Text: current, ResolvedText: current, NeedsKnowledge: true, Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true,
+	}}})
+	summary := &RunResult{}
+	_, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput(current, "1"), Summary: summary, Collector: collector, Intent: intent,
+	})
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if summary.handoffDirective || actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+		t.Fatalf("current rejection must block the recovered knowledge handoff: summary=%#v ledger=%#v", summary, collector.Data.ActionLedger)
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].AnswerText == nil || !strings.Contains(*plan.TaskPlans[0].AnswerText, "我先不转接") {
+		t.Fatalf("recovered handoff did not enter the declined-handoff reply path: %#v", plan.TaskPlans)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if len(trace.Tasks) != 1 || trace.Tasks[0].DecisionSource != "customer_declined_handoff" || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer {
+		t.Fatalf("declined recovered handoff trace mismatch: %#v", trace)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeOnlyExposesSelectedFAQUnit(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "入住与服务", `问题：怎么办理入住
 	答案：我们酒店没有传统前台，可以通过入住机或小程序线上办理入住。

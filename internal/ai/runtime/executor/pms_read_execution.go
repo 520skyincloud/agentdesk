@@ -999,20 +999,26 @@ func runtimePMSReadPathStrings(data any, path string) []string {
 		key := strings.TrimSuffix(part, "[]")
 		next := make([]any, 0)
 		for _, value := range values {
-			object, ok := value.(map[string]any)
-			if !ok {
-				continue
+			objects := []any{value}
+			if items, ok := value.([]any); ok {
+				objects = items
 			}
-			child, exists := object[key]
-			if !exists {
-				continue
-			}
-			if array {
-				if items, ok := child.([]any); ok {
-					next = append(next, items...)
+			for _, objectValue := range objects {
+				object, ok := objectValue.(map[string]any)
+				if !ok {
+					continue
 				}
-			} else {
-				next = append(next, child)
+				child, exists := object[key]
+				if !exists {
+					continue
+				}
+				if array {
+					if items, ok := child.([]any); ok {
+						next = append(next, items...)
+					}
+				} else {
+					next = append(next, child)
+				}
 			}
 		}
 		values = next
@@ -1118,9 +1124,19 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 	if task == nil {
 		return
 	}
+	hasUsablePriceFact := false
+	for _, step := range result.Steps {
+		if step.StepID == "price.difference" && (step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial) {
+			hasUsablePriceFact = true
+			break
+		}
+	}
 	factIndex := 0
 	for _, step := range result.Steps {
 		if step.Status != pmsReadStepOK && step.Status != pmsReadStepPartial {
+			continue
+		}
+		if plan.Scenario == pmsReadScenarioPrice && step.StepID == "inventory.stay" && hasUsablePriceFact {
 			continue
 		}
 		statement := runtimePMSReadFactStatement(plan, step)
@@ -1152,11 +1168,14 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 func runtimePMSReadFactStatement(plan pmsReadPlan, step pmsReadStepResult) string {
 	switch step.StepID {
 	case "order.reserve", "order.recept":
+		if plan.Scenario == pmsReadScenarioDateInventory || plan.Scenario == pmsReadScenarioRoomStatus || plan.Scenario == pmsReadScenarioPrice {
+			return ""
+		}
 		return runtimePMSOrderFact(step.Data)
 	case "inventory.stay":
-		return runtimePMSInventoryFact(step)
+		return runtimePMSInventoryFactForPlan(plan, step)
 	case "member.benefits":
-		return runtimePMSMemberFact(step.Data)
+		return runtimePMSMemberFactForPlan(plan, step.Data)
 	case "member.info":
 		return runtimePMSMemberFact(step.Data)
 	case "price.difference":
@@ -1176,15 +1195,49 @@ func runtimePMSOrderFact(data any) string {
 	if len(orders) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(orders))
+	type customerOrderFact struct {
+		roomNames string
+		homeName  string
+		checkIn   string
+		checkOut  string
+		status    string
+		amount    string
+	}
+	merged := make(map[string]customerOrderFact, len(orders))
+	keys := make([]string, 0, len(orders))
 	for _, order := range orders {
+		fact := customerOrderFact{
+			roomNames: strings.Join(runtimePMSOrderRoomNames(order), "/"),
+			homeName:  firstRuntimePMSReadText(order, "homeName"),
+			checkIn:   firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate"),
+			checkOut:  firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate"),
+			status:    runtimePMSCustomerOrderStatus(order),
+			amount:    firstRuntimePMSReadText(order, "payableAmount", "roomFee", "payAmount", "waitPayAmount"),
+		}
+		key := strings.Join([]string{fact.roomNames, fact.homeName, normalizePMSReadDate(fact.checkIn), normalizePMSReadDate(fact.checkOut)}, "|")
+		if current, exists := merged[key]; exists {
+			if current.status == "" {
+				current.status = fact.status
+			}
+			if current.amount == "" {
+				current.amount = fact.amount
+			}
+			merged[key] = current
+			continue
+		}
+		merged[key] = fact
+		keys = append(keys, key)
+	}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		order := merged[key]
 		fields := make([]string, 0, 6)
-		appendRuntimePMSFactField(&fields, "房型", strings.Join(runtimePMSOrderRoomNames(order), "/"))
-		appendRuntimePMSFactField(&fields, "房号", firstRuntimePMSReadText(order, "homeName"))
-		appendRuntimePMSFactField(&fields, "入住", firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate"))
-		appendRuntimePMSFactField(&fields, "离店", firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate"))
-		appendRuntimePMSFactField(&fields, "状态", firstRuntimePMSReadText(order, "orderStatus", "reserveStatus"))
-		appendRuntimePMSFactField(&fields, "金额", firstRuntimePMSReadText(order, "payableAmount", "roomFee", "payAmount", "waitPayAmount"))
+		appendRuntimePMSFactField(&fields, "房型", order.roomNames)
+		appendRuntimePMSFactField(&fields, "房号", order.homeName)
+		appendRuntimePMSFactField(&fields, "入住", order.checkIn)
+		appendRuntimePMSFactField(&fields, "离店", order.checkOut)
+		appendRuntimePMSFactField(&fields, "状态", order.status)
+		appendRuntimePMSFactField(&fields, "金额", order.amount)
 		if len(fields) > 0 {
 			parts = append(parts, strings.Join(fields, "，"))
 		}
@@ -1193,6 +1246,10 @@ func runtimePMSOrderFact(data any) string {
 		return "已查询到当前有效订单，但返回字段不足以确认客户所问详情。"
 	}
 	return "PMS 当前有效订单：" + strings.Join(parts, "；") + "。"
+}
+
+func runtimePMSCustomerOrderStatus(order map[string]any) string {
+	return firstRuntimePMSReadText(order, "orderStatusName", "reserveStatusName", "statusName")
 }
 
 func runtimePMSOrderRoomNames(order map[string]any) []string {
@@ -1230,15 +1287,29 @@ func runtimePMSOrderObjects(data any) []map[string]any {
 }
 
 func runtimePMSInventoryFact(step pmsReadStepResult) string {
+	return runtimePMSInventoryFactForPlan(pmsReadPlan{}, step)
+}
+
+func runtimePMSInventoryFactForPlan(plan pmsReadPlan, step pmsReadStepResult) string {
 	items, ok := step.Data.([]any)
 	if !ok || len(items) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, min(len(items), 6))
 	expected, _ := runtimePMSStayDates(step.Args["beginTime"], step.Args["endTime"])
+	targetRoomTypeID := ""
+	for _, candidate := range plan.Steps {
+		if candidate.ID == "price.difference" {
+			targetRoomTypeID = strings.TrimSpace(candidate.Args["roomTypeId"])
+			break
+		}
+	}
 	for _, value := range items {
 		row, ok := value.(map[string]any)
 		if !ok {
+			continue
+		}
+		if targetRoomTypeID != "" && firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId") != targetRoomTypeID {
 			continue
 		}
 		name := firstRuntimePMSReadText(row, "roomTypeName", "productName", "roomName")
@@ -1292,6 +1363,10 @@ func runtimePMSInventoryAvailability(row map[string]any, expectedDates []string)
 }
 
 func runtimePMSMemberFact(data any) string {
+	return runtimePMSMemberFactForPlan(pmsReadPlan{}, data)
+}
+
+func runtimePMSMemberFactForPlan(plan pmsReadPlan, data any) string {
 	root, ok := data.(map[string]any)
 	if !ok {
 		return ""
@@ -1311,14 +1386,42 @@ func runtimePMSMemberFact(data any) string {
 			fields = append(fields, "当前等级不可用")
 		}
 	}
-	benefits := runtimePMSMemberBenefitTexts(grade)
+	benefits := runtimePMSMemberBenefitTextsForScenario(grade, plan.Scenario)
 	if len(benefits) > 0 {
 		fields = append(fields, "权益"+strings.Join(benefits, "、"))
+	} else if grade != nil && plan.Scenario == pmsReadScenarioRoomUpgrade {
+		fields = append(fields, "当前权益中未查到免费升房或免差价说明")
 	}
 	if len(fields) == 0 {
 		return ""
 	}
 	return "PMS 会员信息：" + strings.Join(fields, "，") + "。权益配置不代表已办理升房或减免费用。"
+}
+
+func runtimePMSMemberBenefitTextsForScenario(grade map[string]any, scenario pmsReadScenario) []string {
+	benefits := runtimePMSMemberBenefitTexts(grade)
+	if scenario == "" || scenario == pmsReadScenarioMemberBenefit || scenario == pmsReadScenarioMemberInfo {
+		return benefits
+	}
+	keywords := []string(nil)
+	switch scenario {
+	case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
+		keywords = []string{"升房", "升级", "房型", "差价", "免差"}
+	case pmsReadScenarioLateCheckout:
+		keywords = []string{"延迟", "延退", "退房"}
+	default:
+		return benefits
+	}
+	filtered := make([]string, 0, len(benefits))
+	for _, benefit := range benefits {
+		for _, keyword := range keywords {
+			if strings.Contains(benefit, keyword) {
+				filtered = appendIfMissing(filtered, benefit)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 func runtimePMSMemberBenefitTexts(grade map[string]any) []string {
@@ -1357,19 +1460,22 @@ func runtimePMSPriceFact(data any) string {
 	difference := firstRuntimePMSReadText(assessment, "difference")
 	currency := firstRuntimePMSReadText(assessment, "currency")
 	reason := firstRuntimePMSReadText(assessment, "reason")
-	parts := make([]string, 0, 4)
-	if availability != "" {
-		parts = append(parts, "目标房型库存状态"+availability)
+	parts := make([]string, 0, 3)
+	switch availability {
+	case pms.PriceAvailabilityAvailable:
+		parts = append(parts, "目标房型在完整入住区间有可售库存")
+	case pms.PriceAvailabilityUnavailable:
+		parts = append(parts, "目标房型在至少一个入住日没有可售库存")
 	}
 	if status == "exact" && difference != "" {
 		parts = append(parts, "按相同逐日计价口径计算的差价为"+difference+currency)
-	} else if reason != "" {
+	} else if reason != "" && availability != pms.PriceAvailabilityUnavailable {
 		parts = append(parts, reason)
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "PMS 只读差价评估：" + strings.Join(parts, "，") + "。该结果仅为查询评估，尚未办理。"
+	return "当前查询结果：" + strings.Join(parts, "，") + "。这只是实时查询结果，尚未办理升房或换房。"
 }
 
 func runtimePMSRoomStatusFact(data any) string {

@@ -336,6 +336,26 @@ func TestEnforceGeneratedReplyActionLedgerRemovesFindSomeoneAndAskColleague(t *t
 	}
 }
 
+func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedFollowUpPromise(t *testing.T) {
+	for _, reply := range []string{
+		"查到您这笔是星旗房型，1304房，目前9月26日的同房型库存暂时还没确认到，我这边先给您留意一下。",
+		"当前还不能确认续住库存，我帮您留意一下。",
+	} {
+		summary := &RunResult{ReplyText: reply}
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.Data.Pipeline.Intent = callbacks.IntentTraceData{PrimaryIntent: "hotel_info"}
+
+		enforceGeneratedReplyActionLedger(summary, collector)
+
+		if strings.Contains(summary.ReplyText, "留意") {
+			t.Fatalf("unsupported follow-up promise was not removed: %q", summary.ReplyText)
+		}
+		if !strings.Contains(summary.ReplyText, "暂时还没确认") && !strings.Contains(summary.ReplyText, "当前还不能确认") {
+			t.Fatalf("useful read-only result was removed with the promise: %q", summary.ReplyText)
+		}
+	}
+}
+
 func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply(t *testing.T) {
 	summary := &RunResult{ReplyText: "稍等，我先帮你把信息转给人工对接处理。"}
 	collector := callbacks.NewRuntimeTraceCollector()

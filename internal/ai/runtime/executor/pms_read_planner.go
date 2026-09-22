@@ -91,8 +91,8 @@ type pmsReadPlanResult struct {
 var (
 	pmsReadReserveIDFields = []string{"reserveOrderId", "receptOrderList[].reserveOrderId"}
 	pmsReadReceptIDFields  = []string{"receptOrderId", "receptOrderList[].receptOrderId"}
-	pmsReadStayStartFields = []string{"checkInBusinessDate", "checkInTime", "receptOrderList[].checkInBusinessDate", "receptOrderList[].checkInTime"}
-	pmsReadStayEndFields   = []string{"checkOutBusinessDate", "checkOutTime", "receptOrderList[].checkOutBusinessDate", "receptOrderList[].checkOutTime"}
+	pmsReadStayStartFields = []string{"checkInTime", "receptOrderList[].checkInTime"}
+	pmsReadStayEndFields   = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 	pmsReadRoomFields      = []string{"homeName", "receptOrderList[].homeName"}
 )
 

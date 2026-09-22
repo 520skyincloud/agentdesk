@@ -7808,7 +7808,10 @@ func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEv
 			trimKnowledgeEvidenceHandoffQuestionSuffix(question),
 			trimKnowledgeEvidenceHandoffQuestionSuffix(exactQuery),
 		)
-		if match < 0.94 {
+		questionKey := normalizeKnowledgeEvidenceQuestionForMatch(question)
+		queryKey := normalizeKnowledgeEvidenceQuestionForMatch(exactQuery)
+		literalBusinessQuestionIncluded := len([]rune(questionKey)) >= 4 && strings.Contains(queryKey, questionKey)
+		if !literalBusinessQuestionIncluded && match < 0.94 {
 			continue
 		}
 		matches = append(matches, matchedCandidate{

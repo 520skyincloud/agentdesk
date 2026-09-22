@@ -11,6 +11,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pms"
 )
 
 type runtimePMSFakeCall struct {
@@ -199,7 +200,7 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 	t.Run("order dates bind into inventory", func(t *testing.T) {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"reserve_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
-				"reserveOrderId": "RES-1", "checkInBusinessDate": "2026-09-22", "checkOutBusinessDate": "2026-09-24",
+				"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
 			}}},
 			"inventory": {{Status: pmsReadStepOK, Data: []any{}}},
 		}}
@@ -217,7 +218,7 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 	t.Run("order room binds into room status", func(t *testing.T) {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
-				"receptOrderId": "REC-1", "homeName": "1401", "checkInBusinessDate": "2026-09-22", "checkOutBusinessDate": "2026-09-24",
+				"receptOrderId": "REC-1", "homeName": "1401", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
 			}}},
 			"inventory":   {{Status: pmsReadStepOK, Data: []any{}}},
 			"room_status": {{Status: pmsReadStepOK, Data: map[string]any{"list": []any{}}}},
@@ -232,6 +233,68 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 		}
 		if roomCall == nil || roomCall.args["keyword"] != "1401" {
 			t.Fatalf("current room was not bound into room status: %#v", invoker.calls)
+		}
+	})
+
+	t.Run("phone result list binds calendar times into inventory", func(t *testing.T) {
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: []any{
+				map[string]any{"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00"},
+				map[string]any{"reserveOrderId": "RES-2", "checkInTime": "2026-09-22 19:00:00", "checkOutTime": "2026-09-24 12:00:00"},
+			}}},
+			"recept_order_by_phone": {{Status: pmsReadStepUnavailable, Message: "接待单不存在"}},
+			"inventory":             {{Status: pmsReadStepOK, Data: []any{}}},
+			"member_benefits_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"member": map[string]any{"gradeName": "银卡"},
+			}}},
+		}}
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "15256560071", TargetRoomTypeText: "大床房"}
+		_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		var inventoryCall *runtimePMSFakeCall
+		for index := range invoker.calls {
+			if invoker.calls[index].action == "inventory" {
+				inventoryCall = &invoker.calls[index]
+				break
+			}
+		}
+		if inventoryCall == nil || inventoryCall.args["beginTime"] != "2026-09-22" || inventoryCall.args["endTime"] != "2026-09-24" {
+			t.Fatalf("phone lookup calendar times did not drive inventory: %#v", invoker.calls)
+		}
+	})
+
+	t.Run("business dates never override calendar checkout time", func(t *testing.T) {
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
+				"receptOrderList": []any{
+					map[string]any{"checkInBusinessDate": "2026-09-22", "checkInTime": "2026-09-22 18:00:00", "checkOutBusinessDate": "2026-09-23", "checkOutTime": "2026-09-24 13:00:00"},
+					map[string]any{"checkInBusinessDate": "2026-09-22", "checkInTime": "2026-09-22 18:00:00", "checkOutBusinessDate": "2026-09-23", "checkOutTime": "2026-09-24 13:00:00"},
+				},
+			}}},
+			"recept_order_by_phone":    {{Status: pmsReadStepUnavailable, Message: "接待单不存在"}},
+			"inventory":                {{Status: pmsReadStepOK, Data: []any{}}},
+			"member_benefits_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"member": map[string]any{"gradeName": "银卡"}}}},
+		}}
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "15256560071", TargetRoomTypeText: "大床房"}
+		_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		for _, call := range invoker.calls {
+			if call.action == "inventory" && call.args["endTime"] == "2026-09-24" {
+				return
+			}
+		}
+		t.Fatalf("business-day checkout incorrectly blocked calendar inventory lookup: %#v", invoker.calls)
+	})
+
+	t.Run("business-date-only orders do not guess calendar stay", func(t *testing.T) {
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "checkInBusinessDate": "2026-09-22", "checkOutBusinessDate": "2026-09-23",
+			}}},
+		}}
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioDateInventory, ReserveOrderID: "RES-1"}
+		_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		if runtimePMSFakeCalled(invoker.calls, "inventory") {
+			t.Fatalf("business dates are not calendar stay dates and must not query inventory: %#v", invoker.calls)
 		}
 	})
 }
@@ -398,7 +461,7 @@ func TestResolveRuntimePMSReadStepArgsNormalizesDuplicateOrderDates(t *testing.T
 	}
 
 	results["order.recept"] = pmsReadStepResult{Status: pmsReadStepOK, Data: map[string]any{
-		"checkInBusinessDate": "2026-09-22 18:00:00",
+		"checkInTime": "2026-09-22 18:00:00",
 		"receptOrderList": []any{map[string]any{
 			"checkInTime": "2026-09-23T18:00:00+08:00",
 		}},
@@ -445,13 +508,70 @@ func TestRuntimePMSOrderFactReadsSanitizedProductRoomNames(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("linked rows are deduplicated and internal status codes stay hidden", func(t *testing.T) {
+		fact := runtimePMSOrderFact(map[string]any{
+			"roomName": "橙意", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00", "reserveStatus": "0008005", "payableAmount": "942.40",
+			"receptOrderList": []any{
+				map[string]any{"roomName": "橙意", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00", "orderStatus": "0015001"},
+				map[string]any{"roomName": "橙意", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00", "orderStatus": "0015001"},
+			},
+		})
+		if strings.Count(fact, "房型橙意") != 1 || strings.Contains(fact, "0008005") || strings.Contains(fact, "0015001") {
+			t.Fatalf("customer order fact leaked duplicates or internal status codes: %q", fact)
+		}
+		if !strings.Contains(fact, "金额942.40") {
+			t.Fatalf("deduplicating linked rows lost the usable amount: %q", fact)
+		}
+	})
+}
+
+func TestRuntimePMSCustomerFactsStayFocusedOnTheCurrentDecision(t *testing.T) {
+	t.Run("price result uses customer wording", func(t *testing.T) {
+		fact := runtimePMSPriceFact(map[string]any{"assessment": map[string]any{
+			"status": pms.PriceDifferenceUnavailable, "availability": pms.PriceAvailabilityUnavailable,
+			"reason": "目标房型在至少一个入住日不可售",
+		}})
+		if !strings.Contains(fact, "至少一个入住日没有可售库存") || strings.Contains(fact, "unavailable") || strings.Contains(fact, "PMS") {
+			t.Fatalf("price fact is not customer-ready: %q", fact)
+		}
+	})
+
+	t.Run("upgrade inventory only exposes the selected target", func(t *testing.T) {
+		plan := pmsReadPlan{Scenario: pmsReadScenarioRoomUpgrade, Steps: []pmsReadPlanStep{{
+			ID: "price.difference", Args: map[string]string{"roomTypeId": "ROOM-BIG"},
+		}}}
+		fact := runtimePMSInventoryFactForPlan(plan, pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-22", "endTime": "2026-09-24"},
+			Data: []any{
+				map[string]any{"roomTypeId": "ROOM-BASE", "roomTypeName": "橙意", "bookings": map[string]any{"2026-09-22": map[string]any{"available": "2"}, "2026-09-23": map[string]any{"available": "2"}}},
+				map[string]any{"roomTypeId": "ROOM-BIG", "roomTypeName": "大床房", "bookings": map[string]any{"2026-09-22": map[string]any{"available": "0"}, "2026-09-23": map[string]any{"available": "0"}}},
+			},
+		})
+		if !strings.Contains(fact, "大床房可售0间") || strings.Contains(fact, "橙意") {
+			t.Fatalf("upgrade inventory fact exposed unrelated room types: %q", fact)
+		}
+	})
+
+	t.Run("upgrade member fact only keeps upgrade-related benefits", func(t *testing.T) {
+		fact := runtimePMSMemberFactForPlan(pmsReadPlan{Scenario: pmsReadScenarioRoomUpgrade}, map[string]any{
+			"member": map[string]any{"gradeName": "银卡会员", "statusName": "启用", "gradeAvailable": true},
+			"grade": map[string]any{"benefits": []any{
+				map[string]any{"label": "9.5折"}, map[string]any{"label": "1份早餐"}, map[string]any{"label": "免费升房一次"},
+			}},
+		})
+		if !strings.Contains(fact, "免费升房一次") || strings.Contains(fact, "早餐") || strings.Contains(fact, "9.5折") {
+			t.Fatalf("upgrade member fact included unrelated benefits: %q", fact)
+		}
+	})
 }
 
 func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 	for _, target := range []string{"豪华大床房", "我想换到豪华大床房"} {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
-				"receptOrderId": "REC-1", "checkInBusinessDate": "2026-09-22", "checkOutBusinessDate": "2026-09-24",
+				"receptOrderId": "REC-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
 			}}},
 			"inventory": {{Status: pmsReadStepOK, Data: []any{
 				map[string]any{"roomTypeId": "ROOM-1", "roomTypeName": "大床房"},
