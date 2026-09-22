@@ -41,7 +41,7 @@ const (
 	knowledgeEvidenceStoreSupplyRescueScore  = float32(0.70)
 
 	knowledgeEvidenceJudgeMinTimeout      = 10 * time.Second
-	knowledgeEvidenceJudgeMaxTimeout      = 28 * time.Second
+	knowledgeEvidenceJudgeMaxTimeout      = 45 * time.Second
 	knowledgeEvidenceJudgeDeadlineReserve = 12 * time.Second
 	knowledgeEvidenceJudgeMaxOutputTokens = 4096
 	knowledgeEvidenceJudgeRetryDelay      = 250 * time.Millisecond
