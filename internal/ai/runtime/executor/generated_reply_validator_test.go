@@ -356,6 +356,18 @@ func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedFollowUpPromise(t *t
 	}
 }
 
+func TestEnforceGeneratedReplyActionLedgerKeepsDeclinedHandoffBoundary(t *testing.T) {
+	summary := &RunResult{ReplyText: declinedKnowledgeHandoffReply}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{PrimaryIntent: "service_request"}
+
+	enforceGeneratedReplyActionLedger(summary, collector)
+
+	if summary.ReplyText != declinedKnowledgeHandoffReply {
+		t.Fatalf("declined handoff boundary was changed: %q", summary.ReplyText)
+	}
+}
+
 func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply(t *testing.T) {
 	summary := &RunResult{ReplyText: "稍等，我先帮你把信息转给人工对接处理。"}
 	collector := callbacks.NewRuntimeTraceCollector()

@@ -2518,7 +2518,7 @@ func buildDeclinedRuntimeKnowledgeHandoffInstruction(pending []runtimeKnowledgeQ
 		"必须逐项按 ReplyPlan.answerText 回复需要同事处理且本轮不会转接，不得改成‘暂时无法确认’，不得编造处理步骤、承诺已安排或再次触发人工路由。"
 }
 
-const declinedKnowledgeHandoffReply = "这个问题需要门店同事处理，您暂时不需要人工的话，我先不转接。"
+const declinedKnowledgeHandoffReply = "这类情况需要门店同事协助，按您的要求我先不转接。"
 
 func applyDeclinedKnowledgeHandoffReplies(plan callbacks.ReplyPlanTraceData, pending []runtimeKnowledgeQuestionDisposition) callbacks.ReplyPlanTraceData {
 	pendingTaskIDs := make(map[string]struct{}, len(pending))
