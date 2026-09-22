@@ -7844,7 +7844,7 @@ func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEv
 	}
 	selectedCandidateIDs := []string{best.candidate.CandidateID}
 	if knowledgeEvidenceSelectedCandidatesHaveExplicitSubjectConflict(task, layer, selectedCandidateIDs) ||
-		knowledgeEvidenceLayerHasCompetingCompleteAnswer(task, layer, selectedCandidateIDs, best.question, best.answer) {
+		knowledgeEvidenceLayerHasCompetingExactAnswerForHandoffRecovery(task, layer, selectedCandidateIDs, exactQuery) {
 		return knowledgeEvidenceLayerSelection{}, false
 	}
 	return knowledgeEvidenceLayerSelection{
@@ -7852,6 +7852,34 @@ func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEv
 		DecisionSource:       "deterministic_handoff_model_miss",
 		SelectedCandidateIDs: selectedCandidateIDs,
 	}, true
+}
+
+func knowledgeEvidenceLayerHasCompetingExactAnswerForHandoffRecovery(task knowledgeEvidenceJudgeTask, layer string, excludedCandidateIDs []string, exactQuery string) bool {
+	excluded := make(map[string]struct{}, len(excludedCandidateIDs))
+	for _, candidateID := range excludedCandidateIDs {
+		excluded[strings.TrimSpace(candidateID)] = struct{}{}
+	}
+	queryKey := trimKnowledgeEvidenceHandoffQuestionSuffix(exactQuery)
+	for _, candidate := range allKnowledgeEvidenceJudgeTaskCandidates(task) {
+		if strings.TrimSpace(candidate.Layer) != strings.TrimSpace(layer) || candidate.Hit.Score < knowledgeEvidenceJudgeReviewMinimumScore {
+			continue
+		}
+		if _, skip := excluded[strings.TrimSpace(candidate.CandidateID)]; skip {
+			continue
+		}
+		question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, exactQuery)
+		if strings.TrimSpace(answer) == "" || isKnowledgeHandoffDirectiveContent(answer) {
+			continue
+		}
+		questionKey := trimKnowledgeEvidenceHandoffQuestionSuffix(question)
+		literalBusinessQuestionIncluded := !isGenericKnowledgeEvidenceHandoffQuestion(questionKey) &&
+			len([]rune(questionKey)) >= 4 && strings.Contains(queryKey, questionKey)
+		match := knowledgeEvidenceFAQQuestionMatchScore(questionKey, queryKey)
+		if literalBusinessQuestionIncluded || match >= 0.94 {
+			return true
+		}
+	}
+	return false
 }
 
 func isGenericKnowledgeEvidenceHandoffQuestion(question string) bool {

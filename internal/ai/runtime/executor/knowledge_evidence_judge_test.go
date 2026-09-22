@@ -5875,6 +5875,26 @@ func TestRepairModelMissKnowledgeHandoffSelectionsUsesNarrowRecovery(t *testing.
 	}
 }
 
+func TestRepairModelMissKnowledgeHandoffSelectionsIgnoresUnrelatedPeerFAQ(t *testing.T) {
+	const current = "空调不制冷，我住1304，先告诉我可以怎么处理，不要转人工"
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "task-1", Query: current, RetrievalQuery: current,
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "store-1", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7979)},
+			{CandidateID: "store-2", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 102, "冰箱不制冷，怎么办？", "问题：冰箱不制冷，怎么办？\n答案：这边辛苦您自己插一下哈", 0.7222)},
+			{CandidateID: "store-3", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 103, "空调不出冷风", "问题：空调不出冷风\n答案：转接", 0.7765)},
+			{CandidateID: "store-4", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 104, "空调制冷效果不怎么好", "问题：空调制冷效果不怎么好\n答案：转接", 0.7238)},
+			{CandidateID: "store-5", Layer: knowledgeEvidenceLayerStore, Hit: judgeTestHit(1, 105, "空调坏的，给我换个房间", "问题：空调坏的，给我换个房间\n答案：转接", 0.7422)},
+		},
+	}}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"task-1": {knowledgeEvidenceLayerStore: {Decision: knowledgeEvidenceDecisionInsufficient, DecisionSource: "model"}},
+	}
+	if repaired := repairModelMissKnowledgeHandoffSelections(tasks, selections); repaired != 1 {
+		t.Fatalf("unrelated peer FAQ blocked the exact handoff recovery: repaired=%d selection=%#v", repaired, selections["task-1"][knowledgeEvidenceLayerStore])
+	}
+}
+
 func TestKnowledgeEvidenceJudgeOnlyExposesSelectedFAQUnit(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "入住与服务", `问题：怎么办理入住
 	答案：我们酒店没有传统前台，可以通过入住机或小程序线上办理入住。
