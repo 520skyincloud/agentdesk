@@ -950,7 +950,7 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 				}
 			}
 		}
-		for _, rawHit := range rawHits {
+		for rawIndex, rawHit := range rawHits {
 			for _, hit := range expandKnowledgeEvidenceJudgeHit(rawHit) {
 				layer := ""
 				if _, ok := storeSet[hit.KnowledgeBaseID]; ok {
@@ -965,6 +965,7 @@ func buildKnowledgeEvidenceJudgeTasks(batch *runtimeKnowledgeRetrieveBatch, stor
 					CandidateID: fmt.Sprintf("%sC%d", question.TaskID, len(item.Candidates)+1),
 					Layer:       layer,
 					Hit:         hit,
+					RawRankNo:   rawIndex + 1,
 				})
 			}
 		}
@@ -1746,6 +1747,8 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		}
 		taskTrace.SelectedLayer = selectedLayer
 		taskTrace.Disposition = disposition
+		taskTrace.RawCandidateCount = len(allCandidates)
+		taskTrace.Candidates = buildKnowledgeEvidenceCandidateTrace(task, taskTrace.SelectedCandidateIDs)
 		if selectedLayer == "" {
 			taskTrace.Decision, taskTrace.DecisionSource = knowledgeEvidenceTaskFailureDecisionAndSource(selections)
 		}
@@ -2413,7 +2416,9 @@ func clearDeferredRuntimeKnowledgeQuestions(batch *runtimeKnowledgeRetrieveBatch
 		}
 		retrievers.RebuildKnowledgeRetrieveSelection(batch.Questions[index].Result, nil)
 	}
-	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
+	if batch.Merged != nil {
+		batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
+	}
 }
 
 func deferredRuntimeKnowledgeHandoffReason(pending []runtimeKnowledgeQuestionDisposition) string {
@@ -2790,6 +2795,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		result = batch.Merged
 	}
 	judgeTrace = appendRuntimeKnowledgeUnjudgedTaskTrace(judgeTrace, batch)
+	suppressRuntimeKnowledgeHandoffForPMSTasks(batch, state.Input.Collector, &judgeTrace)
 	externalProxyBoundaryTaskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &judgeTrace)
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
@@ -2842,7 +2848,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			return state, nil
 		}
 		for _, pending := range pendingQuestions {
-			if pending.HandoffHit.Content != "" && !runtimeCollectorHasPMSReadTask(state.Input.Collector) {
+			if pending.HandoffHit.Content != "" {
 				markKnowledgeHandoffDirective(state.Input, pending.HandoffHit)
 				state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
 				state.recordAnswerability(answerabilityStatusSkipped, "selected knowledge answer requested human handoff", nil)
@@ -3266,10 +3272,54 @@ func runtimeKnowledgeAutoHandoffEnabledForCollector(
 	pending []runtimeKnowledgeQuestionDisposition,
 	collector *callbacks.RuntimeTraceCollector,
 ) bool {
-	if runtimeCollectorHasPMSReadTask(collector) {
-		return false
-	}
+	_ = collector
 	return runtimeKnowledgeAutoHandoffEnabled(conversationID, pending)
+}
+
+func suppressRuntimeKnowledgeHandoffForPMSTasks(batch *runtimeKnowledgeRetrieveBatch, collector *callbacks.RuntimeTraceCollector, trace *callbacks.KnowledgeEvidenceJudgeTraceData) {
+	if batch == nil || collector == nil {
+		return
+	}
+	pmsTaskIDs := make(map[string]struct{})
+	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
+		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) && strings.TrimSpace(task.TaskID) != "" {
+			pmsTaskIDs[strings.TrimSpace(task.TaskID)] = struct{}{}
+		}
+	}
+	if len(pmsTaskIDs) == 0 {
+		return
+	}
+	for index := range batch.Questions {
+		question := &batch.Questions[index]
+		if _, ok := pmsTaskIDs[strings.TrimSpace(question.TaskID)]; !ok {
+			continue
+		}
+		if question.Disposition != runtimeKnowledgeDispositionDirectHandoff && question.Disposition != runtimeKnowledgeDispositionAnswerThenHandoff {
+			continue
+		}
+		question.Disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+		question.Decision = knowledgeEvidenceDecisionInsufficient
+		question.MissingAspects = appendIfMissing(question.MissingAspects, "当前实时问题应优先使用 PMS 查询结果")
+		removeKnowledgeHandoffDirectiveSelection(question.Result)
+		if trace == nil {
+			continue
+		}
+		for taskIndex := range trace.Tasks {
+			taskTrace := &trace.Tasks[taskIndex]
+			if strings.TrimSpace(taskTrace.TaskID) != strings.TrimSpace(question.TaskID) {
+				continue
+			}
+			taskTrace.Decision = knowledgeEvidenceDecisionInsufficient
+			taskTrace.DecisionSource = "pms_read_precedence"
+			taskTrace.Disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
+			taskTrace.SelectedLayer = ""
+			taskTrace.SelectedCandidateIDs = nil
+			taskTrace.SupportedFacts = nil
+			taskTrace.AnswerText = nil
+			taskTrace.MissingAspects = appendIfMissing(taskTrace.MissingAspects, "当前实时问题应优先使用 PMS 查询结果")
+		}
+	}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 }
 
 func topKnowledgeHandoffDirective(result *retrievers.KnowledgeRetrieveResult) (rag.RetrieveResult, bool) {
@@ -3383,7 +3433,7 @@ func buildIntentActionInstruction(req RunInput, intent callbacks.IntentTraceData
 		parts = append(parts, buildHotelVariableInstruction(req, intent))
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
-			parts = append(parts, "人工/投诉/风险-突发安全：这是受伤/摔倒/流血/报警等高风险场景，必须进入接待路由；先安抚并提醒用户不要移动，必要时拨打 120/报警。缺房号/位置时只追问当前位置，同时不得等待知识库。")
+			parts = append(parts, "人工/投诉/风险-突发安全：先给出必要的安全提示；只有客户明确要求人工或知识库明确要求转接时才进入接待路由，不得因风险标签自行转接，也不得声称已经派人。")
 		} else {
 			parts = append(parts, "人工/投诉/风险：投诉、退款、赔偿、订单和价格问题先结合知识库与 PMS 只读事实回答或给出可确认方案；只有客户当前原话明确要求人工，或知识库明确要求转人工时，才进入接待路由。answer_rejected 只表示需要重新回答，不自动转人工。没有工具或路由结果时，不得表达人工动作、通知安排或处理结果已经发生。")
 		}

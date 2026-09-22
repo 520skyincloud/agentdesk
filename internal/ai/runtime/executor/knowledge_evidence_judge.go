@@ -79,6 +79,7 @@ type knowledgeEvidenceJudgeCandidate struct {
 	CandidateID string
 	Layer       string
 	Hit         rag.RetrieveResult
+	RawRankNo   int
 }
 
 type knowledgeEvidenceJudgeOutcome struct {

@@ -78,8 +78,8 @@ func TestAssemblerBaseInstructionKeepsHumanToneGuardrails(t *testing.T) {
 			t.Fatalf("base instruction should not teach unsupported staff action %q in: %s", forbidden, result.Text)
 		}
 	}
-	if !strings.Contains(result.Text, "human_complaint_risk 一律交给现有接待路由直接处理") {
-		t.Fatalf("base instruction must use the direct handoff contract: %s", result.Text)
+	if !strings.Contains(result.Text, "human_complaint_risk 只有在明确人工、知识库转人工或严重安全风险时交给现有接待路由") {
+		t.Fatalf("base instruction must preserve the narrowed handoff contract: %s", result.Text)
 	}
 	if strings.Contains(result.Text, "二次确认") {
 		t.Fatalf("base instruction must not retain the removed handoff confirmation protocol: %s", result.Text)

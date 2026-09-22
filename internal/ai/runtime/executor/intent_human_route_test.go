@@ -263,17 +263,17 @@ func TestRuntimeHandoffRoomNumberPolicyUsesOnlyPendingTaskSemantics(t *testing.T
 	}
 }
 
-func TestRuntimeHandoffDirectiveKnowledgeCannotOverridePMSReadTask(t *testing.T) {
+func TestRuntimeHandoffDirectiveKeepsIndependentKnowledgeHandoff(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "pms-1", Intent: "hotel_variable", SubIntent: "room_status", NeedsTool: true,
 	}}
-	if runtimeHandoffDirectiveAllowed(
+	if !runtimeHandoffDirectiveAllowed(
 		RunInput{UserMessage: models.Message{Content: "房间现在有空房吗"}},
 		collector,
 		"knowledge_top_answer",
 	) {
-		t.Fatal("knowledge-driven handoff must not override an independent PMS read task")
+		t.Fatal("an independent knowledge directive must not be globally suppressed by a PMS sibling")
 	}
 	if !runtimeHandoffDirectiveAllowed(
 		RunInput{UserMessage: models.Message{Content: "请转人工处理"}},

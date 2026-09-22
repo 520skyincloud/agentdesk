@@ -38,8 +38,19 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 		intent = intentDetectUnavailableIntent("IntentDetect model unavailable; entering interaction")
 		promptPack = selectIntentPromptPack(intent)
 	}
+	if configured && !manualResume {
+		if restored, changed := restoreRuntimeRejectedTask(req, history, intent); changed {
+			intent = restored
+			promptPack = promptForModelDetectedIntent(intent, loadEnabledIntentConfigs(resolveRuntimeIntentScope(req)))
+		}
+	}
 	intent = retainRuntimeMemberQueryTool(intent)
+	intent = retainRuntimeTicketTools(intent)
 	promptPack = appendMemberQueryRuntimeInstruction(promptPack, intent)
+	if runtimeIntentHasTicketTask(intent) {
+		promptPack.Instructions = append(promptPack.Instructions,
+			"当前客户明确要求创建工单：使用现有 create_ticket_with_confirmation 工具处理，不用知识检索结果替代建单，也不因此转人工。只有房号、事项等必要信息缺失时追问缺失信息；遵守工具原有客户确认流程，只有真实创建成功后才能说已创建。")
+	}
 	contextTrace := buildContextTrace(req, history, intent)
 	toolKnowledge := buildToolKnowledgeTrace(intent)
 	replyPlan := buildReplyPlan(intent, promptPack)
@@ -110,7 +121,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		instructions = append(instructions, "服务请求先查当前门店知识库；涉及订单、当前房间、可售房型、升房/换房可行性、差价、会员权益或延迟退房条件时，同时使用只读 pms_query 获取事实。知识库或 PMS 能回答的内容直接回答，不因服务请求本身自动转人工；只有客户明确要求人工，或知识库明确写明转人工，才进入接待路由。没有真实写工具时，不得表达已经送达、已经换房、已经升房、已经延退或已经通知同事。", "同轮包含早餐、停车、发票等知识问题时必须直接回答知识结果。")
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
-			instructions = append(instructions, "突发安全/受伤风险必须进入接待路由；同时先安抚并给出当前知识支持的立即安全建议。", "提醒不要移动；如停不下来或流血严重，提示先拨打 120/报警。", "缺房号/位置时追问当前位置，但不要编造已经派人。")
+			instructions = append(instructions, "安全风险先给出必要的安全提示；只有客户明确要求人工或知识库明确要求转接时才进入接待路由。", "缺房号/位置时追问当前位置，但不要编造已经派人。")
 		} else {
 			instructions = append(instructions, "投诉、赔偿、退款、订单或价格问题先查知识库和只读 PMS 事实，能回答就直接回答；不要把这些分类自动当作人工路由。只有客户明确要求人工，或知识库明确要求转人工，才调用人工路由。", "不要口头假装已经通知或处理完成。", "普通设施/设备问题若知识库命中，知识库优先，不要反复诱导转人工。")
 		}
@@ -130,7 +141,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		instructions = append(instructions, "未匹配到启用意图分类时，只围绕当前问题短答或追问一个关键点，不调用知识、资源或人工路由。")
 	}
 	instructions = append(instructions,
-		"人工路由最终约束：客户当前原话明确要求转人工/找同事/找客服/真人、知识库选中的答案明确要求转人工，或当前任务属于严重安全风险时，才允许调用人工路由；知识库未命中、普通服务请求、价格/赔偿问题和模型的不确定性都不能单独触发人工。",
+		"人工路由最终约束：只有客户当前原话明确要求转人工/找同事/找客服/真人，或知识库选中的答案明确要求转人工时，才允许调用人工路由；知识库未命中、普通服务请求、价格/赔偿问题、安全标签和模型的不确定性都不能单独触发人工。",
 	)
 	if pmsInstruction := strings.TrimSpace(pmsQueryIntentInstruction()); pmsInstruction != "" {
 		instructions = append(instructions, pmsInstruction)
@@ -312,9 +323,12 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 		}
 	case "service_request":
 		goal = "先用知识库或只读 PMS 给出当前问题的事实、条件和可行方案；没有真实写入能力时只说明尚未办理，不主动转人工"
+		if runtimeIntentHasTicketTask(intent) {
+			goal = "使用现有工单确认工具处理客户明确的建单请求；其他知识或 PMS 问题分别回答，不转人工"
+		}
 	case "human_complaint_risk":
 		if intent.SubIntent == "emergency_safety" {
-			goal = "进入安全接待路由，并先给出有依据的立即安全处理建议"
+			goal = "先给出有依据的安全处理提示，仅在客户明确要求人工或知识库明确转接时进入接待路由"
 		} else {
 			goal = "先查知识库或只读 PMS 回答投诉、赔偿、退款、订单和价格事实；仅在客户明确要求人工或知识库明确要求转人工时路由"
 		}

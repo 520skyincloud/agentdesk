@@ -96,6 +96,8 @@ type KnowledgeEvidenceJudgeTraceData struct {
 }
 
 type KnowledgeEvidenceJudgeTaskTraceData struct {
+	RawCandidateCount    int                                    `json:"rawCandidateCount,omitempty"`
+	Candidates           []KnowledgeEvidenceCandidateTraceData  `json:"candidates,omitempty"`
 	HasUsableSelfService bool                                   `json:"hasUsableSelfService,omitempty"`
 	TaskID               string                                 `json:"taskId,omitempty"`
 	QueryPreview         string                                 `json:"queryPreview,omitempty"`
@@ -109,6 +111,20 @@ type KnowledgeEvidenceJudgeTaskTraceData struct {
 	AnswerText           *string                                `json:"answerText,omitempty"`
 	Decision             string                                 `json:"decision,omitempty"`
 	Layers               []KnowledgeEvidenceJudgeLayerTraceData `json:"layers,omitempty"`
+}
+
+type KnowledgeEvidenceCandidateTraceData struct {
+	CandidateID     string  `json:"candidateId"`
+	Layer           string  `json:"layer"`
+	KnowledgeBaseID int64   `json:"knowledgeBaseId,omitempty"`
+	SourceRecordID  string  `json:"sourceRecordId,omitempty"`
+	RawRankNo       int     `json:"rawRankNo,omitempty"`
+	QuestionPreview string  `json:"questionPreview,omitempty"`
+	ContentPreview  string  `json:"contentPreview,omitempty"`
+	Score           float64 `json:"score,omitempty"`
+	EnteredJudge    bool    `json:"enteredJudge"`
+	Selected        bool    `json:"selected"`
+	Disposition     string  `json:"disposition"`
 }
 
 type KnowledgeEvidenceJudgeLayerTraceData struct {

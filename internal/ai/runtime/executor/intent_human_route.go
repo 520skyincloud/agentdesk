@@ -48,12 +48,6 @@ func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentTex
 			taskText = task.ResolvedText
 		}
 		explicitTask := runtimeExplicitHumanHandoffRequest(taskText)
-		if strings.TrimSpace(task.SubIntent) == "emergency_safety" {
-			task.NeedsHumanRoute = true
-			task.NeedsKnowledge = false
-			task.NeedsTool = false
-			continue
-		}
 		if task.SubIntent == "explicit_handoff" && (explicitTask || explicitCurrent) {
 			task.NeedsHumanRoute = true
 			task.NeedsKnowledge = false
@@ -74,7 +68,7 @@ func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentTex
 		changed = true
 	}
 	if len(intent.IntentTasks) == 0 && intent.PrimaryIntent == "human_complaint_risk" {
-		if explicitCurrent && strings.TrimSpace(intent.SubIntent) != "emergency_safety" {
+		if explicitCurrent {
 			intent.SubIntent = "explicit_handoff"
 			intent.NeedsHumanRoute = true
 			intent.HumanRoutePolicy = "managed_mode"
@@ -84,17 +78,14 @@ func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentTex
 			intent.Reason = appendIntentReason(intent.Reason, "explicit handoff normalized from current customer message")
 			return intent
 		}
-		if strings.TrimSpace(intent.SubIntent) != "emergency_safety" {
-			intent.PrimaryIntent = "service_request"
-			intent.MatchedIntentCode = "service_request"
-			intent.SubIntent = "service_follow_up"
-			intent.NeedsHumanRoute = false
-			intent.HumanRoutePolicy = ""
-			intent.NeedsKnowledge = true
-			intent.NeedsTool = false
-			intent.Reason = appendIntentReason(intent.Reason, "non-explicit human-risk label returned to self-service path")
-			return intent
-		}
+		intent.PrimaryIntent = "service_request"
+		intent.MatchedIntentCode = "service_request"
+		intent.NeedsHumanRoute = false
+		intent.HumanRoutePolicy = ""
+		intent.NeedsKnowledge = true
+		intent.NeedsTool = false
+		intent.Reason = appendIntentReason(intent.Reason, "non-explicit human-risk label returned to self-service path")
+		return intent
 	}
 	if !changed {
 		return intent
@@ -143,8 +134,7 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !isEmergencySafetyHandoff(intent) &&
-		!runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) {
+	if !runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,
@@ -351,9 +341,6 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTraceCollector, source string) bool {
 	switch strings.TrimSpace(source) {
 	case "knowledge_top_answer":
-		if runtimeCollectorHasPMSReadTask(collector) {
-			return false
-		}
 		return true
 	case "generated_reply_guard":
 		return runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
@@ -363,24 +350,6 @@ func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTr
 			strings.TrimSpace(collector.Data.Pipeline.Intent.SubIntent) == "explicit_handoff" &&
 			runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
 	}
-}
-
-func runtimeCollectorHasPMSReadTask(collector *callbacks.RuntimeTraceCollector) bool {
-	if collector == nil {
-		return false
-	}
-	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
-		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
-			return true
-		}
-	}
-	for _, task := range collector.Data.Pipeline.Intent.IntentTasks {
-		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
-			return true
-		}
-	}
-	intent := collector.Data.Pipeline.Intent
-	return intent.NeedsTool && isPMSRuntimeSubIntent(intent.SubIntent)
 }
 
 // HandoffRoomNumberPolicyFromTrace keeps post-commit handoffs on the same policy

@@ -118,6 +118,9 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 			return QueryResult{}, err
 		}
 	}
+	if err := validateReadQuery(action, query); err != nil {
+		return QueryResult{}, err
+	}
 	if err := validateMemberQuery(action, query); err != nil {
 		return QueryResult{}, err
 	}
@@ -359,7 +362,49 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 			ret["metrics"] = "sold,sellable,occupied,maintenance"
 		}
 	}
+	if action == "renew_candidates" {
+		if strings.TrimSpace(ret["pageNum"]) == "" {
+			ret["pageNum"] = "1"
+		}
+		if strings.TrimSpace(ret["pageSize"]) == "" {
+			ret["pageSize"] = "20"
+		}
+	}
 	return ret
+}
+
+func validateReadQuery(action string, query url.Values) error {
+	switch action {
+	case "reserve_order_detail":
+		if strings.TrimSpace(query.Get("reserveOrderId")) == "" {
+			return fmt.Errorf("预订单详情查询需要真实预订单 ID")
+		}
+	case "recept_order_detail":
+		if strings.TrimSpace(query.Get("receptOrderId")) == "" {
+			return fmt.Errorf("接待单详情查询需要真实接待单 ID")
+		}
+	case "inventory":
+		if !validQueryDate(query.Get("beginTime")) || !validQueryDate(query.Get("endTime")) {
+			return fmt.Errorf("库存查询需要完整的入住和离店日期")
+		}
+	case "renew_candidates":
+		if strings.TrimSpace(query.Get("currentReceptOrderId")) == "" &&
+			strings.TrimSpace(query.Get("reserveOrderNo")) == "" &&
+			strings.TrimSpace(query.Get("reserveName")) == "" &&
+			strings.TrimSpace(query.Get("reservePhone")) == "" {
+			return fmt.Errorf("续住候选查询需要当前接待单或真实预订筛选条件")
+		}
+	}
+	return nil
+}
+
+func validQueryDate(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
 }
 
 func validateCurrentOrderLookup(action string, query url.Values) error {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	applicationruntime "agent-desk/internal/ai/application/runtime"
 	"agent-desk/internal/models"
@@ -141,7 +142,7 @@ func TestStructuredVariableResourceTypesFromTraceIncludesPhone(t *testing.T) {
 }
 
 func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
-	dbName := "runtime_knowledge_resource_commit_" + strings.NewReplacer("/", "_").Replace(t.Name())
+	dbName := fmt.Sprintf("runtime_knowledge_resource_commit_%s_%d", strings.NewReplacer("/", "_").Replace(t.Name()), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
 		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
 	})

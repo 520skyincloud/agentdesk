@@ -62,6 +62,14 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if collector != nil {
 		plan.Intent = collector.Data.Pipeline.Intent
 		plan.PromptSelect = collector.Data.Pipeline.PromptSelect
+		plan.ReplyPlan = collector.Data.Pipeline.ReplyPlan
+	}
+	plan.Intent, plan.ReplyPlan, _ = applyRuntimePMSReadPlans(ctx, req, history, plan.Intent, plan.ReplyPlan, summary, collector)
+	plan.ToolKnowledge = buildToolKnowledgeTrace(plan.Intent)
+	if collector != nil {
+		collector.Data.Pipeline.Intent = plan.Intent
+		collector.Data.Pipeline.ToolKnowledge = plan.ToolKnowledge
+		collector.SetReplyPlan(plan.ReplyPlan)
 	}
 	activeReplyPlan := plan.ReplyPlan
 	hasDeferredKnowledge := false
@@ -78,6 +86,9 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		}
 	}
 	if instruction := buildCurrentTurnBoundaryInstructionForReplyPlan(req, history, plan.Intent, activeReplyPlan); strings.TrimSpace(instruction) != "" {
+		messages = append(messages, schema.SystemMessage(instruction))
+	}
+	if instruction := buildRuntimePMSResolvedInstruction(activeReplyPlan); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))
 	}
 	messages = buildGenerateStageMessages(req, history, plan.Intent, activeReplyPlan, messages, retrievedContext.RawKnowledgeContextMessages)

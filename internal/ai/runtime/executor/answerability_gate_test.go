@@ -456,6 +456,35 @@ func TestExternalProxyCapabilityBoundaryDoesNotOverrideOtherServiceRoutes(t *tes
 	}
 }
 
+func TestPMSPrecedenceSuppressesKnowledgeHandoffOnlyForTheSameTask(t *testing.T) {
+	handoff := rag.RetrieveResult{Content: "转人工"}
+	batch := &runtimeKnowledgeRetrieveBatch{
+		Questions: []runtimeKnowledgeQuestionResult{
+			{TaskID: "pms-task", Disposition: runtimeKnowledgeDispositionDirectHandoff, Decision: knowledgeEvidenceDecisionDirectSingle, Result: &retrievers.KnowledgeRetrieveResult{Hits: []rag.RetrieveResult{handoff}}},
+			{TaskID: "knowledge-task", Disposition: runtimeKnowledgeDispositionDirectHandoff, Decision: knowledgeEvidenceDecisionDirectSingle, Result: &retrievers.KnowledgeRetrieveResult{Hits: []rag.RetrieveResult{handoff}}},
+		},
+		Merged: &retrievers.KnowledgeRetrieveResult{},
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "pms-task", SubIntent: "room_upgrade", NeedsTool: true, NeedsKnowledge: true},
+		{TaskID: "knowledge-task", SubIntent: "other_policy", NeedsKnowledge: true},
+	}
+	trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+		{TaskID: "pms-task", Decision: knowledgeEvidenceDecisionDirectSingle, Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}},
+		{TaskID: "knowledge-task", Decision: knowledgeEvidenceDecisionDirectSingle, Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C2"}},
+	}}
+
+	suppressRuntimeKnowledgeHandoffForPMSTasks(batch, collector, &trace)
+
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff || trace.Tasks[0].Decision != knowledgeEvidenceDecisionInsufficient {
+		t.Fatalf("same-task PMS precedence was not applied: batch=%#v trace=%#v", batch.Questions, trace.Tasks)
+	}
+	if batch.Questions[1].Disposition != runtimeKnowledgeDispositionDirectHandoff || trace.Tasks[1].Disposition != runtimeKnowledgeDispositionDirectHandoff {
+		t.Fatalf("independent knowledge handoff was incorrectly suppressed: batch=%#v trace=%#v", batch.Questions, trace.Tasks)
+	}
+}
+
 func TestExternalProxyPartialKeepsSelectedEvidenceWithoutHandoff(t *testing.T) {
 	hit := judgeTestHit(1, 101, "外卖下单", "问题：怎么点外卖？\n答案：可以自行在美团下单。", 0.9)
 	result := &retrievers.KnowledgeRetrieveResult{RawHits: []rag.RetrieveResult{hit}}

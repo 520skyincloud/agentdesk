@@ -1086,3 +1086,17 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
   `go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime/graphs ./internal/ai/runtime/tools ./internal/pkg/utils ./internal/services ./internal/pms -count=1`。
 - 提交前需保留 `0d91c98` release 作为回滚点；部署目标仅为 `test-2`，并保持
   `AGENT_DESK_PMS_ENABLED=true`、`AGENT_DESK_PMS_ALLOW_WRITE=false`。
+
+## 2026-09-22 PMS 客户目标确定性执行与回复链路结构收口
+
+- 目标：系统性解决手机号重复追问、订单已存在但查不到、升房/换房漏调用、差价与日期错误、PMS 成功被知识失败抹掉、普通问题误转人工及失败定位困难。
+- 运行链路保持 `Intent -> Knowledge/Judge -> PMS Read Plan -> Generate -> Commit -> Outbox`；没有新增 Judge、Agent、消息状态机或本地中文语义门。
+- 新增 `pms_read_planner.go` 与 `pms_read_execution.go`：每个 PMS 客户目标使用确定性只读计划；相同查询在单轮复用，差价复用同轮订单和库存事实，不重复查询。
+- 上下文只复用同 session 已确认手机号/订单；当前纠正、否定、取消优先。日期支持完整日期、月日、日号和相对日期，续住目标日不再被改写成单晚。
+- 目标房型必须明确；库存逐房型逐日覆盖完整入住期。订单事实补充读取 `reserveProductList`，但仍只输出客户侧白名单。
+- 知识/PMS 混合 Task 分别守边界；PMS 事实不替代知识证据。PMS 优先只作用于同一 Task，独立知识明确转接仍可执行。
+- 人工路由收紧为客户当前明确要求或当前 Task 知识明确转接；知识不足、PMS 失败、普通服务和投诉不自动转接。明确建维修工单继续使用现有确认工具。
+- 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox 或计费变更；HPMS 保持只读，`allowWrite=false`。
+- 双轮验证通过：`go test -p=1 ./internal/pms -count=2`、`go test -p=1 ./internal/ai/runtime/tools -count=2`、`go test -p=1 ./internal/ai/runtime/executor -count=2`、`go test -p=1 ./internal/ai/runtime/... -count=2`，以及 `git diff --check`。
+- 并行影响：`customer-audit` 可能继续追加本文件，合并时保留双方段落；`ai-billing` 无字段和计费语义变化。建议本轮回复链路提交先独立 review，再合并其他同时修改 Intent/Judge/人工路由的提交。
+- 回滚边界：程序可回到部署前 release；数据库、消息、知识库和“薇薇2”不回滚。PMS 写能力始终关闭，不存在需要逆向撤销的 PMS 操作。

@@ -377,6 +377,259 @@ func TestRuntimePMSRequiredSlotPreflightUsesOnlySupportedLocatorContracts(t *tes
 	}
 }
 
+func TestRuntimePMSRequiredSlotPreflightReusesConfirmedSessionPhone(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		history   []models.Message
+		subIntent string
+		current   string
+		wantPhone string
+	}{
+		{
+			name: "answer to order phone prompt",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "帮我查订单"},
+				{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: runtimePMSOrderPhoneClarification},
+				{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "+86 138-0013-8000"},
+			},
+			subIntent: "room_upgrade", current: "那我能升房吗", wantPhone: "13800138000",
+		},
+		{
+			name: "phone embedded in prior PMS request",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "用手机号139 0000 0000帮我查预订"},
+				{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "已经查到当前订单。"},
+			},
+			subIntent: "member_benefits", current: "那我的会员权益呢", wantPhone: "13900000000",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: tc.subIntent, Objective: "status", Text: tc.current, ResolvedText: tc.current,
+					SourceRefs: []string{"U1"}, RelationToPrevious: "follow_up", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: tc.current}}, adapter.HistoryBuildResult{RawItems: tc.history}, nil)
+			if !intent.NeedsTool || intent.NeedsClarification || !containsString(intent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
+				t.Fatalf("confirmed session phone must prevent a repeated slot question: %#v", intent)
+			}
+			marker := "本次查询手机号：" + tc.wantPhone
+			if !strings.Contains(intent.IntentTasks[0].ResolvedText, marker) {
+				t.Fatalf("session phone was not normalized and rebound: %#v", intent.IntentTasks[0])
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightReusesConfirmedSessionOrderLocator(t *testing.T) {
+	for _, tc := range []struct {
+		name, prior, subIntent, current, wantLocator string
+	}{
+		{
+			name: "reception order id", prior: "接待单ID：REC-1001", subIntent: "check_out_status",
+			current: "这单几点退房", wantLocator: "接待单ID:REC-1001",
+		},
+		{
+			name: "customer number", prior: "会员编号 MEMBER-88", subIntent: "order_query",
+			current: "再查一下我的订单", wantLocator: "会员编号:MEMBER-88",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: tc.subIntent, Objective: "status", Text: tc.current, ResolvedText: tc.current,
+					SourceRefs: []string{"U1"}, RelationToPrevious: "follow_up", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: tc.current}}, adapter.HistoryBuildResult{RawItems: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: tc.prior},
+			}}, nil)
+			if !intent.NeedsTool || intent.NeedsClarification {
+				t.Fatalf("confirmed session order locator must remain executable: %#v", intent)
+			}
+			if !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位："+tc.wantLocator) {
+				t.Fatalf("session order locator was not rebound: %#v", intent.IntentTasks[0])
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightCurrentCorrectionOverridesSessionLocator(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "订单手机号13900000000"},
+	}}
+	for _, tc := range []struct {
+		name, current, wantPhone string
+		wantClarification        bool
+	}{
+		{name: "replacement wins", current: "不是这个号码，是+86 138-0013-8000", wantPhone: "13800138000"},
+		{name: "denial clears inherited phone", current: "刚才号码错了，不是13900000000", wantClarification: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_query", Objective: "status", Text: tc.current,
+					ResolvedText: "历史订单手机号13900000000\n当前客户补充：" + tc.current,
+					SourceRefs:   []string{"U1"}, RelationToPrevious: "correction", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: tc.current}}, history, nil)
+			if intent.NeedsClarification != tc.wantClarification {
+				t.Fatalf("current correction did not override the session locator: %#v", intent)
+			}
+			if tc.wantPhone == "" {
+				if intent.NeedsTool || strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号：13900000000") {
+					t.Fatalf("rejected session phone was revived: %#v", intent)
+				}
+				return
+			}
+			if !intent.NeedsTool || !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号："+tc.wantPhone) ||
+				strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号：13900000000") {
+				t.Fatalf("replacement phone was not authoritative: %#v", intent)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightCurrentOrderCorrectionOverridesSessionLocator(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "接待单ID：OLD-1001"},
+	}}
+	for _, tc := range []struct {
+		name, current, wantLocator string
+		wantClarification          bool
+	}{
+		{name: "replacement order wins", current: "不是这个订单，接待单ID：NEW-2002", wantLocator: "接待单ID:NEW-2002"},
+		{name: "rejected order is not revived", current: "不是这个订单", wantClarification: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_detail", Objective: "status", Text: tc.current,
+					ResolvedText: "历史接待单ID：OLD-1001\n当前客户补充：" + tc.current,
+					SourceRefs:   []string{"U1"}, RelationToPrevious: "correction", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: tc.current}}, history, nil)
+			if intent.NeedsClarification != tc.wantClarification {
+				t.Fatalf("current order correction did not override session history: %#v", intent)
+			}
+			if tc.wantLocator == "" {
+				if intent.NeedsTool || strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位：接待单ID:OLD-1001") {
+					t.Fatalf("rejected session order was revived: %#v", intent)
+				}
+				return
+			}
+			if !intent.NeedsTool || !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位："+tc.wantLocator) ||
+				strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位：接待单ID:OLD-1001") {
+				t.Fatalf("replacement order locator was not authoritative: %#v", intent)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightCancellationDoesNotReuseSessionLocator(t *testing.T) {
+	for _, current := range []string{"先别查了", "不用查这个订单了", "取消查询"} {
+		t.Run(current, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_query", Objective: "cancel", Text: current,
+					ResolvedText: "帮我查订单\n当前客户补充：" + current,
+					SourceRefs:   []string{"U1"}, RelationToPrevious: "cancel_previous", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: current}}, adapter.HistoryBuildResult{RawItems: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "订单手机号13900000000"},
+			}}, nil)
+			if intent.NeedsTool || intent.NeedsClarification || intent.IntentTasks[0].SubIntent != "acknowledgement" ||
+				strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号") {
+				t.Fatalf("cancelled query reused the session locator: %#v", intent)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightRoomAssignmentUsesLocatorOnlyWhenPersonalized(t *testing.T) {
+	for _, tc := range []struct {
+		name, objective, text string
+		history               adapter.HistoryBuildResult
+		wantClarification     bool
+	}{
+		{name: "generic availability", objective: "availability", text: "今晚有哪些房间可以安排"},
+		{
+			name: "personalized assignment reuses phone", objective: "modify", text: "给我的订单安排安静一点的房间",
+			history: adapter.HistoryBuildResult{RawItems: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "预订手机号13800138000"},
+			}},
+		},
+		{name: "personalized assignment without locator", objective: "modify", text: "给我的订单安排安静一点的房间", wantClarification: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "room_assignment", Objective: tc.objective, Text: tc.text, ResolvedText: tc.text,
+					SourceRefs: []string{"U1"}, RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: tc.text}}, tc.history, nil)
+			if intent.NeedsClarification != tc.wantClarification {
+				t.Fatalf("room assignment locator policy changed: %#v", intent)
+			}
+			if !tc.wantClarification && !intent.NeedsTool {
+				t.Fatalf("answerable room assignment must keep PMS enabled: %#v", intent)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSCustomerPhoneNormalization(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{input: "+86 138-0013-8000", want: "13800138000"},
+		{input: "手机号 139 0000 0000", want: "13900000000"},
+	} {
+		if got := runtimePMSLastUsableCustomerPhone(tc.input); got != tc.want {
+			t.Fatalf("normalize %q = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestRuntimePMSSessionLocatorRequiresConfirmationAndHonorsCorrections(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		history []models.Message
+	}{
+		{
+			name: "standalone unrequested phone is not assumed",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "酒店联系电话是13800138000。"},
+				{ID: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "13900000000"},
+			},
+		},
+		{
+			name: "later phone correction clears confirmed value",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "订单手机号13900000000"},
+				{ID: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "刚才手机号不对"},
+			},
+		},
+		{
+			name: "later order correction clears confirmed value",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "接待单ID：OLD-1001"},
+				{ID: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "不是这个订单"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			locator := runtimePMSSessionLocatorFromHistory(adapter.HistoryBuildResult{RawItems: tc.history})
+			if locator.Phone != "" || locator.OrderLocator != "" {
+				t.Fatalf("unconfirmed or corrected locator must not survive: %#v", locator)
+			}
+		})
+	}
+}
+
 func TestRuntimePMSRequiredSlotPreflightSynchronizesEffectiveTrace(t *testing.T) {
 	configs := []models.ReplyIntentConfig{
 		{ID: 11, Code: "hotel_info", Name: "酒店信息"},
@@ -3463,13 +3716,13 @@ func TestRuntimePipelineCurrentFacilityQuestionBeatsOldRiskContext(t *testing.T)
 	}
 }
 
-func TestRuntimePipelineEmergencySafetyIntent(t *testing.T) {
+func TestRuntimePipelineEmergencySafetyClassificationDoesNotAuthorizeHandoff(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "keyword", Keywords: "厕所,地滑", NeedsKnowledge: true, Status: enums.StatusOk})
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我摔倒了，厕所太滑了，我在109"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", SubIntent: "emergency_safety", IntentConfidence: 0.96, ShouldReply: true, NeedsHumanRoute: true, Reason: "模型识别为突发安全风险"}})
-	if plan.Intent.PrimaryIntent != "human_complaint_risk" || plan.Intent.SubIntent != "emergency_safety" || !plan.Intent.NeedsHumanRoute {
-		t.Fatalf("expected emergency safety handoff intent, got %#v", plan.Intent)
+	if plan.Intent.SubIntent != "emergency_safety" || plan.Intent.NeedsHumanRoute || !plan.Intent.ShouldReply {
+		t.Fatalf("expected safety advice without unauthorized handoff, got %#v", plan.Intent)
 	}
 }
 

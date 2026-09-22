@@ -67,6 +67,40 @@ func TestUngroundedKnowledgeReplyTaskIDsRequiresSelectedFacts(t *testing.T) {
 	}
 }
 
+func TestUngroundedKnowledgeGuardPreservesMixedPMSFacts(t *testing.T) {
+	for _, aspect := range []string{"pms_order_recept", "pms_inventory_stay"} {
+		task := callbacks.ReplyTaskPlanTraceData{
+			TaskID: "mixed-pms", Intent: "hotel_info", SubIntent: "room_upgrade", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+				FactID: "P1F1", Aspect: aspect, Statement: "PMS 已确认当前订单和可售情况。",
+			}},
+			MissingAspects: []string{"门店补偿政策尚未确认"},
+		}
+		if !isUngroundedKnowledgeReplyTask(task) {
+			t.Fatalf("PMS facts must not count as evidence for the missing knowledge portion: %#v", task)
+		}
+		plan, isolated := isolateUngroundedKnowledgeReplyTasks(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+			task,
+			{TaskID: "weather", Intent: "interaction", SubIntent: "weather_query", OutputKind: "text", ReplyRequired: true},
+		}})
+		if len(isolated) != 1 || plan.TaskPlans[0].SelectedLayer != "runtime_safe_fallback" || len(plan.TaskPlans[0].SupportedFacts) != 2 || plan.TaskPlans[0].SupportedFacts[0].Aspect != aspect {
+			t.Fatalf("PMS facts must survive while only the knowledge portion is constrained: plan=%#v isolated=%#v", plan, isolated)
+		}
+	}
+}
+
+func TestUngroundedKnowledgeGuardStillBlocksKnowledgeOnlyTasks(t *testing.T) {
+	for _, task := range []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "missing-layer", Intent: "hotel_info", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "policy", Statement: "停车免费。"}}},
+		{TaskID: "missing-fact", Intent: "hotel_info", NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, SelectedLayer: "store"},
+	} {
+		if !isUngroundedKnowledgeReplyTask(task) {
+			t.Fatalf("knowledge-only evidence guard was weakened: %#v", task)
+		}
+	}
+}
+
 func TestCompleteUngroundedKnowledgeFallbackKeepsGroundedSiblingFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Model.Name = "deepseek-v4-pro"

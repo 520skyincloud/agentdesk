@@ -40,6 +40,7 @@ type CreateRetrieveLogRequest struct {
 	RerankLimit        int
 	Hits               []response.KnowledgeSearchResult
 	UsedHits           []response.KnowledgeSearchResult
+	SelectionPending   bool
 	HitSourceRecordIDs []string
 	UsedHitRankNos     []int
 	Citations          []response.KnowledgeCitation
@@ -74,12 +75,13 @@ type retrieveTraceHit struct {
 }
 
 type retrieveTraceRetrieve struct {
-	Provider        string `json:"provider"`
-	RerankEnabled   bool   `json:"rerankEnabled"`
-	RerankLimit     int    `json:"rerankLimit"`
-	RawHitCount     int    `json:"rawHitCount"`
-	ContextHitCount int    `json:"contextHitCount"`
-	CitationCount   int    `json:"citationCount"`
+	SelectionPending bool   `json:"selectionPending,omitempty"`
+	Provider         string `json:"provider"`
+	RerankEnabled    bool   `json:"rerankEnabled"`
+	RerankLimit      int    `json:"rerankLimit"`
+	RawHitCount      int    `json:"rawHitCount"`
+	ContextHitCount  int    `json:"contextHitCount"`
+	CitationCount    int    `json:"citationCount"`
 }
 
 type retrieveTraceChunkConfig struct {
@@ -220,12 +222,13 @@ func (s *retrieveLog) CreateRetrieveLog(req *CreateRetrieveLogRequest, _ *dto.Au
 func buildRetrieveTraceData(req *CreateRetrieveLogRequest) string {
 	trace := retrieveTraceData{
 		Retrieve: retrieveTraceRetrieve{
-			Provider:        req.ChunkProvider,
-			RerankEnabled:   req.RerankEnabled,
-			RerankLimit:     req.RerankLimit,
-			RawHitCount:     len(req.Hits),
-			ContextHitCount: len(req.UsedHits),
-			CitationCount:   len(req.Citations),
+			SelectionPending: req.SelectionPending,
+			Provider:         req.ChunkProvider,
+			RerankEnabled:    req.RerankEnabled,
+			RerankLimit:      req.RerankLimit,
+			RawHitCount:      len(req.Hits),
+			ContextHitCount:  len(req.UsedHits),
+			CitationCount:    len(req.Citations),
 		},
 		Linkage: retrieveTraceLinkage{
 			ConversationID: req.ConversationID,
@@ -271,6 +274,9 @@ func buildRetrieveTraceHits(req *CreateRetrieveLogRequest) []retrieveTraceHit {
 		discardReason := ""
 		if contextRankNo == 0 {
 			discardReason = "context_limit_or_duplicate"
+			if req.SelectionPending {
+				discardReason = "pending_judge_selection"
+			}
 		}
 		result = append(result, retrieveTraceHit{
 			SourceRecordID: sourceRecordIDAt(req.HitSourceRecordIDs, index),

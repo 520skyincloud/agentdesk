@@ -36,7 +36,7 @@ func (t *CreateTicketGraphTool) Code() string {
 }
 
 func (t *CreateTicketGraphTool) Enabled(ctx registry.Context) bool {
-	return false
+	return ctx.Conversation.ID > 0 && ctx.AIAgent.ID > 0
 }
 
 func (t *CreateTicketGraphTool) Build(ctx registry.Context) (einotool.BaseTool, error) {

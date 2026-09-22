@@ -143,6 +143,7 @@ func (c *RuntimeTraceCollector) SetKnowledgeEvidenceJudge(data KnowledgeEvidence
 	data.DeferredTaskIDs = append([]string(nil), data.DeferredTaskIDs...)
 	data.Tasks = append([]KnowledgeEvidenceJudgeTaskTraceData(nil), data.Tasks...)
 	for index := range data.Tasks {
+		data.Tasks[index].Candidates = append([]KnowledgeEvidenceCandidateTraceData(nil), data.Tasks[index].Candidates...)
 		data.Tasks[index].SelectedCandidateIDs = append([]string(nil), data.Tasks[index].SelectedCandidateIDs...)
 		data.Tasks[index].SupportedFacts = cloneKnowledgeEvidenceFacts(data.Tasks[index].SupportedFacts)
 		data.Tasks[index].MissingAspects = append([]string(nil), data.Tasks[index].MissingAspects...)

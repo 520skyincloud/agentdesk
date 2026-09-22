@@ -96,6 +96,66 @@ func TestPMSQueryToolPassesReadOnlyInventoryFilters(t *testing.T) {
 	}
 }
 
+func TestPMSQueryToolRejectsInventoryWithoutCompleteValidDates(t *testing.T) {
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", HotelID: "hotel-1"})
+	for _, payload := range []string{
+		`{"action":"inventory","beginTime":"2026-09-23"}`,
+		`{"action":"inventory","beginTime":"2026-09-23","endTime":"not-a-date"}`,
+	} {
+		got, err := NewPMSQueryTool().InvokableRun(context.Background(), payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "入住和离店日期") {
+			t.Fatalf("invalid inventory dates must be blocked before HTTP: %s", got)
+		}
+	}
+}
+
+func TestPMSQueryToolRenewCandidatesUsesBoundedPaginationAndRealFilter(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"code":0,"data":{"total":0,"rows":[]}}`))
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+	for _, payload := range []string{
+		`{"action":"renew_candidates","currentReceptOrderId":"RECEPT-1"}`,
+		`{"action":"renew_candidates","reservePhone":"138-0013-8000","pageNum":3,"pageSize":500}`,
+	} {
+		got, err := NewPMSQueryTool().InvokableRun(context.Background(), payload)
+		if err != nil || !strings.Contains(got, `"status":"ok"`) {
+			t.Fatalf("renew candidate query failed: %s %v", got, err)
+		}
+	}
+	first := <-requests
+	second := <-requests
+	if !strings.Contains(first, "pageNum=1") || !strings.Contains(first, "pageSize=20") || !strings.Contains(first, "currentReceptOrderId=RECEPT-1") {
+		t.Fatalf("default pagination or current order filter missing: %s", first)
+	}
+	if !strings.Contains(second, "pageNum=3") || !strings.Contains(second, "pageSize=100") || !strings.Contains(second, "reservePhone=13800138000") {
+		t.Fatalf("bounded pagination or reserve phone filter missing: %s", second)
+	}
+}
+
+func TestPMSQueryToolRenewCandidatesRejectsMissingFilterTwice(t *testing.T) {
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", HotelID: "hotel-1"})
+	for _, payload := range []string{
+		`{"action":"renew_candidates"}`,
+		`{"action":"renew_candidates","reservePhone":"not-a-phone"}`,
+	} {
+		got, err := NewPMSQueryTool().InvokableRun(context.Background(), payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "真实预订筛选条件") {
+			t.Fatalf("missing renew candidate filter must be blocked: %s", got)
+		}
+	}
+}
+
 func TestPMSQueryToolPriceDifferenceUsesOnlyReadQueries(t *testing.T) {
 	var writeRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,5 +491,13 @@ func usePMSQueryToolConfig(t *testing.T, cfg config.PMSConfig) {
 func TestPhoneArgForActionKeepsKeywordFallbackForOtherQueries(t *testing.T) {
 	if got := phoneArgForAction("room_status", "", "13800000000"); got != "13800000000" {
 		t.Fatalf("expected keyword fallback for non-phone action, got %q", got)
+	}
+}
+
+func TestPhoneArgForActionNormalizesSupportedCustomerFormats(t *testing.T) {
+	for _, input := range []string{"+86 138 0013 8000", "138-0013-8000"} {
+		if got := phoneArgForAction("member_info_by_phone", input, ""); got != "13800138000" {
+			t.Fatalf("phone %q was not normalized: %q", input, got)
+		}
 	}
 }

@@ -250,7 +250,7 @@ func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (ca
 
 	hasExecutableSibling := false
 	for index, task := range plan.TaskPlans {
-		if _, blocked := ungrounded[index]; blocked {
+		if _, blocked := ungrounded[index]; blocked && !runtimeReplyTaskHasPMSFact(task) {
 			continue
 		}
 		if runtimeReplyTaskIsExecutable(task) {
@@ -271,19 +271,23 @@ func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (ca
 		}
 		isolatedTaskIDs = append(isolatedTaskIDs, taskID)
 		plan.TaskPlans[index].TaskID = taskID
+		preservedFacts := runtimeReplyTaskPMSFacts(plan.TaskPlans[index])
 		plan.TaskPlans[index].Output = "knowledge_safe_fallback"
+		if len(preservedFacts) > 0 {
+			plan.TaskPlans[index].Output = "knowledge_partial_safe_fallback"
+		}
 		plan.TaskPlans[index].SelectedLayer = "runtime_safe_fallback"
 		plan.TaskPlans[index].SelectedCandidateIDs = nil
-		plan.TaskPlans[index].SupportedFacts = []callbacks.KnowledgeEvidenceFactTraceData{{
+		plan.TaskPlans[index].SupportedFacts = append(preservedFacts, callbacks.KnowledgeEvidenceFactTraceData{
 			FactID:         taskID + "FSafe",
 			Aspect:         "other",
 			Statement:      ungroundedKnowledgeSafeReply,
 			CriticalValues: []string{"暂时没法准确回答"},
-		}}
+		})
 		plan.TaskPlans[index].MissingAspects = appendIfMissing(plan.TaskPlans[index].MissingAspects, "缺少可核验的知识证据")
 	}
 	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
-	plan.DoNot = appendIfMissing(plan.DoNot, "标记为知识安全兜底的任务只能表达无法准确回答，不得补充任何酒店事实")
+	plan.DoNot = appendIfMissing(plan.DoNot, "知识未获得证据的部分只能表达暂时无法准确回答；同一任务中已确认的 PMS 事实仍须正常回答，不得补充未确认的酒店政策")
 	return plan, isolatedTaskIDs
 }
 
@@ -306,14 +310,27 @@ func isUngroundedKnowledgeReplyTask(task callbacks.ReplyTaskPlanTraceData) bool 
 	if !isReplyRequiredTextTask(task) || !runtimeReplyTaskUsesKnowledge(task) {
 		return false
 	}
-	hasFact := false
+	hasKnowledgeFact := false
 	for _, fact := range task.SupportedFacts {
-		if strings.TrimSpace(fact.Statement) != "" {
-			hasFact = true
-			break
+		if strings.TrimSpace(fact.Statement) != "" && !strings.HasPrefix(strings.TrimSpace(fact.Aspect), "pms_") {
+			hasKnowledgeFact = true
 		}
 	}
-	return strings.TrimSpace(task.SelectedLayer) == "" || !hasFact
+	return strings.TrimSpace(task.SelectedLayer) == "" || !hasKnowledgeFact
+}
+
+func runtimeReplyTaskHasPMSFact(task callbacks.ReplyTaskPlanTraceData) bool {
+	return len(runtimeReplyTaskPMSFacts(task)) > 0
+}
+
+func runtimeReplyTaskPMSFacts(task callbacks.ReplyTaskPlanTraceData) []callbacks.KnowledgeEvidenceFactTraceData {
+	ret := make([]callbacks.KnowledgeEvidenceFactTraceData, 0)
+	for _, fact := range task.SupportedFacts {
+		if strings.HasPrefix(strings.TrimSpace(fact.Aspect), "pms_") && strings.TrimSpace(fact.Statement) != "" {
+			ret = append(ret, fact)
+		}
+	}
+	return ret
 }
 
 func runtimeReplyTaskIsExecutable(task callbacks.ReplyTaskPlanTraceData) bool {

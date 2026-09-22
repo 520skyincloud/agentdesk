@@ -266,9 +266,14 @@ func TestPMSQueryTransportErrorsDoNotEchoPrivateRequestURL(t *testing.T) {
 			client.httpClient.Transport = memberQueryRoundTripper(func(r *http.Request) (*http.Response, error) {
 				return nil, fmt.Errorf("request %s failed with 13800138000 private-token", r.URL.String())
 			})
-			_, err := client.Query(context.Background(), action, map[string]string{
+			args := map[string]string{
 				"phone": "13800138000", "gradeId": "GRADE-T2-GOLD", "keyword": "13800138000",
-			})
+			}
+			if action == "inventory" {
+				args["beginTime"] = "2026-09-22"
+				args["endTime"] = "2026-09-23"
+			}
+			_, err := client.Query(context.Background(), action, args)
 			if err == nil {
 				t.Fatal("transport failure must not become success")
 			}
@@ -303,7 +308,11 @@ func TestInventoryQueryUsesOnlyConfiguredTenant(t *testing.T) {
 			}))
 			defer server.Close()
 			client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, Headers: tt.headers})
-			_, err := client.Query(context.Background(), "inventory", tt.args)
+			args := map[string]string{"beginTime": "2026-09-22", "endTime": "2026-09-23"}
+			for key, value := range tt.args {
+				args[key] = value
+			}
+			_, err := client.Query(context.Background(), "inventory", args)
 			if (err != nil) != tt.wantError {
 				t.Fatalf("unexpected error: %v", err)
 			}

@@ -38,7 +38,7 @@ var runtimeIntentModelServerStatusPattern = regexp.MustCompile(`status(?: code)?
 
 var runtimePMSCustomerPhoneValuePattern = regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9][0-9](?:[- ]?[0-9]){8}`)
 
-var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(?:reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*[A-Za-z0-9][A-Za-z0-9_-]{2,}`)
+var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})`)
 
 const runtimePMSOrderPhoneClarification = "请提供预订手机号。"
 
@@ -60,6 +60,11 @@ type runtimeIntentDetectJSON struct {
 	MixedSubTasks      runtimeIntentStringList `json:"mixedSubTasks"`
 	IntentTasks        runtimeIntentTaskList   `json:"intentTasks"`
 	Reason             string                  `json:"reason"`
+}
+
+type runtimePMSSessionLocator struct {
+	Phone        string
+	OrderLocator string
 }
 
 type runtimeIntentTaskJSON struct {
@@ -239,12 +244,12 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 
 func postprocessRuntimeModelIntent(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
 	intent = normalizeModelIntentTrace(intent, req, history, configs)
-	intent = applyRuntimePMSRequiredSlotPreflight(intent)
+	intent = applyRuntimePMSRequiredSlotPreflight(intent, runtimePMSSessionLocatorFromHistory(history))
 	intent = retainRuntimeMemberQueryTool(intent)
 	return syncRuntimeIntentTraceMetadata(intent, configs)
 }
 
-func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData, sessionLocator runtimePMSSessionLocator) callbacks.IntentTraceData {
 	changed := false
 	clarificationRequested := false
 	for index := range intent.IntentTasks {
@@ -252,12 +257,15 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData) call
 		if !task.NeedsTool || !runtimePMSTaskRequiresCustomerLocator(*task) {
 			continue
 		}
-		if phone := runtimePMSPreferredCustomerPhone(*task); phone != "" {
-			marker := "本次查询手机号：" + phone
-			if !strings.Contains(task.ResolvedText, marker) {
-				task.ResolvedText = strings.TrimSpace(task.ResolvedText) + "\n" + marker
-			}
+		if phone := runtimePMSLastUsableCustomerPhone(task.Text); phone != "" {
+			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+phone)
 			continue
+		}
+		if !isMemberRuntimeSubIntent(task.SubIntent) {
+			if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
+				appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+locator)
+				continue
+			}
 		}
 		if runtimePMSTaskCancelsCustomerQuery(*task) {
 			task.Intent = "interaction"
@@ -272,6 +280,26 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData) call
 			task.ResourceAction = ""
 			task.Reason = appendIntentReason(task.Reason, "customer cancelled PMS query")
 			changed = true
+			continue
+		}
+		if phone := runtimePMSPreferredCustomerPhone(*task); phone != "" {
+			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+phone)
+			continue
+		}
+		if !isMemberRuntimeSubIntent(task.SubIntent) {
+			if locator := runtimePMSPreferredOrderLocator(*task); locator != "" {
+				appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+locator)
+				continue
+			}
+		}
+		phoneRejected := runtimePMSCurrentTextRejectsCustomerPhone(task.Text)
+		orderLocatorRejected := runtimePMSCurrentTextRejectsOrderLocator(task.Text)
+		if !isMemberRuntimeSubIntent(task.SubIntent) && !orderLocatorRejected && sessionLocator.OrderLocator != "" {
+			appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+sessionLocator.OrderLocator)
+			continue
+		}
+		if !phoneRejected && sessionLocator.Phone != "" {
+			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+sessionLocator.Phone)
 			continue
 		}
 		if runtimePMSTaskHasCustomerLocator(*task) {
@@ -314,6 +342,13 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData) call
 	return intent
 }
 
+func appendRuntimePMSLocatorMarker(task *callbacks.IntentTaskTraceData, marker string) {
+	if task == nil || marker == "" || strings.Contains(task.ResolvedText, marker) {
+		return
+	}
+	task.ResolvedText = strings.TrimSpace(task.ResolvedText) + "\n" + marker
+}
+
 func runtimePMSTaskRequiresCustomerLocator(task callbacks.IntentTaskTraceData) bool {
 	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
 	case "order_query", "order_detail", "order_status",
@@ -338,20 +373,7 @@ func runtimePMSTaskHasCustomerLocator(task callbacks.IntentTaskTraceData) bool {
 	if isMemberRuntimeSubIntent(task.SubIntent) {
 		return false
 	}
-	current := strings.TrimSpace(task.Text)
-	if runtimePMSCustomerLocatorPattern.MatchString(current) {
-		return true
-	}
-	if runtimePMSCurrentTextRejectsCustomerPhone(current) {
-		return false
-	}
-
-	parts := []string{task.ResolvedText}
-	for _, entity := range task.Entities {
-		parts = append(parts, entity.Text)
-	}
-	text := strings.Join(parts, "\n")
-	return runtimePMSCustomerLocatorPattern.MatchString(text)
+	return runtimePMSPreferredOrderLocator(task) != ""
 }
 
 func runtimePMSPreferredCustomerPhone(task callbacks.IntentTaskTraceData) string {
@@ -367,6 +389,21 @@ func runtimePMSPreferredCustomerPhone(task callbacks.IntentTaskTraceData) string
 		}
 	}
 	return runtimePMSLastUsableCustomerPhone(task.ResolvedText)
+}
+
+func runtimePMSPreferredOrderLocator(task callbacks.IntentTaskTraceData) string {
+	if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
+		return locator
+	}
+	if runtimePMSCurrentTextRejectsOrderLocator(task.Text) {
+		return ""
+	}
+	for index := len(task.Entities) - 1; index >= 0; index-- {
+		if locator := runtimePMSLastUsableOrderLocator(task.Entities[index].Text); locator != "" {
+			return locator
+		}
+	}
+	return runtimePMSLastUsableOrderLocator(task.ResolvedText)
 }
 
 func runtimePMSLastUsableCustomerPhone(text string) string {
@@ -406,6 +443,36 @@ func runtimePMSLastUsableCustomerPhone(text string) string {
 	return phone
 }
 
+func runtimePMSLastUsableOrderLocator(text string) string {
+	locator := ""
+	for _, match := range runtimePMSCustomerLocatorPattern.FindAllStringSubmatchIndex(text, -1) {
+		if len(match) < 6 {
+			continue
+		}
+		prefixRunes := []rune(text[:match[0]])
+		if len(prefixRunes) > 8 {
+			prefixRunes = prefixRunes[len(prefixRunes)-8:]
+		}
+		suffixRunes := []rune(text[match[1]:])
+		if len(suffixRunes) > 5 {
+			suffixRunes = suffixRunes[:5]
+		}
+		prefix := compactRuntimePMSPhoneContext(string(prefixRunes))
+		suffix := compactRuntimePMSPhoneContext(string(suffixRunes))
+		if strings.HasSuffix(prefix, "不是") || strings.HasSuffix(prefix, "别用") ||
+			strings.HasSuffix(prefix, "不要用") || strings.HasSuffix(prefix, "不用") ||
+			strings.HasSuffix(prefix, "别查") || strings.HasSuffix(prefix, "不要查") || strings.HasSuffix(prefix, "不用查") ||
+			strings.HasPrefix(suffix, "不是") || strings.HasPrefix(suffix, "不对") || strings.HasPrefix(suffix, "错了") ||
+			strings.HasPrefix(suffix, "说错了") || strings.HasPrefix(suffix, "这个不对") {
+			continue
+		}
+		label := text[match[2]:match[3]]
+		value := text[match[4]:match[5]]
+		locator = strings.TrimSpace(label) + ":" + strings.TrimSpace(value)
+	}
+	return locator
+}
+
 func runtimePMSCurrentTextRejectsCustomerPhone(text string) bool {
 	if text == "" {
 		return false
@@ -424,6 +491,101 @@ func runtimePMSCurrentTextRejectsCustomerPhone(text string) bool {
 		}
 	}
 	return false
+}
+
+func runtimePMSCurrentTextRejectsOrderLocator(text string) bool {
+	if text == "" {
+		return false
+	}
+	if runtimePMSCustomerLocatorPattern.MatchString(text) && runtimePMSLastUsableOrderLocator(text) == "" {
+		return true
+	}
+	text = compactRuntimePMSPhoneContext(text)
+	for _, phrase := range []string{
+		"订单号错了", "订单id错了", "预订单id错了", "接待单id错了",
+		"订单号不对", "订单id不对", "预订单id不对", "接待单id不对",
+		"不是这个订单", "别用这个订单", "不要用这个订单", "不用这个订单",
+	} {
+		if strings.Contains(strings.ToLower(text), phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePMSSessionLocatorFromHistory(history adapter.HistoryBuildResult) runtimePMSSessionLocator {
+	locator := runtimePMSSessionLocator{}
+	phoneRequested := false
+	for _, item := range history.RawItems {
+		text := runtimePMSHistoryMessageText(item)
+		if text == "" {
+			continue
+		}
+		if item.SenderType == enums.IMSenderTypeAI || item.SenderType == enums.IMSenderTypeAgent {
+			phoneRequested = runtimePMSServiceRequestsCustomerPhone(text)
+			continue
+		}
+		if item.SenderType != enums.IMSenderTypeCustomer {
+			continue
+		}
+
+		phone := runtimePMSLastUsableCustomerPhone(text)
+		if runtimePMSCurrentTextInvalidatesCustomerPhone(text) {
+			locator.Phone = phone
+		} else if phone != "" && (phoneRequested || runtimePMSCustomerMessageConfirmsLocator(text)) {
+			locator.Phone = phone
+		}
+		orderLocator := runtimePMSLastUsableOrderLocator(text)
+		if runtimePMSCurrentTextRejectsOrderLocator(text) {
+			locator.OrderLocator = orderLocator
+		} else if orderLocator != "" {
+			locator.OrderLocator = orderLocator
+		}
+		phoneRequested = false
+	}
+	return locator
+}
+
+func runtimePMSHistoryMessageText(item models.Message) string {
+	parts := make([]string, 0, 2)
+	for _, source := range adapter.BuildCurrentTurnSources(item) {
+		if text := strings.TrimSpace(source.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func runtimePMSServiceRequestsCustomerPhone(text string) bool {
+	text = compactRuntimePMSPhoneContext(text)
+	return strings.Contains(text, compactRuntimePMSPhoneContext(runtimePMSOrderPhoneClarification)) ||
+		strings.Contains(text, compactRuntimePMSPhoneContext(runtimePMSMemberPhoneClarification))
+}
+
+func runtimePMSCustomerMessageConfirmsLocator(text string) bool {
+	text = compactRuntimePMSPhoneContext(text)
+	for _, phrase := range []string{
+		"手机号", "联系电话", "预订电话", "订单", "预订", "会员", "入住", "退房",
+		"升房", "换房", "续住", "延迟退房", "差价", "房型", "房间",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePMSCurrentTextInvalidatesCustomerPhone(text string) bool {
+	text = compactRuntimePMSPhoneContext(text)
+	for _, phrase := range []string{
+		"号码错了", "手机号错了", "电话错了", "号码不对", "手机号不对", "电话不对",
+		"不是这个号码", "不是这个手机号", "别用这个号码", "不要用这个号码", "不用这个号码",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return runtimePMSCustomerPhoneValuePattern.MatchString(text) && runtimePMSLastUsableCustomerPhone(text) == ""
 }
 
 func runtimePMSTaskCancelsCustomerQuery(task callbacks.IntentTaskTraceData) bool {

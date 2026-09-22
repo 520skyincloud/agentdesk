@@ -253,6 +253,69 @@ func TestClientInventoryMapsToolDatesToHPMSParameters(t *testing.T) {
 	}
 }
 
+func TestClientInventoryRequiresCompleteValidDatesBeforeHTTP(t *testing.T) {
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", HotelID: "hotel-1"})
+	for _, args := range []map[string]string{
+		{"beginTime": "2026-09-23"},
+		{"beginTime": "2026-09-23", "endTime": "2026-09-xx"},
+	} {
+		_, err := client.Query(context.Background(), "inventory", args)
+		if err == nil || !strings.Contains(err.Error(), "入住和离店日期") {
+			t.Fatalf("invalid inventory range must be rejected, args=%#v err=%v", args, err)
+		}
+	}
+}
+
+func TestClientDetailQueriesRequireTheirRealIdentifiers(t *testing.T) {
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", HotelID: "hotel-1"})
+	for _, tc := range []struct {
+		action string
+		want   string
+	}{
+		{action: "reserve_order_detail", want: "预订单 ID"},
+		{action: "recept_order_detail", want: "接待单 ID"},
+	} {
+		_, err := client.Query(context.Background(), tc.action, nil)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s must require its identifier: %v", tc.action, err)
+		}
+	}
+}
+
+func TestClientRenewCandidatesDefaultsPaginationAndRequiresFilter(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"code":0,"data":{"total":0,"rows":[]}}`))
+	}))
+	defer server.Close()
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+	for _, args := range []map[string]string{
+		{"currentReceptOrderId": "RECEPT-1"},
+		{"reserveOrderNo": "RESERVE-2", "pageNum": "2", "pageSize": "30"},
+	} {
+		if _, err := client.Query(context.Background(), "renew_candidates", args); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := <-requests
+	second := <-requests
+	if !strings.Contains(first, "pageNum=1") || !strings.Contains(first, "pageSize=20") {
+		t.Fatalf("default renew pagination missing: %s", first)
+	}
+	if !strings.Contains(second, "pageNum=2") || !strings.Contains(second, "pageSize=30") {
+		t.Fatalf("explicit renew pagination missing: %s", second)
+	}
+
+	for _, args := range []map[string]string{nil, {"pageNum": "1", "pageSize": "20"}} {
+		_, err := client.Query(context.Background(), "renew_candidates", args)
+		if err == nil || !strings.Contains(err.Error(), "真实预订筛选条件") {
+			t.Fatalf("renew candidate filter must be required: %#v err=%v", args, err)
+		}
+	}
+}
+
 func TestClientRenewRequiresExplicitWriteEnablement(t *testing.T) {
 	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: "http://example.com"})
 	_, err := client.Renew(context.Background(), RenewRequest{ReceptOrderID: 1})

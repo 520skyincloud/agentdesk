@@ -88,6 +88,45 @@ func TestJevBoundariesDoNotSplitIdentifiersOrAssumePunctuation(t *testing.T) {
 	}
 }
 
+func TestJevSegmentationKeepsDecisionDimensionsInOneGoal(t *testing.T) {
+	for _, text := range []string{
+		"能不能升大床房，有没有房，会员能免差价吗，要补多少？",
+		"房间太吵想换房，今晚有没有别的房，差价多少？",
+	} {
+		checked := false
+		spans, err := segmentJevIntentSources([]adapter.CurrentTurnSource{{Ref: "U1", Text: text}}, jevIntentState{}, func(_ any, questions map[string]jev.Question) (jev.Response, error) {
+			if question, ok := questions["U1_count"]; ok {
+				instructions, _ := question.Instructions.(map[string]any)
+				rule, _ := instructions["question"].(string)
+				if !strings.Contains(rule, "dimensions of that one decision goal") {
+					t.Fatalf("decision dimensions are not grouped in JEV segmentation: %s", rule)
+				}
+				checked = true
+			}
+			return jevTestResponse(questions, map[string]string{"U1_count": "1"}, nil), nil
+		})
+		if err != nil || !checked || len(spans) != 1 || spans[0].Text != text {
+			t.Fatalf("decision request was not preserved as one goal: spans=%#v checked=%v err=%v", spans, checked, err)
+		}
+	}
+}
+
+func TestJevRouteCriteriaSeparateBroadDecisionsFromStandaloneFollowups(t *testing.T) {
+	criteria := jevIntentRouteCriteria()
+	for _, route := range []string{"room_upgrade", "room_change", "late_checkout", "renewal"} {
+		description, _ := criteria[route].(string)
+		if !strings.Contains(description, "One ") || !strings.Contains(description, " when asked together") {
+			t.Fatalf("%s must describe one combined customer decision: %q", route, description)
+		}
+	}
+	for _, route := range []string{"price_difference", "upgrade_eligibility"} {
+		description, _ := criteria[route].(string)
+		if !strings.Contains(description, "standalone") || !strings.Contains(description, "broader current") {
+			t.Fatalf("%s must remain a standalone follow-up only: %q", route, description)
+		}
+	}
+}
+
 func TestJevCurrentContextUsesEarlierSpansWithoutChangingSource(t *testing.T) {
 	message := models.Message{
 		ID: 103, MessageType: enums.IMMessageTypeText,
@@ -192,7 +231,7 @@ func TestJevNormalizationRetainsHumanAuthorizationBoundary(t *testing.T) {
 		{name: "cancel", text: "取消转人工", route: "explicit_handoff", objective: "cancel"},
 		{name: "service", text: "帮忙送条毛巾", route: "room_supplies", objective: "action_request"},
 		{name: "correction", text: "你回答错了", route: "answer_rejected", objective: "explanation"},
-		{name: "emergency", text: "有人受伤流血了", route: "emergency_safety", objective: "action_request", handoff: true},
+		{name: "emergency_without_explicit_handoff", text: "有人受伤流血了", route: "emergency_safety", objective: "action_request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := RunInput{UserMessage: models.Message{Content: tc.text, MessageType: enums.IMMessageTypeText}}

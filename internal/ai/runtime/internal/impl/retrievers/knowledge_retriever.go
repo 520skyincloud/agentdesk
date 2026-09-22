@@ -226,6 +226,19 @@ func RebuildKnowledgeRetrieveSelection(result *KnowledgeRetrieveResult, hits []r
 	result.TopScore = resolveTopScore(result.Hits)
 	result.AnswerMode = resolveRuntimeAnswerMode(result.KnowledgeBaseIDs, result.Hits)
 	result.TraceItems = buildRetrieverTraceItems(result.Options.QueryPreview, rawHits, result.ContextResults, result.Trace)
+	selected := make(map[string]bool, len(hits))
+	for _, hit := range hits {
+		selected[retrieveResultIdentity(hit)] = true
+	}
+	for index := range result.TraceItems {
+		if result.TraceItems[index].UsedInContext {
+			continue
+		}
+		result.TraceItems[index].DiscardReason = "judge_not_selected"
+		if selected[retrieveResultIdentity(rawHits[index])] {
+			result.TraceItems[index].DiscardReason = "reply_context_budget_excluded"
+		}
+	}
 	result.TraceSummary = buildRetrieverTraceSummary(result.Options, result.Policies, result.ContextResults, rawHits, result.Trace)
 }
 
@@ -367,6 +380,7 @@ func (r *KnowledgeRetriever) writeRuntimeRetrieveLog(ctx context.Context, query 
 		// The runtime Judge runs after this retrieval log is written. Do not mark
 		// Retriever-preselected chunks as the final evidence used in the reply.
 		UsedHits:           nil,
+		SelectionPending:   true,
 		HitSourceRecordIDs: retrieveSourceRecordIDs(rawHits),
 		UsedHitRankNos:     nil,
 		RetrieveMs:         retrieveMs,

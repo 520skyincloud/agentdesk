@@ -180,7 +180,7 @@ func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevInten
 			Type: "choice",
 			Instructions: map[string]any{
 				"sourceRef": source.Ref, "text": source.Text,
-				"question": "How many independent customer reply goals are in this CURRENT message? Count complete questions/requests, not words, sentences, fields, clauses or punctuation. Different questions about the same thing (availability, price, location) are separate. Details, corrected phone values and conditions supporting one request stay together even across sentence punctuation. An order lookup asking all its fields is one goal. Greetings, thanks and denial of handoff accompanying a business request do NOT add a goal. A standalone phone, social turn or unclear message counts as one. Use history only to understand the current message, never count historical questions. If state.repair is present, use coverageIssues to correct only the reported omission, merge or query problem; preserve unaffected previousIntentTasks and never count repair metadata as customer text.",
+				"question": "How many independent customer reply goals are in this CURRENT message? Count complete questions/requests, not words, sentences, fields, clauses or punctuation. Independent hotel topics stay separate. Availability, membership waiver, price difference and policy conditions that jointly decide ONE room-upgrade, room-change, renewal or late-checkout request are dimensions of that one decision goal, not duplicate goals. A standalone later question asking only a new price, date or policy remains a separate goal. Details, corrected phone values and conditions supporting one request stay together even across sentence punctuation. An order lookup asking all its fields is one goal. Greetings, thanks and denial of handoff accompanying a business request do NOT add a goal. A standalone phone, social turn or unclear message counts as one. Use history only to understand the current message, never count historical questions. If state.repair is present, use coverageIssues to correct only the reported omission, merge or query problem; preserve unaffected previousIntentTasks and never count repair metadata as customer text.",
 			},
 			Criteria: options,
 		}
@@ -489,15 +489,16 @@ func jevIntentRouteCriteria() map[string]any {
 		"room_inventory":         "Available room types or inventory for a date range.",
 		"member_info":            "Customer membership, level or validity; identify a member by phone.",
 		"member_benefits":        "Membership benefits, tier upgrade/retention rules or birthday benefits.",
-		"room_upgrade":           "Better ROOM TYPE or room upgrade feasibility; not membership tier upgrade.",
-		"room_change":            "Change rooms or find a suitable alternative room.",
+		"room_upgrade":           "One room-upgrade decision, including its availability, membership waiver and price dimensions when asked together; not membership tier upgrade. Do not emit duplicate upgrade tasks for those dimensions.",
+		"room_change":            "One room-change decision, including alternative availability, policy and price dimensions when asked together.",
 		"room_assignment":        "Room assignment options or feasibility.",
-		"price_difference":       "Room upgrade/change price difference or waiver assessment.",
-		"upgrade_eligibility":    "Whether membership entitles the customer to a free ROOM upgrade.",
-		"late_checkout":          "Late checkout feasibility/conditions.",
-		"renewal":                "Extend a stay, renewal conditions or available dates.",
+		"price_difference":       "A standalone or follow-up request specifically about room upgrade/change price difference. When price is only one dimension of a broader current upgrade/change decision, keep the single room_upgrade/room_change task.",
+		"upgrade_eligibility":    "A standalone question specifically about whether membership entitles the customer to a free ROOM upgrade. When asked as part of a broader current upgrade decision, keep the single room_upgrade task.",
+		"late_checkout":          "One late-checkout decision, including feasibility, conditions and fee when asked together.",
+		"renewal":                "One stay-extension decision, including renewal conditions, dates, same-room preference and availability when asked together.",
 		"room_supplies":          "Ask hotel to deliver towels, toiletries or other items.",
 		"maintenance":            "Broken facility requiring repair.",
+		"create_ticket":          "Customer explicitly asks to create or submit a service/maintenance/complaint ticket. A report of a fault, request for advice, or dissatisfaction alone is NOT a ticket request.",
 		"cleaning":               "Cleaning request/problem.",
 		"lost_item":              "Lost item.",
 		"service_follow_up":      "Other physical hotel service or its progress.",
@@ -561,7 +562,7 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			task.Intent, task.ResourceAction, task.NeedsResource = "hotel_variable", route, true
 		case "explicit_handoff", "emergency_safety":
 			task.Intent, task.NeedsHumanRoute = "human_complaint_risk", true
-		case "room_supplies", "maintenance", "cleaning", "lost_item", "service_follow_up", "external_proxy_action", "refund_compensation":
+		case "room_supplies", "maintenance", "cleaning", "lost_item", "service_follow_up", "external_proxy_action", "refund_compensation", "create_ticket":
 			task.Intent, task.NeedsKnowledge = "service_request", true
 		case "answer_rejected", "weather_query", "conversation_recap", "acknowledgement", "chat", "clarify":
 			task.Intent = "interaction"

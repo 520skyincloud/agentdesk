@@ -73,6 +73,8 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveOrderNo", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的预订单号。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveName", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的预订人。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reservePhone", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的联系电话。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "pageNum", Value: &einojsonschema.Schema{Type: "integer", Description: "换单续住候选页码，默认 1。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "pageSize", Value: &einojsonschema.Schema{Type: "integer", Description: "换单续住候选每页数量，默认 20，最大 100。"}},
 			)),
 		}),
 		Extra: map[string]any{"toolCode": toolx.BuiltinPMSQuery.Code, "sourceType": toolx.BuiltinPMSQuery.SourceType},
@@ -98,6 +100,8 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		ReserveOrderNo       string `json:"reserveOrderNo"`
 		ReserveName          string `json:"reserveName"`
 		ReservePhone         string `json:"reservePhone"`
+		PageNum              int    `json:"pageNum"`
+		PageSize             int    `json:"pageSize"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {
 		return "", fmt.Errorf("PMS 查询参数 JSON 不合法")
@@ -105,6 +109,24 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	input.Action = strings.TrimSpace(input.Action)
 	if !isPMSReadOnlyAction(input.Action) {
 		return `{"status":"unsupported","message":"当前客服 PMS 工具只支持只读查询，未执行任何办理操作。"}`, nil
+	}
+	if err := validatePMSReadOnlyInput(input.Action, input.ReserveOrderID, input.ReceptOrderID, input.Phone, input.Keyword,
+		input.BeginTime, input.StartDate, input.EndTime, input.EndDate, input.RoomTypeID,
+		input.CurrentReceptOrderID, input.ReserveOrderNo, input.ReserveName, input.ReservePhone); err != nil {
+		payload, marshalErr := json.Marshal(map[string]any{"status": "unavailable", "message": err.Error()})
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		return string(payload), nil
+	}
+	if input.PageNum <= 0 {
+		input.PageNum = 1
+	}
+	if input.PageSize <= 0 {
+		input.PageSize = 20
+	}
+	if input.PageSize > 100 {
+		input.PageSize = 100
 	}
 	args := map[string]string{
 		"reserveOrderId":       input.ReserveOrderID,
@@ -120,8 +142,10 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		"currentReceptOrderId": input.CurrentReceptOrderID,
 		"reserveOrderNo":       input.ReserveOrderNo,
 		"reserveName":          input.ReserveName,
-		"reservePhone":         input.ReservePhone,
+		"reservePhone":         normalizePMSPhone(input.ReservePhone),
 		"phone":                phoneArgForAction(input.Action, input.Phone, input.Keyword),
+		"pageNum":              fmt.Sprintf("%d", input.PageNum),
+		"pageSize":             fmt.Sprintf("%d", input.PageSize),
 	}
 	client := pms.NewClient(config.Current().PMS)
 	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -209,6 +233,42 @@ func isPMSReadOnlyAction(action string) bool {
 	}
 }
 
+func validatePMSReadOnlyInput(action, reserveOrderID, receptOrderID, phone, keyword, beginTime, startDate, endTime, endDate, roomTypeID, currentReceptOrderID, reserveOrderNo, reserveName, reservePhone string) error {
+	switch action {
+	case "reserve_order_detail":
+		if strings.TrimSpace(reserveOrderID) == "" {
+			return fmt.Errorf("预订单详情查询需要真实预订单 ID")
+		}
+	case "recept_order_detail":
+		if strings.TrimSpace(receptOrderID) == "" {
+			return fmt.Errorf("接待单详情查询需要真实接待单 ID")
+		}
+	case "reserve_order_by_phone", "recept_order_by_phone", "member_info_by_phone", "member_benefits_by_phone":
+		if normalizePMSPhone(phone) == "" {
+			return fmt.Errorf("查询需要客户提供的有效手机号")
+		}
+	case "inventory":
+		if queryDate(firstNonEmpty(beginTime, startDate)) == "" || queryDate(firstNonEmpty(endTime, endDate)) == "" {
+			return fmt.Errorf("库存查询需要完整的入住和离店日期")
+		}
+	case "price_difference":
+		if strings.TrimSpace(reserveOrderID) == "" && strings.TrimSpace(receptOrderID) == "" {
+			return fmt.Errorf("差价评估需要先定位真实订单 ID")
+		}
+		if strings.TrimSpace(roomTypeID) == "" {
+			return fmt.Errorf("差价评估需要真实目标房型 ID")
+		}
+	case "renew_candidates":
+		if strings.TrimSpace(currentReceptOrderID) == "" && strings.TrimSpace(reserveOrderNo) == "" &&
+			strings.TrimSpace(reserveName) == "" && normalizePMSPhone(reservePhone) == "" {
+			return fmt.Errorf("续住候选查询需要当前接待单或真实预订筛选条件")
+		}
+	case "room_status":
+		_ = keyword
+	}
+	return nil
+}
+
 func queryPriceDifference(ctx context.Context, client *pms.Client, reserveOrderID, receptOrderID, roomTypeID, startDate, endDate string) (pms.QueryResult, error) {
 	reserveOrderID = strings.TrimSpace(reserveOrderID)
 	receptOrderID = strings.TrimSpace(receptOrderID)
@@ -286,8 +346,12 @@ func orderDate(orderData any, keys ...string) string {
 
 func queryDate(value string) string {
 	value = strings.TrimSpace(value)
-	if len(value) >= len("2006-01-02") {
-		return value[:len("2006-01-02")]
+	if len(value) < len("2006-01-02") {
+		return ""
+	}
+	value = value[:len("2006-01-02")]
+	if _, err := time.Parse("2006-01-02", value); err != nil {
+		return ""
 	}
 	return value
 }
@@ -304,7 +368,23 @@ func firstNonEmpty(values ...string) string {
 func phoneArgForAction(action, phone, keyword string) string {
 	if action == "reserve_order_by_phone" || action == "recept_order_by_phone" ||
 		action == "member_info_by_phone" || action == "member_benefits_by_phone" {
-		return phone
+		return normalizePMSPhone(phone)
 	}
 	return firstNonEmpty(phone, keyword)
+}
+
+func normalizePMSPhone(value string) string {
+	digits := strings.NewReplacer("+", "", "-", "", " ", "", "\t", "").Replace(strings.TrimSpace(value))
+	if strings.HasPrefix(digits, "86") && len(digits) == 13 {
+		digits = strings.TrimPrefix(digits, "86")
+	}
+	if len(digits) != 11 || digits[0] != '1' || digits[1] < '3' || digits[1] > '9' {
+		return ""
+	}
+	for _, digit := range digits {
+		if digit < '0' || digit > '9' {
+			return ""
+		}
+	}
+	return digits
 }
