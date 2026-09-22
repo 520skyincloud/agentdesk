@@ -69,6 +69,29 @@ git diff --check
 延退、空调/漏水且拒绝人工、外卖自助边界、外卖机器人纠正、PMS+停车混合问题、明确人工和
 知识库明确转接。验收同时检查没有 PMS 写请求和新增 `PMSOperation`。
 
+最终运行提交为 `e5454cd80584eefdb5f09e45b70f70e3d4a11573`，test-2 release 为
+`/opt/agentdesk/releases/20260923-pms-readonly-e5454cd`，二进制 SHA-256 为
+`28e651b1980307c2522c1cffbecedc20309e04c5850cd6ad43c30b35c31b5aec`。服务状态为
+`active/running`、`NRestarts=0`，`8083` 返回 200；PMS 为 `enabled=true`、
+`allowWrite=false`。
+
+最终提交上的第一轮 22 场景复验实际业务结果全部正确；测试脚本最初只接受“可选/可售/库存”
+等字面词，把正确回复“现在还有儿童房、橙意和沐阳可以选”误记为 21/22。验收词组补充自然
+表达“可以选”后，未修改运行程序，再次完整运行达到 22/22：
+`/opt/agentdesk/shared/live-tests/jev-runtime-smoke-pms-matrix-20260922-190940-797ba8b4.json`，
+会话 ID 为 `2204`。此前 `75a7674` 完整矩阵也为 22/22，因此各普通能力至少完成两次真实
+运行；最终矩阵 22 轮路由均为 `AI_SERVING/ai`，工具动作仅为预订单、接待单、会员、库存和
+房态只读查询。
+
+人工路由另使用四个独立会话验证，避免首次转接后的人工状态污染后续输入：明确人工两种表达
+分别为会话 `2198/2199`，门店知识精确“转接”两种表达分别为会话 `2201/2202`。四轮都只
+发送一次 `帮您转接到同事了`，路由均为 `STORE_WECOM_MANUAL/store_wecom`。门店知识已经有
+正文答案的问题不能拿通用库“转接”做验收，例如“酒店有洗衣机吗”应优先直接回答门店正文；
+最终知识转接样本使用无竞争正文的门店精确 FAQ“怎么出车？”和“水单怎么开？”。
+
+会话 `2198-2204` 的 `t_pms_operation` 总数为 0。完整矩阵最慢一轮为 83.178 秒，功能和投递
+正确，但不作为延迟达标证据；性能优化仍需单独设定 P90/P95 目标，不能与本次功能通过混为一谈。
+
 共享高风险文件为 `internal/ai/runtime/executor`。开始和 push 前均需 `git fetch origin`，检查
 `codex/customer-audit`、`codex/ai-billing` 同文件修改；建议本提交作为独立 Runtime 收口提交
 合并。程序异常只回退 test-2 release，不恢复数据库；实施前回滚点为
