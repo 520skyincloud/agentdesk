@@ -5856,6 +5856,25 @@ func TestKnowledgeEvidenceJudgeDoesNotRecoverGenericHandoffQuestion(t *testing.T
 	}
 }
 
+func TestRepairModelMissKnowledgeHandoffSelectionsUsesNarrowRecovery(t *testing.T) {
+	const current = "空调不制冷，我住1304，先告诉我可以怎么处理，不要转人工"
+	storeHandoff := judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7979)
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "task-1", Query: current, RetrievalQuery: current,
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "store-1", Layer: knowledgeEvidenceLayerStore, Hit: storeHandoff}},
+	}}
+	selections := map[string]map[string]knowledgeEvidenceLayerSelection{
+		"task-1": {knowledgeEvidenceLayerStore: {Decision: knowledgeEvidenceDecisionInsufficient, DecisionSource: "model"}},
+	}
+	if repaired := repairModelMissKnowledgeHandoffSelections(tasks, selections); repaired != 1 {
+		t.Fatalf("expected one recovered handoff selection, got %d", repaired)
+	}
+	selection := selections["task-1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "deterministic_handoff_model_miss" {
+		t.Fatalf("unexpected repaired selection: %#v", selection)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeOnlyExposesSelectedFAQUnit(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "入住与服务", `问题：怎么办理入住
 	答案：我们酒店没有传统前台，可以通过入住机或小程序线上办理入住。

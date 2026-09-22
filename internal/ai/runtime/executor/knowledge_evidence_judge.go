@@ -294,6 +294,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
+	repairedHandoffs := repairModelMissKnowledgeHandoffSelections(tasks, selections)
 	coverage, coverageErr := parseRuntimeQuestionCoverage(result.Content, prompt.Coverage)
 	if coverageErr != nil {
 		trace.Status = knowledgeEvidenceDecisionProtocolInvalid
@@ -302,6 +303,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
+	if repairedHandoffs > 0 {
+		trace.Reason += fmt.Sprintf("; recovered %d explicit knowledge handoff selection(s) missed by the model", repairedHandoffs)
+	}
 	for taskID, layers := range selections {
 		for layer, selection := range layers {
 			if selection.ProtocolError != "" {
