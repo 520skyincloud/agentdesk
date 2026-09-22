@@ -1081,12 +1081,18 @@ func validateRuntimePMSInventoryCoverage(result pmsReadStepResult) pmsReadStepRe
 	if !ok || len(items) == 0 {
 		return result
 	}
+	targetRoomTypeID := strings.TrimSpace(result.Args["roomTypeId"])
+	targetMatched := targetRoomTypeID == ""
 	missingByRoom := make([]string, 0)
 	for _, value := range items {
 		row, ok := value.(map[string]any)
 		if !ok {
 			continue
 		}
+		if targetRoomTypeID != "" && firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId") != targetRoomTypeID {
+			continue
+		}
+		targetMatched = true
 		bookings, _ := row["bookings"].(map[string]any)
 		missing := make([]string, 0)
 		for _, date := range expected {
@@ -1102,6 +1108,11 @@ func validateRuntimePMSInventoryCoverage(result pmsReadStepResult) pmsReadStepRe
 			}
 			missingByRoom = append(missingByRoom, roomName+"缺少"+strings.Join(missing, "、"))
 		}
+	}
+	if !targetMatched {
+		result.Status = pmsReadStepPartial
+		result.Message = "PMS 未返回当前订单房型的库存"
+		return result
 	}
 	if len(missingByRoom) > 0 {
 		result.Status = pmsReadStepPartial
@@ -1696,8 +1707,8 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		})
 	}
 	for _, missing := range result.Unconfirmed {
-		if (missing == "order.reserve" || missing == "order.recept") &&
-			runtimePMSReadStepHasStatus(result, missing, pmsReadStepEmpty) &&
+		if step, ok := runtimePMSReadPlanStepByID(plan, missing); ok &&
+			!step.Required && (missing == "order.reserve" || missing == "order.recept") &&
 			runtimePMSReadHasOtherOrderFact(result, missing) {
 			continue
 		}
@@ -1710,10 +1721,12 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		if step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial {
 			continue
 		}
-		if (step.StepID == "order.reserve" || step.StepID == "order.recept") && step.Status == pmsReadStepEmpty && runtimePMSReadHasOtherOrderFact(result, step.StepID) {
+		planned, plannedStep := runtimePMSReadPlanStepByID(plan, step.StepID)
+		if plannedStep && !planned.Required &&
+			(step.StepID == "order.reserve" || step.StepID == "order.recept") &&
+			runtimePMSReadHasOtherOrderFact(result, step.StepID) {
 			continue
 		}
-		planned, plannedStep := runtimePMSReadPlanStepByID(plan, step.StepID)
 		if plannedStep && !planned.Required && !runtimePMSOptionalStepRelevantToTask(plan, *task, step.StepID) {
 			continue
 		}
@@ -1756,15 +1769,6 @@ func runtimePMSReadHasOtherOrderFact(result pmsReadPlanResult, skipStepID string
 			continue
 		}
 		if (step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial) && runtimePMSOrderFact(step.Data) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func runtimePMSReadStepHasStatus(result pmsReadPlanResult, stepID string, status pmsReadStepStatus) bool {
-	for _, step := range result.Steps {
-		if step.StepID == stepID && step.Status == status {
 			return true
 		}
 	}
@@ -1911,9 +1915,9 @@ func runtimePMSInventoryFactForPlan(plan pmsReadPlan, step pmsReadStepResult) st
 	}
 	parts := make([]string, 0, min(len(items), 6))
 	expected, _ := runtimePMSStayDates(step.Args["beginTime"], step.Args["endTime"])
-	targetRoomTypeID := ""
+	targetRoomTypeID := strings.TrimSpace(step.Args["roomTypeId"])
 	for _, candidate := range plan.Steps {
-		if candidate.ID == "price.difference" {
+		if targetRoomTypeID == "" && candidate.ID == "price.difference" {
 			targetRoomTypeID = strings.TrimSpace(candidate.Args["roomTypeId"])
 			break
 		}
@@ -1948,10 +1952,18 @@ func runtimePMSInventoryFactForPlan(plan pmsReadPlan, step pmsReadStepResult) st
 		return ""
 	}
 	prefix := "PMS 当前日期区间的房型库存："
+	suffix := "。库存是查询时结果，不代表已经锁房。"
+	if plan.Scenario == pmsReadScenarioRenewal {
+		prefix = "PMS 当前续住日期区间的同房型库存："
+		suffix = "。这是当前续住库存查询结果，不代表已经锁房或完成续住。"
+	}
 	if step.Status == pmsReadStepPartial {
 		prefix = "PMS 仅返回部分日期的房型库存，不能确认整个入住区间："
+		if plan.Scenario == pmsReadScenarioRenewal {
+			prefix = "PMS 仅返回部分续住日期的同房型库存，暂时不能确认完整续住区间："
+		}
 	}
-	return prefix + strings.Join(parts, "；") + "。库存是查询时结果，不代表已经锁房。"
+	return prefix + strings.Join(parts, "；") + suffix
 }
 
 func runtimePMSInventoryAvailability(row map[string]any, expectedDates []string) string {

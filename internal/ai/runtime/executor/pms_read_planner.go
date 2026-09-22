@@ -396,7 +396,7 @@ func appendPMSReadRoomStatusStep(plan *pmsReadPlan, input pmsReadPlanInput, orde
 
 func appendPMSReadRenewCandidateStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string) {
 	step := pmsReadPlanStep{
-		ID: "renew.candidates", Action: "renew_candidates", Purpose: "查询换单续住候选和允许的房间处理方式", Required: true,
+		ID: "renew.candidates", Action: "renew_candidates", Purpose: "查询换单续住候选和允许的房间处理方式", Required: false,
 		Args: map[string]string{}, RequiredArgs: []string{"currentReceptOrderId"},
 	}
 	if input.ReceptOrderID != "" {

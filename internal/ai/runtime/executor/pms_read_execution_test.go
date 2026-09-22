@@ -521,6 +521,40 @@ func TestRuntimePMSInventoryCoverageRequiresEveryStayDate(t *testing.T) {
 		}
 	})
 
+	t.Run("requested room type ignores incomplete unrelated rooms", func(t *testing.T) {
+		got := validateRuntimePMSInventoryCoverage(pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-24", "endTime": "2026-09-25", "roomTypeId": "ROOM-ORANGE"},
+			Data: []any{
+				map[string]any{"roomId": "ROOM-OTHER", "roomTypeName": "其他房型", "bookings": map[string]any{}},
+				map[string]any{"roomId": "ROOM-ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{
+					"2026-09-24": map[string]any{"available": "4"},
+				}},
+			},
+		})
+		if got.Status != pmsReadStepOK {
+			t.Fatalf("unrelated room coverage must not invalidate the requested room type: %#v", got)
+		}
+	})
+
+	t.Run("requested room type still requires every requested date", func(t *testing.T) {
+		got := validateRuntimePMSInventoryCoverage(pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-24", "endTime": "2026-09-26", "roomTypeId": "ROOM-ORANGE"},
+			Data: []any{
+				map[string]any{"roomId": "ROOM-OTHER", "roomTypeName": "其他房型", "bookings": map[string]any{
+					"2026-09-24": map[string]any{"available": "3"}, "2026-09-25": map[string]any{"available": "3"},
+				}},
+				map[string]any{"roomId": "ROOM-ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{
+					"2026-09-24": map[string]any{"available": "4"},
+				}},
+			},
+		})
+		if got.Status != pmsReadStepPartial || !strings.Contains(got.Message, "橙意") || strings.Contains(got.Message, "其他房型") {
+			t.Fatalf("requested room coverage must remain scoped and complete: %#v", got)
+		}
+	})
+
 	t.Run("availability ignores dates outside the requested stay", func(t *testing.T) {
 		row := map[string]any{"roomTypeName": "大床房", "bookings": map[string]any{
 			"2026-09-21": map[string]any{"available": "0"},
@@ -742,6 +776,20 @@ func TestRuntimePMSCustomerFactsStayFocusedOnTheCurrentDecision(t *testing.T) {
 		}
 	})
 
+	t.Run("renewal inventory answers the requested stay and room type", func(t *testing.T) {
+		fact := runtimePMSInventoryFactForPlan(pmsReadPlan{Scenario: pmsReadScenarioRenewal}, pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-24", "endTime": "2026-09-25", "roomTypeId": "ROOM-ORANGE"},
+			Data: []any{
+				map[string]any{"roomId": "ROOM-OTHER", "roomTypeName": "其他房型", "bookings": map[string]any{"2026-09-24": map[string]any{"available": "8"}}},
+				map[string]any{"roomId": "ROOM-ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{"2026-09-24": map[string]any{"available": "4"}}},
+			},
+		})
+		if !strings.Contains(fact, "续住日期区间") || !strings.Contains(fact, "橙意可售4间") || strings.Contains(fact, "其他房型") || !strings.Contains(fact, "不代表已经锁房或完成续住") {
+			t.Fatalf("renewal inventory fact did not answer the read-only customer goal: %q", fact)
+		}
+	})
+
 	t.Run("upgrade member fact only keeps upgrade-related benefits", func(t *testing.T) {
 		fact := runtimePMSMemberFactForPlan(pmsReadPlan{Scenario: pmsReadScenarioRoomUpgrade}, map[string]any{
 			"member": map[string]any{"gradeName": "银卡会员", "statusName": "启用", "gradeAvailable": true},
@@ -850,6 +898,46 @@ func TestExecuteRuntimePMSReadPlanPreservesPartialSuccess(t *testing.T) {
 		if err != nil || aggregated.Status != pmsReadStepPartial || len(aggregated.Confirmed) < 2 {
 			t.Fatalf("one failed subquery must preserve other facts: failed=%s aggregated=%#v err=%v", failedAction, aggregated, err)
 		}
+	}
+}
+
+func TestApplyRuntimePMSRenewalKeepsUsableReserveInventoryWithoutReception(t *testing.T) {
+	plan := buildPMSReadPlan(pmsReadPlanInput{
+		Scenario: pmsReadScenarioRenewal, Phone: "13800138000", ExtensionDays: 1,
+	})
+	result := pmsReadPlanResult{
+		Status: pmsReadStepPartial,
+		Steps: []pmsReadStepResult{
+			{StepID: "order.reserve", Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "roomId": "ROOM-ORANGE", "roomName": "橙意",
+				"checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
+			}},
+			{StepID: "order.recept", Status: pmsReadStepUnavailable, Message: "接待单不存在"},
+			{StepID: "inventory.stay", Status: pmsReadStepOK,
+				Args: map[string]string{"beginTime": "2026-09-24", "endTime": "2026-09-25", "roomTypeId": "ROOM-ORANGE"},
+				Data: []any{
+					map[string]any{"roomId": "ROOM-OTHER", "roomTypeName": "其他房型", "bookings": map[string]any{}},
+					map[string]any{"roomId": "ROOM-ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{"2026-09-24": map[string]any{"available": "4"}}},
+				}},
+			{StepID: "renew.candidates", Status: pmsReadStepAmbiguous, Message: "上游订单返回多个可用定位值，不能擅自选择"},
+		},
+		Unconfirmed: []string{"order.recept", "renew.candidates"},
+	}
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "T1", OriginalText: "行程改了，我想多住一晚，同房型还有房吗？",
+		Text: "行程改了，我想多住一晚，同房型还有房吗？", SubIntent: "renewal",
+	}
+	applyRuntimePMSReadResultToTask(&task, plan, result, 0)
+	if len(task.MissingAspects) != 0 {
+		t.Fatalf("optional reception and candidate failures must not erase a complete reserve inventory answer: %#v", task.MissingAspects)
+	}
+	facts := make([]string, 0, len(task.SupportedFacts))
+	for _, fact := range task.SupportedFacts {
+		facts = append(facts, fact.Statement)
+	}
+	joined := strings.Join(facts, "\n")
+	if !strings.Contains(joined, "续住日期区间") || !strings.Contains(joined, "橙意可售4间") || strings.Contains(joined, "其他房型") {
+		t.Fatalf("usable renewal facts were not preserved and scoped: %q", joined)
 	}
 }
 

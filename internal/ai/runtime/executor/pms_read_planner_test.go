@@ -231,7 +231,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
 		assertPMSReadBinding(t, inventory, "beginTime", "order.recept")
 		candidate := requirePMSReadStep(t, plan, "renew.candidates")
-		if candidate.Args["currentReceptOrderId"] != "REC-1" || candidate.Action != "renew_candidates" {
+		if candidate.Args["currentReceptOrderId"] != "REC-1" || candidate.Action != "renew_candidates" || candidate.Required {
 			t.Fatalf("renewal must remain read-only and grounded: %#v", candidate)
 		}
 	})
@@ -248,7 +248,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		candidate := requirePMSReadStep(t, plan, "renew.candidates")
 		assertPMSReadBinding(t, candidate, "currentReceptOrderId", "order.reserve")
 		assertPMSReadBinding(t, candidate, "currentReceptOrderId", "order.recept")
-		if candidate.Args["reservePhone"] != "13800138000" {
+		if candidate.Args["reservePhone"] != "13800138000" || candidate.Required {
 			t.Fatalf("candidate lookup lost the explicit phone: %#v", candidate)
 		}
 	})
