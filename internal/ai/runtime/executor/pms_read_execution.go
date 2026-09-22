@@ -1138,12 +1138,15 @@ func isRuntimePMSReadOnlyAction(action string) bool {
 func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsReadStepResult) (map[string]string, pmsReadStepStatus, string) {
 	args := clonePMSReadArgs(step.Args)
 	orderSourceIDs := runtimePMSReadOrderBindingSourceIDs(step.Bindings)
-	var selectedOrder *runtimePMSStayCandidate
+	var orderCandidates []runtimePMSStayCandidate
 	if len(orderSourceIDs) > 0 {
-		candidate, status, message := selectRuntimePMSStayCandidate(results, orderSourceIDs, args)
+		candidates, status, message := runtimePMSStayCandidatesForArgs(results, orderSourceIDs, args)
 		switch status {
 		case pmsReadStepOK:
-			selectedOrder = &candidate
+			if len(candidates) > 1 && !runtimePMSStayCandidatesShareReadScope(candidates) {
+				return args, pmsReadStepAmbiguous, runtimePMSAmbiguousStayMessage(candidates)
+			}
+			orderCandidates = candidates
 		case pmsReadStepEmpty:
 			// Preserve the existing missing-argument behavior for an empty order response.
 		default:
@@ -1152,8 +1155,11 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 	}
 	for _, binding := range step.Bindings {
 		values := make([]string, 0, 2)
-		if selectedOrder != nil && runtimePMSReadBindingUsesOrderSource(binding) {
-			values = runtimePMSReadBindingSourceValues(selectedOrder.data, runtimePMSReadBindingFields(binding), binding.Argument)
+		if len(orderCandidates) > 0 && runtimePMSReadBindingUsesOrderSource(binding) {
+			fields := runtimePMSReadBindingFields(binding)
+			for _, candidate := range orderCandidates {
+				values = append(values, runtimePMSReadBindingSourceValues(candidate.data, fields, binding.Argument)...)
+			}
 		} else {
 			for _, source := range binding.Sources {
 				result, ok := results[source.StepID]
@@ -1224,6 +1230,19 @@ type runtimePMSStayCandidate struct {
 }
 
 func selectRuntimePMSStayCandidate(results map[string]pmsReadStepResult, sourceIDs []string, args map[string]string) (runtimePMSStayCandidate, pmsReadStepStatus, string) {
+	candidates, status, message := runtimePMSStayCandidatesForArgs(results, sourceIDs, args)
+	if status != pmsReadStepOK {
+		return runtimePMSStayCandidate{}, status, message
+	}
+	switch len(candidates) {
+	case 1:
+		return candidates[0], pmsReadStepOK, ""
+	default:
+		return runtimePMSStayCandidate{}, pmsReadStepAmbiguous, runtimePMSAmbiguousStayMessage(candidates)
+	}
+}
+
+func runtimePMSStayCandidatesForArgs(results map[string]pmsReadStepResult, sourceIDs []string, args map[string]string) ([]runtimePMSStayCandidate, pmsReadStepStatus, string) {
 	for _, stepID := range uniquePMSReadStrings(sourceIDs) {
 		result, ok := results[stepID]
 		if !ok || result.Status != pmsReadStepAmbiguous {
@@ -1233,7 +1252,7 @@ func selectRuntimePMSStayCandidate(results map[string]pmsReadStepResult, sourceI
 		if message == "" {
 			message = "查询到多个匹配住宿，请确认入住日期或订单号"
 		}
-		return runtimePMSStayCandidate{}, pmsReadStepAmbiguous, message
+		return nil, pmsReadStepAmbiguous, message
 	}
 	candidates := runtimePMSStayCandidates(results, sourceIDs)
 	reserveOrderID := strings.TrimSpace(args["reserveOrderId"])
@@ -1253,12 +1272,46 @@ func selectRuntimePMSStayCandidate(results map[string]pmsReadStepResult, sourceI
 	}
 	switch len(candidates) {
 	case 0:
-		return runtimePMSStayCandidate{}, pmsReadStepEmpty, "未查询到可唯一定位的当前住宿"
-	case 1:
-		return candidates[0], pmsReadStepOK, ""
+		return nil, pmsReadStepEmpty, "未查询到可唯一定位的当前住宿"
 	default:
-		return runtimePMSStayCandidate{}, pmsReadStepAmbiguous, runtimePMSAmbiguousStayMessage(candidates)
+		return candidates, pmsReadStepOK, ""
 	}
+}
+
+func runtimePMSStayCandidatesShareReadScope(candidates []runtimePMSStayCandidate) bool {
+	if len(candidates) < 2 {
+		return true
+	}
+	first := candidates[0]
+	if first.reserveOrderID == "" || first.checkIn == "" || first.checkOut == "" {
+		return false
+	}
+	firstRoomTypes := normalizeRuntimePMSBindingValues(
+		"roomTypeId",
+		runtimePMSReadBindingSourceValues(first.data, pmsReadRoomTypeFields, "roomTypeId"),
+	)
+	if len(firstRoomTypes) == 0 && first.roomName != "" {
+		firstRoomTypes = []string{first.roomName}
+	}
+	if len(firstRoomTypes) != 1 {
+		return false
+	}
+	for _, candidate := range candidates[1:] {
+		if candidate.reserveOrderID != first.reserveOrderID || candidate.checkIn != first.checkIn || candidate.checkOut != first.checkOut {
+			return false
+		}
+		roomTypes := normalizeRuntimePMSBindingValues(
+			"roomTypeId",
+			runtimePMSReadBindingSourceValues(candidate.data, pmsReadRoomTypeFields, "roomTypeId"),
+		)
+		if len(roomTypes) == 0 && candidate.roomName != "" {
+			roomTypes = []string{candidate.roomName}
+		}
+		if len(roomTypes) != 1 || roomTypes[0] != firstRoomTypes[0] {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimePMSStayCandidates(results map[string]pmsReadStepResult, sourceIDs []string) []runtimePMSStayCandidate {

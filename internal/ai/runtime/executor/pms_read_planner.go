@@ -97,7 +97,7 @@ var (
 	pmsReadStayStartFields = []string{"checkInTime", "receptOrderList[].checkInTime"}
 	pmsReadStayEndFields   = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 	pmsReadRoomFields      = []string{"homeName", "receptOrderList[].homeName"}
-	pmsReadRoomTypeFields  = []string{"productId", "roomTypeId", "receptOrderList[].productId", "receptOrderList[].roomTypeId"}
+	pmsReadRoomTypeFields  = []string{"productId", "roomTypeId", "roomId", "reserveProductList[].roomId", "receptOrderList[].productId", "receptOrderList[].roomTypeId", "receptOrderList[].roomId"}
 	pmsReadCheckoutFields  = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 )
 

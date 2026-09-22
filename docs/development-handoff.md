@@ -29,6 +29,16 @@ SQLite/MySQL 表结构均不变。PMS 保持 `enabled=true`、`allowWrite=false`
 
 ### 验证、并行分支与回滚
 
+首轮 test-2 隔离矩阵共 22 轮，16 轮通过；报告为
+`/opt/agentdesk/shared/live-tests/jev-runtime-smoke-pms-matrix-20260922-174359-fea74748.json`，
+会话 ID 为 `2192`。失败已定位为三类确定原因：同一预订单两间同房型被误判为两次住宿；
+HPMS 实际房型字段为 `roomId`，旧绑定仅读取 `productId/roomTypeId`；固定维修答复在 Generate
+协议失败时未被锁定。外部代办两轮实际回复正确，失败来自测试脚本未把“没法”计为能力边界。
+
+第二阶段修复只扩展房型字段、同预订单多房的订单级只读合并，以及非空服务端 `AnswerText`
+保留。多房只有在预订单 ID、入住离店区间和真实房型全部一致时才能共享只读字段；接待单级
+查询仍要求唯一接待单 ID。该规则不开放写操作，也不会猜选房间。
+
 提交前验证：
 
 ```bash

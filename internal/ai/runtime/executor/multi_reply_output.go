@@ -1034,7 +1034,7 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 		usedTaskIDs[taskID] = struct{}{}
 		text := firstNonEmptyReplyTaskText(task.ResolvedText, task.Text, task.SubIntent, task.Intent)
 		evidenceLocked := task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0
-		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) == declinedKnowledgeHandoffReply {
+		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
 			evidenceLocked = true
 		}
 		groups = append(groups, textReplyTaskGroup{

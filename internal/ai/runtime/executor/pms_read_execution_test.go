@@ -141,6 +141,44 @@ func TestRuntimePMSRenewalRelativeDatesUseCurrentCheckout(t *testing.T) {
 	}
 }
 
+func TestRuntimePMSMultiRoomReservationSharesReadFieldsWithoutGuessingReception(t *testing.T) {
+	results := map[string]pmsReadStepResult{
+		"order.reserve": {Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
+			"roomId": "ROOM-1", "roomName": "橙意",
+			"receptOrderList": []any{
+				map[string]any{"receptOrderId": "REC-1", "reserveOrderId": "RES-1", "roomId": "ROOM-1", "checkOutTime": "2026-09-24 13:00:00"},
+				map[string]any{"receptOrderId": "REC-2", "reserveOrderId": "RES-1", "roomId": "ROOM-1", "checkOutTime": "2026-09-24 13:00:00"},
+			},
+		}},
+	}
+	inventory := pmsReadPlanStep{
+		RequiredArgs: []string{"beginTime", "endTime", "roomTypeId"},
+		Bindings: []pmsReadPlanBinding{
+			pmsReadBinding("beginTime", []string{"order.reserve"}, pmsReadStayEndFields),
+			func() pmsReadPlanBinding {
+				binding := pmsReadBinding("endTime", []string{"order.reserve"}, pmsReadStayEndFields)
+				binding.DateOffsetDays = 1
+				return binding
+			}(),
+			pmsReadBinding("roomTypeId", []string{"order.reserve"}, pmsReadRoomTypeFields),
+		},
+	}
+	args, status, message := resolveRuntimePMSReadStepArgs(inventory, results)
+	if status != "" || message != "" || args["beginTime"] != "2026-09-24" || args["endTime"] != "2026-09-25" || args["roomTypeId"] != "ROOM-1" {
+		t.Fatalf("shared multi-room fields must remain usable for read-only inventory: args=%#v status=%q message=%q", args, status, message)
+	}
+
+	renewCandidate := pmsReadPlanStep{
+		RequiredArgs: []string{"currentReceptOrderId"},
+		Bindings:     []pmsReadPlanBinding{pmsReadBinding("currentReceptOrderId", []string{"order.reserve"}, pmsReadReceptIDFields)},
+	}
+	_, status, message = resolveRuntimePMSReadStepArgs(renewCandidate, results)
+	if status != pmsReadStepAmbiguous || !strings.Contains(message, "多个可用定位值") {
+		t.Fatalf("a concrete reception must still be selected before a reception-specific query: status=%q message=%q", status, message)
+	}
+}
+
 func TestRuntimePMSOrderLocatorsPreserveMultipleKnownIDs(t *testing.T) {
 	reserveID, receptID, customerNo := runtimePMSOrderLocators("预订单ID:RES-1 接待单ID:REC-2 会员编号:C-3")
 	if reserveID != "RES-1" || receptID != "REC-2" || customerNo != "C-3" {

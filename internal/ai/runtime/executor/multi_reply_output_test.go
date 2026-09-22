@@ -89,12 +89,17 @@ func TestJudgeAnswerTextReplacesFactDumpWithoutLosingCriticalValues(t *testing.T
 }
 
 func TestDeclinedKnowledgeHandoffAnswerIsLockedWithoutKnowledgeFacts(t *testing.T) {
-	answer := declinedKnowledgeHandoffReply
-	groups := buildTextReplyTaskGroups(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
-		TaskID: "T1", Output: "text_reply", OutputKind: "text", ReplyRequired: true, AnswerText: &answer,
-	}}})
-	if len(groups) != 1 || !groups[0].EvidenceLocked || groups[0].AnswerText == nil || *groups[0].AnswerText != declinedKnowledgeHandoffReply {
-		t.Fatalf("declined handoff answer was not locked: %#v", groups)
+	for _, answer := range []string{
+		declinedKnowledgeHandoffReply,
+		"这个需要门店同事处理，按您的要求先不转接。需要的话，我可以帮您登记维修工单。",
+	} {
+		answer := answer
+		groups := buildTextReplyTaskGroups(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "T1", Output: "text_reply", OutputKind: "text", ReplyRequired: true, AnswerText: &answer,
+		}}})
+		if len(groups) != 1 || !groups[0].EvidenceLocked || groups[0].AnswerText == nil || *groups[0].AnswerText != answer {
+			t.Fatalf("fixed handoff answer was not locked: %#v", groups)
+		}
 	}
 }
 
