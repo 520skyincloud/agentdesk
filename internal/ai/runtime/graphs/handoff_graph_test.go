@@ -114,6 +114,35 @@ func TestHandoffGraphDoesNotDispatchWhenAutoHandoffDisabled(t *testing.T) {
 	}
 }
 
+func TestHandoffGraphExplicitRequestBypassesAutoHandoffDisabled(t *testing.T) {
+	previousEnabled := isAutoHandoffEnabledForConversation
+	previousDispatch := dispatchHandoffByAI
+	t.Cleanup(func() {
+		isAutoHandoffEnabledForConversation = previousEnabled
+		dispatchHandoffByAI = previousDispatch
+	})
+
+	isAutoHandoffEnabledForConversation = func(int64) bool { return false }
+	dispatchCalled := false
+	dispatchHandoffByAI = func(_ int64, _ models.AIAgent, _ string, _ string) (*services.HandoffDispatchResult, error) {
+		dispatchCalled = true
+		return &services.HandoffDispatchResult{Status: services.HandoffDispatchStatusDispatched}, nil
+	}
+
+	reply, err := NewHandoffGraph(
+		models.Conversation{ID: 101},
+		models.AIAgent{ID: 202},
+		models.Message{ID: 303, Content: "请帮我转人工客服"},
+	).Run(context.Background(), `{"reason":"用户明确要求人工"}`)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	result, ok := tooling.ParseToolResult(reply)
+	if !ok || !dispatchCalled || !result.Handled || !result.Terminal || !result.ReplySent || result.Action != string(services.HandoffDispatchStatusDispatched) {
+		t.Fatalf("explicit customer handoff must bypass the automatic-route setting: result=%+v dispatch=%v", result, dispatchCalled)
+	}
+}
+
 func TestHandoffGraphRejectsNonExplicitCurrentMessage(t *testing.T) {
 	previousEnabled := isAutoHandoffEnabledForConversation
 	previousDispatch := dispatchHandoffByAI

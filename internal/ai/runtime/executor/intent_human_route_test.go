@@ -84,17 +84,21 @@ func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeDirectDispatch(t *testi
 
 func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *testing.T) {
 	tests := []struct {
-		name         string
-		subIntent    string
-		message      string
-		inquiry      bool
-		expectRoute  bool
-		expectAction string
+		name               string
+		subIntent          string
+		message            string
+		inquiry            bool
+		knowledgeDirective bool
+		autoDisabled       bool
+		expectRoute        bool
+		expectAction       string
 	}{
-		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工", expectRoute: true, expectAction: "dispatch_human_route"},
-		{name: "answer rejected with explicit handoff", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理", expectRoute: true, expectAction: "dispatch_human_route"},
-		{name: "emergency injury", subIntent: "emergency_safety", message: "我摔倒了，腿在流血", expectRoute: true, expectAction: "dispatch_emergency_handoff"},
-		{name: "emergency fainting", subIntent: "emergency_safety", message: "房间有人突然晕倒了，需要马上处理", expectRoute: true, expectAction: "dispatch_emergency_handoff"},
+		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工", autoDisabled: true, expectRoute: true, expectAction: "dispatch_human_route"},
+		{name: "answer rejected with explicit handoff", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理", autoDisabled: true, expectRoute: true, expectAction: "dispatch_human_route"},
+		{name: "emergency injury", subIntent: "emergency_safety", message: "我摔倒了，腿在流血", autoDisabled: true, expectRoute: true, expectAction: "dispatch_emergency_handoff"},
+		{name: "emergency fainting", subIntent: "emergency_safety", message: "房间有人突然晕倒了，需要马上处理", autoDisabled: true, expectRoute: true, expectAction: "dispatch_emergency_handoff"},
+		{name: "knowledge handoff laundry", message: "酒店有洗衣机吗？", knowledgeDirective: true, autoDisabled: true, expectRoute: true, expectAction: "dispatch_human_route"},
+		{name: "knowledge handoff luggage", message: "可以寄存行李吗？", knowledgeDirective: true, autoDisabled: true, expectRoute: true, expectAction: "dispatch_human_route"},
 		{name: "knowledge inquiry does not handoff", message: "外卖机器人能送到房间门口吗？", inquiry: true},
 	}
 	for _, tt := range tests {
@@ -144,13 +148,25 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 			if err := db.Create(&conversation).Error; err != nil {
 				t.Fatalf("create conversation: %v", err)
 			}
+			const wxWorkInstanceID int64 = 9406
 			if err := db.Create(&models.ConversationRouteState{
-				ConversationID: conversation.ID,
-				RouteStatus:    enums.ConversationRouteStatusAIServing,
-				RouteTarget:    "ai",
-				SessionNo:      1,
+				ConversationID:   conversation.ID,
+				WxWorkInstanceID: wxWorkInstanceID,
+				RouteStatus:      enums.ConversationRouteStatusAIServing,
+				RouteTarget:      "ai",
+				SessionNo:        1,
 			}).Error; err != nil {
 				t.Fatalf("create route state: %v", err)
+			}
+			if tt.autoDisabled {
+				if err := db.Create(&models.WxWorkCustomerHandoffSetting{
+					CustomerID:         conversation.CustomerID,
+					WxWorkInstanceID:   wxWorkInstanceID,
+					AutoHandoffEnabled: false,
+					AuditFields:        models.AuditFields{CreatedAt: now, UpdatedAt: now},
+				}).Error; err != nil {
+					t.Fatalf("create disabled auto-handoff setting: %v", err)
+				}
 			}
 			message := models.Message{
 				ID:             9405,
@@ -182,13 +198,16 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 			}
 			var handled bool
 			var err error
-			if tt.inquiry {
+			if tt.inquiry || tt.knowledgeDirective {
 				collector.Data.Pipeline.EvidenceJudge.DeferredTaskIDs = []string{"task-1"}
 				collector.Data.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
 					TaskID: "task-1", Intent: "hotel_info", Objective: "policy", ResolvedText: tt.message,
 				}}
 				summary.handoffDirective = true
 				summary.handoffDirectiveReason = "完整待处理问题：" + tt.message
+				if tt.knowledgeDirective {
+					summary.handoffDirectiveSource = "knowledge_top_answer"
+				}
 				handled, err = executeRuntimeHandoffDirective(req, summary, collector)
 			} else {
 				handled, err = executeIntentHumanRoute(t.Context(), req, summary, collector)
@@ -212,8 +231,8 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 				t.Fatalf("expected dispatched status, got %q", summary.handoffDispatchStatus)
 			}
 			state := services.ConversationRouteService.GetByConversationID(conversation.ID)
-			if state == nil || state.RouteStatus != enums.ConversationRouteStatusStoreWecomManual || state.PendingAction != "" {
-				t.Fatalf("expected direct manual route without a pending action, got %+v", state)
+			if state == nil || state.RouteStatus == enums.ConversationRouteStatusAIServing || state.RouteTarget == "ai" || state.PendingAction != "" {
+				t.Fatalf("expected a direct human route without a pending action, got %+v", state)
 			}
 			var replies []models.Message
 			if err := db.Where("conversation_id = ? AND sender_type = ?", conversation.ID, enums.IMSenderTypeAI).Order("seq_no ASC, id ASC").Find(&replies).Error; err != nil {

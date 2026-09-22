@@ -135,7 +135,9 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+	explicitCurrent := runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
+	if !explicitCurrent && !isEmergencySafetyHandoff(intent) &&
+		!services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,
@@ -149,7 +151,7 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) && !isEmergencySafetyHandoff(intent) {
+	if !explicitCurrent && !isEmergencySafetyHandoff(intent) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,
@@ -286,7 +288,10 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 		summary.handoffDirective = false
 		return false, nil
 	}
-	if !services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
+	authorizedDirective := strings.TrimSpace(summary.handoffDirectiveSource) == "knowledge_top_answer" ||
+		runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
+	if !authorizedDirective &&
+		!services.WxWorkCustomerHandoffSettingService.IsAutoHandoffEnabledForConversation(req.Conversation.ID) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,

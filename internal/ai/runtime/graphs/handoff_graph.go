@@ -43,21 +43,21 @@ func NewHandoffGraph(conversation models.Conversation, aiAgent models.AIAgent, c
 }
 
 func (g *HandoffGraph) Run(ctx context.Context, argumentsInJSON string) (string, error) {
-	if !isAutoHandoffEnabledForConversation(g.conversation.ID) {
-		return tooling.MarshalToolResult(tooling.ToolResult{
-			Handled:     false,
-			Terminal:    false,
-			Action:      "auto_handoff_disabled",
-			ReplySent:   false,
-			ShouldRetry: false,
-		}), nil
-	}
-	if (g.userMessage.ID > 0 || strings.TrimSpace(g.userMessage.Content) != "") &&
-		!utils.IsExplicitHumanHandoffRequest(g.userMessage.Content) {
+	hasCurrentMessage := g.userMessage.ID > 0 || strings.TrimSpace(g.userMessage.Content) != ""
+	if hasCurrentMessage && !utils.IsExplicitHumanHandoffRequest(g.userMessage.Content) {
 		return tooling.MarshalToolResult(tooling.ToolResult{
 			Handled:     false,
 			Terminal:    false,
 			Action:      "handoff_requires_explicit_customer_request",
+			ReplySent:   false,
+			ShouldRetry: false,
+		}), nil
+	}
+	if !hasCurrentMessage && !isAutoHandoffEnabledForConversation(g.conversation.ID) {
+		return tooling.MarshalToolResult(tooling.ToolResult{
+			Handled:     false,
+			Terminal:    false,
+			Action:      "auto_handoff_disabled",
 			ReplySent:   false,
 			ShouldRetry: false,
 		}), nil
