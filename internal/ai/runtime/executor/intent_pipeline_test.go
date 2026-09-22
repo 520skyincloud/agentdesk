@@ -402,6 +402,24 @@ func TestRuntimePMSRequiredSlotPreflightReusesConfirmedSessionPhone(t *testing.T
 			},
 			subIntent: "member_benefits", current: "那我的会员权益呢", wantPhone: "13900000000",
 		},
+		{
+			name: "phone answer is reused for checkout followup",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "帮我查订单"},
+				{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: runtimePMSOrderPhoneClarification},
+				{ID: 3, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "13800138000"},
+				{ID: 4, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "已经查到当前订单。"},
+			},
+			subIntent: "check_out_status", current: "那我最晚几点退房？", wantPhone: "13800138000",
+		},
+		{
+			name: "above order reference reuses prior lookup phone",
+			history: []models.Message{
+				{ID: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "手机号13900000000，帮我查这笔订单"},
+				{ID: 2, SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "已经查到当前订单。"},
+			},
+			subIntent: "room_upgrade", current: "就是上面那个，能升大床房吗？", wantPhone: "13900000000",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
@@ -3716,13 +3734,13 @@ func TestRuntimePipelineCurrentFacilityQuestionBeatsOldRiskContext(t *testing.T)
 	}
 }
 
-func TestRuntimePipelineEmergencySafetyClassificationDoesNotAuthorizeHandoff(t *testing.T) {
+func TestRuntimePipelineEmergencySafetyClassificationAuthorizesHandoff(t *testing.T) {
 	setupRuntimeIntentConfigTestDB(t)
 	seedRuntimeIntentConfig(t, models.ReplyIntentConfig{Code: "hotel_info", Name: "酒店信息", Priority: 100, MatchMode: "keyword", Keywords: "厕所,地滑", NeedsKnowledge: true, Status: enums.StatusOk})
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我摔倒了，厕所太滑了，我在109"}}
 	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: callbacks.IntentTraceData{PrimaryIntent: "human_complaint_risk", SubIntent: "emergency_safety", IntentConfidence: 0.96, ShouldReply: true, NeedsHumanRoute: true, Reason: "模型识别为突发安全风险"}})
-	if plan.Intent.SubIntent != "emergency_safety" || plan.Intent.NeedsHumanRoute || !plan.Intent.ShouldReply {
-		t.Fatalf("expected safety advice without unauthorized handoff, got %#v", plan.Intent)
+	if plan.Intent.SubIntent != "emergency_safety" || !plan.Intent.NeedsHumanRoute || !plan.Intent.ShouldReply {
+		t.Fatalf("expected emergency safety to retain the authorized human route, got %#v", plan.Intent)
 	}
 }
 

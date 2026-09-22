@@ -125,6 +125,105 @@ func TestCompleteUngroundedKnowledgeFallbackKeepsGroundedSiblingFacts(t *testing
 	}
 }
 
+func TestCompleteUngroundedKnowledgeFallbackOffersMaintenanceTicketWithoutAutomaticAction(t *testing.T) {
+	tests := []struct {
+		name      string
+		subIntent string
+		customer  string
+		wantReply string
+	}{
+		{
+			name:      "maintenance respects rejected handoff",
+			subIntent: "maintenance",
+			customer:  "空调不制冷，我住1304，先告诉我怎么处理，不要转人工",
+			wantReply: ungroundedMaintenanceOfferNoHandoffReply,
+		},
+		{
+			name:      "air conditioner malfunction offers a ticket",
+			subIntent: "air_conditioner",
+			customer:  "房间空调坏了，能帮我处理吗",
+			wantReply: ungroundedMaintenanceOfferReply,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Model.Name = "test-model"
+			collector.Data.Pipeline.Normalize.CurrentUserText = tt.customer
+			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "task-1", Intent: "service_request", SubIntent: tt.subIntent,
+				OriginalText: tt.customer, ResolvedText: tt.customer,
+				NeedsKnowledge: true, Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true,
+			}}}
+			summary := &RunResult{Status: "started"}
+
+			got, err := completeUngroundedKnowledgeFallback(summary, collector, []string{"task-1"})
+
+			if err != nil || got != summary || summary.Status != "completed" || summary.ReplyText != tt.wantReply {
+				t.Fatalf("unexpected maintenance fallback summary=%#v err=%v", summary, err)
+			}
+			if summary.handoffDirective || summary.handoffDispatchStatus != "" {
+				t.Fatalf("maintenance fallback must not dispatch a human route: %#v", summary)
+			}
+			if strings.Contains(summary.ReplyText, "已登记") || strings.Contains(summary.ReplyText, "已创建") || strings.Contains(summary.ReplyText, "已转接") {
+				t.Fatalf("maintenance fallback must only offer the existing ticket flow: %q", summary.ReplyText)
+			}
+			if len(collector.Data.ActionLedger.RequestedActions) != 0 || len(collector.Data.ActionLedger.CommittedActions) != 0 {
+				t.Fatalf("maintenance fallback must not create or commit an action: %#v", collector.Data.ActionLedger)
+			}
+		})
+	}
+}
+
+func TestIsolateUngroundedMaintenanceTaskKeepsOfferInsideMixedReply(t *testing.T) {
+	tests := []struct {
+		name      string
+		subIntent string
+		customer  string
+		wantReply string
+	}{
+		{name: "air conditioner repair", subIntent: "air_conditioner_repair", customer: "空调不出风了怎么办", wantReply: ungroundedMaintenanceOfferReply},
+		{name: "generic maintenance without handoff", subIntent: "maintenance", customer: "马桶堵了，先不要转人工", wantReply: ungroundedMaintenanceOfferNoHandoffReply},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+				{
+					TaskID: "repair", Intent: "service_request", SubIntent: tt.subIntent,
+					OriginalText: tt.customer, ResolvedText: tt.customer,
+					NeedsKnowledge: true, Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true,
+				},
+				{TaskID: "weather", Intent: "interaction", SubIntent: "weather_query", Output: "text_reply", OutputKind: "text", ReplyRequired: true},
+			}}
+
+			got, isolated := isolateUngroundedKnowledgeReplyTasks(plan)
+
+			if len(isolated) != 1 || isolated[0] != "repair" {
+				t.Fatalf("expected only the maintenance task to be isolated, got %#v", isolated)
+			}
+			facts := got.TaskPlans[0].SupportedFacts
+			if got.TaskPlans[0].SelectedLayer != "runtime_safe_fallback" || len(facts) != 1 || facts[0].Statement != tt.wantReply || facts[0].Aspect != "service_resolution" {
+				t.Fatalf("maintenance task did not receive the fixed service offer: %#v", got.TaskPlans[0])
+			}
+			if strings.Contains(facts[0].Statement, "已登记") || strings.Contains(facts[0].Statement, "已转接") {
+				t.Fatalf("isolated maintenance task claimed an action: %q", facts[0].Statement)
+			}
+		})
+	}
+}
+
+func TestUngroundedMaintenanceFallbackDoesNotReplaceExplicitTicketToolTask(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "ticket", Intent: "service_request", SubIntent: "create_ticket",
+		OriginalText: "空调坏了，请创建维修工单", NeedsTool: true, Output: "text_reply", OutputKind: "text", ReplyRequired: true,
+	}
+	if reply, ok := ungroundedMaintenanceServiceReply(task, task.OriginalText); ok || reply != "" {
+		t.Fatalf("explicit create_ticket must remain owned by the existing tool flow, reply=%q ok=%v", reply, ok)
+	}
+}
+
 func TestIsolateUngroundedKnowledgeReplyTasksKeepsIndependentToolTask(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply"},

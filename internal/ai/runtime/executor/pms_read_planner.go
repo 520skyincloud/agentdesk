@@ -33,6 +33,7 @@ type pmsReadPlanInput struct {
 	TargetRoomTypeText string
 	StartDate          string
 	EndDate            string
+	TargetCheckoutTime string
 }
 
 type pmsReadPlan struct {
@@ -94,6 +95,7 @@ var (
 	pmsReadStayStartFields = []string{"checkInTime", "receptOrderList[].checkInTime"}
 	pmsReadStayEndFields   = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 	pmsReadRoomFields      = []string{"homeName", "receptOrderList[].homeName"}
+	pmsReadCheckoutFields  = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 )
 
 func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
@@ -112,7 +114,7 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		if input.RoomKeyword == "" {
 			orderSteps = appendPMSReadOrderSteps(&plan, input, true)
 		}
-		appendPMSReadRoomStatusStep(&plan, input, orderSteps)
+		appendPMSReadRoomStatusStep(&plan, input, orderSteps, true)
 	case pmsReadScenarioDateInventory:
 		orderSteps := []string(nil)
 		if input.StartDate == "" || input.EndDate == "" {
@@ -122,12 +124,12 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 	case pmsReadScenarioRoomUpgrade:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, false)
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
-		appendPMSReadMemberStep(&plan, input)
+		appendPMSReadMemberStep(&plan, input, false)
 		appendPMSReadPriceStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioRoomChange:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
-		appendPMSReadRoomStatusStep(&plan, input, orderSteps)
+		appendPMSReadRoomStatusStep(&plan, input, orderSteps, false)
 		appendPMSReadPriceStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioPrice:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, false)
@@ -139,13 +141,16 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		appendPMSReadRenewCandidateStep(&plan, input, orderSteps)
 	case pmsReadScenarioLateCheckout:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
-		appendPMSReadRoomStatusStep(&plan, input, orderSteps)
-		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayEndFields, nil, true)
-		appendPMSReadMemberStep(&plan, input)
+		appendPMSReadRoomStatusStep(&plan, input, orderSteps, false)
+		if input.StartDate != "" && input.EndDate != "" {
+			appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayEndFields, nil, true)
+		}
+		appendPMSReadMemberStep(&plan, input, false)
+		appendPMSReadLateCheckoutAssessmentStep(&plan, input, orderSteps)
 	case pmsReadScenarioMemberInfo:
 		appendPMSReadMemberInfoStep(&plan, input)
 	case pmsReadScenarioMemberBenefit:
-		appendPMSReadMemberStep(&plan, input)
+		appendPMSReadMemberStep(&plan, input, true)
 	default:
 		plan.Missing = append(plan.Missing, "supportedScenario")
 	}
@@ -164,6 +169,7 @@ func normalizePMSReadPlanInput(input pmsReadPlanInput) pmsReadPlanInput {
 	input.TargetRoomTypeText = strings.TrimSpace(input.TargetRoomTypeText)
 	input.StartDate = normalizePMSReadDate(input.StartDate)
 	input.EndDate = normalizePMSReadDate(input.EndDate)
+	input.TargetCheckoutTime = normalizePMSReadClock(input.TargetCheckoutTime)
 	return input
 }
 
@@ -225,13 +231,13 @@ func appendPMSReadOrderSteps(plan *pmsReadPlan, input pmsReadPlanInput, receptOn
 	}
 	if !receptOnly {
 		plan.Steps = append(plan.Steps, pmsReadPlanStep{
-			ID: "order.reserve", Action: "reserve_order_by_phone", Purpose: "查询当前有效预订单", Required: true,
+			ID: "order.reserve", Action: "reserve_order_by_phone", Purpose: "查询当前有效预订单", Required: false,
 			Args: clonePMSReadArgs(locator), RequiredAnyArgs: []string{"phone", "customerNo"},
 		})
 		stepIDs = append(stepIDs, "order.reserve")
 	}
 	plan.Steps = append(plan.Steps, pmsReadPlanStep{
-		ID: "order.recept", Action: "recept_order_by_phone", Purpose: "查询当前有效接待单", Required: true,
+		ID: "order.recept", Action: "recept_order_by_phone", Purpose: "查询当前有效接待单", Required: receptOnly,
 		Args: clonePMSReadArgs(locator), RequiredAnyArgs: []string{"phone", "customerNo"},
 	})
 	return append(stepIDs, "order.recept")
@@ -268,13 +274,13 @@ func appendPMSReadInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput, order
 	}
 }
 
-func appendPMSReadMemberStep(plan *pmsReadPlan, input pmsReadPlanInput) {
+func appendPMSReadMemberStep(plan *pmsReadPlan, input pmsReadPlanInput, required bool) {
 	if input.Phone == "" {
 		plan.Missing = append(plan.Missing, "memberPhone")
 		return
 	}
 	plan.Steps = append(plan.Steps, pmsReadPlanStep{
-		ID: "member.benefits", Action: "member_benefits_by_phone", Purpose: "查询当前会员等级及明确权益", Required: false,
+		ID: "member.benefits", Action: "member_benefits_by_phone", Purpose: "查询当前会员等级及明确权益", Required: required,
 		Args: map[string]string{"phone": input.Phone}, RequiredArgs: []string{"phone"},
 	})
 }
@@ -292,7 +298,9 @@ func appendPMSReadMemberInfoStep(plan *pmsReadPlan, input pmsReadPlanInput) {
 
 func appendPMSReadPriceStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string, required bool) {
 	if input.TargetRoomTypeID == "" {
-		plan.Missing = append(plan.Missing, "targetRoomTypeId")
+		if required {
+			plan.Missing = append(plan.Missing, "targetRoomTypeId")
+		}
 		return
 	}
 	if len(orderSteps) == 0 {
@@ -325,9 +333,9 @@ func appendPMSReadPriceStep(plan *pmsReadPlan, input pmsReadPlanInput, orderStep
 	plan.Steps = append(plan.Steps, step)
 }
 
-func appendPMSReadRoomStatusStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string) {
+func appendPMSReadRoomStatusStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string, required bool) {
 	step := pmsReadPlanStep{
-		ID: "room.status", Action: "room_status", Purpose: "查询当前房间的实时净脏和控制状态", Required: false,
+		ID: "room.status", Action: "room_status", Purpose: "查询当前房间的实时净脏和控制状态", Required: required,
 		Args: map[string]string{}, RequiredArgs: []string{"keyword"},
 	}
 	if input.RoomKeyword != "" {
@@ -363,6 +371,25 @@ func appendPMSReadRenewCandidateStep(plan *pmsReadPlan, input pmsReadPlanInput, 
 	}
 	if input.Phone != "" {
 		step.Args["reservePhone"] = input.Phone
+	}
+	plan.Steps = append(plan.Steps, step)
+}
+
+func appendPMSReadLateCheckoutAssessmentStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string) {
+	if input.TargetCheckoutTime == "" {
+		plan.Missing = append(plan.Missing, "targetCheckoutTime")
+		return
+	}
+	if len(orderSteps) == 0 {
+		return
+	}
+	step := pmsReadPlanStep{
+		ID: "late_checkout.assessment", Action: "late_checkout_assessment", Purpose: "对照当前订单退房时间与客户目标时间进行只读评估",
+		Required: true, Args: map[string]string{"targetCheckoutTime": input.TargetCheckoutTime}, RequiredArgs: []string{"targetCheckoutTime"},
+		Bindings: []pmsReadPlanBinding{pmsReadBinding("currentCheckoutTime", orderSteps, pmsReadCheckoutFields)},
+	}
+	if input.EndDate != "" {
+		step.Args["targetCheckoutDate"] = input.EndDate
 	}
 	plan.Steps = append(plan.Steps, step)
 }
@@ -438,6 +465,15 @@ func normalizePMSReadDate(value string) string {
 		return ""
 	}
 	return value
+}
+
+func normalizePMSReadClock(value string) string {
+	value = strings.TrimSpace(value)
+	parsed, err := time.Parse("15:04", value)
+	if err != nil {
+		return ""
+	}
+	return parsed.Format("15:04")
 }
 
 func validPMSReadDateRange(startDate, endDate string) bool {

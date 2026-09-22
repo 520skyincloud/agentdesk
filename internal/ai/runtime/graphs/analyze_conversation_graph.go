@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"agent-desk/internal/ai/replyengine"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 )
 
@@ -68,8 +69,9 @@ func (g *AnalyzeConversationGraph) parseInput(argumentsInJSON string) (AnalyzeCo
 
 func buildAnalyzeConversationResult(conversation models.Conversation, messages []models.Message, input AnalyzeConversationInput) AnalyzeConversationResult {
 	joined := strings.ToLower(buildConversationCorpus(conversation, messages, input))
-	signals := collectRiskSignals(joined, input)
-	intent := detectUserIntent(joined, input)
+	currentCustomerText := latestAnalyzeConversationCustomerText(messages)
+	signals := collectRiskSignals(joined, currentCustomerText, input)
+	intent := detectUserIntent(joined, currentCustomerText, input)
 	recommendedAction := recommendNextAction(intent, signals, input)
 	result := AnalyzeConversationResult{
 		Summary:               buildConversationSummary(conversation, messages, input),
@@ -109,7 +111,7 @@ func buildConversationCorpus(conversation models.Conversation, messages []models
 	return strings.Join(parts, "\n")
 }
 
-func collectRiskSignals(joined string, input AnalyzeConversationInput) []string {
+func collectRiskSignals(joined, currentCustomerText string, input AnalyzeConversationInput) []string {
 	signals := make([]string, 0, 6)
 	add := func(signal string) {
 		for _, item := range signals {
@@ -128,7 +130,7 @@ func collectRiskSignals(joined string, input AnalyzeConversationInput) []string 
 	if containsAny(joined, "生气", "愤怒", "垃圾", "太差", "一直没人", "再不处理") {
 		add("negative_sentiment")
 	}
-	if containsHandoffRequest(joined) || input.NeedHumanHandoff {
+	if containsHandoffRequest(currentCustomerText) {
 		add("handoff_requested")
 	}
 	if containsAny(joined, "工单", "报障", "售后", "登记", "记录问题") || input.NeedTicket {
@@ -140,9 +142,9 @@ func collectRiskSignals(joined string, input AnalyzeConversationInput) []string 
 	return signals
 }
 
-func detectUserIntent(joined string, input AnalyzeConversationInput) string {
+func detectUserIntent(joined, currentCustomerText string, input AnalyzeConversationInput) string {
 	switch {
-	case input.NeedHumanHandoff || containsHandoffRequest(joined):
+	case containsHandoffRequest(currentCustomerText):
 		return "handoff_request"
 	case input.NeedTicket || containsAny(joined, "工单", "报障", "售后", "登记问题"):
 		return "ticket_request"
@@ -174,15 +176,22 @@ func recommendNextAction(intent string, signals []string, input AnalyzeConversat
 		return "handoff_to_human"
 	case containsSignal(signals, "ticket_expected") || intent == "ticket_request":
 		return "prepare_ticket"
-	case containsSignal(signals, "complaint_escalation") || containsSignal(signals, "financial_risk"):
-		return "handoff_to_human"
 	default:
 		return "continue_answering"
 	}
 }
 
 func containsHandoffRequest(joined string) bool {
-	return replyengine.IsExplicitHandoffRequest(joined)
+	return utils.IsExplicitHumanHandoffRequest(joined)
+}
+
+func latestAnalyzeConversationCustomerText(messages []models.Message) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].SenderType == enums.IMSenderTypeCustomer {
+			return strings.TrimSpace(messages[index].Content)
+		}
+	}
+	return ""
 }
 
 func hasSeriousHumanRisk(signals []string) bool {

@@ -236,7 +236,7 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 		}
 	})
 
-	t.Run("phone result list binds calendar times into inventory", func(t *testing.T) {
+	t.Run("same-date distinct reservations remain ambiguous", func(t *testing.T) {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: []any{
 				map[string]any{"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00"},
@@ -248,18 +248,72 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 				"member": map[string]any{"gradeName": "银卡"},
 			}}},
 		}}
-		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "15256560071", TargetRoomTypeText: "大床房"}
-		_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		var inventoryCall *runtimePMSFakeCall
-		for index := range invoker.calls {
-			if invoker.calls[index].action == "inventory" {
-				inventoryCall = &invoker.calls[index]
-				break
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "15256560071", TargetRoomTypeID: "ROOM-2"}
+		results, _ := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		if runtimePMSFakeCalled(invoker.calls, "inventory") {
+			t.Fatalf("distinct reservations must not be collapsed by equal dates: %#v", invoker.calls)
+		}
+		ambiguousSteps := map[string]bool{}
+		for _, result := range results {
+			if result.StepID == "inventory.stay" || result.StepID == "price.difference" {
+				if result.Status != pmsReadStepAmbiguous || !strings.Contains(result.Message, "RES-1") || !strings.Contains(result.Message, "RES-2") {
+					t.Fatalf("ambiguous reservations need minimal distinguishing details: %#v", result)
+				}
+				ambiguousSteps[result.StepID] = true
 			}
 		}
-		if inventoryCall == nil || inventoryCall.args["beginTime"] != "2026-09-22" || inventoryCall.args["endTime"] != "2026-09-24" {
-			t.Fatalf("phone lookup calendar times did not drive inventory: %#v", invoker.calls)
+		if !ambiguousSteps["inventory.stay"] || !ambiguousSteps["price.difference"] {
+			t.Fatalf("inventory and price must both reject an ambiguous stay: %#v", results)
 		}
+	})
+
+	t.Run("linked reserve and reception form one stay candidate", func(t *testing.T) {
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
+				"receptOrderList": []any{map[string]any{"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "homeName": "1401"}},
+			}}},
+			"recept_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "checkInTime": "2026-09-22 20:00:00", "checkOutTime": "2026-09-24 12:00:00",
+			}}},
+			"inventory":                {{Status: pmsReadStepOK, Data: []any{}}},
+			"member_benefits_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"member": map[string]any{"gradeName": "银卡"}}}},
+		}}
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "15256560071", TargetRoomTypeText: "大床房"}
+		_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		for _, call := range invoker.calls {
+			if call.action == "inventory" && call.args["beginTime"] == "2026-09-22" && call.args["endTime"] == "2026-09-24" {
+				return
+			}
+		}
+		t.Fatalf("linked order responses did not produce one stay candidate: %#v", invoker.calls)
+	})
+
+	t.Run("one reservation with two assigned rooms remains ambiguous", func(t *testing.T) {
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"recept_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1",
+				"receptOrderList": []any{
+					map[string]any{"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "homeName": "1401", "roomName": "大床房", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 12:00:00"},
+					map[string]any{"reserveOrderId": "RES-1", "receptOrderId": "REC-2", "homeName": "1502", "roomName": "双床房", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 12:00:00"},
+				},
+			}}},
+		}}
+		input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomChange, Phone: "15256560071"}
+		results, _ := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		if runtimePMSFakeCalled(invoker.calls, "inventory") || runtimePMSFakeCalled(invoker.calls, "room_status") {
+			t.Fatalf("different assigned rooms must be selected by the customer first: %#v", invoker.calls)
+		}
+		for _, result := range results {
+			if result.StepID != "room.status" {
+				continue
+			}
+			if result.Status != pmsReadStepAmbiguous || !strings.Contains(result.Message, "房号1401") || !strings.Contains(result.Message, "房号1502") {
+				t.Fatalf("ambiguous room assignments need minimal distinguishing details: %#v", result)
+			}
+			return
+		}
+		t.Fatalf("room ambiguity result missing: %#v", results)
 	})
 
 	t.Run("business dates never override calendar checkout time", func(t *testing.T) {
@@ -422,17 +476,39 @@ func TestResolveRuntimePMSTargetRoomTypeIsDeterministic(t *testing.T) {
 		t.Fatalf("exact target must win over shorter contained names: id=%q name=%q status=%q", id, name, status)
 	}
 
-	id, name, status = resolveRuntimePMSTargetRoomType(inventory, "我想换到豪华大床房")
+	id, name, status = resolveRuntimePMSTargetRoomType(inventory, " 豪华 大床房 ")
 	if status != pmsReadStepOK || id != "ROOM-2" || name != "豪华大床房" {
-		t.Fatalf("longest uniquely named target must be selected: id=%q name=%q status=%q", id, name, status)
+		t.Fatalf("normalized exact target must be selected: id=%q name=%q status=%q", id, name, status)
 	}
 
-	ambiguous := []any{
-		map[string]any{"roomTypeId": "ROOM-E", "roomTypeName": "东景观房"},
-		map[string]any{"roomTypeId": "ROOM-W", "roomTypeName": "西景观房"},
+	if _, _, status = resolveRuntimePMSTargetRoomType(inventory, "我想换到豪华大床房"); status != pmsReadStepEmpty {
+		t.Fatalf("sentence containment must not select a PMS room type, got %q", status)
 	}
-	if _, _, status = resolveRuntimePMSTargetRoomType(ambiguous, "东景观房或者西景观房都行"); status != pmsReadStepAmbiguous {
-		t.Fatalf("multiple equally specific targets must remain ambiguous, got %q", status)
+
+	duplicateName := []any{
+		map[string]any{"roomTypeId": "ROOM-E", "roomTypeName": "景观房"},
+		map[string]any{"roomTypeId": "ROOM-W", "roomTypeName": "景观房"},
+	}
+	if _, _, status = resolveRuntimePMSTargetRoomType(duplicateName, "景观房"); status != pmsReadStepAmbiguous {
+		t.Fatalf("duplicate exact PMS names must remain ambiguous, got %q", status)
+	}
+}
+
+func TestRuntimePMSLateCheckoutTargetTimeIsMechanical(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		want string
+	}{
+		{text: "我想下午三点退房", want: "15:00"},
+		{text: "可以延迟到15:30吗", want: "15:30"},
+		{text: "能延迟到十点半吗", want: "10:30"},
+		{text: "原来12:00退房，能不能再晚一点", want: ""},
+		{text: "最晚几点退房", want: ""},
+	} {
+		got := runtimePMSLateCheckoutTargetTime(callbacks.ReplyTaskPlanTraceData{OriginalText: test.text})
+		if got != test.want {
+			t.Fatalf("checkout time mismatch for %q: got=%q want=%q", test.text, got, test.want)
+		}
 	}
 }
 
@@ -581,7 +657,7 @@ func TestRuntimePMSCustomerFactsStayFocusedOnTheCurrentDecision(t *testing.T) {
 }
 
 func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
-	for _, target := range []string{"豪华大床房", "我想换到豪华大床房"} {
+	for _, target := range []string{"豪华大床房", " 豪华 大床房 "} {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
 				"receptOrderId": "REC-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
@@ -603,6 +679,54 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 			!runtimePMSFakeCalled(invoker.calls, "member_benefits_by_phone") || runtimePMSFakeCalled(invoker.calls, "price_difference") {
 			t.Fatalf("unexpected upgrade read sequence: %#v", invoker.calls)
 		}
+	}
+}
+
+func TestExecuteRuntimePMSUpgradeDoesNotPriceUnmatchedRoomText(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		target    string
+		inventory []any
+		missing   string
+	}{
+		{
+			name:   "sentence containing a room name",
+			target: "我想换到豪华大床房",
+			inventory: []any{
+				map[string]any{"roomTypeId": "ROOM-1", "roomTypeName": "大床房"},
+				map[string]any{"roomTypeId": "ROOM-2", "roomTypeName": "豪华大床房"},
+			},
+			missing: "targetRoomTypeUnmatched",
+		},
+		{
+			name:   "duplicate exact PMS room names",
+			target: "景观房",
+			inventory: []any{
+				map[string]any{"roomTypeId": "ROOM-E", "roomTypeName": "景观房"},
+				map[string]any{"roomTypeId": "ROOM-W", "roomTypeName": "景观房"},
+			},
+			missing: "targetRoomTypeAmbiguous",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+				"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
+					"receptOrderId": "REC-1", "checkInTime": "2026-09-23 18:00:00", "checkOutTime": "2026-09-25 12:00:00",
+				}}},
+				"inventory":                {{Status: pmsReadStepOK, Data: test.inventory}},
+				"member_benefits_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"member": map[string]any{"gradeName": "金卡"}}}},
+			}}
+			input := pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "13800138000", ReceptOrderID: "REC-1", TargetRoomTypeText: test.target}
+			results, plan := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+			if hasPMSReadStep(plan, "price.difference") || !containsPMSReadString(plan.Missing, test.missing) {
+				t.Fatalf("unmatched target must not produce price assessment: plan=%#v", plan)
+			}
+			for _, result := range results {
+				if result.StepID == "price.difference" {
+					t.Fatalf("unmatched target produced a price result: %#v", results)
+				}
+			}
+		})
 	}
 }
 
@@ -656,7 +780,7 @@ func TestExecuteRuntimePMSRenewalAndLateCheckoutRemainReadOnly(t *testing.T) {
 		for _, phone := range []string{"13800138000", "13900139000"} {
 			invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 				"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
-					"receptOrderId": "REC-1", "homeName": "1401", "checkOutBusinessDate": "2026-09-24",
+					"receptOrderId": "REC-1", "homeName": "1401", "checkOutTime": "2026-09-24 12:00:00", "checkOutBusinessDate": "2026-09-24",
 				}}},
 				"room_status":              {{Status: pmsReadStepOK, Data: map[string]any{"list": []any{}}}},
 				"inventory":                {{Status: pmsReadStepOK, Data: []any{}}},
@@ -664,13 +788,26 @@ func TestExecuteRuntimePMSRenewalAndLateCheckoutRemainReadOnly(t *testing.T) {
 			}}
 			input := pmsReadPlanInput{
 				Scenario: pmsReadScenarioLateCheckout, ReceptOrderID: "REC-1", Phone: phone,
-				StartDate: "2026-09-24", EndDate: "2026-09-25",
+				StartDate: "2026-09-24", EndDate: "2026-09-25", TargetCheckoutTime: "15:30",
 			}
-			_, _ = executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+			results, _ := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
 			for _, call := range invoker.calls {
 				if !isRuntimePMSReadOnlyAction(call.action) {
 					t.Fatalf("late checkout assessment attempted a write: %#v", invoker.calls)
 				}
+			}
+			foundAssessment := false
+			for _, result := range results {
+				if result.StepID == "late_checkout.assessment" {
+					foundAssessment = true
+					fact := runtimePMSLateCheckoutFact(result.Data)
+					if !strings.Contains(fact, "2026-09-24 12:00:00") || !strings.Contains(fact, "15:30") || !strings.Contains(fact, "尚未办理延迟退房") {
+						t.Fatalf("late checkout assessment lost its read-only boundary: result=%#v fact=%q", result, fact)
+					}
+				}
+			}
+			if !foundAssessment {
+				t.Fatalf("late checkout assessment result missing: %#v", results)
 			}
 		}
 	})
@@ -757,6 +894,111 @@ func TestRuntimePMSKnowledgeHandoffUsesPMSFactsBeforeSameTaskTransfer(t *testing
 	}
 	if summary.handoffDirective {
 		t.Fatalf("successful same-task PMS read must not request immediate handoff: %#v", summary)
+	}
+}
+
+func TestRuntimePMSGenericRoomOptionsBeatSameTaskKnowledgeHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		subIntent string
+		text      string
+	}{
+		{name: "generic upgrade", subIntent: "room_upgrade", text: "我手机号13800138000，这间有点小，现在能升房吗？"},
+		{name: "generic room change", subIntent: "room_change", text: "我手机号13800138000，这间住着不舒服，现在有别的房能换吗？"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+				"reserve_order_by_phone": {{Status: pmsReadStepEmpty}},
+				"recept_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+					"receptOrderId": "REC-1", "roomName": "标准房", "homeName": "1201",
+					"checkInTime": "2026-09-22 14:00:00", "checkOutTime": "2026-09-24 12:00:00",
+				}}},
+				"inventory": {{Status: pmsReadStepOK, Data: []any{
+					map[string]any{"roomTypeId": "ROOM-2", "roomTypeName": "大床房", "bookings": map[string]any{
+						"2026-09-22": map[string]any{"available": "2"},
+						"2026-09-23": map[string]any{"available": "1"},
+					}},
+				}}},
+				"member_benefits_by_phone": {{Status: pmsReadStepEmpty}},
+				"room_status":              {{Status: pmsReadStepOK, Data: map[string]any{"list": []any{}}}},
+			}}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+				TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle, Disposition: runtimeKnowledgeDispositionDirectHandoff,
+				SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+			}}})
+			intent := callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{
+				SubIntent: tc.subIntent, NeedsTool: true, NeedsKnowledge: true,
+			}}}
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "hotel_info", SubIntent: tc.subIntent, OriginalText: tc.text,
+				NeedsTool: true, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+				SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+			}}}
+
+			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(
+				context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, collector,
+				time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker,
+			)
+			if !handled {
+				t.Fatal("generic room option question did not execute the PMS plan")
+			}
+			task := gotPlan.TaskPlans[0]
+			if task.OutputKind != "text" || !task.ReplyRequired || task.NeedsKnowledge || !runtimeReplyTaskHasPMSFact(task) || len(task.MissingAspects) != 0 {
+				t.Fatalf("real room options must answer before a same-task handoff: %#v", task)
+			}
+			trace := collector.Data.Pipeline.EvidenceJudge
+			if trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 0 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer {
+				t.Fatalf("generic room options left an executable handoff: %#v", trace)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSKnowledgeHandoffKeepsUnresolvedSameTaskHandlingAfterPartialRead(t *testing.T) {
+	for _, text := range []string{
+		"手机号13800138000，我想延迟到15:30退房，需要怎么处理？",
+		"13800138000这笔订单下午三点退房可以吗？",
+	} {
+		t.Run(text, func(t *testing.T) {
+			invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+				"recept_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+					"receptOrderId": "REC-1", "homeName": "1401", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-23 12:00:00",
+				}}},
+				"room_status":              {{Status: pmsReadStepUnavailable, Message: "当前房态暂未确认"}},
+				"member_benefits_by_phone": {{Status: pmsReadStepUnavailable, Message: "会员权益暂未确认"}},
+			}}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+				TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionDirectHandoff,
+				SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}, MissingAspects: []string{"延迟退房处理政策"},
+			}}})
+			intent := callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{SubIntent: "late_checkout", NeedsTool: true, NeedsKnowledge: true}}}
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "hotel_info", SubIntent: "late_checkout", OriginalText: text, NeedsTool: true, NeedsKnowledge: true,
+				OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply", SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+			}}}
+			summary := &RunResult{}
+
+			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(
+				context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, summary, collector,
+				time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker,
+			)
+			if !handled {
+				t.Fatal("partial late-checkout PMS task was not handled")
+			}
+			task := gotPlan.TaskPlans[0]
+			if task.OutputKind != "text" || !task.ReplyRequired || !runtimeReplyTaskHasPMSFact(task) {
+				t.Fatalf("confirmed PMS facts must remain answerable before unresolved handling: %#v", task)
+			}
+			if task.SelectedLayer != "" || len(task.SelectedCandidateIDs) != 0 {
+				t.Fatalf("knowledge handoff directive must not leak into customer facts: %#v", task)
+			}
+			trace := collector.Data.Pipeline.EvidenceJudge
+			if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" || summary.handoffDirective {
+				t.Fatalf("partial PMS facts must defer same-task handling until after the facts are answered: trace=%#v summary=%#v", trace, summary)
+			}
+		})
 	}
 }
 

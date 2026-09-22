@@ -84,14 +84,17 @@ func TestExecuteRuntimeHandoffDirectiveCollectsRoomBeforeDirectDispatch(t *testi
 
 func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *testing.T) {
 	tests := []struct {
-		name        string
-		subIntent   string
-		message     string
-		inquiry     bool
-		expectRoute bool
+		name         string
+		subIntent    string
+		message      string
+		inquiry      bool
+		expectRoute  bool
+		expectAction string
 	}{
-		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工", expectRoute: true},
-		{name: "answer rejected with explicit handoff", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理", expectRoute: true},
+		{name: "explicit handoff", subIntent: "explicit_handoff", message: "别机器人了，帮我转人工", expectRoute: true, expectAction: "dispatch_human_route"},
+		{name: "answer rejected with explicit handoff", subIntent: "answer_rejected", message: "你刚才答非所问，找同事来处理", expectRoute: true, expectAction: "dispatch_human_route"},
+		{name: "emergency injury", subIntent: "emergency_safety", message: "我摔倒了，腿在流血", expectRoute: true, expectAction: "dispatch_emergency_handoff"},
+		{name: "emergency fainting", subIntent: "emergency_safety", message: "房间有人突然晕倒了，需要马上处理", expectRoute: true, expectAction: "dispatch_emergency_handoff"},
 		{name: "knowledge inquiry does not handoff", message: "外卖机器人能送到房间门口吗？", inquiry: true},
 	}
 	for _, tt := range tests {
@@ -219,7 +222,7 @@ func TestExecuteIntentHumanRouteDispatchesExplicitAndRejectedAnswersDirectly(t *
 			if len(replies) != 1 || replies[0].Content != services.DirectHandoffSuccessMessage {
 				t.Fatalf("expected one exact success message, got %+v", replies)
 			}
-			if len(collector.Data.GraphTools.Items) != 1 || collector.Data.GraphTools.Items[0].RecommendedAction != "dispatch_human_route" {
+			if len(collector.Data.GraphTools.Items) != 1 || collector.Data.GraphTools.Items[0].RecommendedAction != tt.expectAction {
 				t.Fatalf("expected direct dispatch trace, got %+v", collector.Data.GraphTools.Items)
 			}
 			assertNoHandoffConfirmationProtocol(t, replies[0].Content+"\n"+collector.Marshal())

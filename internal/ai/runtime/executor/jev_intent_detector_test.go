@@ -17,6 +17,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/enums"
+	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/utils"
 )
 
@@ -144,6 +145,43 @@ func TestJevRouteCriteriaKeepsSpecificOrderCheckoutFollowupsOnPMS(t *testing.T) 
 	}
 }
 
+func TestJevMaintenanceTicketFollowupsBindExistingConfirmationTool(t *testing.T) {
+	for _, current := range []string{
+		"需要，帮我登记",
+		"可以，麻烦建个维修工单",
+	} {
+		span := jevIntentSpan{Ref: "T1", SourceRef: "U1", Text: current}
+		state := jevIntentState{History: []jevIntentText{
+			{Ref: "H0", Role: "customer", Text: "空调不制冷，先不要转人工"},
+			{Ref: "H1", Role: "service", Text: ungroundedMaintenanceOfferNoHandoffReply},
+		}}
+		questions, contexts := buildJevClassificationQuestions([]jevIntentSpan{span}, state)
+		response := jevTestResponse(questions, map[string]string{
+			"T1_route":      "create_ticket",
+			"T1_objective":  "action_request",
+			"T1_relation":   "follow_up",
+			"T1_resolution": "resolved_from_context",
+			"T1_context":    "H0",
+		}, nil)
+
+		intent, err := buildIntentTraceFromJev(response, []jevIntentSpan{span}, contexts)
+		if err != nil {
+			t.Fatalf("build ticket follow-up intent for %q: %v", current, err)
+		}
+		intent = retainRuntimeTicketTools(intent)
+		if len(intent.IntentTasks) != 1 {
+			t.Fatalf("ticket follow-up %q changed task count: %#v", current, intent.IntentTasks)
+		}
+		task := intent.IntentTasks[0]
+		if task.Intent != "service_request" || task.SubIntent != "create_ticket" || !task.NeedsTool || task.NeedsKnowledge || task.NeedsHumanRoute {
+			t.Fatalf("ticket follow-up %q did not bind the existing confirmation tool: %#v", current, task)
+		}
+		if !containsString(intent.ToolCodes, toolx.GraphCreateTicketConfirm.Code) || !strings.Contains(task.ResolvedText, "空调不制冷") {
+			t.Fatalf("ticket follow-up %q lost its tool or maintenance context: intent=%#v task=%#v", current, intent, task)
+		}
+	}
+}
+
 func TestJevCurrentContextUsesEarlierSpansWithoutChangingSource(t *testing.T) {
 	message := models.Message{
 		ID: 103, MessageType: enums.IMMessageTypeText,
@@ -248,7 +286,7 @@ func TestJevNormalizationRetainsHumanAuthorizationBoundary(t *testing.T) {
 		{name: "cancel", text: "取消转人工", route: "explicit_handoff", objective: "cancel"},
 		{name: "service", text: "帮忙送条毛巾", route: "room_supplies", objective: "action_request"},
 		{name: "correction", text: "你回答错了", route: "answer_rejected", objective: "explanation"},
-		{name: "emergency_without_explicit_handoff", text: "有人受伤流血了", route: "emergency_safety", objective: "action_request"},
+		{name: "emergency_without_explicit_handoff", text: "有人受伤流血了", route: "emergency_safety", objective: "action_request", handoff: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := RunInput{UserMessage: models.Message{Content: tc.text, MessageType: enums.IMMessageTypeText}}

@@ -137,7 +137,7 @@ func TestBuildPMSReadPlanRoomUpgrade(t *testing.T) {
 
 	t.Run("unknown target keeps real options query but skips price", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{Scenario: pmsReadScenarioRoomUpgrade, Phone: "13800138000"})
-		if !containsPMSReadString(plan.Missing, "targetRoomTypeId") || hasPMSReadStep(plan, "price.difference") {
+		if containsPMSReadString(plan.Missing, "targetRoomTypeId") || hasPMSReadStep(plan, "price.difference") {
 			t.Fatalf("upgrade must not guess a target room type: %#v", plan)
 		}
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
@@ -145,6 +145,13 @@ func TestBuildPMSReadPlanRoomUpgrade(t *testing.T) {
 			t.Fatalf("inventory must list real options when target is unknown: %#v", inventory)
 		}
 		assertPMSReadBinding(t, inventory, "beginTime", "order.reserve")
+	})
+
+	t.Run("explicit price question still requires a target room type", func(t *testing.T) {
+		plan := buildPMSReadPlan(pmsReadPlanInput{Scenario: pmsReadScenarioPrice, Phone: "13800138000"})
+		if !containsPMSReadString(plan.Missing, "targetRoomTypeId") || hasPMSReadStep(plan, "price.difference") {
+			t.Fatalf("price comparison must wait for a concrete target room type: %#v", plan)
+		}
 	})
 }
 
@@ -165,7 +172,7 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 
 	t.Run("phone lookup binds room and dates without inventing a room", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "room_change", Phone: "13800138000"})
-		if len(plan.Steps) != 3 || !containsPMSReadString(plan.Missing, "targetRoomTypeId") {
+		if len(plan.Steps) != 3 || containsPMSReadString(plan.Missing, "targetRoomTypeId") {
 			t.Fatalf("unexpected contextual room change plan: %#v", plan)
 		}
 		room := requirePMSReadStep(t, plan, "room.status")
@@ -248,26 +255,55 @@ func TestBuildPMSReadPlanLateCheckout(t *testing.T) {
 	t.Run("late checkout combines order room inventory and member facts", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			Scenario: pmsReadScenarioLateCheckout, Phone: "13800138000", ReceptOrderID: "REC-1", RoomKeyword: "1401",
-			StartDate: "2026-09-25", EndDate: "2026-09-26",
+			StartDate: "2026-09-25", EndDate: "2026-09-26", TargetCheckoutTime: "15:00",
 		})
-		if len(plan.Steps) != 4 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected late checkout plan: %#v", plan)
 		}
-		for _, id := range []string{"order.recept", "room.status", "inventory.stay", "member.benefits"} {
+		for _, id := range []string{"order.recept", "room.status", "inventory.stay", "member.benefits", "late_checkout.assessment"} {
 			requirePMSReadStep(t, plan, id)
 		}
+		assessment := requirePMSReadStep(t, plan, "late_checkout.assessment")
+		if assessment.Args["targetCheckoutTime"] != "15:00" || assessment.Args["targetCheckoutDate"] != "2026-09-26" {
+			t.Fatalf("late checkout target slot was not preserved: %#v", assessment)
+		}
+		assertPMSReadBinding(t, assessment, "currentCheckoutTime", "order.recept")
 	})
 
-	t.Run("phone context binds checkout date and room but still needs target date", func(t *testing.T) {
-		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "late_checkout", Phone: "13800138000"})
-		if len(plan.Steps) != 3 || !containsPMSReadString(plan.Missing, "inventoryEndDate") {
-			t.Fatalf("missing target checkout date must stay explicit: %#v", plan)
+	t.Run("explicit checkout time does not require an inventory date", func(t *testing.T) {
+		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "late_checkout", Phone: "13800138000", TargetCheckoutTime: "15:30"})
+		if len(plan.Steps) != 4 || len(plan.Missing) != 0 {
+			t.Fatalf("time-only late checkout assessment changed: %#v", plan)
 		}
 		if hasPMSReadStep(plan, "inventory.stay") {
-			t.Fatalf("late checkout must not query undated inventory: %#v", plan)
+			t.Fatalf("late checkout must not query inventory without explicit dates: %#v", plan)
 		}
 		room := requirePMSReadStep(t, plan, "room.status")
 		assertPMSReadBinding(t, room, "keyword", "order.recept")
+		assessment := requirePMSReadStep(t, plan, "late_checkout.assessment")
+		if assessment.Args["targetCheckoutTime"] != "15:30" {
+			t.Fatalf("target checkout time changed: %#v", assessment)
+		}
+	})
+
+	t.Run("missing checkout time stays explicit", func(t *testing.T) {
+		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "late_checkout", Phone: "13800138000"})
+		if !containsPMSReadString(plan.Missing, "targetCheckoutTime") || hasPMSReadStep(plan, "late_checkout.assessment") {
+			t.Fatalf("missing target checkout time must not be guessed: %#v", plan)
+		}
+	})
+
+	t.Run("one target date does not create an invalid inventory range", func(t *testing.T) {
+		plan := buildPMSReadPlan(pmsReadPlanInput{
+			SubIntent: "late_checkout", Phone: "13800138000", EndDate: "2026-09-25", TargetCheckoutTime: "15:00",
+		})
+		if hasPMSReadStep(plan, "inventory.stay") || len(plan.Missing) != 0 {
+			t.Fatalf("single checkout date must stay on the assessment instead of becoming inventory range: %#v", plan)
+		}
+		assessment := requirePMSReadStep(t, plan, "late_checkout.assessment")
+		if assessment.Args["targetCheckoutDate"] != "2026-09-25" {
+			t.Fatalf("target checkout date was lost: %#v", assessment)
+		}
 	})
 }
 

@@ -43,6 +43,13 @@ func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentTex
 		if task.Intent != "human_complaint_risk" {
 			continue
 		}
+		if task.SubIntent == "emergency_safety" {
+			task.NeedsHumanRoute = true
+			task.NeedsTool = false
+			task.NeedsResource = false
+			task.ResourceAction = ""
+			continue
+		}
 		taskText := task.Text
 		if strings.TrimSpace(taskText) == "" {
 			taskText = task.ResolvedText
@@ -68,6 +75,14 @@ func enforceRuntimeHumanRoutePolicy(intent callbacks.IntentTraceData, currentTex
 		changed = true
 	}
 	if len(intent.IntentTasks) == 0 && intent.PrimaryIntent == "human_complaint_risk" {
+		if intent.SubIntent == "emergency_safety" {
+			intent.NeedsHumanRoute = true
+			intent.HumanRoutePolicy = "managed_mode"
+			intent.NeedsTool = false
+			intent.NeedsResource = false
+			intent.Reason = appendIntentReason(intent.Reason, "emergency safety retained as an authorized human route")
+			return intent
+		}
 		if explicitCurrent {
 			intent.SubIntent = "explicit_handoff"
 			intent.NeedsHumanRoute = true
@@ -134,7 +149,7 @@ func executeIntentHumanRoute(ctx context.Context, req RunInput, summary *RunResu
 		})
 		return false, nil
 	}
-	if !runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) {
+	if !runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req)) && !isEmergencySafetyHandoff(intent) {
 		collector.AddGraphToolItem(callbacks.GraphToolTraceItem{
 			ToolCode: toolx.GraphHandoffConversation.Code,
 			ToolName: toolx.GraphHandoffConversation.Name,

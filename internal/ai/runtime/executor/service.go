@@ -9,6 +9,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/factory"
 	"agent-desk/internal/models"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 
 	"github.com/cloudwego/eino/adk"
@@ -230,7 +231,11 @@ func completeIntentDetectUnavailable(summary *RunResult, collector *callbacks.Ru
 	return summary, nil
 }
 
-const ungroundedKnowledgeSafeReply = "不好意思，这个我暂时没法准确回答。"
+const (
+	ungroundedKnowledgeSafeReply             = "不好意思，这个我暂时没法准确回答。"
+	ungroundedMaintenanceOfferReply          = "这个需要门店同事处理。需要的话，我可以帮您登记维修工单。"
+	ungroundedMaintenanceOfferNoHandoffReply = "这个需要门店同事处理，按您的要求先不转接。需要的话，我可以帮您登记维修工单。"
+)
 
 func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (callbacks.ReplyPlanTraceData, []string) {
 	ungrounded := make(map[int]string)
@@ -264,10 +269,18 @@ func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (ca
 
 	plan.TaskPlans = append([]callbacks.ReplyTaskPlanTraceData(nil), plan.TaskPlans...)
 	isolatedTaskIDs := make([]string, 0, len(ungrounded))
+	hasMaintenanceFallback := false
 	for index := range plan.TaskPlans {
 		taskID, blocked := ungrounded[index]
 		if !blocked {
 			continue
+		}
+		fallbackReply := ungroundedKnowledgeSafeReply
+		fallbackAspect := "other"
+		if serviceReply, ok := ungroundedMaintenanceServiceReply(plan.TaskPlans[index], ""); ok {
+			fallbackReply = serviceReply
+			fallbackAspect = "service_resolution"
+			hasMaintenanceFallback = true
 		}
 		isolatedTaskIDs = append(isolatedTaskIDs, taskID)
 		plan.TaskPlans[index].TaskID = taskID
@@ -280,14 +293,18 @@ func isolateUngroundedKnowledgeReplyTasks(plan callbacks.ReplyPlanTraceData) (ca
 		plan.TaskPlans[index].SelectedCandidateIDs = nil
 		plan.TaskPlans[index].SupportedFacts = append(preservedFacts, callbacks.KnowledgeEvidenceFactTraceData{
 			FactID:         taskID + "FSafe",
-			Aspect:         "other",
-			Statement:      ungroundedKnowledgeSafeReply,
-			CriticalValues: []string{"暂时没法准确回答"},
+			Aspect:         fallbackAspect,
+			Statement:      fallbackReply,
+			CriticalValues: fallbackCriticalValues(fallbackReply),
 		})
 		plan.TaskPlans[index].MissingAspects = appendIfMissing(plan.TaskPlans[index].MissingAspects, "缺少可核验的知识证据")
 	}
 	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
-	plan.DoNot = appendIfMissing(plan.DoNot, "知识未获得证据的部分只能表达暂时无法准确回答；同一任务中已确认的 PMS 事实仍须正常回答，不得补充未确认的酒店政策")
+	if hasMaintenanceFallback {
+		plan.DoNot = appendIfMissing(plan.DoNot, "维修故障任务只能使用 runtime_safe_fallback 给出的固定处理说明和维修工单选择，不得声称已建单或已转人工；其他未获得知识证据的事实只能表达暂时无法准确回答")
+	} else {
+		plan.DoNot = appendIfMissing(plan.DoNot, "知识未获得证据的部分只能表达暂时无法准确回答；同一任务中已确认的 PMS 事实仍须正常回答，不得补充未确认的酒店政策")
+	}
 	return plan, isolatedTaskIDs
 }
 
@@ -347,6 +364,14 @@ func runtimeReplyTaskIsExecutable(task callbacks.ReplyTaskPlanTraceData) bool {
 }
 
 func completeUngroundedKnowledgeFallback(summary *RunResult, collector *callbacks.RuntimeTraceCollector, taskIDs []string) (*RunResult, error) {
+	plan, serviceFallbackApplied := applyUngroundedMaintenanceServiceFallbacks(
+		collector.Data.Pipeline.ReplyPlan,
+		taskIDs,
+		collector.Data.Pipeline.Normalize.CurrentUserText,
+	)
+	if serviceFallbackApplied {
+		collector.SetReplyPlan(plan)
+	}
 	reply := strings.TrimSpace(deterministicGeneratedReplyFallback(collector))
 	if reply == "" {
 		reply = ungroundedKnowledgeSafeReply
@@ -364,6 +389,84 @@ func completeUngroundedKnowledgeFallback(summary *RunResult, collector *callback
 	collector.Data.Pipeline.Validate.Reason = "ungrounded knowledge tasks were blocked before free generation"
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func applyUngroundedMaintenanceServiceFallbacks(plan callbacks.ReplyPlanTraceData, taskIDs []string, currentText string) (callbacks.ReplyPlanTraceData, bool) {
+	requested := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		if taskID = strings.TrimSpace(taskID); taskID != "" {
+			requested[taskID] = struct{}{}
+		}
+	}
+	if len(requested) == 0 {
+		return plan, false
+	}
+
+	updated := false
+	plan.TaskPlans = append([]callbacks.ReplyTaskPlanTraceData(nil), plan.TaskPlans...)
+	for index := range plan.TaskPlans {
+		taskID := strings.TrimSpace(plan.TaskPlans[index].TaskID)
+		if taskID == "" {
+			taskID = fmt.Sprintf("task-%d", index+1)
+		}
+		if _, ok := requested[taskID]; !ok {
+			continue
+		}
+		reply, ok := ungroundedMaintenanceServiceReply(plan.TaskPlans[index], currentText)
+		if !ok {
+			continue
+		}
+		preservedFacts := runtimeReplyTaskPMSFacts(plan.TaskPlans[index])
+		plan.TaskPlans[index].TaskID = taskID
+		plan.TaskPlans[index].Output = "knowledge_safe_fallback"
+		if len(preservedFacts) > 0 {
+			plan.TaskPlans[index].Output = "knowledge_partial_safe_fallback"
+		}
+		plan.TaskPlans[index].SelectedLayer = "runtime_safe_fallback"
+		plan.TaskPlans[index].SelectedCandidateIDs = nil
+		plan.TaskPlans[index].SupportedFacts = append(preservedFacts, callbacks.KnowledgeEvidenceFactTraceData{
+			FactID:         taskID + "FSafe",
+			Aspect:         "service_resolution",
+			Statement:      reply,
+			CriticalValues: fallbackCriticalValues(reply),
+		})
+		plan.TaskPlans[index].MissingAspects = appendIfMissing(plan.TaskPlans[index].MissingAspects, "缺少可核验的维修知识证据")
+		updated = true
+	}
+	return plan, updated
+}
+
+func ungroundedMaintenanceServiceReply(task callbacks.ReplyTaskPlanTraceData, currentText string) (string, bool) {
+	if strings.TrimSpace(task.Intent) != "service_request" || strings.TrimSpace(task.SubIntent) == "create_ticket" {
+		return "", false
+	}
+
+	subIntent := strings.TrimSpace(task.SubIntent)
+	taskText := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.ResolvedText, task.Text}, "\n"))
+	isMaintenance := subIntent == "maintenance" ||
+		strings.Contains(subIntent, "repair") ||
+		subIntent == "hvac_issue" ||
+		subIntent == "ac_not_cooling" ||
+		knowledgeEvidenceServiceOperationTarget(taskText) == "malfunction"
+	if !isMaintenance {
+		return "", false
+	}
+
+	handoffText := strings.TrimSpace(strings.Join([]string{taskText, currentText}, "\n"))
+	if utils.IsExplicitHumanHandoffRejection(handoffText) {
+		return ungroundedMaintenanceOfferNoHandoffReply, true
+	}
+	return ungroundedMaintenanceOfferReply, true
+}
+
+func fallbackCriticalValues(reply string) []string {
+	if reply == ungroundedMaintenanceOfferNoHandoffReply {
+		return []string{"门店同事处理", "先不转接", "维修工单"}
+	}
+	if reply == ungroundedMaintenanceOfferReply {
+		return []string{"门店同事处理", "维修工单"}
+	}
+	return []string{"暂时没法准确回答"}
 }
 
 func completeRuntimeHandoffDirective(summary *RunResult, collector *callbacks.RuntimeTraceCollector, err error, afterGenerate bool) (*RunResult, error) {

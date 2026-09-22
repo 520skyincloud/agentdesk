@@ -23,10 +23,13 @@ import (
 )
 
 var (
-	runtimePMSExplicitDatePattern = regexp.MustCompile(`(?P<year>20[0-9]{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
-	runtimePMSMonthDayPattern     = regexp.MustCompile(`(?P<month>1[0-2]|0?[1-9])月(?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
-	runtimePMSDayOnlyPattern      = regexp.MustCompile(`(?P<day>3[01]|[12][0-9]|0?[1-9])(?:日|号)`)
-	runtimePMSTargetRoomPattern   = regexp.MustCompile(`(?:升级|升房|换房|换|改)(?:到|成|为)?\s*([^，。！？,.!?\n]{1,12}房)`)
+	runtimePMSExplicitDatePattern   = regexp.MustCompile(`(?P<year>20[0-9]{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
+	runtimePMSMonthDayPattern       = regexp.MustCompile(`(?P<month>1[0-2]|0?[1-9])月(?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
+	runtimePMSDayOnlyPattern        = regexp.MustCompile(`(?P<day>3[01]|[12][0-9]|0?[1-9])(?:日|号)`)
+	runtimePMSTargetRoomPattern     = regexp.MustCompile(`(?:升级|升房|换房|换|改)(?:到|成|为)?\s*([^，。！？,.!?\n]{1,12}房)`)
+	runtimePMSLateClockPattern      = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*([01]?[0-9]|2[0-3])[:：]([0-5][0-9])`)
+	runtimePMSLateChinesePattern    = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*(?:(上午|下午|晚上|中午|凌晨)\s*)?([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?`)
+	runtimePMSPeriodCheckoutPattern = regexp.MustCompile(`(上午|下午|晚上|中午|凌晨)\s*([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?\s*退房`)
 )
 
 var (
@@ -218,7 +221,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			aggregated = pmsReadPlanResult{Status: pmsReadStepUnavailable, Unconfirmed: []string{"PMS 查询计划结果无效"}}
 		}
 		applyRuntimePMSReadResultToTask(task, finalPlan, aggregated, index)
-		resolveRuntimePMSKnowledgeHandoffForTask(req, task, replyPlan, summary, collector)
+		resolveRuntimePMSKnowledgeHandoffForTask(req, task, replyPlan, finalPlan, aggregated, summary, collector)
 		task.NeedsTool = false
 		processedTasks = append(processedTasks, *task)
 		executed = true
@@ -275,7 +278,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 	return intent, replyPlan, true
 }
 
-func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.ReplyTaskPlanTraceData, plan callbacks.ReplyPlanTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.ReplyTaskPlanTraceData, replyPlan callbacks.ReplyPlanTraceData, pmsPlan pmsReadPlan, result pmsReadPlanResult, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
 	if task == nil || collector == nil || strings.TrimSpace(task.TaskID) == "" || !isPMSRuntimeSubIntent(task.SubIntent) {
 		return
 	}
@@ -297,7 +300,8 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 	}
 
 	taskID := strings.TrimSpace(task.TaskID)
-	if runtimeReplyTaskHasPMSFact(*task) {
+	hasPMSFacts := runtimeReplyTaskHasPMSFact(*task)
+	if hasPMSFacts && runtimePMSReadResultCompleteForKnowledgePrecedence(*task, pmsPlan, result) {
 		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
 		if len(trace.DeferredTaskIDs) == 0 {
 			trace.DeferredHandoff = false
@@ -327,13 +331,22 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 		TaskID:         taskID,
 		Query:          activeGenerationTaskText(*task),
 		Disposition:    originalDisposition,
-		HasAnswer:      originalDisposition == runtimeKnowledgeDispositionAnswerThenHandoff,
+		HasAnswer:      hasPMSFacts || originalDisposition == runtimeKnowledgeDispositionAnswerThenHandoff,
 		NeedsHandoff:   true,
 		MissingAspects: append([]string(nil), taskTrace.MissingAspects...),
 		HandoffHit:     rag.RetrieveResult{Content: "转人工"},
 	}
 	if utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req)) {
+		pmsFacts := runtimeReplyTaskPMSFacts(*task)
 		applyDeclinedKnowledgeHandoffReply(task)
+		if len(pmsFacts) > 0 {
+			task.SupportedFacts = append(pmsFacts, callbacks.KnowledgeEvidenceFactTraceData{
+				FactID:    taskID + "FHandoffBoundary",
+				Aspect:    "handoff_boundary",
+				Statement: declinedKnowledgeHandoffReply,
+			})
+			task.AnswerText = nil
+		}
 		taskTrace.Disposition = runtimeKnowledgeDispositionAnswer
 		taskTrace.DecisionSource = "customer_declined_handoff"
 		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
@@ -363,11 +376,11 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 			trace.DeferredHandoffReason += "；" + reason
 		}
 	}
-	if originalDisposition == runtimeKnowledgeDispositionDirectHandoff {
+	if originalDisposition == runtimeKnowledgeDispositionDirectHandoff && !hasPMSFacts {
 		task.Output = runtimeKnowledgeDeferredHandoffOutput
 		task.OutputKind = "handoff"
 		task.ReplyRequired = false
-		if summary != nil && !runtimePMSReplyPlanHasAnswerableSibling(plan, taskID) {
+		if summary != nil && !runtimePMSReplyPlanHasAnswerableSibling(replyPlan, taskID) {
 			summary.handoffDirective = true
 			summary.handoffDirectiveReason = deferredRuntimeKnowledgeHandoffReason([]runtimeKnowledgeQuestionDisposition{pending})
 			summary.handoffDirectiveSource = "knowledge_top_answer"
@@ -376,8 +389,49 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 		task.Output = "knowledge_text_reply"
 		task.OutputKind = "text"
 		task.ReplyRequired = true
+		if originalDisposition == runtimeKnowledgeDispositionDirectHandoff {
+			task.NeedsKnowledge = false
+			task.SelectedLayer = ""
+			task.SelectedCandidateIDs = nil
+			task.SupportedFacts = runtimeReplyTaskPMSFacts(*task)
+			task.AnswerText = nil
+		}
 	}
 	collector.SetKnowledgeEvidenceJudge(trace)
+}
+
+func runtimePMSReadResultCompleteForKnowledgePrecedence(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) bool {
+	if !runtimeReplyTaskHasPMSFact(task) || len(plan.Missing) > 0 {
+		return false
+	}
+	byStep := make(map[string]pmsReadStepStatus, len(result.Steps))
+	for _, step := range result.Steps {
+		byStep[step.StepID] = step.Status
+	}
+	for _, step := range plan.Steps {
+		if step.Required && byStep[step.ID] != pmsReadStepOK {
+			return false
+		}
+	}
+
+	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	if plan.Scenario == pmsReadScenarioRoomUpgrade || plan.Scenario == pmsReadScenarioRoomChange || plan.Scenario == pmsReadScenarioPrice {
+		if containsAny(text, []string{"会员", "权益", "免差", "免费升"}) && byStep["member.benefits"] != pmsReadStepOK {
+			return false
+		}
+		if containsAny(text, []string{"差价", "补多少", "多少钱", "费用", "价格"}) && byStep["price.difference"] != pmsReadStepOK {
+			return false
+		}
+	}
+	if plan.Scenario == pmsReadScenarioLateCheckout {
+		if byStep["room.status"] != pmsReadStepOK && byStep["inventory.stay"] != pmsReadStepOK {
+			return false
+		}
+		if containsAny(text, []string{"收费", "费用", "多少钱", "政策", "条件"}) {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimePMSReplyPlanHasAnswerableSibling(plan callbacks.ReplyPlanTraceData, taskID string) bool {
@@ -477,7 +531,102 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.CustomerNo = customerNo
 	}
 	input.StartDate, input.EndDate = runtimePMSReadDates(task, input.Scenario, now)
+	if input.Scenario == pmsReadScenarioLateCheckout {
+		input.TargetCheckoutTime = runtimePMSLateCheckoutTargetTime(task)
+	}
 	return input
+}
+
+func runtimePMSLateCheckoutTargetTime(task callbacks.ReplyTaskPlanTraceData) string {
+	text := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+	if matches := runtimePMSLateClockPattern.FindAllStringSubmatch(text, -1); len(matches) > 0 {
+		match := matches[len(matches)-1]
+		return runtimePMSClockFromDigits(match[1], match[2])
+	}
+	for _, pattern := range []*regexp.Regexp{runtimePMSLateChinesePattern, runtimePMSPeriodCheckoutPattern} {
+		if matches := pattern.FindAllStringSubmatch(text, -1); len(matches) > 0 {
+			return runtimePMSClockFromChineseMatch(matches[len(matches)-1])
+		}
+	}
+	return ""
+}
+
+func runtimePMSClockFromChineseMatch(match []string) string {
+	if len(match) < 4 {
+		return ""
+	}
+	hour, ok := runtimePMSChineseNumber(match[2])
+	if !ok {
+		return ""
+	}
+	minute := 0
+	minuteText := strings.TrimSuffix(strings.TrimSpace(match[3]), "分")
+	if minuteText == "半" {
+		minute = 30
+	} else if minuteText != "" {
+		var minuteOK bool
+		minute, minuteOK = runtimePMSChineseNumber(minuteText)
+		if !minuteOK {
+			return ""
+		}
+	}
+	switch match[1] {
+	case "下午", "晚上":
+		if hour < 12 {
+			hour += 12
+		}
+	case "中午":
+		if hour < 11 {
+			hour += 12
+		}
+	case "上午", "凌晨":
+		if hour == 12 {
+			hour = 0
+		}
+	}
+	if hour > 23 || minute > 59 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
+}
+
+func runtimePMSClockFromDigits(hourText, minuteText string) string {
+	hour, hourErr := strconv.Atoi(hourText)
+	minute, minuteErr := strconv.Atoi(minuteText)
+	if hourErr != nil || minuteErr != nil || hour > 23 || minute > 59 {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
+}
+
+func runtimePMSChineseNumber(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if number, err := strconv.Atoi(value); err == nil {
+		return number, true
+	}
+	digits := map[rune]int{'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+	runes := []rune(value)
+	if len(runes) == 1 {
+		if runes[0] == '十' {
+			return 10, true
+		}
+		number, ok := digits[runes[0]]
+		return number, ok
+	}
+	if len(runes) == 2 && runes[0] == '十' {
+		ones, ok := digits[runes[1]]
+		return 10 + ones, ok
+	}
+	if len(runes) == 2 && runes[1] == '十' {
+		tens, ok := digits[runes[0]]
+		return tens * 10, ok
+	}
+	if len(runes) == 3 && runes[1] == '十' {
+		tens, tensOK := digits[runes[0]]
+		ones, onesOK := digits[runes[2]]
+		return tens*10 + ones, tensOK && onesOK
+	}
+	return 0, false
 }
 
 func runtimePMSOrderLocators(text string) (string, string, string) {
@@ -759,6 +908,13 @@ func executeRuntimePMSReadSteps(ctx context.Context, steps []pmsReadPlanStep, by
 				waveResults[index] = result
 				continue
 			}
+			if step.Action == "late_checkout_assessment" {
+				result := assessRuntimePMSLateCheckout(args)
+				result.StepID = step.ID
+				result.Args = clonePMSReadArgs(args)
+				waveResults[index] = result
+				continue
+			}
 
 			waitGroup.Add(1)
 			go func(index int, step pmsReadPlanStep, args map[string]string) {
@@ -803,25 +959,37 @@ func runtimePMSReadStepDependenciesComplete(step pmsReadPlanStep, byStep map[str
 }
 
 func assessRuntimePMSPriceDifference(results map[string]pmsReadStepResult, args map[string]string) pmsReadStepResult {
-	order := pmsReadStepResult{}
-	for _, stepID := range []string{"order.recept", "order.reserve"} {
-		candidate, ok := results[stepID]
-		if ok && (candidate.Status == pmsReadStepOK || candidate.Status == pmsReadStepPartial) {
-			order = candidate
-			break
-		}
-	}
+	order, orderStatus, orderMessage := selectRuntimePMSStayCandidate(results, []string{"order.reserve", "order.recept"}, args)
 	inventory, ok := results["inventory.stay"]
-	if order.Data == nil || !ok || (inventory.Status != pmsReadStepOK && inventory.Status != pmsReadStepPartial) {
+	if orderStatus != pmsReadStepOK {
+		return pmsReadStepResult{Status: orderStatus, Message: orderMessage}
+	}
+	if order.data == nil || !ok || (inventory.Status != pmsReadStepOK && inventory.Status != pmsReadStepPartial) {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "订单或目标日期库存尚未确认，不能计算差价"}
 	}
 	startDate := firstNonEmpty(args["beginTime"], inventory.Args["beginTime"])
 	endDate := firstNonEmpty(args["endTime"], inventory.Args["endTime"])
-	assessment, err := pms.AssessPriceDifference(order.Data, inventory.Data, args["roomTypeId"], startDate, endDate)
+	assessment, err := pms.AssessPriceDifference(order.data, inventory.Data, args["roomTypeId"], startDate, endDate)
 	if err != nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 差价评估暂时不可用"}
 	}
 	return pmsReadStepResult{Status: pmsReadStepOK, Data: map[string]any{"assessment": runtimePMSJSONValue(assessment)}}
+}
+
+func assessRuntimePMSLateCheckout(args map[string]string) pmsReadStepResult {
+	target := normalizePMSReadClock(args["targetCheckoutTime"])
+	if target == "" {
+		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "缺少明确的目标退房时间"}
+	}
+	data := map[string]any{"targetCheckoutTime": target}
+	if targetDate := normalizePMSReadDate(args["targetCheckoutDate"]); targetDate != "" {
+		data["targetCheckoutDate"] = targetDate
+	}
+	if current := strings.TrimSpace(args["currentCheckoutTime"]); current != "" {
+		data["currentCheckoutTime"] = current
+		return pmsReadStepResult{Status: pmsReadStepOK, Data: data}
+	}
+	return pmsReadStepResult{Status: pmsReadStepPartial, Data: data, Message: "PMS 未返回当前订单的原退房时间"}
 }
 
 func runtimePMSJSONValue(value any) any {
@@ -906,7 +1074,7 @@ func isRuntimePMSReadOnlyAction(action string) bool {
 	case "reserve_order_detail", "reserve_order_by_phone",
 		"recept_order_detail", "recept_order_by_phone",
 		"renew_candidates", "room_status", "inventory",
-		"member_info_by_phone", "member_benefits_by_phone", "price_difference":
+		"member_info_by_phone", "member_benefits_by_phone", "price_difference", "late_checkout_assessment":
 		return true
 	default:
 		return false
@@ -915,14 +1083,31 @@ func isRuntimePMSReadOnlyAction(action string) bool {
 
 func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsReadStepResult) (map[string]string, pmsReadStepStatus, string) {
 	args := clonePMSReadArgs(step.Args)
+	orderSourceIDs := runtimePMSReadOrderBindingSourceIDs(step.Bindings)
+	var selectedOrder *runtimePMSStayCandidate
+	if len(orderSourceIDs) > 0 {
+		candidate, status, message := selectRuntimePMSStayCandidate(results, orderSourceIDs, args)
+		switch status {
+		case pmsReadStepOK:
+			selectedOrder = &candidate
+		case pmsReadStepEmpty:
+			// Preserve the existing missing-argument behavior for an empty order response.
+		default:
+			return args, status, message
+		}
+	}
 	for _, binding := range step.Bindings {
 		values := make([]string, 0, 2)
-		for _, source := range binding.Sources {
-			result, ok := results[source.StepID]
-			if !ok || (result.Status != pmsReadStepOK && result.Status != pmsReadStepPartial) {
-				continue
+		if selectedOrder != nil && runtimePMSReadBindingUsesOrderSource(binding) {
+			values = runtimePMSReadBindingSourceValues(selectedOrder.data, runtimePMSReadBindingFields(binding), binding.Argument)
+		} else {
+			for _, source := range binding.Sources {
+				result, ok := results[source.StepID]
+				if !ok || (result.Status != pmsReadStepOK && result.Status != pmsReadStepPartial) {
+					continue
+				}
+				values = append(values, runtimePMSReadBindingSourceValues(result.Data, source.Fields, binding.Argument)...)
 			}
-			values = append(values, runtimePMSReadBindingSourceValues(result.Data, source.Fields, binding.Argument)...)
 		}
 		values = normalizeRuntimePMSBindingValues(binding.Argument, values)
 		switch len(values) {
@@ -952,6 +1137,242 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		}
 	}
 	return args, "", ""
+}
+
+type runtimePMSStayCandidate struct {
+	data           map[string]any
+	reserveOrderID string
+	receptOrderID  string
+	checkIn        string
+	checkOut       string
+	roomName       string
+	homeName       string
+	orderNumber    string
+}
+
+func selectRuntimePMSStayCandidate(results map[string]pmsReadStepResult, sourceIDs []string, args map[string]string) (runtimePMSStayCandidate, pmsReadStepStatus, string) {
+	for _, stepID := range uniquePMSReadStrings(sourceIDs) {
+		result, ok := results[stepID]
+		if !ok || result.Status != pmsReadStepAmbiguous {
+			continue
+		}
+		message := strings.TrimSpace(result.Message)
+		if message == "" {
+			message = "查询到多个匹配住宿，请确认入住日期或订单号"
+		}
+		return runtimePMSStayCandidate{}, pmsReadStepAmbiguous, message
+	}
+	candidates := runtimePMSStayCandidates(results, sourceIDs)
+	reserveOrderID := strings.TrimSpace(args["reserveOrderId"])
+	receptOrderID := strings.TrimSpace(firstNonEmpty(args["receptOrderId"], args["currentReceptOrderId"]))
+	if reserveOrderID != "" || receptOrderID != "" {
+		matched := make([]runtimePMSStayCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if reserveOrderID != "" && candidate.reserveOrderID != reserveOrderID {
+				continue
+			}
+			if receptOrderID != "" && candidate.receptOrderID != receptOrderID {
+				continue
+			}
+			matched = append(matched, candidate)
+		}
+		candidates = matched
+	}
+	switch len(candidates) {
+	case 0:
+		return runtimePMSStayCandidate{}, pmsReadStepEmpty, "未查询到可唯一定位的当前住宿"
+	case 1:
+		return candidates[0], pmsReadStepOK, ""
+	default:
+		return runtimePMSStayCandidate{}, pmsReadStepAmbiguous, runtimePMSAmbiguousStayMessage(candidates)
+	}
+}
+
+func runtimePMSStayCandidates(results map[string]pmsReadStepResult, sourceIDs []string) []runtimePMSStayCandidate {
+	candidates := make([]runtimePMSStayCandidate, 0, 4)
+	for _, stepID := range uniquePMSReadStrings(sourceIDs) {
+		result, ok := results[stepID]
+		if !ok || (result.Status != pmsReadStepOK && result.Status != pmsReadStepPartial) {
+			continue
+		}
+		for _, data := range runtimePMSStayCandidateData(result.Data) {
+			candidate := runtimePMSStayCandidateFromData(data)
+			if candidate.data != nil {
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	for merged := true; merged; {
+		merged = false
+		for index := 0; index < len(candidates) && !merged; index++ {
+			for other := index + 1; other < len(candidates); other++ {
+				if !runtimePMSStayCandidatesMatch(candidates[index], candidates[other]) {
+					continue
+				}
+				candidates[index] = mergeRuntimePMSStayCandidates(candidates[index], candidates[other])
+				candidates = append(candidates[:other], candidates[other+1:]...)
+				merged = true
+				break
+			}
+		}
+	}
+	return candidates
+}
+
+func runtimePMSStayCandidateData(data any) []map[string]any {
+	switch value := data.(type) {
+	case []any:
+		ret := make([]map[string]any, 0, len(value))
+		for _, item := range value {
+			ret = append(ret, runtimePMSStayCandidateData(item)...)
+		}
+		return ret
+	case map[string]any:
+		nested, _ := value["receptOrderList"].([]any)
+		if len(nested) == 0 {
+			return []map[string]any{cloneRuntimePMSReadData(value)}
+		}
+		ret := make([]map[string]any, 0, len(nested))
+		for _, item := range nested {
+			recept, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			// The reserve root is authoritative for stay dates and price details;
+			// the nested reception contributes its linked id and assigned room.
+			ret = append(ret, mergeRuntimePMSReadData(recept, value))
+		}
+		if len(ret) > 0 {
+			return ret
+		}
+		return []map[string]any{cloneRuntimePMSReadData(value)}
+	default:
+		return nil
+	}
+}
+
+func runtimePMSStayCandidateFromData(data map[string]any) runtimePMSStayCandidate {
+	if data == nil {
+		return runtimePMSStayCandidate{}
+	}
+	return runtimePMSStayCandidate{
+		data:           data,
+		reserveOrderID: firstRuntimePMSReadText(data, "reserveOrderId"),
+		receptOrderID:  firstRuntimePMSReadText(data, "receptOrderId"),
+		checkIn:        normalizePMSReadDate(firstRuntimePMSReadText(data, "checkInTime", "checkInBusinessDate")),
+		checkOut:       normalizePMSReadDate(firstRuntimePMSReadText(data, "checkOutTime", "checkOutBusinessDate")),
+		roomName:       firstNonEmpty(firstRuntimePMSReadText(data, "roomName"), strings.Join(runtimePMSOrderRoomNames(data), "/")),
+		homeName:       firstRuntimePMSReadText(data, "homeName"),
+		orderNumber:    firstRuntimePMSReadText(data, "channelOrderNumber", "reserveOrderNo"),
+	}
+}
+
+func runtimePMSStayCandidatesMatch(left, right runtimePMSStayCandidate) bool {
+	if left.reserveOrderID != "" && left.reserveOrderID == right.reserveOrderID {
+		return left.receptOrderID == "" || right.receptOrderID == "" || left.receptOrderID == right.receptOrderID
+	}
+	if left.receptOrderID != "" && left.receptOrderID == right.receptOrderID {
+		return left.reserveOrderID == "" || right.reserveOrderID == "" || left.reserveOrderID == right.reserveOrderID
+	}
+	if left.checkIn == "" || left.checkOut == "" || left.checkIn != right.checkIn || left.checkOut != right.checkOut {
+		return false
+	}
+	if left.reserveOrderID != "" && right.reserveOrderID != "" && left.reserveOrderID != right.reserveOrderID {
+		return false
+	}
+	if left.receptOrderID != "" && right.receptOrderID != "" && left.receptOrderID != right.receptOrderID {
+		return false
+	}
+	return true
+}
+
+func mergeRuntimePMSStayCandidates(left, right runtimePMSStayCandidate) runtimePMSStayCandidate {
+	return runtimePMSStayCandidateFromData(mergeRuntimePMSReadData(right.data, left.data))
+}
+
+func mergeRuntimePMSReadData(base, preferred map[string]any) map[string]any {
+	ret := cloneRuntimePMSReadData(base)
+	for key, value := range preferred {
+		if key == "receptOrderList" {
+			continue
+		}
+		if runtimePMSReadText(value) == "" {
+			if _, exists := ret[key]; exists {
+				continue
+			}
+		}
+		ret[key] = value
+	}
+	return ret
+}
+
+func cloneRuntimePMSReadData(source map[string]any) map[string]any {
+	ret := make(map[string]any, len(source))
+	for key, value := range source {
+		if key != "receptOrderList" {
+			ret[key] = value
+		}
+	}
+	return ret
+}
+
+func runtimePMSAmbiguousStayMessage(candidates []runtimePMSStayCandidate) string {
+	details := make([]string, 0, min(len(candidates), 3))
+	for index, candidate := range candidates {
+		fields := make([]string, 0, 4)
+		if candidate.checkIn != "" || candidate.checkOut != "" {
+			fields = append(fields, firstNonEmpty(candidate.checkIn, "日期未知")+"至"+firstNonEmpty(candidate.checkOut, "日期未知"))
+		}
+		if candidate.roomName != "" {
+			fields = append(fields, candidate.roomName)
+		}
+		if candidate.homeName != "" {
+			fields = append(fields, "房号"+candidate.homeName)
+		}
+		orderNumber := firstNonEmpty(candidate.orderNumber, candidate.reserveOrderID, candidate.receptOrderID)
+		if orderNumber != "" {
+			fields = append(fields, "订单"+orderNumber)
+		}
+		if len(fields) == 0 {
+			fields = append(fields, fmt.Sprintf("第%d笔", index+1))
+		}
+		details = append(details, strings.Join(fields, "、"))
+		if len(details) == 3 {
+			break
+		}
+	}
+	return "查询到多个匹配住宿（" + strings.Join(details, "；") + "），请确认入住日期、房型或订单号"
+}
+
+func runtimePMSReadOrderBindingSourceIDs(bindings []pmsReadPlanBinding) []string {
+	ret := make([]string, 0, 2)
+	for _, binding := range bindings {
+		for _, source := range binding.Sources {
+			if source.StepID == "order.reserve" || source.StepID == "order.recept" {
+				ret = append(ret, source.StepID)
+			}
+		}
+	}
+	return uniquePMSReadStrings(ret)
+}
+
+func runtimePMSReadBindingUsesOrderSource(binding pmsReadPlanBinding) bool {
+	for _, source := range binding.Sources {
+		if source.StepID == "order.reserve" || source.StepID == "order.recept" {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePMSReadBindingFields(binding pmsReadPlanBinding) []string {
+	ret := make([]string, 0, 4)
+	for _, source := range binding.Sources {
+		if source.StepID == "order.reserve" || source.StepID == "order.recept" {
+			ret = append(ret, source.Fields...)
+		}
+	}
+	return uniquePMSReadStrings(ret)
 }
 
 func runtimePMSReadBindingSourceValues(data any, fields []string, argument string) []string {
@@ -1065,7 +1486,6 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
 	type candidate struct{ id, name string }
 	exactCandidates := make([]candidate, 0)
-	containedCandidates := make([]candidate, 0)
 	for _, value := range items {
 		row, ok := value.(map[string]any)
 		if !ok {
@@ -1079,24 +1499,9 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 		}
 		if normalizedTarget == normalizedName {
 			exactCandidates = append(exactCandidates, candidate{id: id, name: name})
-		} else if strings.Contains(normalizedTarget, normalizedName) {
-			containedCandidates = append(containedCandidates, candidate{id: id, name: name})
 		}
 	}
 	candidates := exactCandidates
-	if len(candidates) == 0 && len(containedCandidates) > 0 {
-		longest := 0
-		for _, item := range containedCandidates {
-			if length := len([]rune(normalizeRuntimePMSRoomTypeText(item.name))); length > longest {
-				longest = length
-			}
-		}
-		for _, item := range containedCandidates {
-			if len([]rune(normalizeRuntimePMSRoomTypeText(item.name))) == longest {
-				candidates = append(candidates, item)
-			}
-		}
-	}
 	if len(candidates) == 0 {
 		return "", "", pmsReadStepEmpty
 	}
@@ -1165,10 +1570,25 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		})
 	}
 	for _, missing := range result.Unconfirmed {
+		if (missing == "order.reserve" || missing == "order.recept") &&
+			runtimePMSReadStepHasStatus(result, missing, pmsReadStepEmpty) &&
+			runtimePMSReadHasOtherOrderFact(result, missing) {
+			continue
+		}
+		if step, ok := runtimePMSReadPlanStepByID(plan, missing); ok && !step.Required && !runtimePMSOptionalStepRelevantToTask(plan, *task, missing) {
+			continue
+		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, runtimePMSReadMissingAspect(missing))
 	}
 	for _, step := range result.Steps {
 		if step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial {
+			continue
+		}
+		if (step.StepID == "order.reserve" || step.StepID == "order.recept") && step.Status == pmsReadStepEmpty && runtimePMSReadHasOtherOrderFact(result, step.StepID) {
+			continue
+		}
+		planned, plannedStep := runtimePMSReadPlanStepByID(plan, step.StepID)
+		if plannedStep && !planned.Required && !runtimePMSOptionalStepRelevantToTask(plan, *task, step.StepID) {
 			continue
 		}
 		message := strings.TrimSpace(step.Message)
@@ -1177,6 +1597,52 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, message)
 	}
+}
+
+func runtimePMSReadPlanStepByID(plan pmsReadPlan, stepID string) (pmsReadPlanStep, bool) {
+	for _, step := range plan.Steps {
+		if step.ID == stepID {
+			return step, true
+		}
+	}
+	return pmsReadPlanStep{}, false
+}
+
+func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.ReplyTaskPlanTraceData, stepID string) bool {
+	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	switch stepID {
+	case "order.reserve", "order.recept":
+		return true
+	case "member.benefits":
+		return plan.Scenario == pmsReadScenarioMemberBenefit || containsAny(text, []string{"会员", "权益", "免差", "免费升", "等级"})
+	case "price.difference":
+		return plan.Scenario == pmsReadScenarioPrice || containsAny(text, []string{"差价", "补多少", "多少钱", "费用", "价格"})
+	case "room.status":
+		return plan.Scenario == pmsReadScenarioRoomStatus || containsAny(text, []string{"房态", "空净", "空脏", "住净", "住脏", "打扫", "清扫", "维修", "锁房"})
+	default:
+		return false
+	}
+}
+
+func runtimePMSReadHasOtherOrderFact(result pmsReadPlanResult, skipStepID string) bool {
+	for _, step := range result.Steps {
+		if step.StepID == skipStepID || (step.StepID != "order.reserve" && step.StepID != "order.recept") {
+			continue
+		}
+		if (step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial) && runtimePMSOrderFact(step.Data) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePMSReadStepHasStatus(result pmsReadPlanResult, stepID string, status pmsReadStepStatus) bool {
+	for _, step := range result.Steps {
+		if step.StepID == stepID && step.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimePMSReadFactStatement(plan pmsReadPlan, step pmsReadStepResult) string {
@@ -1198,6 +1664,8 @@ func runtimePMSReadFactStatement(plan pmsReadPlan, step pmsReadStepResult) strin
 		return runtimePMSRoomStatusFact(step.Data)
 	case "renew.candidates":
 		return runtimePMSRenewCandidateFact(step.Data)
+	case "late_checkout.assessment":
+		return runtimePMSLateCheckoutFact(step.Data)
 	default:
 		_ = plan
 		return ""
@@ -1562,6 +2030,28 @@ func runtimePMSRenewCandidateFact(data any) string {
 	return "PMS 续住候选：" + strings.Join(parts, "；") + "。当前只完成查询，没有提交续住。"
 }
 
+func runtimePMSLateCheckoutFact(data any) string {
+	root, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	fields := make([]string, 0, 2)
+	if current := firstRuntimePMSReadText(root, "currentCheckoutTime"); current != "" {
+		fields = append(fields, "PMS 当前订单退房时间为"+current)
+	}
+	target := firstRuntimePMSReadText(root, "targetCheckoutTime")
+	if targetDate := firstRuntimePMSReadText(root, "targetCheckoutDate"); targetDate != "" && target != "" {
+		target = targetDate + " " + target
+	}
+	if target != "" {
+		fields = append(fields, "客户希望延迟至"+target)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return "延迟退房只读评估：" + strings.Join(fields, "，") + "。当前仅完成查询评估，尚未办理延迟退房。"
+}
+
 func runtimePMSReadMissingAspect(value string) string {
 	switch value {
 	case "customerLocator", "receptOrderLocator":
@@ -1572,6 +2062,8 @@ func runtimePMSReadMissingAspect(value string) string {
 		return "客户目标房型尚未与 PMS 返回的真实房型唯一匹配"
 	case "targetRoomTypeAmbiguous":
 		return "客户目标描述对应多个 PMS 房型，需要客户选择"
+	case "targetCheckoutTime":
+		return "缺少客户明确希望延迟到的退房时间"
 	case "orderIdForPrice":
 		return "缺少真实订单 ID，不能确认差价"
 	case "order.reserve":

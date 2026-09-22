@@ -73,6 +73,7 @@ func rebindRuntimeRejectedTask(intent callbacks.IntentTraceData, previous callba
 			failed[task.TaskID] = true
 		}
 	}
+	explicitFailedCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
 	failedCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
 	for _, task := range previous.Pipeline.ReplyPlan.TaskPlans {
 		if task.OutputKind == "context_only" || task.Intent == "interaction" || task.NeedsResource || task.NeedsHumanRoute ||
@@ -80,8 +81,13 @@ func rebindRuntimeRejectedTask(intent callbacks.IntentTraceData, previous callba
 			continue
 		}
 		if failed[task.TaskID] {
+			explicitFailedCandidates = append(explicitFailedCandidates, task)
+		} else if runtimePreviousReplyTaskIncomplete(task, previous) {
 			failedCandidates = append(failedCandidates, task)
 		}
+	}
+	if len(explicitFailedCandidates) > 0 {
+		failedCandidates = explicitFailedCandidates
 	}
 	if len(failedCandidates) != 1 {
 		return intent, false
@@ -111,4 +117,45 @@ func rebindRuntimeRejectedTask(intent callbacks.IntentTraceData, previous callba
 		return intent, false
 	}
 	return deriveModelIntentFromTasks(intent), true
+}
+
+func runtimePreviousReplyTaskIncomplete(task callbacks.ReplyTaskPlanTraceData, previous callbacks.RuntimeTraceData) bool {
+	if runtimePreviousReplyTaskCommitted(task.TaskID, previous) {
+		return false
+	}
+	if isPMSRuntimeSubIntent(task.SubIntent) {
+		if !runtimeReplyTaskHasPMSFact(task) || len(task.MissingAspects) > 0 {
+			return true
+		}
+	}
+	if isUngroundedKnowledgeReplyTask(task) {
+		return true
+	}
+	if strings.TrimSpace(previous.Status) == "error" || strings.TrimSpace(previous.Pipeline.Generate.Status) == "failed" ||
+		strings.TrimSpace(previous.Pipeline.Validate.Status) == "failed" || strings.TrimSpace(previous.Error.Stage) != "" {
+		return true
+	}
+	switch strings.TrimSpace(previous.Output.FinishReason) {
+	case "knowledge_evidence_safe_fallback", "generated_reply_protocol_error", "question_coverage":
+		return true
+	}
+	return false
+}
+
+func runtimePreviousReplyTaskCommitted(taskID string, previous callbacks.RuntimeTraceData) bool {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return false
+	}
+	for _, message := range previous.Output.CommitMessages {
+		if strings.TrimSpace(message.Status) != "sent" {
+			continue
+		}
+		for _, committedTaskID := range message.TaskIDs {
+			if strings.TrimSpace(committedTaskID) == taskID {
+				return true
+			}
+		}
+	}
+	return false
 }
