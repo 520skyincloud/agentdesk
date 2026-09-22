@@ -3,12 +3,14 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-desk/internal/ai"
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
@@ -6162,7 +6164,7 @@ func TestKnowledgeEvidenceJudgeSourceContextOnlyUsesAdjacentTurnForReference(t *
 	}
 }
 
-func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutRetries(t *testing.T) {
+func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutProviderRetries(t *testing.T) {
 	for _, tc := range []struct {
 		timeoutMS      int
 		taskCount      int
@@ -6187,6 +6189,54 @@ func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutRetries(t
 	longBatch := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{TimeoutMS: 4_000, MaxOutputTokens: 1_024}, 8, 28)
 	if longBatch.TimeoutMS != 28_000 || longBatch.MaxOutputTokens != 2_560 {
 		t.Fatalf("eight-task batch needs enough protocol capacity, got timeout=%d output=%d", longBatch.TimeoutMS, longBatch.MaxOutputTokens)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeRetriesOneTransientTransportFailure(t *testing.T) {
+	calls := 0
+	result, err, retried := callKnowledgeEvidenceJudgeModel(
+		context.Background(),
+		models.AIConfig{},
+		"system",
+		"user",
+		func(context.Context, models.AIConfig, string, string) (*ai.ChatCompletionResult, error) {
+			calls++
+			if calls == 1 {
+				return nil, fmt.Errorf("failed to call llm api: connection refused")
+			}
+			return &ai.ChatCompletionResult{Content: `{"schemaVersion":"knowledge_evidence_judge.v2"}`}, nil
+		},
+	)
+	if err != nil || result == nil || calls != 2 || !retried {
+		t.Fatalf("one transient transport failure must be retried once: result=%#v err=%v calls=%d retried=%v", result, err, calls, retried)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeDoesNotRetryPermanentOrExpiredFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "unauthorized", err: fmt.Errorf("status 401 unauthorized")},
+		{name: "bad request", err: fmt.Errorf("status 400 bad request")},
+		{name: "stage deadline", err: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			_, gotErr, retried := callKnowledgeEvidenceJudgeModel(
+				context.Background(),
+				models.AIConfig{},
+				"system",
+				"user",
+				func(context.Context, models.AIConfig, string, string) (*ai.ChatCompletionResult, error) {
+					calls++
+					return nil, test.err
+				},
+			)
+			if !errors.Is(gotErr, test.err) || calls != 1 || retried {
+				t.Fatalf("permanent or expired failure must not retry: err=%v calls=%d retried=%v", gotErr, calls, retried)
+			}
+		})
 	}
 }
 

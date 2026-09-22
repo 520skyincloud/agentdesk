@@ -44,6 +44,7 @@ const (
 	knowledgeEvidenceJudgeMaxTimeout      = 28 * time.Second
 	knowledgeEvidenceJudgeDeadlineReserve = 12 * time.Second
 	knowledgeEvidenceJudgeMaxOutputTokens = 4096
+	knowledgeEvidenceJudgeRetryDelay      = 250 * time.Millisecond
 )
 
 type knowledgeEvidenceJudge interface {
@@ -272,7 +273,13 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	callCtx, cancel := context.WithTimeout(callCtx, time.Duration(config.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	startedAt := time.Now()
-	result, callErr := ai.LLM.ChatWithConfig(callCtx, config, systemPrompt, string(userPrompt))
+	result, callErr, transportRetried := callKnowledgeEvidenceJudgeModel(
+		callCtx,
+		config,
+		systemPrompt,
+		string(userPrompt),
+		ai.LLM.ChatWithConfig,
+	)
 	trace.LatencyMs = time.Since(startedAt).Milliseconds()
 	recordKnowledgeEvidenceJudgeUsage(callCtx, req, config, result, lastKnowledgeEvidenceJudgeReceipt(capture), fingerprint, trace.LatencyMs, callErr)
 	if callErr != nil {
@@ -282,6 +289,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		}
 		trace.Status = failureDecision
 		trace.Reason = "knowledge judge model call failed; retrieval remains intact and the judge protocol must be retried"
+		if transportRetried {
+			trace.Reason += "; one bounded transport retry also failed"
+		}
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(callErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
@@ -303,6 +313,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
+	if transportRetried {
+		trace.Reason += "; recovered after one bounded transport retry"
+	}
 	if repairedHandoffs > 0 {
 		trace.Reason += fmt.Sprintf("; recovered %d explicit knowledge handoff selection(s) missed by the model", repairedHandoffs)
 	}
@@ -321,6 +334,41 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		Applied:    true,
 		Selections: selections,
 		Trace:      trace,
+	}
+}
+
+type knowledgeEvidenceJudgeChatFunc func(context.Context, models.AIConfig, string, string) (*ai.ChatCompletionResult, error)
+
+func callKnowledgeEvidenceJudgeModel(
+	ctx context.Context,
+	config models.AIConfig,
+	systemPrompt string,
+	userPrompt string,
+	chat knowledgeEvidenceJudgeChatFunc,
+) (*ai.ChatCompletionResult, error, bool) {
+	result, err := chat(ctx, config, systemPrompt, userPrompt)
+	if err == nil || !isRetryableKnowledgeEvidenceJudgeError(err) || !sleepKnowledgeEvidenceJudgeRetry(ctx, knowledgeEvidenceJudgeRetryDelay) {
+		return result, err, false
+	}
+	result, err = chat(ctx, config, systemPrompt, userPrompt)
+	return result, err, true
+}
+
+func isRetryableKnowledgeEvidenceJudgeError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return isRetryableRuntimeIntentModelError(err)
+}
+
+func sleepKnowledgeEvidenceJudgeRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
