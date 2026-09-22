@@ -2391,6 +2391,9 @@ func runtimeReplyTaskUsesKnowledge(task callbacks.ReplyTaskPlanTraceData) bool {
 	if output == "structured_resource_commit" || output == "human_route_confirmation_or_dispatch" || intent == "hotel_variable" {
 		return false
 	}
+	if !task.NeedsKnowledge && runtimeReplyTaskHasPMSFact(task) {
+		return false
+	}
 	if task.NeedsKnowledge {
 		return true
 	}
@@ -2795,7 +2798,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		result = batch.Merged
 	}
 	judgeTrace = appendRuntimeKnowledgeUnjudgedTaskTrace(judgeTrace, batch)
-	suppressRuntimeKnowledgeHandoffForPMSTasks(batch, state.Input.Collector, &judgeTrace)
+	deferRuntimeKnowledgeHandoffForPMSTasks(batch, state.Input.Collector, &judgeTrace)
 	externalProxyBoundaryTaskIDs := routeExternalProxyNoEvidenceAsCapabilityBoundary(batch, &judgeTrace)
 	dispositions := runtimeKnowledgeQuestionDispositions(batch)
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
@@ -3276,10 +3279,11 @@ func runtimeKnowledgeAutoHandoffEnabledForCollector(
 	return runtimeKnowledgeAutoHandoffEnabled(conversationID, pending)
 }
 
-func suppressRuntimeKnowledgeHandoffForPMSTasks(batch *runtimeKnowledgeRetrieveBatch, collector *callbacks.RuntimeTraceCollector, trace *callbacks.KnowledgeEvidenceJudgeTraceData) {
+func deferRuntimeKnowledgeHandoffForPMSTasks(batch *runtimeKnowledgeRetrieveBatch, collector *callbacks.RuntimeTraceCollector, trace *callbacks.KnowledgeEvidenceJudgeTraceData) {
 	if batch == nil || collector == nil {
 		return
 	}
+	_ = trace
 	pmsTaskIDs := make(map[string]struct{})
 	for _, task := range collector.Data.Pipeline.ReplyPlan.TaskPlans {
 		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) && strings.TrimSpace(task.TaskID) != "" {
@@ -3297,27 +3301,11 @@ func suppressRuntimeKnowledgeHandoffForPMSTasks(batch *runtimeKnowledgeRetrieveB
 		if question.Disposition != runtimeKnowledgeDispositionDirectHandoff && question.Disposition != runtimeKnowledgeDispositionAnswerThenHandoff {
 			continue
 		}
-		question.Disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
-		question.Decision = knowledgeEvidenceDecisionInsufficient
-		question.MissingAspects = appendIfMissing(question.MissingAspects, "当前实时问题应优先使用 PMS 查询结果")
+		// Keep the Judge trace intact until this same Task's PMS read has
+		// completed. Only hide the directive from pre-PMS generation so the
+		// knowledge handoff cannot fire before the realtime source is known.
+		question.Disposition = runtimeKnowledgeDispositionAnswer
 		removeKnowledgeHandoffDirectiveSelection(question.Result)
-		if trace == nil {
-			continue
-		}
-		for taskIndex := range trace.Tasks {
-			taskTrace := &trace.Tasks[taskIndex]
-			if strings.TrimSpace(taskTrace.TaskID) != strings.TrimSpace(question.TaskID) {
-				continue
-			}
-			taskTrace.Decision = knowledgeEvidenceDecisionInsufficient
-			taskTrace.DecisionSource = "pms_read_precedence"
-			taskTrace.Disposition = runtimeKnowledgeDispositionNoEvidenceHandoff
-			taskTrace.SelectedLayer = ""
-			taskTrace.SelectedCandidateIDs = nil
-			taskTrace.SupportedFacts = nil
-			taskTrace.AnswerText = nil
-			taskTrace.MissingAspects = appendIfMissing(taskTrace.MissingAspects, "当前实时问题应优先使用 PMS 查询结果")
-		}
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
 }

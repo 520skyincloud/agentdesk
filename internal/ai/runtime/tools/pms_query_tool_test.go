@@ -28,6 +28,45 @@ func TestPhoneArgForActionDoesNotUseKeywordForPhoneLookup(t *testing.T) {
 	}
 }
 
+func TestPMSQueryToolOrderLookupAcceptsCustomerNoWithoutPhone(t *testing.T) {
+	for _, tc := range []struct {
+		action string
+		path   string
+	}{
+		{action: "reserve_order_by_phone", path: "/admin-api/hpms/orderManage/reserveOrder/detailByPhone"},
+		{action: "recept_order_by_phone", path: "/admin-api/hpms/orderManage/receptOrder/detailByPhone"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != tc.path {
+					t.Fatalf("unexpected PMS request: %s %s", r.Method, r.URL.Path)
+				}
+				if r.URL.Query().Get("phone") != "" || r.URL.Query().Get("customerNo") != "MEMBER-001" {
+					t.Fatalf("customer number contract was not preserved: %s", r.URL.RawQuery)
+				}
+				_, _ = w.Write([]byte(`{"code":0,"data":{"customerNo":"MEMBER-001"}}`))
+			}))
+			defer server.Close()
+			usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+			got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"`+tc.action+`","customerNo":"MEMBER-001"}`)
+			if err != nil || !strings.Contains(got, `"status":"ok"`) || !strings.Contains(got, `"customerNo":"MEMBER-001"`) {
+				t.Fatalf("customerNo order lookup failed: %s %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPMSQueryToolMemberLookupStillRequiresPhoneWithCustomerNo(t *testing.T) {
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: "http://127.0.0.1:1"})
+	for _, action := range []string{"member_info_by_phone", "member_benefits_by_phone"} {
+		got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"`+action+`","customerNo":"MEMBER-001"}`)
+		if err != nil || !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "有效手机号") {
+			t.Fatalf("%s must not accept customerNo instead of phone: %s %v", action, got, err)
+		}
+	}
+}
+
 func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 	info, err := NewPMSQueryTool().Info(context.Background())
 	if err != nil {

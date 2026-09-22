@@ -67,7 +67,7 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "endTime", Value: &einojsonschema.Schema{Type: "string", Description: "库存结束日期，YYYY-MM-DD；与 endDate 二选一，优先使用 endTime。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "roomTypeId", Value: &einojsonschema.Schema{Type: "string", Description: "只读筛选的房型 ID；只能使用 PMS 返回的真实房型 ID，不得猜测。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "metrics", Value: &einojsonschema.Schema{Type: "string", Description: "库存指标筛选，按 PMS 支持的逗号分隔值传入；不填写时由服务端使用默认指标。"}},
-				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "customerNo", Value: &einojsonschema.Schema{Type: "string", Description: "会员编号或协议公司编号；可与 phone 同时传入以缩小当前有效订单范围。"}},
+				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "customerNo", Value: &einojsonschema.Schema{Type: "string", Description: "会员编号或协议公司编号；查询当前有效订单时可单独使用，也可与 phone 同时传入缩小范围；不能代替会员查询所需手机号。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "memberId", Value: &einojsonschema.Schema{Type: "string", Description: "兼容旧调用的会员编号别名，内部按 customerNo 传递。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "currentReceptOrderId", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选查询的当前接待单 ID。"}},
 				orderedmap.Pair[string, *einojsonschema.Schema]{Key: "reserveOrderNo", Value: &einojsonschema.Schema{Type: "string", Description: "换单续住候选的预订单号。"}},
@@ -110,7 +110,7 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	if !isPMSReadOnlyAction(input.Action) {
 		return `{"status":"unsupported","message":"当前客服 PMS 工具只支持只读查询，未执行任何办理操作。"}`, nil
 	}
-	if err := validatePMSReadOnlyInput(input.Action, input.ReserveOrderID, input.ReceptOrderID, input.Phone, input.Keyword,
+	if err := validatePMSReadOnlyInput(input.Action, input.ReserveOrderID, input.ReceptOrderID, input.Phone, firstNonEmpty(input.CustomerNo, input.MemberID), input.Keyword,
 		input.BeginTime, input.StartDate, input.EndTime, input.EndDate, input.RoomTypeID,
 		input.CurrentReceptOrderID, input.ReserveOrderNo, input.ReserveName, input.ReservePhone); err != nil {
 		payload, marshalErr := json.Marshal(map[string]any{"status": "unavailable", "message": err.Error()})
@@ -233,7 +233,7 @@ func isPMSReadOnlyAction(action string) bool {
 	}
 }
 
-func validatePMSReadOnlyInput(action, reserveOrderID, receptOrderID, phone, keyword, beginTime, startDate, endTime, endDate, roomTypeID, currentReceptOrderID, reserveOrderNo, reserveName, reservePhone string) error {
+func validatePMSReadOnlyInput(action, reserveOrderID, receptOrderID, phone, customerNo, keyword, beginTime, startDate, endTime, endDate, roomTypeID, currentReceptOrderID, reserveOrderNo, reserveName, reservePhone string) error {
 	switch action {
 	case "reserve_order_detail":
 		if strings.TrimSpace(reserveOrderID) == "" {
@@ -243,7 +243,11 @@ func validatePMSReadOnlyInput(action, reserveOrderID, receptOrderID, phone, keyw
 		if strings.TrimSpace(receptOrderID) == "" {
 			return fmt.Errorf("接待单详情查询需要真实接待单 ID")
 		}
-	case "reserve_order_by_phone", "recept_order_by_phone", "member_info_by_phone", "member_benefits_by_phone":
+	case "reserve_order_by_phone", "recept_order_by_phone":
+		if normalizePMSPhone(phone) == "" && strings.TrimSpace(customerNo) == "" {
+			return fmt.Errorf("订单查询需要客户提供的有效手机号或会员编号/协议公司编号")
+		}
+	case "member_info_by_phone", "member_benefits_by_phone":
 		if normalizePMSPhone(phone) == "" {
 			return fmt.Errorf("查询需要客户提供的有效手机号")
 		}

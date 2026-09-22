@@ -1095,8 +1095,11 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 上下文只复用同 session 已确认手机号/订单；当前纠正、否定、取消优先。日期支持完整日期、月日、日号和相对日期，续住目标日不再被改写成单晚。
 - 目标房型必须明确；库存逐房型逐日覆盖完整入住期。订单事实补充读取 `reserveProductList`，但仍只输出客户侧白名单。
 - 知识/PMS 混合 Task 分别守边界；PMS 事实不替代知识证据。PMS 优先只作用于同一 Task，独立知识明确转接仍可执行。
+- 同 Task 的知识转接改为结果后裁决：PMS 有可用事实时直接回答，PMS 缺参数、空结果或失败时恢复 Direct/AnswerThenHandoff；原 Judge 事实、候选和答案不会在 PMS 前被清空。
+- 订单查询支持手机号或 `customerNo`，会员查询仍只接受手机号；多日期纠正保留替换后的完整区间，库存只按请求日期且每天具备 `available` 才形成可售结论。
+- 预订单/接待单等独立只读请求，以及日期已明确时的库存/会员请求可并发执行；依赖步骤仍串行，运行级相同查询缓存已改为并发安全。
 - 人工路由收紧为客户当前明确要求或当前 Task 知识明确转接；知识不足、PMS 失败、普通服务和投诉不自动转接。明确建维修工单继续使用现有确认工具。
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox 或计费变更；HPMS 保持只读，`allowWrite=false`。
-- 双轮验证通过：`go test -p=1 ./internal/pms -count=2`、`go test -p=1 ./internal/ai/runtime/tools -count=2`、`go test -p=1 ./internal/ai/runtime/executor -count=2`、`go test -p=1 ./internal/ai/runtime/... -count=2`，以及 `git diff --check`。
+- 双轮验证通过：`go test -p=1 ./internal/pms -count=2`、`go test -p=1 ./internal/ai/runtime/tools -count=2`、`go test -p=1 ./internal/ai/runtime/executor -count=2`、`go test -p=1 ./internal/ai/runtime/... -count=2`，以及 `git diff --check`。并发聚焦路径另通过 `go test -race ... -count=2`。
 - 并行影响：`customer-audit` 可能继续追加本文件，合并时保留双方段落；`ai-billing` 无字段和计费语义变化。建议本轮回复链路提交先独立 review，再合并其他同时修改 Intent/Judge/人工路由的提交。
 - 回滚边界：程序可回到部署前 release；数据库、消息、知识库和“薇薇2”不回滚。PMS 写能力始终关闭，不存在需要逆向撤销的 PMS 操作。

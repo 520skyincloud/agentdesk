@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
+	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	runtimetools "agent-desk/internal/ai/runtime/tools"
@@ -75,26 +77,47 @@ func (i runtimePMSReadToolInvoker) Invoke(ctx context.Context, action string, ar
 type runtimePMSCountingInvoker struct {
 	delegate runtimePMSReadInvoker
 	count    *int
+	mu       sync.Mutex
+}
+
+type runtimePMSMemoizedResult struct {
+	done   chan struct{}
+	result pmsReadStepResult
 }
 
 type runtimePMSMemoizingInvoker struct {
 	delegate runtimePMSReadInvoker
-	results  map[string]pmsReadStepResult
+	mu       sync.Mutex
+	results  map[string]*runtimePMSMemoizedResult
 }
 
 func (i *runtimePMSMemoizingInvoker) Invoke(ctx context.Context, action string, args map[string]string) pmsReadStepResult {
 	if i == nil || i.delegate == nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 查询执行器不可用"}
 	}
-	if i.results == nil {
-		i.results = make(map[string]pmsReadStepResult)
-	}
 	key := runtimePMSReadCacheKey(action, args)
-	if result, ok := i.results[key]; ok {
-		return result
+	i.mu.Lock()
+	if i.results == nil {
+		i.results = make(map[string]*runtimePMSMemoizedResult)
 	}
+	if cached, ok := i.results[key]; ok {
+		i.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 查询已取消"}
+		case <-cached.done:
+			return cached.result
+		}
+	}
+	cached := &runtimePMSMemoizedResult{done: make(chan struct{})}
+	i.results[key] = cached
+	i.mu.Unlock()
+
 	result := i.delegate.Invoke(ctx, action, args)
-	i.results[key] = result
+	i.mu.Lock()
+	cached.result = result
+	close(cached.done)
+	i.mu.Unlock()
 	return result
 }
 
@@ -111,9 +134,11 @@ func runtimePMSReadCacheKey(action string, args map[string]string) string {
 	return strings.Join(parts, "|")
 }
 
-func (i runtimePMSCountingInvoker) Invoke(ctx context.Context, action string, args map[string]string) pmsReadStepResult {
+func (i *runtimePMSCountingInvoker) Invoke(ctx context.Context, action string, args map[string]string) pmsReadStepResult {
 	if i.count != nil {
+		i.mu.Lock()
 		*i.count++
+		i.mu.Unlock()
 	}
 	return i.delegate.Invoke(ctx, action, args)
 }
@@ -176,7 +201,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 	}
 	sessionLocator := runtimePMSSessionLocatorFromHistory(history)
 	callCount := 0
-	invoker := &runtimePMSMemoizingInvoker{delegate: runtimePMSCountingInvoker{delegate: delegate, count: &callCount}}
+	invoker := &runtimePMSMemoizingInvoker{delegate: &runtimePMSCountingInvoker{delegate: delegate, count: &callCount}}
 	executed := false
 	processedTasks := make([]callbacks.ReplyTaskPlanTraceData, 0)
 	for index := range replyPlan.TaskPlans {
@@ -192,10 +217,13 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			aggregated = pmsReadPlanResult{Status: pmsReadStepUnavailable, Unconfirmed: []string{"PMS 查询计划结果无效"}}
 		}
 		applyRuntimePMSReadResultToTask(task, finalPlan, aggregated, index)
+		resolveRuntimePMSKnowledgeHandoffForTask(req, task, replyPlan, summary, collector)
 		task.NeedsTool = false
 		processedTasks = append(processedTasks, *task)
 		executed = true
 	}
+	replyPlan.ActiveTaskCount = len(replyPlan.TaskPlans)
+	replyPlan.ReplyRequiredTaskCount = countReplyRequiredTasks(replyPlan.TaskPlans)
 	if !executed {
 		return intent, replyPlan, false
 	}
@@ -244,6 +272,106 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 		}
 	}
 	return intent, replyPlan, true
+}
+
+func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.ReplyTaskPlanTraceData, plan callbacks.ReplyPlanTraceData, summary *RunResult, collector *callbacks.RuntimeTraceCollector) {
+	if task == nil || collector == nil || strings.TrimSpace(task.TaskID) == "" || !isPMSRuntimeSubIntent(task.SubIntent) {
+		return
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	traceIndex := -1
+	for index := range trace.Tasks {
+		if strings.TrimSpace(trace.Tasks[index].TaskID) == strings.TrimSpace(task.TaskID) {
+			traceIndex = index
+			break
+		}
+	}
+	if traceIndex < 0 {
+		return
+	}
+	taskTrace := &trace.Tasks[traceIndex]
+	originalDisposition := strings.TrimSpace(taskTrace.Disposition)
+	if originalDisposition != runtimeKnowledgeDispositionDirectHandoff && originalDisposition != runtimeKnowledgeDispositionAnswerThenHandoff {
+		return
+	}
+
+	taskID := strings.TrimSpace(task.TaskID)
+	if runtimeReplyTaskHasPMSFact(*task) {
+		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
+		if len(trace.DeferredTaskIDs) == 0 {
+			trace.DeferredHandoff = false
+			trace.DeferredHandoffReason = ""
+		}
+		taskTrace.Disposition = runtimeKnowledgeDispositionAnswer
+		taskTrace.DecisionSource = "pms_read_precedence"
+		if originalDisposition == runtimeKnowledgeDispositionDirectHandoff {
+			task.NeedsKnowledge = false
+			task.Output = "text_reply"
+			task.OutputKind = "text"
+			task.ReplyRequired = true
+			task.SelectedLayer = ""
+			task.SelectedCandidateIDs = nil
+			task.SupportedFacts = runtimeReplyTaskPMSFacts(*task)
+			task.AnswerText = nil
+			taskTrace.SelectedLayer = ""
+			taskTrace.SelectedCandidateIDs = nil
+			taskTrace.SupportedFacts = nil
+			taskTrace.AnswerText = nil
+		}
+		collector.SetKnowledgeEvidenceJudge(trace)
+		return
+	}
+
+	pending := runtimeKnowledgeQuestionDisposition{
+		TaskID:         taskID,
+		Query:          activeGenerationTaskText(*task),
+		Disposition:    originalDisposition,
+		HasAnswer:      originalDisposition == runtimeKnowledgeDispositionAnswerThenHandoff,
+		NeedsHandoff:   true,
+		MissingAspects: append([]string(nil), taskTrace.MissingAspects...),
+		HandoffHit:     rag.RetrieveResult{Content: "转人工"},
+	}
+	if !runtimeKnowledgeAutoHandoffEnabledForCollector(req.Conversation.ID, []runtimeKnowledgeQuestionDisposition{pending}, collector) {
+		return
+	}
+	previousCount := len(trace.DeferredTaskIDs)
+	trace.DeferredTaskIDs = appendIfMissing(trace.DeferredTaskIDs, taskID)
+	trace.DeferredHandoff = true
+	if len(trace.DeferredTaskIDs) > previousCount {
+		reason := deferredRuntimeKnowledgeHandoffReason([]runtimeKnowledgeQuestionDisposition{pending})
+		if strings.TrimSpace(trace.DeferredHandoffReason) == "" {
+			trace.DeferredHandoffReason = reason
+		} else if strings.TrimSpace(reason) != "" {
+			trace.DeferredHandoffReason += "；" + reason
+		}
+	}
+	if originalDisposition == runtimeKnowledgeDispositionDirectHandoff {
+		task.Output = runtimeKnowledgeDeferredHandoffOutput
+		task.OutputKind = "handoff"
+		task.ReplyRequired = false
+		if summary != nil && !runtimePMSReplyPlanHasAnswerableSibling(plan, taskID) {
+			summary.handoffDirective = true
+			summary.handoffDirectiveReason = deferredRuntimeKnowledgeHandoffReason([]runtimeKnowledgeQuestionDisposition{pending})
+			summary.handoffDirectiveSource = "knowledge_top_answer"
+		}
+	} else {
+		task.Output = "knowledge_text_reply"
+		task.OutputKind = "text"
+		task.ReplyRequired = true
+	}
+	collector.SetKnowledgeEvidenceJudge(trace)
+}
+
+func runtimePMSReplyPlanHasAnswerableSibling(plan callbacks.ReplyPlanTraceData, taskID string) bool {
+	for _, candidate := range plan.TaskPlans {
+		if strings.TrimSpace(candidate.TaskID) == strings.TrimSpace(taskID) {
+			continue
+		}
+		if replyTaskRequiresText(candidate) || strings.TrimSpace(candidate.OutputKind) == "resource" || strings.TrimSpace(candidate.Output) == "structured_resource_commit" {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimePMSMatchingIntentTaskIndex(replyTask callbacks.ReplyTaskPlanTraceData, intentTasks []callbacks.IntentTaskTraceData, used map[int]struct{}) int {
@@ -417,11 +545,11 @@ func runtimePMSReadDates(task callbacks.ReplyTaskPlanTraceData, scenario pmsRead
 		now = now.In(location)
 	}
 	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
-	mentions := runtimePMSDateMentions(text, now)
-	compact := compactRuntimePMSPhoneContext(text)
-	if len(mentions) >= 2 && strings.Contains(compact, "不是") && (strings.Contains(compact, "是") || strings.Contains(compact, "改成")) {
-		mentions = mentions[len(mentions)-1:]
+	dateText := text
+	if correctedText := runtimePMSCorrectedDateText(text); correctedText != "" {
+		dateText = correctedText
 	}
+	mentions := runtimePMSDateMentions(dateText, now)
 	if len(mentions) >= 2 {
 		return mentions[0].date, mentions[1].date
 	}
@@ -435,6 +563,26 @@ func runtimePMSReadDates(task callbacks.ReplyTaskPlanTraceData, scenario pmsRead
 		}
 	}
 	return "", ""
+}
+
+func runtimePMSCorrectedDateText(text string) string {
+	boundary := -1
+	for _, marker := range []string{"改成", "改为", "更正为", "调整为", "替换成", "替换为"} {
+		if index := strings.LastIndex(text, marker); index >= 0 && index+len(marker) > boundary {
+			boundary = index + len(marker)
+		}
+	}
+	if boundary >= 0 {
+		return strings.TrimSpace(text[boundary:])
+	}
+
+	if index := strings.LastIndex(text, "不是"); index >= 0 {
+		replacement := text[index+len("不是"):]
+		if isIndex := strings.Index(replacement, "是"); isIndex >= 0 {
+			return strings.TrimSpace(replacement[isIndex+len("是"):])
+		}
+	}
+	return ""
 }
 
 func runtimePMSDateMentions(text string, now time.Time) []runtimePMSDateMention {
@@ -506,39 +654,8 @@ func runtimePMSDateMentions(text string, now time.Time) []runtimePMSDateMention 
 }
 
 func executeRuntimePMSReadPlan(ctx context.Context, plan pmsReadPlan, input pmsReadPlanInput, invoker runtimePMSReadInvoker) ([]pmsReadStepResult, pmsReadPlan) {
-	results := make([]pmsReadStepResult, 0, len(plan.Steps)+1)
 	byStep := make(map[string]pmsReadStepResult, len(plan.Steps)+1)
-	executeFrom := func(start int) {
-		for _, step := range plan.Steps[start:] {
-			if !isRuntimePMSReadOnlyAction(step.Action) {
-				result := pmsReadStepResult{StepID: step.ID, Status: pmsReadStepUnsupported, Message: "PMS 只读链路拒绝非查询操作"}
-				results = append(results, result)
-				byStep[step.ID] = result
-				continue
-			}
-			args, status, message := resolveRuntimePMSReadStepArgs(step, byStep)
-			if status != "" {
-				result := pmsReadStepResult{StepID: step.ID, Status: status, Message: message, Args: args}
-				results = append(results, result)
-				byStep[step.ID] = result
-				continue
-			}
-			result := pmsReadStepResult{}
-			if step.Action == "price_difference" {
-				result = assessRuntimePMSPriceDifference(byStep, args)
-			} else {
-				result = invoker.Invoke(ctx, step.Action, args)
-			}
-			result.StepID = step.ID
-			result.Args = clonePMSReadArgs(args)
-			if step.Action == "inventory" {
-				result = validateRuntimePMSInventoryCoverage(result)
-			}
-			results = append(results, result)
-			byStep[step.ID] = result
-		}
-	}
-	executeFrom(0)
+	executeRuntimePMSReadSteps(ctx, plan.Steps, byStep, invoker)
 
 	if input.TargetRoomTypeID == "" && strings.TrimSpace(input.TargetRoomTypeText) != "" {
 		if inventory, ok := byStep["inventory.stay"]; ok && (inventory.Status == pmsReadStepOK || inventory.Status == pmsReadStepPartial) {
@@ -552,7 +669,7 @@ func executeRuntimePMSReadPlan(ctx context.Context, plan pmsReadPlan, input pmsR
 					previousCount := len(plan.Steps)
 					appendPMSReadPriceStep(&plan, input, runtimePMSOrderStepIDs(plan), plan.Scenario == pmsReadScenarioPrice)
 					if len(plan.Steps) > previousCount {
-						executeFrom(previousCount)
+						executeRuntimePMSReadSteps(ctx, plan.Steps[previousCount:], byStep, invoker)
 					}
 				}
 			case pmsReadStepAmbiguous:
@@ -563,7 +680,108 @@ func executeRuntimePMSReadPlan(ctx context.Context, plan pmsReadPlan, input pmsR
 		}
 	}
 	plan.Missing = uniquePMSReadStrings(plan.Missing)
+	results := make([]pmsReadStepResult, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		if result, ok := byStep[step.ID]; ok {
+			results = append(results, result)
+		}
+	}
 	return results, plan
+}
+
+func executeRuntimePMSReadSteps(ctx context.Context, steps []pmsReadPlanStep, byStep map[string]pmsReadStepResult, invoker runtimePMSReadInvoker) {
+	pending := append([]pmsReadPlanStep(nil), steps...)
+	knownStepIDs := make(map[string]struct{}, len(steps)+len(byStep))
+	for stepID := range byStep {
+		knownStepIDs[stepID] = struct{}{}
+	}
+	for _, step := range steps {
+		knownStepIDs[step.ID] = struct{}{}
+	}
+
+	for len(pending) > 0 {
+		ready := make([]pmsReadPlanStep, 0, len(pending))
+		remaining := make([]pmsReadPlanStep, 0, len(pending))
+		for _, step := range pending {
+			if runtimePMSReadStepDependenciesComplete(step, byStep, knownStepIDs) {
+				ready = append(ready, step)
+			} else {
+				remaining = append(remaining, step)
+			}
+		}
+		if len(ready) == 0 {
+			for _, step := range remaining {
+				byStep[step.ID] = pmsReadStepResult{
+					StepID:  step.ID,
+					Status:  pmsReadStepUnavailable,
+					Message: "PMS 查询计划依赖无法解析",
+					Args:    clonePMSReadArgs(step.Args),
+				}
+			}
+			return
+		}
+
+		waveResults := make([]pmsReadStepResult, len(ready))
+		var waitGroup sync.WaitGroup
+		for index, step := range ready {
+			args, status, message := resolveRuntimePMSReadStepArgs(step, byStep)
+			if !isRuntimePMSReadOnlyAction(step.Action) {
+				waveResults[index] = pmsReadStepResult{StepID: step.ID, Status: pmsReadStepUnsupported, Message: "PMS 只读链路拒绝非查询操作", Args: clonePMSReadArgs(args)}
+				continue
+			}
+			if status != "" {
+				waveResults[index] = pmsReadStepResult{StepID: step.ID, Status: status, Message: message, Args: args}
+				continue
+			}
+
+			if step.Action == "price_difference" {
+				result := assessRuntimePMSPriceDifference(byStep, args)
+				result.StepID = step.ID
+				result.Args = clonePMSReadArgs(args)
+				waveResults[index] = result
+				continue
+			}
+
+			waitGroup.Add(1)
+			go func(index int, step pmsReadPlanStep, args map[string]string) {
+				defer waitGroup.Done()
+				result := invoker.Invoke(ctx, step.Action, args)
+				result.StepID = step.ID
+				result.Args = clonePMSReadArgs(args)
+				if step.Action == "inventory" {
+					result = validateRuntimePMSInventoryCoverage(result)
+				}
+				waveResults[index] = result
+			}(index, step, clonePMSReadArgs(args))
+		}
+		waitGroup.Wait()
+		for index, step := range ready {
+			byStep[step.ID] = waveResults[index]
+		}
+		pending = remaining
+	}
+}
+
+func runtimePMSReadStepDependenciesComplete(step pmsReadPlanStep, byStep map[string]pmsReadStepResult, knownStepIDs map[string]struct{}) bool {
+	dependencies := make(map[string]struct{})
+	for _, binding := range step.Bindings {
+		for _, source := range binding.Sources {
+			if _, known := knownStepIDs[source.StepID]; known {
+				dependencies[source.StepID] = struct{}{}
+			}
+		}
+	}
+	if step.Action == "price_difference" {
+		if _, known := knownStepIDs["inventory.stay"]; known {
+			dependencies["inventory.stay"] = struct{}{}
+		}
+	}
+	for stepID := range dependencies {
+		if _, complete := byStep[stepID]; !complete {
+			return false
+		}
+	}
+	return true
 }
 
 func assessRuntimePMSPriceDifference(results map[string]pmsReadStepResult, args map[string]string) pmsReadStepResult {
@@ -632,7 +850,8 @@ func validateRuntimePMSInventoryCoverage(result pmsReadStepResult) pmsReadStepRe
 		bookings, _ := row["bookings"].(map[string]any)
 		missing := make([]string, 0)
 		for _, date := range expected {
-			if _, exists := bookings[date]; !exists {
+			day, exists := bookings[date].(map[string]any)
+			if !exists || firstRuntimePMSReadText(day, "available") == "" {
 				missing = append(missing, date)
 			}
 		}
@@ -1016,23 +1235,18 @@ func runtimePMSInventoryFact(step pmsReadStepResult) string {
 
 func runtimePMSInventoryAvailability(row map[string]any, expectedDates []string) string {
 	bookings, ok := row["bookings"].(map[string]any)
-	if !ok || len(bookings) == 0 {
+	if !ok || len(bookings) == 0 || len(expectedDates) == 0 {
 		return ""
 	}
-	for _, date := range expectedDates {
-		if _, exists := bookings[date]; !exists {
-			return ""
-		}
-	}
 	minimum := ""
-	for _, value := range bookings {
-		day, ok := value.(map[string]any)
-		if !ok {
+	for _, date := range expectedDates {
+		day, exists := bookings[date].(map[string]any)
+		if !exists {
 			continue
 		}
 		available := firstRuntimePMSReadText(day, "available")
 		if available == "" {
-			continue
+			return ""
 		}
 		if minimum == "" || compareRuntimePMSNumericText(available, minimum) < 0 {
 			minimum = available

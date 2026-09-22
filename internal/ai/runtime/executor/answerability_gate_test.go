@@ -456,7 +456,7 @@ func TestExternalProxyCapabilityBoundaryDoesNotOverrideOtherServiceRoutes(t *tes
 	}
 }
 
-func TestPMSPrecedenceSuppressesKnowledgeHandoffOnlyForTheSameTask(t *testing.T) {
+func TestPMSPrecedenceDefersKnowledgeHandoffWithoutDestroyingJudgeTrace(t *testing.T) {
 	handoff := rag.RetrieveResult{Content: "转人工"}
 	batch := &runtimeKnowledgeRetrieveBatch{
 		Questions: []runtimeKnowledgeQuestionResult{
@@ -475,13 +475,17 @@ func TestPMSPrecedenceSuppressesKnowledgeHandoffOnlyForTheSameTask(t *testing.T)
 		{TaskID: "knowledge-task", Decision: knowledgeEvidenceDecisionDirectSingle, Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C2"}},
 	}}
 
-	suppressRuntimeKnowledgeHandoffForPMSTasks(batch, collector, &trace)
+	deferRuntimeKnowledgeHandoffForPMSTasks(batch, collector, &trace)
 
-	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff || trace.Tasks[0].Decision != knowledgeEvidenceDecisionInsufficient {
-		t.Fatalf("same-task PMS precedence was not applied: batch=%#v trace=%#v", batch.Questions, trace.Tasks)
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].Result.Hits) != 0 {
+		t.Fatalf("same-task handoff must be hidden only from pre-PMS generation: batch=%#v", batch.Questions)
+	}
+	if trace.Tasks[0].Disposition != runtimeKnowledgeDispositionDirectHandoff || trace.Tasks[0].Decision != knowledgeEvidenceDecisionDirectSingle ||
+		trace.Tasks[0].SelectedLayer != knowledgeEvidenceLayerStore || len(trace.Tasks[0].SelectedCandidateIDs) != 1 {
+		t.Fatalf("pre-PMS deferral must preserve the authoritative Judge decision: %#v", trace.Tasks[0])
 	}
 	if batch.Questions[1].Disposition != runtimeKnowledgeDispositionDirectHandoff || trace.Tasks[1].Disposition != runtimeKnowledgeDispositionDirectHandoff {
-		t.Fatalf("independent knowledge handoff was incorrectly suppressed: batch=%#v trace=%#v", batch.Questions, trace.Tasks)
+		t.Fatalf("independent knowledge handoff was incorrectly changed: batch=%#v trace=%#v", batch.Questions, trace.Tasks)
 	}
 }
 

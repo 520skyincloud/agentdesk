@@ -2,8 +2,8 @@ package executor
 
 import (
 	"context"
-	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,11 +18,14 @@ type runtimePMSFakeCall struct {
 }
 
 type runtimePMSFakeInvoker struct {
+	mu      sync.Mutex
 	calls   []runtimePMSFakeCall
 	results map[string][]pmsReadStepResult
 }
 
 func (f *runtimePMSFakeInvoker) Invoke(_ context.Context, action string, args map[string]string) pmsReadStepResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, runtimePMSFakeCall{action: action, args: clonePMSReadArgs(args)})
 	queue := f.results[action]
 	if len(queue) == 0 {
@@ -156,6 +159,21 @@ func TestRuntimePMSReadDatesResolveExplicitAndRelativeRanges(t *testing.T) {
 			}
 		})
 	}
+
+	for _, test := range []struct {
+		name string
+		text string
+	}{
+		{name: "replacement is keeps the corrected range", text: "不是9月23日到24日，是9月25日到27日"},
+		{name: "change to keeps the corrected range", text: "原来9月23日到24日，改成9月25日到27日"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			start, end := runtimePMSReadDates(callbacks.ReplyTaskPlanTraceData{OriginalText: test.text}, pmsReadScenarioDateInventory, now)
+			if start != "2026-09-25" || end != "2026-09-27" {
+				t.Fatalf("corrected range mismatch for %q: %q to %q", test.text, start, end)
+			}
+		})
+	}
 }
 
 func TestRuntimePMSTargetRoomTypeRequiresARealTarget(t *testing.T) {
@@ -270,6 +288,44 @@ func TestRuntimePMSInventoryCoverageRequiresEveryStayDate(t *testing.T) {
 			t.Fatalf("cross-room date union must remain partial: %#v", got)
 		}
 	})
+
+	t.Run("requested dates require available values", func(t *testing.T) {
+		got := validateRuntimePMSInventoryCoverage(pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-22", "endTime": "2026-09-24"},
+			Data: []any{map[string]any{"roomTypeName": "大床房", "bookings": map[string]any{
+				"2026-09-22": map[string]any{"available": "2"},
+				"2026-09-23": map[string]any{},
+				"2026-09-24": map[string]any{"available": "5"},
+			}}},
+		})
+		if got.Status != pmsReadStepPartial || !strings.Contains(got.Message, "2026-09-23") {
+			t.Fatalf("missing requested-day availability must remain partial: %#v", got)
+		}
+	})
+
+	t.Run("availability ignores dates outside the requested stay", func(t *testing.T) {
+		row := map[string]any{"roomTypeName": "大床房", "bookings": map[string]any{
+			"2026-09-21": map[string]any{"available": "0"},
+			"2026-09-22": map[string]any{"available": "3"},
+			"2026-09-23": map[string]any{"available": "2"},
+			"2026-09-24": map[string]any{"available": "1"},
+		}}
+		result := validateRuntimePMSInventoryCoverage(pmsReadStepResult{
+			Status: pmsReadStepOK,
+			Args:   map[string]string{"beginTime": "2026-09-22", "endTime": "2026-09-24"},
+			Data:   []any{row},
+		})
+		if result.Status != pmsReadStepOK {
+			t.Fatalf("complete requested dates must stay valid: %#v", result)
+		}
+		if got := runtimePMSInventoryAvailability(row, []string{"2026-09-22", "2026-09-23"}); got != "2" {
+			t.Fatalf("out-of-range dates changed requested-stay availability: %q", got)
+		}
+		if fact := runtimePMSInventoryFact(result); !strings.Contains(fact, "可售2间") || strings.Contains(fact, "可售0间") || strings.Contains(fact, "可售1间") {
+			t.Fatalf("inventory fact used an out-of-range date: %q", fact)
+		}
+	})
 }
 
 func TestRuntimePMSMemoizingInvokerReusesIdenticalRead(t *testing.T) {
@@ -373,9 +429,8 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 		if len(results) != 4 || len(invoker.calls) != 3 {
 			t.Fatalf("upgrade must query order, inventory, member and price: plan=%#v calls=%#v results=%#v", plan, invoker.calls, results)
 		}
-		gotActions := []string{invoker.calls[0].action, invoker.calls[1].action, invoker.calls[2].action}
-		wantActions := []string{"recept_order_detail", "inventory", "member_benefits_by_phone"}
-		if !reflect.DeepEqual(gotActions, wantActions) || runtimePMSFakeCalled(invoker.calls, "price_difference") {
+		if !runtimePMSFakeCalled(invoker.calls, "recept_order_detail") || !runtimePMSFakeCalled(invoker.calls, "inventory") ||
+			!runtimePMSFakeCalled(invoker.calls, "member_benefits_by_phone") || runtimePMSFakeCalled(invoker.calls, "price_difference") {
 			t.Fatalf("unexpected upgrade read sequence: %#v", invoker.calls)
 		}
 	}
@@ -484,6 +539,115 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 			t.Fatalf("Generate boundary missing: %q", instruction)
 		}
 	}
+}
+
+func TestRuntimePMSKnowledgeHandoffUsesPMSFactsBeforeSameTaskTransfer(t *testing.T) {
+	invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+		"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"reserveOrderId": "RES-1", "roomName": "大床房"}}},
+		"recept_order_by_phone":  {{Status: pmsReadStepOK, Data: map[string]any{"receptOrderId": "REC-1", "homeName": "1401"}}},
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{
+		DeferredHandoff:       true,
+		DeferredHandoffReason: "兄弟任务需要门店同事接手",
+		DeferredTaskIDs:       []string{"T2"},
+		Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+			{TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}},
+			{TaskID: "T2", Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C2"}},
+		},
+	})
+	intent := callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{SubIntent: "order_query", NeedsTool: true, NeedsKnowledge: true}}}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query", OriginalText: "查 13800138000 的订单", NeedsTool: true, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply", SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}},
+		{TaskID: "T2", Intent: "hotel_info", SubIntent: "other_policy", OriginalText: "另一个问题", NeedsKnowledge: true, OutputKind: "handoff", ReplyRequired: false, Output: runtimeKnowledgeDeferredHandoffOutput},
+	}}
+	summary := &RunResult{}
+
+	_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(
+		context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, summary, collector,
+		time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker,
+	)
+	if !handled {
+		t.Fatal("PMS task was not handled")
+	}
+	resolved := gotPlan.TaskPlans[0]
+	if resolved.Output != "text_reply" || resolved.OutputKind != "text" || !resolved.ReplyRequired || resolved.NeedsKnowledge || !runtimeReplyTaskHasPMSFact(resolved) {
+		t.Fatalf("usable PMS facts must win for the same Task: %#v", resolved)
+	}
+	if resolved.SelectedLayer != "" || len(resolved.SelectedCandidateIDs) != 0 || resolved.AnswerText != nil {
+		t.Fatalf("suppressed direct-handoff evidence leaked into the PMS reply Task: %#v", resolved)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.Tasks[0].DecisionSource != "pms_read_precedence" {
+		t.Fatalf("same-task trace did not record PMS precedence: %#v", trace.Tasks[0])
+	}
+	if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T2" || trace.Tasks[1].Disposition != runtimeKnowledgeDispositionDirectHandoff {
+		t.Fatalf("PMS precedence changed an independent sibling handoff: %#v", trace)
+	}
+	if summary.handoffDirective {
+		t.Fatalf("successful same-task PMS read must not request immediate handoff: %#v", summary)
+	}
+}
+
+func TestRuntimePMSKnowledgeHandoffRestoresKnowledgeRouteWhenReadIsUnavailable(t *testing.T) {
+	unavailableInvoker := func() *runtimePMSFakeInvoker {
+		return &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_by_phone": {{Status: pmsReadStepUnavailable, Message: "reserve unavailable"}},
+			"recept_order_by_phone":  {{Status: pmsReadStepUnavailable, Message: "recept unavailable"}},
+		}}
+	}
+	baseIntent := func() callbacks.IntentTraceData {
+		return callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{SubIntent: "order_query", NeedsTool: true, NeedsKnowledge: true}}}
+	}
+
+	t.Run("direct handoff is restored and dispatched before generation", func(t *testing.T) {
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		}}})
+		plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query", OriginalText: "查 13800138000 的订单", NeedsTool: true, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply", SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		}}}
+		summary := &RunResult{}
+
+		_, gotPlan, _ := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, baseIntent(), plan, summary, collector, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), unavailableInvoker())
+		if task := gotPlan.TaskPlans[0]; task.Output != runtimeKnowledgeDeferredHandoffOutput || task.OutputKind != "handoff" || task.ReplyRequired {
+			t.Fatalf("failed PMS read must restore the direct knowledge handoff: %#v", task)
+		}
+		trace := collector.Data.Pipeline.EvidenceJudge
+		if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
+			t.Fatalf("failed PMS read did not restore the deferred trace: %#v", trace)
+		}
+		if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_top_answer" || strings.TrimSpace(summary.handoffDirectiveReason) == "" {
+			t.Fatalf("failed pure PMS Task must restore the executable knowledge handoff directive: %#v", summary)
+		}
+	})
+
+	t.Run("answer then handoff keeps the knowledge answer before deferred transfer", func(t *testing.T) {
+		answer := "当前规则可以先为您核对订单。"
+		fact := callbacks.KnowledgeEvidenceFactTraceData{FactID: "F1", Aspect: "process", Statement: answer}
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: "T1", Decision: knowledgeEvidenceDecisionPartial, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionAnswerThenHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}, SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{fact}, AnswerText: &answer,
+		}}})
+		plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query", OriginalText: "查 13800138000 的订单", NeedsTool: true, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply", SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"}, SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{fact}, AnswerText: &answer,
+		}}}
+		summary := &RunResult{}
+
+		_, gotPlan, _ := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, baseIntent(), plan, summary, collector, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), unavailableInvoker())
+		task := gotPlan.TaskPlans[0]
+		if task.Output != "knowledge_text_reply" || task.OutputKind != "text" || !task.ReplyRequired || len(task.SupportedFacts) != 1 || task.SupportedFacts[0].Statement != answer || task.AnswerText == nil || *task.AnswerText != answer {
+			t.Fatalf("answer-then-handoff lost its usable knowledge answer: %#v", task)
+		}
+		trace := collector.Data.Pipeline.EvidenceJudge
+		if !trace.DeferredHandoff || len(trace.DeferredTaskIDs) != 1 || trace.DeferredTaskIDs[0] != "T1" {
+			t.Fatalf("answer-then-handoff did not restore deferred transfer: %#v", trace)
+		}
+		if summary.handoffDirective {
+			t.Fatalf("answer-then-handoff must generate the known answer before deferred transfer: %#v", summary)
+		}
+	})
 }
 
 func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
