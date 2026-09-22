@@ -88,6 +88,16 @@ func TestJudgeAnswerTextReplacesFactDumpWithoutLosingCriticalValues(t *testing.T
 	}
 }
 
+func TestDeclinedKnowledgeHandoffAnswerIsLockedWithoutKnowledgeFacts(t *testing.T) {
+	answer := declinedKnowledgeHandoffReply
+	groups := buildTextReplyTaskGroups(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Output: "text_reply", OutputKind: "text", ReplyRequired: true, AnswerText: &answer,
+	}}})
+	if len(groups) != 1 || !groups[0].EvidenceLocked || groups[0].AnswerText == nil || *groups[0].AnswerText != declinedKnowledgeHandoffReply {
+		t.Fatalf("declined handoff answer was not locked: %#v", groups)
+	}
+}
+
 func TestJudgeOwnsProxySelfHelpAndPartialExplanation(t *testing.T) {
 	empty, address := "", "收货地址填写南七店加楼层房间号。"
 	partial := "酒店有外卖机器人。不好意思，能否送到房门口还不能确认。"

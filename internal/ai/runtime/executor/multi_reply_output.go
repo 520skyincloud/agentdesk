@@ -1033,6 +1033,10 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 		}
 		usedTaskIDs[taskID] = struct{}{}
 		text := firstNonEmptyReplyTaskText(task.ResolvedText, task.Text, task.SubIntent, task.Intent)
+		evidenceLocked := task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0
+		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) == declinedKnowledgeHandoffReply {
+			evidenceLocked = true
+		}
 		groups = append(groups, textReplyTaskGroup{
 			TaskID:              taskID,
 			Texts:               []string{text},
@@ -1040,7 +1044,7 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 			StructuredRequired:  task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
 			ExternalProxyAction: isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective),
 			ClarificationOnly:   task.Intent == "interaction" && task.SubIntent == "clarify",
-			EvidenceLocked:      task.SelectedLayer != "" && len(task.SelectedCandidateIDs) > 0 && len(task.SupportedFacts) > 0,
+			EvidenceLocked:      evidenceLocked,
 			SelectedLayer:       task.SelectedLayer,
 			AnswerText:          task.AnswerText,
 		})
