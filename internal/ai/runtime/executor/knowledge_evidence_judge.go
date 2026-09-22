@@ -7808,9 +7808,10 @@ func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEv
 			trimKnowledgeEvidenceHandoffQuestionSuffix(question),
 			trimKnowledgeEvidenceHandoffQuestionSuffix(exactQuery),
 		)
-		questionKey := normalizeKnowledgeEvidenceQuestionForMatch(question)
-		queryKey := normalizeKnowledgeEvidenceQuestionForMatch(exactQuery)
-		literalBusinessQuestionIncluded := len([]rune(questionKey)) >= 4 && strings.Contains(queryKey, questionKey)
+		questionKey := trimKnowledgeEvidenceHandoffQuestionSuffix(question)
+		queryKey := trimKnowledgeEvidenceHandoffQuestionSuffix(exactQuery)
+		literalBusinessQuestionIncluded := !isGenericKnowledgeEvidenceHandoffQuestion(questionKey) &&
+			len([]rune(questionKey)) >= 4 && strings.Contains(queryKey, questionKey)
 		if !literalBusinessQuestionIncluded && match < 0.94 {
 			continue
 		}
@@ -7847,6 +7848,15 @@ func deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task knowledgeEv
 		DecisionSource:       "deterministic_handoff_model_miss",
 		SelectedCandidateIDs: selectedCandidateIDs,
 	}, true
+}
+
+func isGenericKnowledgeEvidenceHandoffQuestion(question string) bool {
+	switch strings.TrimSpace(question) {
+	case "怎么办", "怎么处理", "如何处理", "怎么解决", "如何解决", "咋办", "需要处理", "帮忙处理":
+		return true
+	default:
+		return false
+	}
 }
 
 func repairModelMissKnowledgeHandoffSelections(tasks []knowledgeEvidenceJudgeTask, selections map[string]map[string]knowledgeEvidenceLayerSelection) int {

@@ -461,14 +461,27 @@ func TestResolveRuntimePMSReadStepArgsNormalizesDuplicateOrderDates(t *testing.T
 	}
 
 	results["order.recept"] = pmsReadStepResult{Status: pmsReadStepOK, Data: map[string]any{
-		"checkInTime": "2026-09-22 18:00:00",
+		"checkInTime":  "2026-09-22 18:00:00",
+		"checkOutTime": "2026-09-24 13:00:00",
 		"receptOrderList": []any{map[string]any{
-			"checkInTime": "2026-09-23T18:00:00+08:00",
+			"checkInTime":  "2026-09-23T18:00:00+08:00",
+			"checkOutTime": "2026-09-25T12:00:00+08:00",
 		}},
+	}}
+	args, status, message = resolveRuntimePMSReadStepArgs(step, results)
+	if status != "" || message != "" || args["beginTime"] != "2026-09-22" || args["endTime"] != "2026-09-24" {
+		t.Fatalf("root order dates must take precedence over linked rows: args=%#v status=%q message=%q", args, status, message)
+	}
+
+	results["order.recept"] = pmsReadStepResult{Status: pmsReadStepOK, Data: map[string]any{
+		"receptOrderList": []any{
+			map[string]any{"checkInTime": "2026-09-22T18:00:00+08:00", "checkOutTime": "2026-09-24T12:00:00+08:00"},
+			map[string]any{"checkInTime": "2026-09-23T18:00:00+08:00", "checkOutTime": "2026-09-25T12:00:00+08:00"},
+		},
 	}}
 	_, status, _ = resolveRuntimePMSReadStepArgs(step, results)
 	if status != pmsReadStepAmbiguous {
-		t.Fatalf("genuinely different order dates must remain ambiguous, got %q", status)
+		t.Fatalf("conflicting linked dates without a root date must remain ambiguous, got %q", status)
 	}
 }
 
@@ -520,7 +533,7 @@ func TestRuntimePMSOrderFactReadsSanitizedProductRoomNames(t *testing.T) {
 		if strings.Count(fact, "房型橙意") != 1 || strings.Contains(fact, "0008005") || strings.Contains(fact, "0015001") {
 			t.Fatalf("customer order fact leaked duplicates or internal status codes: %q", fact)
 		}
-		if !strings.Contains(fact, "金额942.40") {
+		if !strings.Contains(fact, "金额942.40") || !strings.Contains(fact, "状态暂未返回可读状态") {
 			t.Fatalf("deduplicating linked rows lost the usable amount: %q", fact)
 		}
 	})

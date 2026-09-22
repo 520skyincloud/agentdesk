@@ -922,9 +922,7 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 			if !ok || (result.Status != pmsReadStepOK && result.Status != pmsReadStepPartial) {
 				continue
 			}
-			for _, field := range source.Fields {
-				values = append(values, runtimePMSReadPathStrings(result.Data, field)...)
-			}
+			values = append(values, runtimePMSReadBindingSourceValues(result.Data, source.Fields, binding.Argument)...)
 		}
 		values = normalizeRuntimePMSBindingValues(binding.Argument, values)
 		switch len(values) {
@@ -954,6 +952,22 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		}
 	}
 	return args, "", ""
+}
+
+func runtimePMSReadBindingSourceValues(data any, fields []string, argument string) []string {
+	if argument == "beginTime" || argument == "endTime" {
+		for _, field := range fields {
+			if values := runtimePMSReadPathStrings(data, field); len(values) > 0 {
+				return values
+			}
+		}
+		return nil
+	}
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		values = append(values, runtimePMSReadPathStrings(data, field)...)
+	}
+	return values
 }
 
 func normalizeRuntimePMSBindingValues(argument string, values []string) []string {
@@ -1249,7 +1263,13 @@ func runtimePMSOrderFact(data any) string {
 }
 
 func runtimePMSCustomerOrderStatus(order map[string]any) string {
-	return firstRuntimePMSReadText(order, "orderStatusName", "reserveStatusName", "statusName")
+	if status := firstRuntimePMSReadText(order, "orderStatusName", "reserveStatusName", "statusName"); status != "" {
+		return status
+	}
+	if firstRuntimePMSReadText(order, "orderStatus", "reserveStatus") != "" {
+		return "暂未返回可读状态"
+	}
+	return ""
 }
 
 func runtimePMSOrderRoomNames(order map[string]any) []string {

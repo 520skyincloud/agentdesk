@@ -5844,6 +5844,18 @@ func TestKnowledgeEvidenceJudgeRecoversExactHandoffBeforeHonoringCurrentRejectio
 	}
 }
 
+func TestKnowledgeEvidenceJudgeDoesNotRecoverGenericHandoffQuestion(t *testing.T) {
+	const current = "空调不制冷，我住1304，先告诉我可以怎么处理，不要转人工"
+	genericHandoff := judgeTestHit(1, 101, "怎么处理", "问题：怎么处理\n答案：转接", 0.92)
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "task-1", Query: current, RetrievalQuery: current,
+		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "store-1", Layer: knowledgeEvidenceLayerStore, Hit: genericHandoff}},
+	}
+	if selection, ok := deterministicKnowledgeEvidenceHandoffSelectionForModelMiss(task, knowledgeEvidenceLayerStore); ok {
+		t.Fatalf("generic handoff FAQ must not be recovered for a specific service problem: %#v", selection)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeOnlyExposesSelectedFAQUnit(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "入住与服务", `问题：怎么办理入住
 	答案：我们酒店没有传统前台，可以通过入住机或小程序线上办理入住。
