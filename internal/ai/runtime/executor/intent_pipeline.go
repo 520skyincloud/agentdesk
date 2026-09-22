@@ -147,17 +147,30 @@ func memberQueryRuntimeInstruction() string {
 }
 
 func hasRuntimeMemberQueryTask(intent callbacks.IntentTraceData) bool {
-	memberTask := intent.NeedsTool && isMemberRuntimeSubIntent(intent.SubIntent)
-	for _, task := range intent.IntentTasks {
-		memberTask = memberTask || (task.NeedsTool && isMemberRuntimeSubIntent(task.SubIntent))
+	if len(intent.IntentTasks) == 0 {
+		return intent.NeedsTool && isMemberRuntimeSubIntent(intent.SubIntent)
 	}
-	return memberTask
+	for _, task := range intent.IntentTasks {
+		if task.NeedsTool && isMemberRuntimeSubIntent(task.SubIntent) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRuntimePMSQueryTask(intent callbacks.IntentTraceData) bool {
+	if len(intent.IntentTasks) > 0 {
+		return runtimeIntentHasExecutablePMSTask(intent.IntentTasks)
+	}
+	return intent.NeedsTool && isPMSRuntimeSubIntent(intent.SubIntent)
 }
 
 func retainRuntimeMemberQueryTool(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
-	if hasRuntimeMemberQueryTask(intent) {
+	if hasRuntimePMSQueryTask(intent) {
 		intent.NeedsTool = true
 		intent.ToolCodes = appendIfMissing(intent.ToolCodes, toolx.BuiltinPMSQuery.Code)
+	} else {
+		intent.ToolCodes = removeRuntimeToolCode(intent.ToolCodes, toolx.BuiltinPMSQuery.Code)
 	}
 	return intent
 }

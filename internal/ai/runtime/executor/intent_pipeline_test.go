@@ -114,7 +114,7 @@ func TestNormalizeModelIntentTracePreservesPMSKnowledgeBoundary(t *testing.T) {
 	}
 }
 
-func TestRuntimeMemberToolSelectionKeepsMixedWeatherAndMemberQuery(t *testing.T) {
+func TestRuntimePMSToolSelectionKeepsMixedWeatherAndMemberQuery(t *testing.T) {
 	intent := callbacks.IntentTraceData{
 		PrimaryIntent: "interaction", SubIntent: "weather_query", NeedsTool: true,
 		ToolCodes: []string{toolx.BuiltinWeather.Code},
@@ -131,6 +131,269 @@ func TestRuntimeMemberToolSelectionKeepsMixedWeatherAndMemberQuery(t *testing.T)
 	again := retainRuntimeMemberQueryTool(got)
 	if !reflect.DeepEqual(again.ToolCodes, want) {
 		t.Fatalf("tool binding must be idempotent: %#v", again.ToolCodes)
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightRequestsPhoneWithoutCallingTool(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{Content: "我想查订单", MessageType: enums.IMMessageTypeText}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+		SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+			RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+			Text: "我想查订单", ResolvedText: "我想查订单", SourceRefs: []string{"U1"}, NeedsTool: true,
+		}},
+	}
+
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+	if plan.Intent.NeedsTool || plan.Intent.NeedsHumanRoute || !plan.Intent.NeedsClarification {
+		t.Fatalf("missing phone must become a bounded clarification without tools or handoff: %#v", plan.Intent)
+	}
+	if len(plan.Intent.IntentTasks) != 1 {
+		t.Fatalf("unexpected task count: %#v", plan.Intent.IntentTasks)
+	}
+	task := plan.Intent.IntentTasks[0]
+	if task.Intent != "interaction" || task.SubIntent != "order_query" || task.ResolvedText != runtimePMSOrderPhoneClarification || task.NeedsTool {
+		t.Fatalf("order topic or phone clarification was lost: %#v", task)
+	}
+	if len(plan.ReplyPlan.TaskPlans) != 1 || plan.ReplyPlan.TaskPlans[0].ResolvedText != runtimePMSOrderPhoneClarification {
+		t.Fatalf("reply plan did not carry the controlled phone question: %#v", plan.ReplyPlan)
+	}
+	tooling := prepareGenerateToolingForIntent(nil, generateToolingStaticSet(), plan.Intent, true)
+	assertEmptyGenerateTooling(t, tooling)
+}
+
+func TestRuntimePMSRequiredSlotPreflightPreservesMixedKnowledgeOrder(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{Content: "我想查订单，酒店有停车场吗", MessageType: enums.IMMessageTypeText}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+		SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+				RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+				Text: "我想查订单", ResolvedText: "我想查订单", SourceRefs: []string{"U1"}, NeedsTool: true,
+			},
+			{
+				Intent: "hotel_info", SubIntent: "parking", Objective: "availability",
+				RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+				Text: "酒店有停车场吗", ResolvedText: "酒店有停车场吗", SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+			},
+		},
+	}
+
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+	if plan.Intent.NeedsTool || !plan.Intent.NeedsKnowledge || plan.Intent.NeedsHumanRoute {
+		t.Fatalf("mixed phone clarification and parking knowledge route changed: %#v", plan.Intent)
+	}
+	if len(plan.ReplyPlan.TaskPlans) != 2 ||
+		plan.ReplyPlan.TaskPlans[0].ResolvedText != runtimePMSOrderPhoneClarification ||
+		plan.ReplyPlan.TaskPlans[1].SubIntent != "parking" {
+		t.Fatalf("mixed task order changed: %#v", plan.ReplyPlan.TaskPlans)
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightKeepsProvidedAndCorrectedPhoneExecutable(t *testing.T) {
+	for _, tc := range []struct {
+		name, current, resolved string
+	}{
+		{name: "current turn", current: "帮我查订单，手机号13900000000", resolved: "帮我查订单，手机号13900000000"},
+		{name: "context followup", current: "13900000000", resolved: "帮我查订单\n当前客户补充（以本次为准）：13900000000"},
+		{name: "correction", current: "不是原来的，是13900000001", resolved: "帮我查13900000000的订单\n当前客户补充（以本次为准）：不是原来的，是13900000001"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := RunInput{UserMessage: models.Message{Content: tc.current, MessageType: enums.IMMessageTypeText}}
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+				SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+					RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+					Text: tc.current, ResolvedText: tc.resolved, SourceRefs: []string{"U1"}, NeedsTool: true,
+				}},
+			}
+
+			plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+			if !plan.Intent.NeedsTool || plan.Intent.NeedsClarification || len(plan.Intent.IntentTasks) != 1 ||
+				plan.Intent.IntentTasks[0].Intent != "hotel_info" || !plan.Intent.IntentTasks[0].NeedsTool {
+				t.Fatalf("provided customer phone must keep PMS query executable: %#v", plan.Intent)
+			}
+			if !reflect.DeepEqual(plan.Intent.ToolCodes, []string{toolx.BuiltinPMSQuery.Code}) {
+				t.Fatalf("PMS task must expose only the PMS query tool: %#v", plan.Intent.ToolCodes)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightDoesNotRebindPMSFromWeatherTopLevel(t *testing.T) {
+	req := RunInput{UserMessage: models.Message{Content: "帮我查订单，再看看今天天气", MessageType: enums.IMMessageTypeText}}
+	intent := callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", DetectedIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+		SemanticContractExpected: true, SourceRefsValidated: true,
+		ToolCodes: []string{toolx.BuiltinPMSQuery.Code, toolx.BuiltinWeather.Code},
+		IntentTasks: []callbacks.IntentTaskTraceData{
+			{
+				Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+				RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+				Text: "帮我查订单", ResolvedText: "帮我查订单", SourceRefs: []string{"U1"}, NeedsTool: true,
+			},
+			{
+				Intent: "interaction", SubIntent: "weather_query", Objective: "general_guidance",
+				RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+				Text: "再看看今天天气", ResolvedText: "再看看今天天气", SourceRefs: []string{"U1"}, NeedsTool: true, ResourceAction: "get_weather",
+			},
+		},
+	}
+
+	plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+	if !plan.Intent.NeedsTool || !plan.Intent.NeedsClarification {
+		t.Fatalf("weather must remain executable while order asks for phone: %#v", plan.Intent)
+	}
+	if containsString(plan.Intent.ToolCodes, toolx.BuiltinPMSQuery.Code) || !containsString(plan.Intent.ToolCodes, toolx.BuiltinWeather.Code) {
+		t.Fatalf("missing-phone order must not regain PMS from weather top-level fields: %#v", plan.Intent.ToolCodes)
+	}
+	if hasRuntimeMemberQueryTask(plan.Intent) {
+		t.Fatalf("non-executable PMS task must not add member guidance: %#v", plan.Intent)
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightRejectsDeniedPhoneAndHandlesCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		current           string
+		resolved          string
+		wantClarification bool
+		wantSubIntent     string
+	}{
+		{
+			name: "denied old phone", current: "刚才号码错了，不是13900000000",
+			resolved:          "帮我查13900000000的订单\n当前客户补充（以本次为准）：刚才号码错了，不是13900000000",
+			wantClarification: true, wantSubIntent: "order_query",
+		},
+		{
+			name: "phone followed by denial", current: "13900000000不是我的手机号",
+			resolved:          "帮我查13900000000的订单\n当前客户补充（以本次为准）：13900000000不是我的手机号",
+			wantClarification: true, wantSubIntent: "order_query",
+		},
+		{
+			name: "cancel query", current: "号码错了先别查",
+			resolved:      "帮我查13900000000的订单\n当前客户补充（以本次为准）：号码错了先别查",
+			wantSubIntent: "acknowledgement",
+		},
+		{
+			name: "cancel before phone", current: "别查13900000000",
+			resolved:      "帮我查13900000000的订单\n当前客户补充（以本次为准）：别查13900000000",
+			wantSubIntent: "acknowledgement",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := RunInput{UserMessage: models.Message{Content: tc.current, MessageType: enums.IMMessageTypeText}}
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", DetectedIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+				SemanticContractExpected: true, SourceRefsValidated: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code},
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+					RelationToPrevious: "correction", ResolutionState: runtimeIntentResolutionClear,
+					Text: tc.current, ResolvedText: tc.resolved, SourceRefs: []string{"U1"}, NeedsTool: true,
+				}},
+			}
+
+			plan := buildRuntimePipelinePlanWithModel(context.Background(), req, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+			if plan.Intent.NeedsTool || plan.Intent.NeedsHumanRoute || containsString(plan.Intent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
+				t.Fatalf("denied/cancelled phone must not execute PMS: %#v", plan.Intent)
+			}
+			if plan.Intent.NeedsClarification != tc.wantClarification || plan.Intent.IntentTasks[0].SubIntent != tc.wantSubIntent {
+				t.Fatalf("unexpected denied/cancelled route: %#v", plan.Intent)
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightUsesReplacementPhoneBeforeCancellation(t *testing.T) {
+	for _, current := range []string{
+		"别查13900000000，改查13800000000",
+		"不要查刚才那个，用13800000000查",
+	} {
+		t.Run(current, func(t *testing.T) {
+			intent := callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", DetectedIntent: "hotel_info", IntentConfidence: 0.95, ShouldReply: true,
+				SemanticContractExpected: true, SourceRefsValidated: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code},
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information",
+					RelationToPrevious: "correction", ResolutionState: runtimeIntentResolutionClear,
+					Text: current, ResolvedText: "帮我查13900000000的订单\n当前客户补充（以本次为准）：" + current,
+					SourceRefs: []string{"U1"}, NeedsTool: true,
+				}},
+			}
+
+			plan := buildRuntimePipelinePlanWithModel(context.Background(), RunInput{UserMessage: models.Message{Content: current}}, adapter.HistoryBuildResult{}, stubRuntimeIntentModelDetector{intent: intent})
+			if !plan.Intent.NeedsTool || plan.Intent.NeedsClarification || !containsString(plan.Intent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
+				t.Fatalf("replacement phone must keep PMS executable: %#v", plan.Intent)
+			}
+			if !strings.Contains(plan.Intent.IntentTasks[0].ResolvedText, "本次查询手机号：13800000000") {
+				t.Fatalf("replacement phone was not made authoritative: %#v", plan.Intent.IntentTasks[0])
+			}
+		})
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightUsesOnlySupportedLocatorContracts(t *testing.T) {
+	for _, subIntent := range []string{"check_in_status", "check_out_status", "order_price_dispute"} {
+		t.Run(subIntent, func(t *testing.T) {
+			intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+				PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+				IntentTasks: []callbacks.IntentTaskTraceData{{
+					Intent: "hotel_info", SubIntent: subIntent, Objective: "status", Text: "帮我查一下", ResolvedText: "帮我查一下",
+					SourceRefs: []string{"U1"}, RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+				}},
+			}, RunInput{UserMessage: models.Message{Content: "帮我查一下"}}, adapter.HistoryBuildResult{}, nil)
+			if intent.NeedsTool || !intent.NeedsClarification || intent.IntentTasks[0].ResolvedText != runtimePMSOrderPhoneClarification {
+				t.Fatalf("%s must request a locator before PMS: %#v", subIntent, intent)
+			}
+		})
+	}
+
+	member := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "member_info", Objective: "identity", Text: "查会员号MG-001的等级", ResolvedText: "查会员号MG-001的等级",
+			SourceRefs: []string{"U1"}, RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+		}},
+	}, RunInput{UserMessage: models.Message{Content: "查会员号MG-001的等级"}}, adapter.HistoryBuildResult{}, nil)
+	if member.NeedsTool || member.IntentTasks[0].ResolvedText != runtimePMSMemberPhoneClarification {
+		t.Fatalf("member number must not impersonate the required phone slot: %#v", member)
+	}
+
+	availability := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", IntentConfidence: 0.9, SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "room_assignment", Objective: "availability", Text: "今晚有哪些房间可以安排", ResolvedText: "今晚有哪些房间可以安排",
+			SourceRefs: []string{"U1"}, RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+		}},
+	}, RunInput{UserMessage: models.Message{Content: "今晚有哪些房间可以安排"}}, adapter.HistoryBuildResult{}, nil)
+	if !availability.NeedsTool || availability.NeedsClarification || !containsString(availability.ToolCodes, toolx.BuiltinPMSQuery.Code) {
+		t.Fatalf("generic room availability must remain executable without a phone: %#v", availability)
+	}
+}
+
+func TestRuntimePMSRequiredSlotPreflightSynchronizesEffectiveTrace(t *testing.T) {
+	configs := []models.ReplyIntentConfig{
+		{ID: 11, Code: "hotel_info", Name: "酒店信息"},
+		{ID: 22, Code: "interaction", Name: "互动"},
+	}
+	intent := postprocessRuntimeModelIntent(callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_info", DetectedIntent: "hotel_info", MatchedIntentCode: "hotel_info",
+		MatchedConfigID: 11, MatchedConfig: "酒店信息", MatchMode: "model", IntentConfidence: 0.9,
+		SemanticContractExpected: true, SourceRefsValidated: true,
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_info", SubIntent: "order_query", Objective: "compound_information", Text: "查订单", ResolvedText: "查订单",
+			SourceRefs: []string{"U1"}, RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear, NeedsTool: true,
+		}},
+	}, RunInput{UserMessage: models.Message{Content: "查订单"}}, adapter.HistoryBuildResult{}, configs)
+	if intent.PrimaryIntent != "interaction" || intent.DetectedIntent != "interaction" || intent.MatchedIntentCode != "interaction" ||
+		intent.MatchedConfigID != 22 || intent.MatchedConfig != "互动" || intent.MatchMode != "model" {
+		t.Fatalf("trace must describe the effective clarification route: %#v", intent)
 	}
 }
 

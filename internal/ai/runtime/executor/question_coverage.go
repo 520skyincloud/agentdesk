@@ -250,7 +250,7 @@ func repairRuntimeQuestionIntent(ctx context.Context, req RunInput, intent callb
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
 	}
-	return normalizeModelIntentTrace(repaired, req, history, configs), nil
+	return postprocessRuntimeModelIntent(repaired, req, history, configs), nil
 }
 
 func runtimeQuestionTaskIdentity(task callbacks.ReplyTaskPlanTraceData, attached bool) string {

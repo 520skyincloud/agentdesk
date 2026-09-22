@@ -36,6 +36,14 @@ const runtimeIntentModelRetryDelay = 250 * time.Millisecond
 
 var runtimeIntentModelServerStatusPattern = regexp.MustCompile(`status(?: code)?[: ]+5\d\d`)
 
+var runtimePMSCustomerPhoneValuePattern = regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9][0-9](?:[- ]?[0-9]){8}`)
+
+var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(?:reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*[A-Za-z0-9][A-Za-z0-9_-]{2,}`)
+
+const runtimePMSOrderPhoneClarification = "请提供预订手机号。"
+
+const runtimePMSMemberPhoneClarification = "请提供会员绑定手机号。"
+
 type runtimeIntentDetectJSON struct {
 	PrimaryIntent      string                  `json:"primaryIntent"`
 	SubIntent          string                  `json:"subIntent"`
@@ -221,12 +229,249 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 		intent := intentDetectUnavailableIntent("IntentDetect model failed: " + err.Error())
 		return intent, selectIntentPromptPack(intent), true
 	}
-	intent = normalizeModelIntentTrace(intent, req, history, configs)
+	intent = postprocessRuntimeModelIntent(intent, req, history, configs)
 	if intent.PrimaryIntent == "" {
 		return callbacks.IntentTraceData{}, callbacks.IntentPromptTraceData{}, false
 	}
 	prompt := promptForModelDetectedIntent(intent, configs)
 	return intent, prompt, true
+}
+
+func postprocessRuntimeModelIntent(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
+	intent = normalizeModelIntentTrace(intent, req, history, configs)
+	intent = applyRuntimePMSRequiredSlotPreflight(intent)
+	intent = retainRuntimeMemberQueryTool(intent)
+	return syncRuntimeIntentTraceMetadata(intent, configs)
+}
+
+func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData) callbacks.IntentTraceData {
+	changed := false
+	clarificationRequested := false
+	for index := range intent.IntentTasks {
+		task := &intent.IntentTasks[index]
+		if !task.NeedsTool || !runtimePMSTaskRequiresCustomerLocator(*task) {
+			continue
+		}
+		if phone := runtimePMSPreferredCustomerPhone(*task); phone != "" {
+			marker := "本次查询手机号：" + phone
+			if !strings.Contains(task.ResolvedText, marker) {
+				task.ResolvedText = strings.TrimSpace(task.ResolvedText) + "\n" + marker
+			}
+			continue
+		}
+		if runtimePMSTaskCancelsCustomerQuery(*task) {
+			task.Intent = "interaction"
+			task.SubIntent = "acknowledgement"
+			task.Objective = "cancel"
+			task.ResolutionState = runtimeIntentResolutionClear
+			task.ResolvedText = "客户取消本次查询。"
+			task.NeedsKnowledge = false
+			task.NeedsResource = false
+			task.NeedsTool = false
+			task.NeedsHumanRoute = false
+			task.ResourceAction = ""
+			task.Reason = appendIntentReason(task.Reason, "customer cancelled PMS query")
+			changed = true
+			continue
+		}
+		if runtimePMSTaskHasCustomerLocator(*task) {
+			continue
+		}
+
+		clarification := runtimePMSOrderPhoneClarification
+		if isMemberRuntimeSubIntent(task.SubIntent) {
+			clarification = runtimePMSMemberPhoneClarification
+		}
+		task.Intent = "interaction"
+		task.Objective = "identity"
+		task.ResolutionState = runtimeIntentResolutionClear
+		task.ResolvedText = clarification
+		task.NeedsKnowledge = false
+		task.NeedsResource = false
+		task.NeedsTool = false
+		task.NeedsHumanRoute = false
+		task.ResourceAction = ""
+		task.Reason = appendIntentReason(task.Reason, "PMS required customer locator missing; request one phone slot before query")
+		changed = true
+		clarificationRequested = true
+	}
+	if !changed {
+		return intent
+	}
+
+	intent = deriveModelIntentFromTasks(intent)
+	if clarificationRequested {
+		intent.NeedsClarification = true
+	}
+	if !runtimeIntentHasExecutablePMSTask(intent.IntentTasks) {
+		intent.ToolCodes = removeRuntimeToolCode(intent.ToolCodes, toolx.BuiltinPMSQuery.Code)
+	}
+	if clarificationRequested {
+		intent.Reason = appendIntentReason(intent.Reason, "PMS required-slot preflight requested customer phone")
+	} else {
+		intent.Reason = appendIntentReason(intent.Reason, "PMS query cancelled before tool execution")
+	}
+	return intent
+}
+
+func runtimePMSTaskRequiresCustomerLocator(task callbacks.IntentTaskTraceData) bool {
+	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
+	case "order_query", "order_detail", "order_status",
+		"check_in_status", "check_out_status", "order_price_dispute",
+		"member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_phone",
+		"room_upgrade", "upgrade_room", "room_upgrade_eligibility", "upgrade_eligibility",
+		"room_change", "change_room", "room_change_eligibility",
+		"price_difference", "upgrade_price", "room_change_price",
+		"late_checkout", "late_check_out", "late_checkout_eligibility", "renew", "renewal":
+		return true
+	case "room_assignment", "assign_room":
+		return semanticGateNormalizeObjective(task.Objective) != "availability"
+	default:
+		return false
+	}
+}
+
+func runtimePMSTaskHasCustomerLocator(task callbacks.IntentTaskTraceData) bool {
+	if runtimePMSPreferredCustomerPhone(task) != "" {
+		return true
+	}
+	if isMemberRuntimeSubIntent(task.SubIntent) {
+		return false
+	}
+	current := strings.TrimSpace(task.Text)
+	if runtimePMSCustomerLocatorPattern.MatchString(current) {
+		return true
+	}
+	if runtimePMSCurrentTextRejectsCustomerPhone(current) {
+		return false
+	}
+
+	parts := []string{task.ResolvedText}
+	for _, entity := range task.Entities {
+		parts = append(parts, entity.Text)
+	}
+	text := strings.Join(parts, "\n")
+	return runtimePMSCustomerLocatorPattern.MatchString(text)
+}
+
+func runtimePMSPreferredCustomerPhone(task callbacks.IntentTaskTraceData) string {
+	if phone := runtimePMSLastUsableCustomerPhone(task.Text); phone != "" {
+		return phone
+	}
+	if runtimePMSCurrentTextRejectsCustomerPhone(task.Text) {
+		return ""
+	}
+	for index := len(task.Entities) - 1; index >= 0; index-- {
+		if phone := runtimePMSLastUsableCustomerPhone(task.Entities[index].Text); phone != "" {
+			return phone
+		}
+	}
+	return runtimePMSLastUsableCustomerPhone(task.ResolvedText)
+}
+
+func runtimePMSLastUsableCustomerPhone(text string) string {
+	phone := ""
+	for _, match := range runtimePMSCustomerPhoneValuePattern.FindAllStringIndex(text, -1) {
+		if match[0] > 0 && text[match[0]-1] >= '0' && text[match[0]-1] <= '9' {
+			continue
+		}
+		if match[1] < len(text) && text[match[1]] >= '0' && text[match[1]] <= '9' {
+			continue
+		}
+		prefixRunes := []rune(text[:match[0]])
+		if len(prefixRunes) > 8 {
+			prefixRunes = prefixRunes[len(prefixRunes)-8:]
+		}
+		suffixRunes := []rune(text[match[1]:])
+		if len(suffixRunes) > 5 {
+			suffixRunes = suffixRunes[:5]
+		}
+		prefix := compactRuntimePMSPhoneContext(string(prefixRunes))
+		suffix := compactRuntimePMSPhoneContext(string(suffixRunes))
+		if strings.HasSuffix(prefix, "不是") || strings.HasSuffix(prefix, "别用") ||
+			strings.HasSuffix(prefix, "不要用") || strings.HasSuffix(prefix, "不用") || strings.HasSuffix(prefix, "别查") ||
+			strings.HasSuffix(prefix, "不要查") || strings.HasSuffix(prefix, "不用查") ||
+			strings.HasPrefix(suffix, "不是") || strings.HasPrefix(suffix, "不对") || strings.HasPrefix(suffix, "错了") ||
+			strings.HasPrefix(suffix, "说错了") || strings.HasPrefix(suffix, "这个不对") ||
+			strings.HasPrefix(suffix, "先别查") || strings.HasPrefix(suffix, "别查") ||
+			strings.HasPrefix(suffix, "不要查") || strings.HasPrefix(suffix, "不用查") {
+			continue
+		}
+		digits := strings.NewReplacer("+", "", "-", "", " ", "").Replace(text[match[0]:match[1]])
+		if strings.HasPrefix(digits, "86") {
+			digits = strings.TrimPrefix(digits, "86")
+		}
+		phone = digits
+	}
+	return phone
+}
+
+func runtimePMSCurrentTextRejectsCustomerPhone(text string) bool {
+	if text == "" {
+		return false
+	}
+	if runtimePMSCustomerPhoneValuePattern.MatchString(text) && runtimePMSLastUsableCustomerPhone(text) == "" {
+		return true
+	}
+	text = compactRuntimePMSPhoneContext(text)
+	for _, phrase := range []string{
+		"号码错了", "手机号错了", "电话错了", "号码不对", "手机号不对", "电话不对",
+		"不是这个号码", "不是这个手机号", "别用这个号码", "不要用这个号码", "不用这个号码",
+		"先别查", "不要查", "不用查",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimePMSTaskCancelsCustomerQuery(task callbacks.IntentTaskTraceData) bool {
+	if semanticGateNormalizeObjective(task.Objective) == "cancel" || semanticGateNormalizeRelation(task.RelationToPrevious) == "cancel_previous" {
+		return true
+	}
+	text := compactRuntimePMSPhoneContext(task.Text)
+	return strings.Contains(text, "别查") || strings.Contains(text, "不要查") || strings.Contains(text, "不用查")
+}
+
+func compactRuntimePMSPhoneContext(text string) string {
+	return strings.NewReplacer(" ", "", "\t", "", "\n", "", "，", "", ",", "", "。", "", "：", "", ":", "").Replace(text)
+}
+
+func runtimeIntentHasExecutablePMSTask(tasks []callbacks.IntentTaskTraceData) bool {
+	for _, task := range tasks {
+		if task.NeedsTool && isPMSRuntimeSubIntent(task.SubIntent) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeRuntimeToolCode(codes []string, remove string) []string {
+	remove = toolx.NormalizeToolCodeAlias(strings.TrimSpace(remove))
+	ret := make([]string, 0, len(codes))
+	for _, code := range codes {
+		code = toolx.NormalizeToolCodeAlias(strings.TrimSpace(code))
+		if code == "" || code == remove {
+			continue
+		}
+		ret = appendIfMissing(ret, code)
+	}
+	return ret
+}
+
+func syncRuntimeIntentTraceMetadata(intent callbacks.IntentTraceData, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
+	intent.DetectedIntent = intent.PrimaryIntent
+	intent.MatchedIntentCode = intent.PrimaryIntent
+	intent.MatchedConfigID = 0
+	intent.MatchedConfig = ""
+	intent.MatchMode = ""
+	if config, ok := findIntentConfigByCode(configs, intent.PrimaryIntent); ok {
+		intent.MatchedConfigID = config.ID
+		intent.MatchedConfig = strings.TrimSpace(config.Name)
+		intent.MatchMode = "model"
+	}
+	return intent
 }
 
 func (llmRuntimeIntentDetector) DetectRuntimeIntent(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) (callbacks.IntentTraceData, error) {
