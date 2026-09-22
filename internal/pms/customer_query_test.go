@@ -76,6 +76,31 @@ func TestCustomerQueryDataPreservesOrderAmountsAndInternalLookupData(t *testing.
 	}
 }
 
+func TestCustomerQueryDataPreservesReadableOrderStatusNames(t *testing.T) {
+	source := customerQueryFixture(t, `{
+		"reserveOrderId":9007199254740995,
+		"reserveStatus":"0008005",
+		"reserveStatusName":"已预订",
+		"receptOrderList":[{
+			"receptOrderId":9007199254740997,
+			"orderStatus":"0015001",
+			"orderStatusName":"已入住"
+		}]
+	}`)
+	projected, err := CustomerQueryData("reserve_order_by_phone", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := projected.(map[string]any)
+	if root["reserveStatusName"] != "已预订" {
+		t.Fatalf("readable reserve status was dropped: %#v", root)
+	}
+	rows := root["receptOrderList"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["orderStatusName"] != "已入住" {
+		t.Fatalf("readable reception status was dropped: %#v", rows)
+	}
+}
+
 func TestCustomerQueryDataPreservesInventoryNullAndDateFacts(t *testing.T) {
 	source := customerQueryFixture(t, `[{"productId":9007199254740993,"productName":"大床房","price":null,
 		"roomCount":5,"bookings":{"2026-09-15":{"sold":2,"available":3,"occupied":2,"maintenance":0,"oversold":false,

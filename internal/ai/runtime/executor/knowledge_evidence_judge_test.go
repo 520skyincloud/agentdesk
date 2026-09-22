@@ -6170,7 +6170,7 @@ func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutProviderR
 		taskCount      int
 		candidateCount int
 		want           int
-	}{{0, 1, 3, 15_000}, {3_000, 1, 3, 11_000}, {60_000, 1, 3, 15_000}, {4_000, 4, 28, 23_000}, {15_000, 8, 28, 28_000}, {60_000, 8, 28, 28_000}, {60_000, 100, 100, 28_000}} {
+	}{{0, 1, 3, 15_000}, {3_000, 1, 3, 11_000}, {28_000, 1, 3, 28_000}, {60_000, 1, 3, 28_000}, {4_000, 4, 28, 23_000}, {15_000, 8, 28, 28_000}, {60_000, 8, 28, 28_000}, {60_000, 100, 100, 28_000}} {
 		config := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{
 			TimeoutMS:       tc.timeoutMS,
 			MaxOutputTokens: 8_192,

@@ -52,7 +52,8 @@ func customerOrderData(data any) (any, error) {
 	}
 	result := customerQueryFields(source,
 		"reserveOrderId", "receptOrderId", "customerNo", "hotelName", "channelOrderNumber",
-		"reserveStatus", "orderStatus", "orderType", "bookingTime", "createTime",
+		"reserveStatus", "reserveStatusName", "orderStatus", "orderStatusName", "statusName",
+		"orderType", "bookingTime", "createTime",
 		"checkInTime", "checkOutTime", "checkInBusinessDate", "checkOutBusinessDate",
 		"reserveDays", "numberNights", "stayNightCount", "checkInDays", "homeTotalNum",
 		"roomId", "roomName", "homeId", "homeName", "payType", "payAmount",

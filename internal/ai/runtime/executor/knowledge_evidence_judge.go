@@ -11037,8 +11037,8 @@ func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int
 		configuredTimeout = 15 * time.Second
 	} else if configuredTimeout < legacyRequiredTimeout {
 		configuredTimeout = legacyRequiredTimeout
-	} else if configuredTimeout > 15*time.Second {
-		configuredTimeout = 15 * time.Second
+	} else if configuredTimeout > knowledgeEvidenceJudgeMaxTimeout {
+		configuredTimeout = knowledgeEvidenceJudgeMaxTimeout
 	}
 	dynamicTimeout := knowledgeEvidenceJudgeTimeoutBudget(taskCount, candidateCount)
 	if dynamicTimeout > configuredTimeout {
