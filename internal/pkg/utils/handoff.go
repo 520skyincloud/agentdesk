@@ -16,6 +16,19 @@ var (
 // explicitly asks for a human agent. Dissatisfaction, a service request, or
 // uncertainty alone must not authorize a handoff.
 func IsExplicitHumanHandoffRequest(text string) bool {
+	authorized, _ := explicitHumanHandoffDisposition(text)
+	return authorized
+}
+
+// IsExplicitHumanHandoffRejection reports whether the current customer text
+// explicitly rejects, cancels or questions a human transfer. It shares the
+// same parser as authorization so later instructions in one burst win.
+func IsExplicitHumanHandoffRejection(text string) bool {
+	_, rejected := explicitHumanHandoffDisposition(text)
+	return rejected
+}
+
+func explicitHumanHandoffDisposition(text string) (authorized bool, rejected bool) {
 	if IsRuntimeCustomerBurstEnvelope(text) {
 		text = RuntimeCustomerBurstDisplayText(text)
 	}
@@ -23,22 +36,29 @@ func IsExplicitHumanHandoffRequest(text string) bool {
 	clauses := strings.FieldsFunc(text, func(r rune) bool {
 		return strings.ContainsRune("，,。.!！？?；;\n\r", r)
 	})
-	authorized := false
+	mentioned := false
 	for _, clause := range clauses {
 		clause = strings.Join(strings.Fields(clause), "")
 		if clause == "人工" || clause == "真人" || clause == "客服" {
+			mentioned = true
 			authorized = true
+			rejected = false
 			continue
 		}
 		// A later explicit cancellation revokes an earlier request in this turn.
 		switch clause {
 		case "取消", "撤销", "算了", "不用", "不用了", "不需要了", "先不用了", "还是不用了", "还是算了", "别了":
+			if mentioned || authorized {
+				rejected = true
+			}
 			authorized = false
 			continue
 		}
 		previousEnd := 0
 		nonAuthorizationCarries := false
-		for _, match := range explicitHandoffTargetPattern.FindAllStringIndex(clause, -1) {
+		matches := explicitHandoffTargetPattern.FindAllStringIndex(clause, -1)
+		for _, match := range matches {
+			mentioned = true
 			prefix := clause[previousEnd:match[0]]
 			suffix := clause[match[1]:]
 			previousEnd = match[1]
@@ -50,14 +70,26 @@ func IsExplicitHumanHandoffRequest(text string) bool {
 				(nonAuthorizationCarries && handoffConnectorPattern.MatchString(prefix))
 			if negated || isHandoffExplanationQuestion(prefix, suffix) {
 				authorized = false
+				rejected = true
 				nonAuthorizationCarries = true
 				continue
 			}
 			authorized = true
+			rejected = false
 			nonAuthorizationCarries = false
 		}
+		if len(matches) == 0 {
+			if index := strings.LastIndex(clause, "人工"); index >= 0 && !strings.HasPrefix(clause[index+len("人工"):], "智能") {
+				prefix := strings.ReplaceAll(clause[:index], "能不能", "能否")
+				if handoffNegationPattern.MatchString(prefix) {
+					mentioned = true
+					authorized = false
+					rejected = true
+				}
+			}
+		}
 	}
-	return authorized
+	return authorized, rejected
 }
 
 func isHandoffExplanationQuestion(prefix, suffix string) bool {

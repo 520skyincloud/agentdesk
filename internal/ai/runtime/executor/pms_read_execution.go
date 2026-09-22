@@ -18,6 +18,7 @@ import (
 	runtimetools "agent-desk/internal/ai/runtime/tools"
 	"agent-desk/internal/pkg/config"
 	"agent-desk/internal/pkg/toolx"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/pms"
 )
 
@@ -331,7 +332,24 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 		MissingAspects: append([]string(nil), taskTrace.MissingAspects...),
 		HandoffHit:     rag.RetrieveResult{Content: "转人工"},
 	}
-	if !runtimeKnowledgeAutoHandoffEnabledForCollector(req.Conversation.ID, []runtimeKnowledgeQuestionDisposition{pending}, collector) {
+	if utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req)) {
+		applyDeclinedKnowledgeHandoffReply(task)
+		taskTrace.Disposition = runtimeKnowledgeDispositionAnswer
+		taskTrace.DecisionSource = "customer_declined_handoff"
+		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
+		if len(trace.DeferredTaskIDs) == 0 {
+			trace.DeferredHandoff = false
+			trace.DeferredHandoffReason = ""
+		}
+		collector.SetKnowledgeEvidenceJudge(trace)
+		return
+	}
+	if !runtimeKnowledgeAutoHandoffEnabledForCollector(
+		req.Conversation.ID,
+		[]runtimeKnowledgeQuestionDisposition{pending},
+		collector,
+		currentRuntimeIntentSemanticText(req),
+	) {
 		return
 	}
 	previousCount := len(trace.DeferredTaskIDs)
@@ -435,7 +453,7 @@ func buildRuntimePMSResolvedInstruction(plan callbacks.ReplyPlanTraceData) strin
 	if !hasPMSFacts {
 		return ""
 	}
-	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 只负责按客户问题整理这些事实，不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。"
+	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 只负责按客户问题整理这些事实，不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号。"
 }
 
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
@@ -908,7 +926,7 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 				values = append(values, runtimePMSReadPathStrings(result.Data, field)...)
 			}
 		}
-		values = uniquePMSReadStrings(values)
+		values = normalizeRuntimePMSBindingValues(binding.Argument, values)
 		switch len(values) {
 		case 0:
 			continue
@@ -936,6 +954,24 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		}
 	}
 	return args, "", ""
+}
+
+func normalizeRuntimePMSBindingValues(argument string, values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		switch strings.TrimSpace(argument) {
+		case "beginTime", "endTime":
+			if date := normalizePMSReadDate(value); date != "" {
+				value = date
+			}
+		}
+		normalized = append(normalized, value)
+	}
+	return uniquePMSReadStrings(normalized)
 }
 
 func runtimePMSReadArgumentMissingMessage(key string) string {

@@ -282,6 +282,15 @@ func TestRuntimeHandoffDirectiveKeepsIndependentKnowledgeHandoff(t *testing.T) {
 	) {
 		t.Fatal("explicit current human request must remain eligible for handoff")
 	}
+	for _, text := range []string{"暂时不要转人工", "不用找同事，先回答我"} {
+		if runtimeHandoffDirectiveAllowed(
+			RunInput{UserMessage: models.Message{Content: text}},
+			collector,
+			"knowledge_top_answer",
+		) {
+			t.Fatalf("current handoff rejection must block the knowledge directive: %q", text)
+		}
+	}
 }
 
 func TestApplyHandoffDispatchResultMapsDirectStatuses(t *testing.T) {

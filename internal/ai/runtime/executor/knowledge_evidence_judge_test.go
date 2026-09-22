@@ -68,6 +68,21 @@ func TestJudgeComparesDirectAnswersBeforeRetainingPartialBackground(t *testing.T
 	}
 }
 
+func TestJudgeAllowsOnlyTheNamedFacilityInherentPurpose(t *testing.T) {
+	prompt := knowledgeEvidenceJudgeSystemPrompt()
+	for _, rule := range []string{
+		"功能名称本身明确限定唯一常规用途的专用设施",
+		"有外卖机器人",
+		"可以回答客户可使用它把外卖送到房间",
+		"不能据此承诺实时可用、配送范围、到达时间、已经安排或酒店代下单",
+		"普通机器人、未注明用途的设备或跨用途请求仍不能这样推断",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("missing inherent-purpose Judge boundary %q", rule)
+		}
+	}
+}
+
 func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing.T) {
 	const faq = "酒店有本子吗？"
 	const raw = "问题：" + faq + "\n答案：不好意思，酒店没有哈，建议您可以在美团上下个外卖订单。"

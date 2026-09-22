@@ -127,6 +127,23 @@ func TestJevRouteCriteriaSeparateBroadDecisionsFromStandaloneFollowups(t *testin
 	}
 }
 
+func TestJevRouteCriteriaKeepsSpecificOrderCheckoutFollowupsOnPMS(t *testing.T) {
+	criteria := jevIntentRouteCriteria()
+	checkout, _ := criteria["checkout_process"].(string)
+	orderDetail, _ := criteria["order_detail"].(string)
+	if !strings.Contains(checkout, "no specific order") || !strings.Contains(checkout, "selected history context") {
+		t.Fatalf("general checkout route must exclude an identified order: %q", checkout)
+	}
+	if !strings.Contains(orderDetail, "original/latest checkout time") {
+		t.Fatalf("specific order checkout follow-ups must remain order_detail: %q", orderDetail)
+	}
+	for _, phrase := range []string{"this order", "my original/latest checkout time"} {
+		if !strings.Contains(jevIntentClassificationRules, phrase) {
+			t.Fatalf("classification rules are missing contextual order phrase %q", phrase)
+		}
+	}
+}
+
 func TestJevCurrentContextUsesEarlierSpansWithoutChangingSource(t *testing.T) {
 	message := models.Message{
 		ID: 103, MessageType: enums.IMMessageTypeText,

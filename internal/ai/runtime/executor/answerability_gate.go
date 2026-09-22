@@ -2509,6 +2509,76 @@ func buildDeferredRuntimeKnowledgeInstruction(pending []runtimeKnowledgeQuestion
 	return strings.Join(parts, "\n")
 }
 
+func buildDeclinedRuntimeKnowledgeHandoffInstruction(pending []runtimeKnowledgeQuestionDisposition) string {
+	if len(pending) == 0 {
+		return ""
+	}
+	return "【客户拒绝人工转接】\n" +
+		"知识库明确要求这些事项由门店同事处理，但客户本轮明确表示暂时不要转人工。" +
+		"必须逐项按 ReplyPlan.answerText 回复需要同事处理且本轮不会转接，不得改成‘暂时无法确认’，不得编造处理步骤、承诺已安排或再次触发人工路由。"
+}
+
+func applyDeclinedKnowledgeHandoffReplies(plan callbacks.ReplyPlanTraceData, pending []runtimeKnowledgeQuestionDisposition) callbacks.ReplyPlanTraceData {
+	pendingTaskIDs := make(map[string]struct{}, len(pending))
+	for _, item := range pending {
+		if taskID := strings.TrimSpace(item.TaskID); taskID != "" {
+			pendingTaskIDs[taskID] = struct{}{}
+		}
+	}
+	for index := range plan.TaskPlans {
+		task := &plan.TaskPlans[index]
+		if _, ok := pendingTaskIDs[strings.TrimSpace(task.TaskID)]; !ok {
+			continue
+		}
+		applyDeclinedKnowledgeHandoffReply(task)
+	}
+	plan.ActiveTaskCount = len(plan.TaskPlans)
+	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
+	return plan
+}
+
+func applyDeclinedKnowledgeHandoffReply(task *callbacks.ReplyTaskPlanTraceData) {
+	if task == nil {
+		return
+	}
+	reply := "这个问题需要门店同事处理，您暂时不需要人工的话，我先不转接。"
+	task.Output = "text_reply"
+	task.OutputKind = "text"
+	task.ReplyRequired = true
+	task.NeedsKnowledge = false
+	task.NeedsHumanRoute = false
+	task.SelectedLayer = ""
+	task.SelectedCandidateIDs = nil
+	task.SupportedFacts = nil
+	task.MissingAspects = nil
+	task.AnswerText = &reply
+}
+
+func markDeclinedKnowledgeHandoffs(
+	trace callbacks.KnowledgeEvidenceJudgeTraceData,
+	pending []runtimeKnowledgeQuestionDisposition,
+) callbacks.KnowledgeEvidenceJudgeTraceData {
+	pendingTaskIDs := make(map[string]struct{}, len(pending))
+	for _, item := range pending {
+		if taskID := strings.TrimSpace(item.TaskID); taskID != "" {
+			pendingTaskIDs[taskID] = struct{}{}
+		}
+	}
+	for index := range trace.Tasks {
+		if _, ok := pendingTaskIDs[strings.TrimSpace(trace.Tasks[index].TaskID)]; !ok {
+			continue
+		}
+		trace.Tasks[index].Disposition = runtimeKnowledgeDispositionAnswer
+		trace.Tasks[index].DecisionSource = "customer_declined_handoff"
+	}
+	trace.DeferredHandoff = false
+	trace.DeferredHandoffReason = ""
+	for taskID := range pendingTaskIDs {
+		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
+	}
+	return trace
+}
+
 // appendKnowledgeDecisionInstruction keeps the answerability policy in one
 // system message. A retrieval miss may add task-specific guidance, but it
 // should not create a second competing prompt with duplicated fallback rules.
@@ -2816,12 +2886,44 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	independentNonKnowledgeWork := state.Input.Collector != nil &&
 		runtimeReplyPlanHasIndependentNonKnowledgeWork(state.Input.Collector.Data.Pipeline.ReplyPlan)
-	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(req.Conversation.ID, pendingQuestions, state.Input.Collector)
+	handoffRejected := utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req))
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(
+		req.Conversation.ID,
+		pendingQuestions,
+		state.Input.Collector,
+		currentRuntimeIntentSemanticText(req),
+	)
 	if len(retryQuestions) > 0 {
 		clearDeferredRuntimeKnowledgeQuestions(batch, retryQuestions)
 		result = batch.Merged
 	}
 	if len(pendingQuestions) > 0 && answeredQuestionCount == 0 && len(retryQuestions) == 0 {
+		if handoffRejected {
+			if state.Input.Collector != nil {
+				activePlan := rebuildRuntimeKnowledgeReplyPlan(
+					state.Input.Collector.Data.Pipeline.ReplyPlan,
+					batch.Questions,
+					pendingQuestions,
+					false,
+				)
+				activePlan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(activePlan, judgeTrace, batch.Questions)
+				activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions)
+				state.Input.Collector.SetReplyPlan(activePlan)
+			}
+			judgeTrace = markDeclinedKnowledgeHandoffs(judgeTrace, pendingQuestions)
+			clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
+			result = batch.Merged
+			if state.Input.Collector != nil {
+				state.Input.Collector.SetKnowledgeEvidenceJudge(judgeTrace)
+			}
+			state.RetrieveResult = result
+			syncRetrieverTrace(result)
+			state.Decision = buildKnowledgeNoContextDecision(req.AIAgent, knowledgeIDs)
+			state.prependDecisionInstruction(knowledgeActionInstruction)
+			appendKnowledgeDecisionInstruction(&state.Decision, buildDeclinedRuntimeKnowledgeHandoffInstruction(pendingQuestions))
+			state.recordAnswerability(answerabilityStatusNoContext, "customer declined the knowledge-directed human route", nil)
+			return state, nil
+		}
 		if state.Input.Collector != nil && autoHandoffEnabled {
 			activePlan := rebuildRuntimeKnowledgeReplyPlan(
 				state.Input.Collector.Data.Pipeline.ReplyPlan,
@@ -2873,13 +2975,21 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 			willRequestHandoff,
 		)
 		activePlan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(activePlan, judgeTrace, batch.Questions)
+		if handoffRejected {
+			activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions)
+		}
 		activePlan = convertExternalProxyCapabilityBoundaryTasks(activePlan, externalProxyBoundaryTaskIDs)
 		state.Input.Collector.SetReplyPlan(activePlan)
 	}
 	if len(pendingQuestions) > 0 {
 		clearDeferredRuntimeKnowledgeQuestions(batch, pendingQuestions)
 		result = batch.Merged
-		deferredInstruction = buildDeferredRuntimeKnowledgeInstruction(pendingQuestions, willRequestHandoff)
+		if handoffRejected {
+			deferredInstruction = buildDeclinedRuntimeKnowledgeHandoffInstruction(pendingQuestions)
+			judgeTrace = markDeclinedKnowledgeHandoffs(judgeTrace, pendingQuestions)
+		} else {
+			deferredInstruction = buildDeferredRuntimeKnowledgeInstruction(pendingQuestions, willRequestHandoff)
+		}
 		if willRequestHandoff {
 			judgeTrace.DeferredHandoff = true
 			judgeTrace.DeferredHandoffReason = deferredRuntimeKnowledgeHandoffReason(pendingQuestions)
@@ -3204,7 +3314,12 @@ func deferUnavailableKnowledgeForIndependentWork(state *answerabilityGateState, 
 	}
 	hasIndependentNonKnowledgeWork := runtimeReplyPlanHasIndependentNonKnowledgeWork(plan)
 
-	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(state.Input.Request.Conversation.ID, pending, state.Input.Collector)
+	autoHandoffEnabled := runtimeKnowledgeAutoHandoffEnabledForCollector(
+		state.Input.Request.Conversation.ID,
+		pending,
+		state.Input.Collector,
+		currentRuntimeIntentSemanticText(state.Input.Request),
+	)
 	if autoHandoffEnabled && len(pending) > 0 {
 		activePlan := rebuildRuntimeKnowledgeReplyPlan(plan, nil, pending, true)
 		state.Input.Collector.SetReplyPlan(activePlan)
@@ -3274,8 +3389,12 @@ func runtimeKnowledgeAutoHandoffEnabledForCollector(
 	conversationID int64,
 	pending []runtimeKnowledgeQuestionDisposition,
 	collector *callbacks.RuntimeTraceCollector,
+	currentText ...string,
 ) bool {
 	_ = collector
+	if len(currentText) > 0 && utils.IsExplicitHumanHandoffRejection(currentText[0]) {
+		return false
+	}
 	return runtimeKnowledgeAutoHandoffEnabled(conversationID, pending)
 }
 

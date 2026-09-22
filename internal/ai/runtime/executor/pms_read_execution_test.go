@@ -9,6 +9,7 @@ import (
 
 	"agent-desk/internal/ai/runtime/internal/impl/adapter"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/toolx"
 )
 
@@ -372,6 +373,42 @@ func TestResolveRuntimePMSTargetRoomTypeIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimePMSReadStepArgsNormalizesDuplicateOrderDates(t *testing.T) {
+	step := pmsReadPlanStep{
+		ID: "inventory.stay", Action: "inventory", RequiredArgs: []string{"beginTime", "endTime"},
+		Bindings: []pmsReadPlanBinding{
+			pmsReadBinding("beginTime", []string{"order.recept"}, pmsReadStayStartFields),
+			pmsReadBinding("endTime", []string{"order.recept"}, pmsReadStayEndFields),
+		},
+	}
+	results := map[string]pmsReadStepResult{"order.recept": {
+		Status: pmsReadStepOK,
+		Data: map[string]any{
+			"checkInBusinessDate":  "2026-09-22 18:00:00",
+			"checkOutBusinessDate": "2026-09-24 13:00:00",
+			"receptOrderList": []any{map[string]any{
+				"checkInTime":  "2026-09-22T20:00:00+08:00",
+				"checkOutTime": "2026-09-24T12:00:00+08:00",
+			}},
+		},
+	}}
+	args, status, message := resolveRuntimePMSReadStepArgs(step, results)
+	if status != "" || message != "" || args["beginTime"] != "2026-09-22" || args["endTime"] != "2026-09-24" {
+		t.Fatalf("same stay dates from linked order rows must bind once: args=%#v status=%q message=%q", args, status, message)
+	}
+
+	results["order.recept"] = pmsReadStepResult{Status: pmsReadStepOK, Data: map[string]any{
+		"checkInBusinessDate": "2026-09-22 18:00:00",
+		"receptOrderList": []any{map[string]any{
+			"checkInTime": "2026-09-23T18:00:00+08:00",
+		}},
+	}}
+	_, status, _ = resolveRuntimePMSReadStepArgs(step, results)
+	if status != pmsReadStepAmbiguous {
+		t.Fatalf("genuinely different order dates must remain ambiguous, got %q", status)
+	}
+}
+
 func TestRuntimePMSOrderFactReadsSanitizedProductRoomNames(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -535,8 +572,9 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || !containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
-		if instruction := buildRuntimePMSResolvedInstruction(gotPlan); !strings.Contains(instruction, "不得再次调用 pms_query") {
-			t.Fatalf("Generate boundary missing: %q", instruction)
+		instruction := buildRuntimePMSResolvedInstruction(gotPlan)
+		if !strings.Contains(instruction, "不得再次调用 pms_query") || !strings.Contains(instruction, "不得在回复中原样复述完整手机号") {
+			t.Fatalf("Generate boundary or phone privacy rule missing: %q", instruction)
 		}
 	}
 }
@@ -620,6 +658,27 @@ func TestRuntimePMSKnowledgeHandoffRestoresKnowledgeRouteWhenReadIsUnavailable(t
 		}
 		if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_top_answer" || strings.TrimSpace(summary.handoffDirectiveReason) == "" {
 			t.Fatalf("failed pure PMS Task must restore the executable knowledge handoff directive: %#v", summary)
+		}
+	})
+
+	t.Run("failed PMS read honors current rejection of knowledge handoff", func(t *testing.T) {
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model", Disposition: runtimeKnowledgeDispositionDirectHandoff, SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		}}})
+		plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query", OriginalText: "查 13800138000 的订单，不要转人工", NeedsTool: true, NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply", SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		}}}
+		summary := &RunResult{}
+		req := RunInput{UserMessage: models.Message{Content: "查 13800138000 的订单，不要转人工"}}
+
+		_, gotPlan, _ := applyRuntimePMSReadPlansWithInvoker(context.Background(), req, adapter.HistoryBuildResult{}, baseIntent(), plan, summary, collector, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), unavailableInvoker())
+		task := gotPlan.TaskPlans[0]
+		if task.Output != "text_reply" || task.OutputKind != "text" || !task.ReplyRequired || task.AnswerText == nil || !strings.Contains(*task.AnswerText, "我先不转接") {
+			t.Fatalf("failed PMS read must honor the current no-handoff instruction: %#v", task)
+		}
+		if summary.handoffDirective || collector.Data.Pipeline.EvidenceJudge.DeferredHandoff {
+			t.Fatalf("declined handoff must not remain executable: summary=%#v trace=%#v", summary, collector.Data.Pipeline.EvidenceJudge)
 		}
 	})
 

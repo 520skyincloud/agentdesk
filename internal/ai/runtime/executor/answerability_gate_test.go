@@ -1499,6 +1499,72 @@ func TestKnowledgePolicyPromotesTopExactHandoffDirective(t *testing.T) {
 	}
 }
 
+func TestKnowledgePolicyHonorsCurrentRejectionOfExactHandoff(t *testing.T) {
+	top := rag.RetrieveResult{
+		KnowledgeBaseID: 1,
+		SourceRecordID:  "toilet-blocked",
+		Title:           "马桶堵了怎么办",
+		Content:         "问题：马桶堵了怎么办\n答案：转接",
+		Score:           0.98,
+	}
+	for _, currentText := range []string{
+		"马桶堵了怎么办，暂时不要转人工",
+		"马桶堵了怎么办，不用找同事，先告诉我",
+	} {
+		t.Run(currentText, func(t *testing.T) {
+			retriever := &fakeKnowledgeContextRetriever{
+				knowledgeBaseIDs: []int64{1},
+				result: &retrievers.KnowledgeRetrieveResult{
+					KnowledgeBaseIDs: []int64{1},
+					Hits:             []rag.RetrieveResult{top},
+					ContextResults:   []rag.RetrieveResult{top},
+					ContextText:      top.Content,
+					AnswerMode:       enums.KnowledgeAnswerModeStrict,
+				},
+			}
+			intent := hotelInfoIntent()
+			intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+				Intent: "hotel_info", SubIntent: "store_knowledge", Text: "马桶堵了怎么办",
+				ResolvedText: "马桶堵了怎么办", NeedsKnowledge: true,
+			}}
+			summary := &RunResult{}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetActionLedger(buildInitialActionLedger(intent))
+			collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "hotel_info", SubIntent: "store_knowledge", Text: "马桶堵了怎么办",
+				OriginalText: "马桶堵了怎么办", ResolvedText: "马桶堵了怎么办", NeedsKnowledge: true,
+				OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+			}}})
+			state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+				Request:   newKnowledgePolicyRunInput(currentText, "1"),
+				Summary:   summary,
+				Collector: collector,
+				Intent:    intent,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate returned error: %v", err)
+			}
+			if summary.handoffDirective || actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+				t.Fatalf("current rejection must not request a human route: summary=%#v ledger=%#v", summary, collector.Data.ActionLedger)
+			}
+			plan := collector.Data.Pipeline.ReplyPlan
+			if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].OutputKind != "text" || !plan.TaskPlans[0].ReplyRequired ||
+				plan.TaskPlans[0].AnswerText == nil || !strings.Contains(*plan.TaskPlans[0].AnswerText, "我先不转接") {
+				t.Fatalf("declined knowledge handoff must become a clear text reply: %#v", plan.TaskPlans)
+			}
+			joined := ""
+			for _, message := range state.Decision.Instructions {
+				if message != nil {
+					joined += message.Content
+				}
+			}
+			if !strings.Contains(joined, "不得改成‘暂时无法确认’") {
+				t.Fatalf("declined handoff reply boundary missing: %q", joined)
+			}
+		})
+	}
+}
+
 func TestKnowledgePolicyKeepsRoomNumberAnswerAndIgnoresLowerRankedDirective(t *testing.T) {
 	top := rag.RetrieveResult{
 		KnowledgeBaseID: 1,

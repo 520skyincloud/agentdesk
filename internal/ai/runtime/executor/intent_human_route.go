@@ -341,7 +341,7 @@ func executeRuntimeHandoffDirective(req RunInput, summary *RunResult, collector 
 func runtimeHandoffDirectiveAllowed(req RunInput, collector *callbacks.RuntimeTraceCollector, source string) bool {
 	switch strings.TrimSpace(source) {
 	case "knowledge_top_answer":
-		return true
+		return !utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req))
 	case "generated_reply_guard":
 		return runtimeExplicitHumanHandoffRequest(currentRuntimeIntentSemanticText(req))
 	default:

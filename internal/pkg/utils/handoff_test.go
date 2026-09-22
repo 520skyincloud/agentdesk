@@ -75,3 +75,32 @@ func TestIsExplicitHumanHandoffRequestBurstUsesLatestAuthorization(t *testing.T)
 		}
 	}
 }
+
+func TestIsExplicitHumanHandoffRejectionUsesTheSameLatestInstruction(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{text: "暂时不用人工，先告诉我怎么处理", want: true},
+		{text: "为什么又直接转人工了", want: true},
+		{text: "不要转人工，还是帮我找同事", want: false},
+		{text: "房间空调坏了，帮我处理一下", want: false},
+	} {
+		if got := IsExplicitHumanHandoffRejection(tc.text); got != tc.want {
+			t.Fatalf("IsExplicitHumanHandoffRejection(%q)=%v, want %v", tc.text, got, tc.want)
+		}
+	}
+
+	if !IsExplicitHumanHandoffRejection(BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 帮我转人工",
+		"2. [消息102] 暂时不用人工了",
+	})) {
+		t.Fatal("the latest burst cancellation must reject the earlier handoff")
+	}
+	if IsExplicitHumanHandoffRejection(BuildRuntimeCustomerBurstEnvelope([]string{
+		"1. [消息101] 不要转人工",
+		"2. [消息102] 还是帮我找同事吧",
+	})) {
+		t.Fatal("the latest burst authorization must override the earlier rejection")
+	}
+}
