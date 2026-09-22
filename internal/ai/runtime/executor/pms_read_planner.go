@@ -33,6 +33,7 @@ type pmsReadPlanInput struct {
 	TargetRoomTypeText string
 	StartDate          string
 	EndDate            string
+	ExtensionDays      int
 	TargetCheckoutTime string
 }
 
@@ -54,8 +55,9 @@ type pmsReadPlanStep struct {
 }
 
 type pmsReadPlanBinding struct {
-	Argument string
-	Sources  []pmsReadPlanSource
+	Argument       string
+	Sources        []pmsReadPlanSource
+	DateOffsetDays int
 }
 
 type pmsReadPlanSource struct {
@@ -95,6 +97,7 @@ var (
 	pmsReadStayStartFields = []string{"checkInTime", "receptOrderList[].checkInTime"}
 	pmsReadStayEndFields   = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 	pmsReadRoomFields      = []string{"homeName", "receptOrderList[].homeName"}
+	pmsReadRoomTypeFields  = []string{"productId", "roomTypeId", "receptOrderList[].productId", "receptOrderList[].roomTypeId"}
 	pmsReadCheckoutFields  = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 )
 
@@ -136,8 +139,8 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
 		appendPMSReadPriceStep(&plan, input, orderSteps, true)
 	case pmsReadScenarioRenewal:
-		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
-		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayEndFields, nil, true)
+		orderSteps := appendPMSReadOrderSteps(&plan, input, false)
+		appendPMSReadRenewalInventoryStep(&plan, input, orderSteps)
 		appendPMSReadRenewCandidateStep(&plan, input, orderSteps)
 	case pmsReadScenarioLateCheckout:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
@@ -169,6 +172,9 @@ func normalizePMSReadPlanInput(input pmsReadPlanInput) pmsReadPlanInput {
 	input.TargetRoomTypeText = strings.TrimSpace(input.TargetRoomTypeText)
 	input.StartDate = normalizePMSReadDate(input.StartDate)
 	input.EndDate = normalizePMSReadDate(input.EndDate)
+	if input.ExtensionDays < 0 {
+		input.ExtensionDays = 0
+	}
 	input.TargetCheckoutTime = normalizePMSReadClock(input.TargetCheckoutTime)
 	return input
 }
@@ -268,6 +274,39 @@ func appendPMSReadInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput, order
 		step.Bindings = append(step.Bindings, pmsReadBinding("endTime", orderSteps, endFields))
 	} else {
 		plan.Missing = append(plan.Missing, "inventoryEndDate")
+	}
+	if pmsReadStepCanResolveArgs(step) {
+		plan.Steps = append(plan.Steps, step)
+	}
+}
+
+func appendPMSReadRenewalInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string) {
+	if len(orderSteps) == 0 {
+		plan.Missing = append(plan.Missing, "orderIdForRenewalInventory")
+		return
+	}
+	step := pmsReadPlanStep{
+		ID: "inventory.stay", Action: "inventory", Purpose: "查询当前订单同房型续住日期的库存和价格", Required: true,
+		Args: map[string]string{"metrics": "sold,sellable"}, RequiredArgs: []string{"beginTime", "endTime", "roomTypeId"},
+	}
+	if input.StartDate != "" {
+		step.Args["beginTime"] = input.StartDate
+	} else {
+		step.Bindings = append(step.Bindings, pmsReadBinding("beginTime", orderSteps, pmsReadStayEndFields))
+	}
+	if input.EndDate != "" {
+		step.Args["endTime"] = input.EndDate
+	} else if input.ExtensionDays > 0 {
+		binding := pmsReadBinding("endTime", orderSteps, pmsReadStayEndFields)
+		binding.DateOffsetDays = input.ExtensionDays
+		step.Bindings = append(step.Bindings, binding)
+	} else {
+		plan.Missing = append(plan.Missing, "renewalEndDate")
+	}
+	if input.TargetRoomTypeID != "" {
+		step.Args["roomTypeId"] = input.TargetRoomTypeID
+	} else {
+		step.Bindings = append(step.Bindings, pmsReadBinding("roomTypeId", orderSteps, pmsReadRoomTypeFields))
 	}
 	if pmsReadStepCanResolveArgs(step) {
 		plan.Steps = append(plan.Steps, step)

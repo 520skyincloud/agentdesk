@@ -89,6 +89,86 @@ func TestJevBoundariesDoNotSplitIdentifiersOrAssumePunctuation(t *testing.T) {
 	}
 }
 
+func TestJevMixedOrderParkingBoundariesRecoverMechanically(t *testing.T) {
+	text := "\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c\u5165\u53e3\u5728\u54ea\uff1f"
+	first := len([]rune("\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f"))
+	second := len([]rune("\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c"))
+	want := []string{
+		"\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f",
+		"\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c",
+		"\u5165\u53e3\u5728\u54ea\uff1f",
+	}
+	for _, test := range []struct {
+		name   string
+		start2 int
+		start3 int
+	}{
+		{name: "ordered", start2: first, start3: second},
+		{name: "reversed", start2: second, start3: first},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spans := jevTestSegment(t, []adapter.CurrentTurnSource{{Ref: "U1", Text: text}}, map[string]string{
+				"U1_count": "3", "U1_terminal_alignment": "not_exact",
+				"U1_start_2": strconv.Itoa(test.start2), "U1_start_3": strconv.Itoa(test.start3),
+			})
+			if len(spans) != len(want) {
+				t.Fatalf("got %d spans, want %d: %#v", len(spans), len(want), spans)
+			}
+			for index := range want {
+				if spans[index].Text != want[index] {
+					t.Fatalf("span %d=%q, want %q", index, spans[index].Text, want[index])
+				}
+			}
+		})
+	}
+}
+
+func TestJevMixedOrderParkingBoundaryRetriesInvalidSelectionOnce(t *testing.T) {
+	text := "\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c\u5165\u53e3\u5728\u54ea\uff1f"
+	first := len([]rune("\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f"))
+	second := len([]rune("\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c"))
+	for _, test := range []struct {
+		name      string
+		badStart3 string
+	}{
+		{name: "duplicate", badStart3: strconv.Itoa(first)},
+		{name: "invalid", badStart3: "999"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			startCalls := 0
+			spans, err := segmentJevIntentSources(
+				[]adapter.CurrentTurnSource{{Ref: "U1", Text: text}},
+				jevIntentState{},
+				func(_ any, questions map[string]jev.Question) (jev.Response, error) {
+					if _, ok := questions["U1_count"]; ok {
+						return jevTestResponse(questions, map[string]string{
+							"U1_count": "3", "U1_terminal_alignment": "not_exact",
+						}, nil), nil
+					}
+					startCalls++
+					choices := map[string]string{
+						"U1_start_2": strconv.Itoa(first),
+						"U1_start_3": strconv.Itoa(second),
+					}
+					if startCalls == 1 {
+						choices["U1_start_3"] = test.badStart3
+					}
+					return jevTestResponse(questions, choices, nil), nil
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if startCalls != 2 {
+				t.Fatalf("boundary selection calls=%d, want exactly two", startCalls)
+			}
+			if len(spans) != 3 || spans[0].Text != "\u8fd9\u7b14\u8ba2\u5355\u51e0\u70b9\u9000\u623f\uff1f" || spans[1].Text != "\u9152\u5e97\u505c\u8f66\u6536\u8d39\u5417\uff0c" || spans[2].Text != "\u5165\u53e3\u5728\u54ea\uff1f" {
+				t.Fatalf("unexpected recovered spans: %#v", spans)
+			}
+		})
+	}
+}
+
 func TestJevSegmentationKeepsDecisionDimensionsInOneGoal(t *testing.T) {
 	for _, text := range []string{
 		"能不能升大床房，有没有房，会员能免差价吗，要补多少？",

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -645,6 +646,78 @@ func TestRuntimePMSSessionLocatorRequiresConfirmationAndHonorsCorrections(t *tes
 				t.Fatalf("unconfirmed or corrected locator must not survive: %#v", locator)
 			}
 		})
+	}
+}
+
+func TestRuntimePMSSessionLocatorRecoversOnlySuccessfulSameSessionRuns(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	conversation := models.Conversation{ID: 7101}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	source := models.Message{ID: 7102, ConversationID: conversation.ID, SessionNo: 3, ClientMsgID: "pms-locator-source", SeqNo: 1, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "帮我查订单"}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+	trace := callbacks.RuntimeTraceData{Status: "completed"}
+	trace.Tools.Items = []callbacks.ToolTraceItem{{ToolCode: toolx.BuiltinPMSQuery.Code, Status: "ok"}}
+	trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "order_query",
+		ResolvedText:   "查询当前订单\n本次查询手机号：13800138000\n本次查询订单定位：接待单ID:REC-7102",
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: "pms_order_reserve", Statement: "当前订单已查询。"}},
+	}}
+	trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-1"}}}
+	payload, err := json.Marshal(struct {
+		Runtime callbacks.RuntimeTraceData `json:"runtime"`
+	}{Runtime: trace})
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if err := db.Create(&models.AgentRunLog{
+		ConversationID: conversation.ID, MessageID: source.ID, FinalStatus: "completed", TraceData: string(payload),
+	}).Error; err != nil {
+		t.Fatalf("create run log: %v", err)
+	}
+	failedSource := models.Message{ID: 7103, ConversationID: conversation.ID, SessionNo: 3, ClientMsgID: "pms-locator-failed", SeqNo: 2, SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "换个手机号查"}
+	if err := db.Create(&failedSource).Error; err != nil {
+		t.Fatalf("create failed source message: %v", err)
+	}
+	failedTrace := callbacks.RuntimeTraceData{Status: "completed"}
+	failedTrace.Tools.Items = []callbacks.ToolTraceItem{{ToolCode: toolx.BuiltinPMSQuery.Code, Status: "unavailable"}}
+	failedTrace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "order_query", ResolvedText: "本次查询手机号：13900139000",
+	}}
+	failedPayload, err := json.Marshal(struct {
+		Runtime callbacks.RuntimeTraceData `json:"runtime"`
+	}{Runtime: failedTrace})
+	if err != nil {
+		t.Fatalf("marshal failed trace: %v", err)
+	}
+	if err := db.Create(&models.AgentRunLog{
+		ConversationID: conversation.ID, MessageID: failedSource.ID, FinalStatus: "completed", TraceData: string(failedPayload),
+	}).Error; err != nil {
+		t.Fatalf("create failed run log: %v", err)
+	}
+
+	req := RunInput{Conversation: conversation, UserMessage: models.Message{ID: 7200, ConversationID: conversation.ID, SessionNo: 3}}
+	locator := runtimePMSSessionLocatorForRequest(req, adapter.HistoryBuildResult{})
+	if locator.Phone != "13800138000" || locator.OrderLocator != "接待单ID:REC-7102" {
+		t.Fatalf("same-session successful PMS run must restore its locator: %#v", locator)
+	}
+
+	corrected := runtimePMSSessionLocatorForRequest(req, adapter.HistoryBuildResult{RawItems: []models.Message{{
+		ID: 7199, ConversationID: conversation.ID, SessionNo: 3, SenderType: enums.IMSenderTypeCustomer,
+		MessageType: enums.IMMessageTypeText, Content: "刚才手机号不对，也不是这个订单",
+	}}})
+	if corrected.Phone != "" || corrected.OrderLocator != "" {
+		t.Fatalf("bounded-history correction must override the recovered locator: %#v", corrected)
+	}
+
+	otherSession := runtimePMSSessionLocatorForRequest(RunInput{
+		Conversation: conversation, UserMessage: models.Message{ID: 7300, ConversationID: conversation.ID, SessionNo: 4},
+	}, adapter.HistoryBuildResult{})
+	if otherSession.Phone != "" || otherSession.OrderLocator != "" {
+		t.Fatalf("a locator must not cross session boundaries: %#v", otherSession)
 	}
 }
 
@@ -4091,6 +4164,7 @@ func setupRuntimeIntentConfigTestDB(t *testing.T) *gorm.DB {
 		&models.WxWorkCustomerHandoffSetting{},
 		&models.KnowledgeResourceGroup{},
 		&models.KnowledgeResourceItem{},
+		&models.AgentRunLog{},
 	); err != nil {
 		t.Fatalf("auto migrate error = %v", err)
 	}

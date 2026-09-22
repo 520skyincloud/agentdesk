@@ -180,6 +180,14 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
 		assertPMSReadBinding(t, inventory, "beginTime", "order.recept")
 		assertPMSReadBinding(t, inventory, "endTime", "order.recept")
+		if inventory.Args["roomTypeId"] != "" {
+			t.Fatalf("unknown target must list real options instead of reusing the current room type: %#v", inventory)
+		}
+		for _, binding := range inventory.Bindings {
+			if binding.Argument == "roomTypeId" {
+				t.Fatalf("unknown target must not bind the current room type as the requested target: %#v", inventory)
+			}
+		}
 	})
 }
 
@@ -232,10 +240,13 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			SubIntent: "renewal", Phone: "13800138000", StartDate: "2026-09-25", EndDate: "2026-09-27",
 		})
-		if len(plan.Steps) != 3 || hasPMSReadAction(plan, "renew") {
+		if len(plan.Steps) != 4 || hasPMSReadAction(plan, "renew") {
 			t.Fatalf("renewal plan exposed a write: %#v", plan)
 		}
+		requirePMSReadStep(t, plan, "order.reserve")
+		requirePMSReadStep(t, plan, "order.recept")
 		candidate := requirePMSReadStep(t, plan, "renew.candidates")
+		assertPMSReadBinding(t, candidate, "currentReceptOrderId", "order.reserve")
 		assertPMSReadBinding(t, candidate, "currentReceptOrderId", "order.recept")
 		if candidate.Args["reservePhone"] != "13800138000" {
 			t.Fatalf("candidate lookup lost the explicit phone: %#v", candidate)
@@ -248,6 +259,21 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		})
 		candidate := requirePMSReadStep(t, plan, "renew.candidates")
 		assertPMSReadBinding(t, candidate, "currentReceptOrderId", "order.reserve")
+	})
+
+	t.Run("relative one-day extension derives the end date from the current checkout", func(t *testing.T) {
+		plan := buildPMSReadPlan(pmsReadPlanInput{
+			Scenario: pmsReadScenarioRenewal, Phone: "13800138000", ExtensionDays: 1,
+		})
+		inventory := requirePMSReadStep(t, plan, "inventory.stay")
+		assertPMSReadBinding(t, inventory, "beginTime", "order.reserve")
+		assertPMSReadBinding(t, inventory, "endTime", "order.reserve")
+		assertPMSReadBinding(t, inventory, "roomTypeId", "order.reserve")
+		for _, binding := range inventory.Bindings {
+			if binding.Argument == "endTime" && binding.DateOffsetDays != 1 {
+				t.Fatalf("relative renewal end date must add exactly one day: %#v", binding)
+			}
+		}
 	})
 }
 

@@ -30,6 +30,7 @@ var (
 	runtimePMSLateClockPattern      = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*([01]?[0-9]|2[0-3])[:：]([0-5][0-9])`)
 	runtimePMSLateChinesePattern    = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*(?:(上午|下午|晚上|中午|凌晨)\s*)?([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?`)
 	runtimePMSPeriodCheckoutPattern = regexp.MustCompile(`(上午|下午|晚上|中午|凌晨)\s*([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?\s*退房`)
+	runtimePMSExtensionPattern      = regexp.MustCompile(`(?:多住|再住|续住|再续|续)([0-9零〇一二两三四五六七八九十]{1,3})(?:晚|天)`)
 )
 
 var (
@@ -203,7 +204,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 	if delegate == nil {
 		return intent, replyPlan, false
 	}
-	sessionLocator := runtimePMSSessionLocatorFromHistory(history)
+	sessionLocator := runtimePMSSessionLocatorForRequest(req, history)
 	callCount := 0
 	invoker := &runtimePMSMemoizingInvoker{delegate: &runtimePMSCountingInvoker{delegate: delegate, count: &callCount}}
 	executed := false
@@ -221,6 +222,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			aggregated = pmsReadPlanResult{Status: pmsReadStepUnavailable, Unconfirmed: []string{"PMS 查询计划结果无效"}}
 		}
 		applyRuntimePMSReadResultToTask(task, finalPlan, aggregated, index)
+		appendRuntimePMSResolvedOrderLocator(task, aggregated)
 		resolveRuntimePMSKnowledgeHandoffForTask(req, task, replyPlan, finalPlan, aggregated, summary, collector)
 		task.NeedsTool = false
 		processedTasks = append(processedTasks, *task)
@@ -338,12 +340,16 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 	}
 	if utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req)) {
 		pmsFacts := runtimeReplyTaskPMSFacts(*task)
-		applyDeclinedKnowledgeHandoffReply(task)
+		applyDeclinedKnowledgeHandoffReply(task, currentRuntimeIntentSemanticText(req))
+		boundaryStatement := declinedKnowledgeHandoffReply
+		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
+			boundaryStatement = strings.TrimSpace(*task.AnswerText)
+		}
 		if len(pmsFacts) > 0 {
 			task.SupportedFacts = append(pmsFacts, callbacks.KnowledgeEvidenceFactTraceData{
 				FactID:    taskID + "FHandoffBoundary",
 				Aspect:    "handoff_boundary",
-				Statement: declinedKnowledgeHandoffReply,
+				Statement: boundaryStatement,
 			})
 			task.AnswerText = nil
 		}
@@ -507,7 +513,39 @@ func buildRuntimePMSResolvedInstruction(plan callbacks.ReplyPlanTraceData) strin
 	if !hasPMSFacts {
 		return ""
 	}
-	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 只负责按客户问题整理这些事实，不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号。"
+	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 只负责按客户问题整理这些事实，不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号；内部预订单/接待单 ID 也不得在回复中原样复述。"
+}
+
+func appendRuntimePMSResolvedOrderLocator(task *callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) {
+	if task == nil {
+		return
+	}
+	byStep := make(map[string]pmsReadStepResult, len(result.Steps))
+	for _, step := range result.Steps {
+		byStep[step.StepID] = step
+	}
+	candidate, status, _ := selectRuntimePMSStayCandidate(byStep, []string{"order.reserve", "order.recept"}, nil)
+	if status != pmsReadStepOK {
+		return
+	}
+	locators := make([]string, 0, 2)
+	if candidate.reserveOrderID != "" {
+		locators = append(locators, "预订单ID:"+candidate.reserveOrderID)
+	}
+	if candidate.receptOrderID != "" {
+		locators = append(locators, "接待单ID:"+candidate.receptOrderID)
+	}
+	if len(locators) == 0 {
+		return
+	}
+	appendRuntimePMSLocatorMarkerToReplyTask(task, "本次查询订单定位："+strings.Join(locators, " "))
+}
+
+func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTraceData, marker string) {
+	if task == nil || strings.TrimSpace(marker) == "" || strings.Contains(task.ResolvedText, marker) {
+		return
+	}
+	task.ResolvedText = strings.TrimSpace(task.ResolvedText) + "\n" + marker
 }
 
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
@@ -531,6 +569,9 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.CustomerNo = customerNo
 	}
 	input.StartDate, input.EndDate = runtimePMSReadDates(task, input.Scenario, now)
+	if input.Scenario == pmsReadScenarioRenewal && input.EndDate == "" {
+		input.ExtensionDays = runtimePMSExtensionDays(task)
+	}
 	if input.Scenario == pmsReadScenarioLateCheckout {
 		input.TargetCheckoutTime = runtimePMSLateCheckoutTargetTime(task)
 	}
@@ -549,6 +590,19 @@ func runtimePMSLateCheckoutTargetTime(task callbacks.ReplyTaskPlanTraceData) str
 		}
 	}
 	return ""
+}
+
+func runtimePMSExtensionDays(task callbacks.ReplyTaskPlanTraceData) int {
+	text := compactRuntimePMSPhoneContext(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+	matches := runtimePMSExtensionPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0
+	}
+	days, ok := runtimePMSChineseNumber(matches[len(matches)-1][1])
+	if !ok || days <= 0 || days > 30 {
+		return 0
+	}
+	return days
 }
 
 func runtimePMSClockFromChineseMatch(match []string) string {
@@ -1110,6 +1164,9 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 			}
 		}
 		values = normalizeRuntimePMSBindingValues(binding.Argument, values)
+		if binding.DateOffsetDays != 0 {
+			values = offsetRuntimePMSBindingDates(values, binding.DateOffsetDays)
+		}
 		switch len(values) {
 		case 0:
 			continue
@@ -1137,6 +1194,22 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		}
 	}
 	return args, "", ""
+}
+
+func offsetRuntimePMSBindingDates(values []string, days int) []string {
+	if days == 0 {
+		return values
+	}
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		date := normalizePMSReadDate(value)
+		parsed, err := time.Parse("2006-01-02", date)
+		if err != nil {
+			continue
+		}
+		ret = append(ret, parsed.AddDate(0, 0, days).Format("2006-01-02"))
+	}
+	return uniquePMSReadStrings(ret)
 }
 
 type runtimePMSStayCandidate struct {

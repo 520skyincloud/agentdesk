@@ -80,6 +80,67 @@ func TestRuntimePMSReadPlanInputUsesCurrentAndSessionLocators(t *testing.T) {
 	})
 }
 
+func TestRuntimePMSRenewalRelativeDatesUseCurrentCheckout(t *testing.T) {
+	for _, test := range []struct {
+		text string
+		days int
+	}{
+		{text: "行程改了，我想多住一晚，同房型还有房吗？", days: 1},
+		{text: "这笔订单再续一天可以吗，帮我看看有没有房？", days: 1},
+		{text: "我想续两天，原房型还有库存吗？", days: 2},
+		{text: "能不能再住2晚，帮我查一下同房型？", days: 2},
+	} {
+		text := test.text
+		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
+			OriginalText: text, SubIntent: "renewal",
+		}, runtimePMSSessionLocator{Phone: "13800138000"}, time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local))
+		if input.ExtensionDays != test.days || input.StartDate != "" || input.EndDate != "" {
+			t.Fatalf("relative renewal phrase must preserve its day derivation: text=%q input=%#v", text, input)
+		}
+
+		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
+			"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{
+				"reserveOrderId": "RES-1", "productId": "ROOM-1", "checkOutTime": "2026-09-25 12:00:00",
+				"receptOrderList": []any{map[string]any{"receptOrderId": "REC-1", "productId": "ROOM-1", "checkOutTime": "2026-09-25 12:00:00"}},
+			}}},
+			"recept_order_by_phone": {{Status: pmsReadStepUnavailable, Message: "reception lookup unavailable"}},
+			"inventory": {{Status: pmsReadStepOK, Data: []any{map[string]any{
+				"roomTypeId": "ROOM-1", "roomTypeName": "大床房", "availableCount": 2,
+			}}}},
+			"renew_candidates": {{Status: pmsReadStepOK, Data: map[string]any{"rows": []any{}}}},
+		}}
+		results, plan := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
+		aggregated, err := aggregatePMSReadPlanResults(plan, results)
+		if err != nil || (aggregated.Status != pmsReadStepOK && aggregated.Status != pmsReadStepPartial) {
+			t.Fatalf("reserve-order fallback must keep renewal read assessment usable: aggregated=%#v err=%v", aggregated, err)
+		}
+		task := callbacks.ReplyTaskPlanTraceData{ResolvedText: text}
+		appendRuntimePMSResolvedOrderLocator(&task, aggregated)
+		if !strings.Contains(task.ResolvedText, "预订单ID:RES-1") || !strings.Contains(task.ResolvedText, "接待单ID:REC-1") {
+			t.Fatalf("a unique PMS stay must retain its real internal order locators: %q", task.ResolvedText)
+		}
+		var inventoryCall *runtimePMSFakeCall
+		for index := range invoker.calls {
+			if invoker.calls[index].action == "inventory" {
+				inventoryCall = &invoker.calls[index]
+				break
+			}
+		}
+		if inventoryCall == nil {
+			t.Fatalf("renewal inventory was not queried: %#v", invoker.calls)
+		}
+		wantEnd := time.Date(2026, 9, 25, 0, 0, 0, 0, time.Local).AddDate(0, 0, test.days).Format("2006-01-02")
+		if inventoryCall.args["beginTime"] != "2026-09-25" || inventoryCall.args["endTime"] != wantEnd || inventoryCall.args["roomTypeId"] != "ROOM-1" {
+			t.Fatalf("renewal inventory must use the real checkout and current room type: %#v", inventoryCall.args)
+		}
+		for _, call := range invoker.calls {
+			if !isRuntimePMSReadOnlyAction(call.action) {
+				t.Fatalf("renewal assessment attempted a write: %#v", invoker.calls)
+			}
+		}
+	}
+}
+
 func TestRuntimePMSOrderLocatorsPreserveMultipleKnownIDs(t *testing.T) {
 	reserveID, receptID, customerNo := runtimePMSOrderLocators("预订单ID:RES-1 接待单ID:REC-2 会员编号:C-3")
 	if reserveID != "RES-1" || receptID != "REC-2" || customerNo != "C-3" {

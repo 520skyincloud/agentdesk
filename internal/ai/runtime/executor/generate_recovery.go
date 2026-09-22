@@ -506,9 +506,36 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 		for _, fact := range fallbackFacts {
 			statements = append(statements, strings.TrimSpace(fact.Statement))
 		}
-		parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, joinGeneratedReplyFactStatements(statements)))
+		content := joinGeneratedReplyFactStatements(statements)
+		if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
+			content = composeGeneratedReplyContents([]string{content, boundary}, 2)
+		}
+		parts = append(parts, applyExternalProxyActionCapabilityBoundary(group, content))
 	}
 	return composeGeneratedReplyContents(parts, 3)
+}
+
+func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID string) string {
+	for _, task := range plan.TaskPlans {
+		if strings.TrimSpace(task.TaskID) != strings.TrimSpace(taskID) || !isPMSRuntimeSubIntent(task.SubIntent) {
+			continue
+		}
+		missing := strings.Join(task.MissingAspects, "\n")
+		switch {
+		case strings.Contains(missing, "目标房型") || strings.Contains(missing, "targetRoomType"):
+			return "请告诉我您想换到的具体房型，我再帮您查询差价。"
+		case strings.Contains(missing, "手机号") || strings.Contains(missing, "customerLocator"):
+			return runtimePMSOrderPhoneClarification
+		case strings.Contains(missing, "目标退房时间") || strings.Contains(missing, "targetCheckoutTime"):
+			return "请告诉我您想延迟到几点退房。"
+		case strings.Contains(missing, "入住和离店日期") || strings.Contains(missing, "日期"):
+			return "请告诉我想查询的入住和离店日期。"
+		case strings.Contains(missing, "价格") || strings.Contains(missing, "差价"):
+			return "当前价格依据还不完整，暂时不能确认差价。"
+		}
+		return "当前查询信息还不完整，我暂时不能确认这一部分。"
+	}
+	return ""
 }
 
 func compactGeneratedReplyFallbackFacts(facts []replyFactRequirement) []replyFactRequirement {

@@ -74,20 +74,29 @@ func rebindRuntimeRejectedTask(intent callbacks.IntentTraceData, previous callba
 		}
 	}
 	explicitFailedCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
-	failedCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
+	taskSpecificFailedCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
+	uncommittedTextCandidates := make([]callbacks.ReplyTaskPlanTraceData, 0)
 	for _, task := range previous.Pipeline.ReplyPlan.TaskPlans {
 		if task.OutputKind == "context_only" || task.Intent == "interaction" || task.NeedsResource || task.NeedsHumanRoute ||
 			task.SubIntent == "create_ticket" || (task.NeedsTool && !isPMSRuntimeSubIntent(task.SubIntent)) {
 			continue
 		}
+		if runtimePreviousReplyTaskCommitted(task.TaskID, previous) {
+			continue
+		}
+		uncommittedTextCandidates = append(uncommittedTextCandidates, task)
 		if failed[task.TaskID] {
 			explicitFailedCandidates = append(explicitFailedCandidates, task)
-		} else if runtimePreviousReplyTaskIncomplete(task, previous) {
-			failedCandidates = append(failedCandidates, task)
+		} else if runtimePreviousReplyTaskSpecificIncomplete(task) {
+			taskSpecificFailedCandidates = append(taskSpecificFailedCandidates, task)
 		}
 	}
+	failedCandidates := taskSpecificFailedCandidates
 	if len(explicitFailedCandidates) > 0 {
 		failedCandidates = explicitFailedCandidates
+	} else if len(taskSpecificFailedCandidates) == 0 &&
+		runtimePreviousReplyHasGlobalTextFailure(previous) && len(uncommittedTextCandidates) == 1 {
+		failedCandidates = uncommittedTextCandidates
 	}
 	if len(failedCandidates) != 1 {
 		return intent, false
@@ -119,10 +128,7 @@ func rebindRuntimeRejectedTask(intent callbacks.IntentTraceData, previous callba
 	return deriveModelIntentFromTasks(intent), true
 }
 
-func runtimePreviousReplyTaskIncomplete(task callbacks.ReplyTaskPlanTraceData, previous callbacks.RuntimeTraceData) bool {
-	if runtimePreviousReplyTaskCommitted(task.TaskID, previous) {
-		return false
-	}
+func runtimePreviousReplyTaskSpecificIncomplete(task callbacks.ReplyTaskPlanTraceData) bool {
 	if isPMSRuntimeSubIntent(task.SubIntent) {
 		if !runtimeReplyTaskHasPMSFact(task) || len(task.MissingAspects) > 0 {
 			return true
@@ -131,12 +137,24 @@ func runtimePreviousReplyTaskIncomplete(task callbacks.ReplyTaskPlanTraceData, p
 	if isUngroundedKnowledgeReplyTask(task) {
 		return true
 	}
-	if strings.TrimSpace(previous.Status) == "error" || strings.TrimSpace(previous.Pipeline.Generate.Status) == "failed" ||
-		strings.TrimSpace(previous.Pipeline.Validate.Status) == "failed" || strings.TrimSpace(previous.Error.Stage) != "" {
+	return false
+}
+
+func runtimePreviousReplyHasGlobalTextFailure(previous callbacks.RuntimeTraceData) bool {
+	stage := strings.TrimSpace(previous.Error.Stage)
+	if stage != "" && stage != "generate" && stage != "validate" && stage != "question_coverage" {
+		return false
+	}
+	if strings.TrimSpace(previous.Pipeline.Generate.Status) == "failed" ||
+		strings.TrimSpace(previous.Pipeline.Validate.Status) == "failed" {
+		return true
+	}
+	switch stage {
+	case "generate", "validate", "question_coverage":
 		return true
 	}
 	switch strings.TrimSpace(previous.Output.FinishReason) {
-	case "knowledge_evidence_safe_fallback", "generated_reply_protocol_error", "question_coverage":
+	case "generated_reply_protocol_error", "question_coverage":
 		return true
 	}
 	return false

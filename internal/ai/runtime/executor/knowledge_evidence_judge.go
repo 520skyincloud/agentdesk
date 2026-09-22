@@ -256,47 +256,60 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, knowledgeEvidenceDecisionMalformed)
 	}
 
-	systemPrompt := knowledgeEvidenceJudgeSystemPrompt()
-	if prompt.Coverage != nil {
-		systemPrompt += "\n\n" + runtimeQuestionCoverageInstruction()
-	}
-	userPrompt, err := json.Marshal(prompt)
-	if err != nil {
-		trace.Status = knowledgeEvidenceDecisionMalformed
-		trace.Reason = "knowledge judge prompt could not be encoded; retrieval remains intact and the judge protocol must be retried"
-		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(err)
-		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, knowledgeEvidenceDecisionMalformed)
-	}
-
 	callCtx := knowledgeEvidenceJudgeUsageContext(ctx, req, resolved)
 	callCtx, capture := usagex.WithCapture(callCtx)
-	callCtx, cancel := context.WithTimeout(callCtx, time.Duration(config.TimeoutMS)*time.Millisecond)
-	defer cancel()
-	startedAt := time.Now()
-	result, callErr, transportRetried := callKnowledgeEvidenceJudgeModel(
+	attempts := callKnowledgeEvidenceJudgeWithCompactRecovery(
 		callCtx,
 		config,
-		systemPrompt,
-		string(userPrompt),
+		tasks,
 		ai.LLM.ChatWithConfig,
+		func(attempt knowledgeEvidenceJudgeModelAttempt) {
+			recordKnowledgeEvidenceJudgeUsage(
+				callCtx,
+				req,
+				attempt.Config,
+				attempt.Result,
+				lastKnowledgeEvidenceJudgeReceipt(capture),
+				attempt.Fingerprint,
+				attempt.LatencyMs,
+				attempt.Err,
+			)
+		},
 	)
-	trace.LatencyMs = time.Since(startedAt).Milliseconds()
-	recordKnowledgeEvidenceJudgeUsage(callCtx, req, config, result, lastKnowledgeEvidenceJudgeReceipt(capture), fingerprint, trace.LatencyMs, callErr)
+	if len(attempts) == 0 {
+		trace.Status = knowledgeEvidenceDecisionMalformed
+		trace.Reason = "knowledge judge did not execute any model attempt"
+		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, knowledgeEvidenceDecisionMalformed)
+	}
+	for _, attempt := range attempts {
+		trace.LatencyMs += attempt.LatencyMs
+	}
+	finalAttempt := attempts[len(attempts)-1]
+	result := finalAttempt.Result
+	callErr := finalAttempt.Err
+	transportRetried := false
+	for _, attempt := range attempts {
+		transportRetried = transportRetried || attempt.TransportRetried
+	}
 	if callErr != nil {
 		failureDecision := knowledgeEvidenceDecisionMalformed
-		if errors.Is(callErr, context.DeadlineExceeded) || errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+		if finalAttempt.TimedOut || errors.Is(callErr, context.DeadlineExceeded) {
 			failureDecision = knowledgeEvidenceDecisionTimeout
 		}
 		trace.Status = failureDecision
 		trace.Reason = "knowledge judge model call failed; retrieval remains intact and the judge protocol must be retried"
-		if transportRetried {
+		if len(attempts) > 1 {
+			trace.Reason += "; one compact recovery attempt also failed"
+		} else if transportRetried {
 			trace.Reason += "; one bounded transport retry also failed"
 		}
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(callErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
 
-	selections, parseErr := parseKnowledgeEvidenceJudgeRuntimeResponse(result.Content, tasks)
+	responseTasks := finalAttempt.Tasks
+	responsePrompt := finalAttempt.Prompt
+	selections, parseErr := parseKnowledgeEvidenceJudgeRuntimeResponse(result.Content, responseTasks)
 	if parseErr != nil {
 		failureDecision := knowledgeEvidenceJudgeParseFailureDecision(parseErr)
 		trace.Status = failureDecision
@@ -305,7 +318,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
 	repairedHandoffs := repairModelMissKnowledgeHandoffSelections(tasks, selections)
-	coverage, coverageErr := parseRuntimeQuestionCoverage(result.Content, prompt.Coverage)
+	coverage, coverageErr := parseRuntimeQuestionCoverage(result.Content, responsePrompt.Coverage)
 	if coverageErr != nil {
 		trace.Status = knowledgeEvidenceDecisionProtocolInvalid
 		trace.ErrorMessage = coverageErr.Error()
@@ -313,6 +326,9 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 	trace.Status = "completed"
 	trace.Reason = "knowledge evidence was selected once per task and layer before deterministic store priority"
+	if len(attempts) > 1 {
+		trace.Reason += "; recovered with one compact same-protocol Judge attempt"
+	}
 	if transportRetried {
 		trace.Reason += "; recovered after one bounded transport retry"
 	}
@@ -338,6 +354,142 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 }
 
 type knowledgeEvidenceJudgeChatFunc func(context.Context, models.AIConfig, string, string) (*ai.ChatCompletionResult, error)
+
+type knowledgeEvidenceJudgeModelAttempt struct {
+	Tasks            []knowledgeEvidenceJudgeTask
+	Prompt           knowledgeEvidenceJudgePrompt
+	Fingerprint      string
+	Config           models.AIConfig
+	Result           *ai.ChatCompletionResult
+	Err              error
+	TransportRetried bool
+	TimedOut         bool
+	LatencyMs        int64
+}
+
+func callKnowledgeEvidenceJudgeWithCompactRecovery(
+	ctx context.Context,
+	config models.AIConfig,
+	tasks []knowledgeEvidenceJudgeTask,
+	chat knowledgeEvidenceJudgeChatFunc,
+	onAttempt func(knowledgeEvidenceJudgeModelAttempt),
+) []knowledgeEvidenceJudgeModelAttempt {
+	totalBudget := time.Duration(config.TimeoutMS) * time.Millisecond
+	if totalBudget <= 0 {
+		return nil
+	}
+	stageCtx, stageCancel := context.WithTimeout(ctx, totalBudget)
+	defer stageCancel()
+
+	primaryBudget, recoveryBudget := knowledgeEvidenceJudgeAttemptBudgets(totalBudget)
+	runAttempt := func(attemptTasks []knowledgeEvidenceJudgeTask, budget time.Duration) knowledgeEvidenceJudgeModelAttempt {
+		prompt := buildKnowledgeEvidenceJudgePrompt(attemptTasks)
+		attempt := knowledgeEvidenceJudgeModelAttempt{
+			Tasks:       attemptTasks,
+			Prompt:      prompt,
+			Fingerprint: fingerprintKnowledgeEvidenceJudgePrompt(prompt),
+			Config:      config,
+		}
+		attempt.Config.TimeoutMS = int(budget / time.Millisecond)
+		if attempt.Config.TimeoutMS < 1 {
+			attempt.Config.TimeoutMS = 1
+		}
+		systemPrompt := knowledgeEvidenceJudgeSystemPrompt()
+		if prompt.Coverage != nil {
+			systemPrompt += "\n\n" + runtimeQuestionCoverageInstruction()
+		}
+		userPrompt, err := json.Marshal(prompt)
+		if err != nil {
+			attempt.Err = err
+			if onAttempt != nil {
+				onAttempt(attempt)
+			}
+			return attempt
+		}
+		attemptCtx, cancel := context.WithTimeout(stageCtx, budget)
+		startedAt := time.Now()
+		attempt.Result, attempt.Err, attempt.TransportRetried = callKnowledgeEvidenceJudgeModel(
+			attemptCtx,
+			attempt.Config,
+			systemPrompt,
+			string(userPrompt),
+			chat,
+		)
+		attempt.LatencyMs = time.Since(startedAt).Milliseconds()
+		attempt.TimedOut = errors.Is(attempt.Err, context.DeadlineExceeded) || errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+		cancel()
+		if onAttempt != nil {
+			onAttempt(attempt)
+		}
+		return attempt
+	}
+
+	attempts := []knowledgeEvidenceJudgeModelAttempt{runAttempt(tasks, primaryBudget)}
+	if !attempts[0].TimedOut || recoveryBudget <= 0 || stageCtx.Err() != nil {
+		return attempts
+	}
+	if deadline, ok := stageCtx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return attempts
+		}
+		if recoveryBudget > remaining {
+			recoveryBudget = remaining
+		}
+	}
+	recoveryTasks := compactKnowledgeEvidenceJudgeRecoveryTasks(tasks)
+	attempts = append(attempts, runAttempt(recoveryTasks, recoveryBudget))
+	return attempts
+}
+
+func knowledgeEvidenceJudgeAttemptBudgets(total time.Duration) (time.Duration, time.Duration) {
+	if total <= time.Millisecond {
+		return total, 0
+	}
+	recovery := total / 3
+	if total >= 24*time.Second {
+		if recovery < 8*time.Second {
+			recovery = 8 * time.Second
+		}
+		if recovery > 12*time.Second {
+			recovery = 12 * time.Second
+		}
+	}
+	primary := total - recovery
+	if primary <= 0 || recovery <= 0 {
+		return total, 0
+	}
+	return primary, recovery
+}
+
+func compactKnowledgeEvidenceJudgeRecoveryTasks(tasks []knowledgeEvidenceJudgeTask) []knowledgeEvidenceJudgeTask {
+	ret := make([]knowledgeEvidenceJudgeTask, 0, len(tasks))
+	for _, task := range tasks {
+		compact := task
+		compact.RawCandidates = nil
+		compact.Candidates = nil
+		bestByLayer := make(map[string]knowledgeEvidenceJudgeCandidate, 2)
+		for _, candidate := range task.Candidates {
+			layer := strings.TrimSpace(candidate.Layer)
+			if layer != knowledgeEvidenceLayerStore && layer != knowledgeEvidenceLayerGeneral {
+				continue
+			}
+			best, exists := bestByLayer[layer]
+			if !exists || candidate.Hit.Score > best.Hit.Score ||
+				(candidate.Hit.Score == best.Hit.Score && candidate.RawRankNo > 0 && (best.RawRankNo <= 0 || candidate.RawRankNo < best.RawRankNo)) {
+				bestByLayer[layer] = candidate
+			}
+		}
+		for _, candidate := range task.Candidates {
+			best, ok := bestByLayer[strings.TrimSpace(candidate.Layer)]
+			if ok && best.CandidateID == candidate.CandidateID {
+				compact.Candidates = append(compact.Candidates, candidate)
+			}
+		}
+		ret = append(ret, compact)
+	}
+	return ret
+}
 
 func callKnowledgeEvidenceJudgeModel(
 	ctx context.Context,

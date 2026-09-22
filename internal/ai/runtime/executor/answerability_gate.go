@@ -2520,7 +2520,11 @@ func buildDeclinedRuntimeKnowledgeHandoffInstruction(pending []runtimeKnowledgeQ
 
 const declinedKnowledgeHandoffReply = "这类情况需要门店同事协助，按您的要求我先不转接。"
 
-func applyDeclinedKnowledgeHandoffReplies(plan callbacks.ReplyPlanTraceData, pending []runtimeKnowledgeQuestionDisposition) callbacks.ReplyPlanTraceData {
+func applyDeclinedKnowledgeHandoffReplies(
+	plan callbacks.ReplyPlanTraceData,
+	pending []runtimeKnowledgeQuestionDisposition,
+	currentText string,
+) callbacks.ReplyPlanTraceData {
 	pendingTaskIDs := make(map[string]struct{}, len(pending))
 	for _, item := range pending {
 		if taskID := strings.TrimSpace(item.TaskID); taskID != "" {
@@ -2532,18 +2536,21 @@ func applyDeclinedKnowledgeHandoffReplies(plan callbacks.ReplyPlanTraceData, pen
 		if _, ok := pendingTaskIDs[strings.TrimSpace(task.TaskID)]; !ok {
 			continue
 		}
-		applyDeclinedKnowledgeHandoffReply(task)
+		applyDeclinedKnowledgeHandoffReply(task, currentText)
 	}
 	plan.ActiveTaskCount = len(plan.TaskPlans)
 	plan.ReplyRequiredTaskCount = countReplyRequiredTasks(plan.TaskPlans)
 	return plan
 }
 
-func applyDeclinedKnowledgeHandoffReply(task *callbacks.ReplyTaskPlanTraceData) {
+func applyDeclinedKnowledgeHandoffReply(task *callbacks.ReplyTaskPlanTraceData, currentText string) {
 	if task == nil {
 		return
 	}
 	reply := declinedKnowledgeHandoffReply
+	if maintenanceReply, ok := ungroundedMaintenanceServiceReply(*task, currentText); ok {
+		reply = maintenanceReply
+	}
 	task.Output = "text_reply"
 	task.OutputKind = "text"
 	task.ReplyRequired = true
@@ -2842,7 +2849,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	}
 	if len(judgeTasks) > 0 {
 		judgeOutcome := gate.judge.JudgeBatch(ctx, req, judgeTasks)
-		if checkCoverage {
+		if checkCoverage && judgeOutcome.Trace.Status != knowledgeEvidenceDecisionTimeout {
 			batch, judgeTasks, judgeOutcome, err = gate.repairQuestionCoverageOnce(
 				ctx, state, retriever, retrieveOptions, batch, judgeTasks, judgeOutcome, storeKnowledgeBaseIDs, knowledgeIDs)
 			if err != nil {
@@ -2865,6 +2872,11 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 				)
 			}
 			rawCandidateCount = runtimeRetrieverRawCandidateCount(batch.Merged)
+		} else if checkCoverage && judgeOutcome.Trace.Status == knowledgeEvidenceDecisionTimeout {
+			state.Input.Collector.Data.Pipeline.Validate.Reason = appendValidationReason(
+				state.Input.Collector.Data.Pipeline.Validate.Reason,
+				"question coverage was not reclassified because the knowledge Judge timed out",
+			)
 		}
 		judgeTrace = applyKnowledgeEvidenceJudgeOutcome(batch, judgeTasks, judgeOutcome)
 		result = batch.Merged
@@ -2909,7 +2921,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 					false,
 				)
 				activePlan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(activePlan, judgeTrace, batch.Questions)
-				activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions)
+				activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions, currentRuntimeIntentSemanticText(req))
 				state.Input.Collector.SetReplyPlan(activePlan)
 			}
 			judgeTrace = markDeclinedKnowledgeHandoffs(judgeTrace, pendingQuestions)
@@ -2978,7 +2990,7 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		)
 		activePlan = applyKnowledgeEvidenceJudgeTraceToReplyPlan(activePlan, judgeTrace, batch.Questions)
 		if handoffRejected {
-			activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions)
+			activePlan = applyDeclinedKnowledgeHandoffReplies(activePlan, pendingQuestions, currentRuntimeIntentSemanticText(req))
 		}
 		activePlan = convertExternalProxyCapabilityBoundaryTasks(activePlan, externalProxyBoundaryTaskIDs)
 		state.Input.Collector.SetReplyPlan(activePlan)

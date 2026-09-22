@@ -1565,6 +1565,94 @@ func TestKnowledgePolicyHonorsCurrentRejectionOfExactHandoff(t *testing.T) {
 	}
 }
 
+func TestKnowledgePolicyDeclinedMaintenanceHandoffOffersTicket(t *testing.T) {
+	for _, tc := range []struct {
+		currentText string
+		question    string
+	}{
+		{currentText: "空调坏了，先不要转人工", question: "空调坏了怎么办"},
+		{currentText: "马桶堵了，不用找同事，先帮我处理", question: "马桶堵了怎么办"},
+	} {
+		t.Run(tc.currentText, func(t *testing.T) {
+			top := rag.RetrieveResult{
+				KnowledgeBaseID: 1,
+				SourceRecordID:  "maintenance-transfer",
+				Title:           "设备故障",
+				Content:         "问题：" + tc.question + "\n答案：转接",
+				Score:           0.98,
+			}
+			retriever := &fakeKnowledgeContextRetriever{
+				knowledgeBaseIDs: []int64{1},
+				result: &retrievers.KnowledgeRetrieveResult{
+					KnowledgeBaseIDs: []int64{1},
+					Hits:             []rag.RetrieveResult{top},
+					ContextResults:   []rag.RetrieveResult{top},
+					ContextText:      top.Content,
+					AnswerMode:       enums.KnowledgeAnswerModeStrict,
+				},
+			}
+			intent := hotelInfoIntent()
+			intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+				Intent: "service_request", SubIntent: "maintenance", Text: tc.question,
+				ResolvedText: tc.question, NeedsKnowledge: true,
+			}}
+			summary := &RunResult{}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetActionLedger(buildInitialActionLedger(intent))
+			collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "service_request", SubIntent: "maintenance", Text: tc.question,
+				OriginalText: tc.question, ResolvedText: tc.question, NeedsKnowledge: true,
+				OutputKind: "text", ReplyRequired: true, Output: "knowledge_text_reply",
+			}}})
+			state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+				Request:   newKnowledgePolicyRunInput(tc.currentText, "1"),
+				Summary:   summary,
+				Collector: collector,
+				Intent:    intent,
+			})
+			if err != nil {
+				t.Fatalf("Evaluate returned error: %v", err)
+			}
+			if summary.handoffDirective || actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+				t.Fatalf("declined maintenance must not request a human route: summary=%#v ledger=%#v", summary, collector.Data.ActionLedger)
+			}
+			plan := collector.Data.Pipeline.ReplyPlan
+			if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].AnswerText == nil ||
+				!strings.Contains(*plan.TaskPlans[0].AnswerText, "维修工单") ||
+				!strings.Contains(*plan.TaskPlans[0].AnswerText, "先不转接") {
+				t.Fatalf("declined maintenance must preserve the ticket option: %#v", plan.TaskPlans)
+			}
+			if state.RetrieveResult == nil {
+				t.Fatal("expected the evaluated retrieve result to remain available")
+			}
+		})
+	}
+}
+
+func TestDeclinedMaintenanceHandoffDoesNotOverwriteSuccessfulSibling(t *testing.T) {
+	parkingReply := "酒店提供免费停车服务。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "parking", AnswerText: &parkingReply,
+			OutputKind: "text", ReplyRequired: true, NeedsKnowledge: false,
+		},
+		{
+			TaskID: "T2", Intent: "service_request", SubIntent: "maintenance", Text: "空调坏了",
+			OriginalText: "空调坏了", ResolvedText: "空调坏了", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true,
+		},
+	}}
+	pending := []runtimeKnowledgeQuestionDisposition{{TaskID: "T2"}}
+
+	got := applyDeclinedKnowledgeHandoffReplies(plan, pending, "停车场在哪？空调坏了但不要转人工")
+	if got.TaskPlans[0].AnswerText == nil || *got.TaskPlans[0].AnswerText != parkingReply {
+		t.Fatalf("successful sibling was overwritten: %#v", got.TaskPlans[0])
+	}
+	if got.TaskPlans[1].AnswerText == nil || !strings.Contains(*got.TaskPlans[1].AnswerText, "维修工单") || got.TaskPlans[1].NeedsHumanRoute {
+		t.Fatalf("maintenance task did not keep its non-handoff resolution: %#v", got.TaskPlans[1])
+	}
+}
+
 func TestKnowledgePolicyKeepsRoomNumberAnswerAndIgnoresLowerRankedDirective(t *testing.T) {
 	top := rag.RetrieveResult{
 		KnowledgeBaseID: 1,

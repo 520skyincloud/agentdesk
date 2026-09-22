@@ -244,7 +244,7 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 
 func postprocessRuntimeModelIntent(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
 	intent = normalizeModelIntentTrace(intent, req, history, configs)
-	intent = applyRuntimePMSRequiredSlotPreflight(intent, runtimePMSSessionLocatorFromHistory(history))
+	intent = applyRuntimePMSRequiredSlotPreflight(intent, runtimePMSSessionLocatorForRequest(req, history))
 	intent = retainRuntimeMemberQueryTool(intent)
 	return syncRuntimeIntentTraceMetadata(intent, configs)
 }
@@ -514,7 +514,14 @@ func runtimePMSCurrentTextRejectsOrderLocator(text string) bool {
 }
 
 func runtimePMSSessionLocatorFromHistory(history adapter.HistoryBuildResult) runtimePMSSessionLocator {
-	locator := runtimePMSSessionLocator{}
+	return runtimePMSSessionLocatorFromHistoryWithBase(history, runtimePMSSessionLocator{})
+}
+
+func runtimePMSSessionLocatorForRequest(req RunInput, history adapter.HistoryBuildResult) runtimePMSSessionLocator {
+	return runtimePMSSessionLocatorFromHistoryWithBase(history, runtimePMSSessionLocatorFromRecentRuns(req))
+}
+
+func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildResult, locator runtimePMSSessionLocator) runtimePMSSessionLocator {
 	phoneRequested := false
 	for _, item := range history.RawItems {
 		text := runtimePMSHistoryMessageText(item)
@@ -542,6 +549,95 @@ func runtimePMSSessionLocatorFromHistory(history adapter.HistoryBuildResult) run
 			locator.OrderLocator = orderLocator
 		}
 		phoneRequested = false
+	}
+	return locator
+}
+
+func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocator {
+	locator := runtimePMSSessionLocator{}
+	if req.Conversation.ID <= 0 || sqls.DB() == nil {
+		return locator
+	}
+	cnd := sqls.NewCnd().Eq("conversation_id", req.Conversation.ID).Desc("id").Limit(20)
+	if req.UserMessage.ID > 0 {
+		cnd.Lt("message_id", req.UserMessage.ID)
+	}
+	logs := services.AgentRunLogService.Find(cnd)
+	for _, log := range logs {
+		if strings.TrimSpace(log.FinalStatus) != "completed" || strings.TrimSpace(log.TraceData) == "" {
+			continue
+		}
+		if req.AIAgent.ID > 0 && log.AIAgentID != req.AIAgent.ID {
+			continue
+		}
+		if req.UserMessage.SessionNo > 0 {
+			source := services.MessageService.Get(log.MessageID)
+			if source == nil || source.SessionNo != req.UserMessage.SessionNo {
+				continue
+			}
+		}
+		var projection struct {
+			Runtime callbacks.RuntimeTraceData `json:"runtime"`
+		}
+		if json.Unmarshal([]byte(log.TraceData), &projection) != nil || !runtimeTraceHasSuccessfulPMSRead(projection.Runtime) {
+			continue
+		}
+		candidate := runtimePMSSessionLocatorFromTrace(projection.Runtime)
+		if candidate.Phone != "" || candidate.OrderLocator != "" {
+			return candidate
+		}
+	}
+	return locator
+}
+
+func runtimeTraceHasSuccessfulPMSRead(trace callbacks.RuntimeTraceData) bool {
+	hasSuccessfulCall := false
+	for _, item := range trace.Tools.Items {
+		if strings.TrimSpace(item.ToolCode) == toolx.BuiltinPMSQuery.Code && strings.TrimSpace(item.Status) == "ok" {
+			hasSuccessfulCall = true
+			break
+		}
+	}
+	return hasSuccessfulCall && len(runtimeTraceSentPMSTaskIDs(trace)) > 0
+}
+
+func runtimePMSSessionLocatorFromTrace(trace callbacks.RuntimeTraceData) runtimePMSSessionLocator {
+	locator := runtimePMSSessionLocator{}
+	sentTaskIDs := runtimeTraceSentPMSTaskIDs(trace)
+	for index := len(trace.Pipeline.ReplyPlan.TaskPlans) - 1; index >= 0; index-- {
+		task := trace.Pipeline.ReplyPlan.TaskPlans[index]
+		if _, sent := sentTaskIDs[strings.TrimSpace(task.TaskID)]; !sent || !isPMSRuntimeSubIntent(task.SubIntent) || !runtimeReplyTaskHasPMSFact(task) {
+			continue
+		}
+		candidate := runtimePMSMergeLocatorText(runtimePMSSessionLocator{}, strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+		if candidate.Phone != "" || candidate.OrderLocator != "" {
+			return candidate
+		}
+	}
+	return locator
+}
+
+func runtimeTraceSentPMSTaskIDs(trace callbacks.RuntimeTraceData) map[string]struct{} {
+	ret := make(map[string]struct{})
+	for _, message := range trace.Output.CommitMessages {
+		if strings.TrimSpace(message.Status) != "sent" {
+			continue
+		}
+		for _, taskID := range message.TaskIDs {
+			if taskID = strings.TrimSpace(taskID); taskID != "" {
+				ret[taskID] = struct{}{}
+			}
+		}
+	}
+	return ret
+}
+
+func runtimePMSMergeLocatorText(locator runtimePMSSessionLocator, text string) runtimePMSSessionLocator {
+	if phone := runtimePMSLastUsableCustomerPhone(text); phone != "" {
+		locator.Phone = phone
+	}
+	if orderLocator := runtimePMSLastUsableOrderLocator(text); orderLocator != "" {
+		locator.OrderLocator = orderLocator
 	}
 	return locator
 }

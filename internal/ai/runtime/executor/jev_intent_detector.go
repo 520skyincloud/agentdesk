@@ -293,20 +293,41 @@ func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevInten
 			return nil, err
 		}
 	}
+	selectedOffsets := make(map[string][]int, len(sources))
+	invalidBoundaries := false
+	for _, source := range sources {
+		if len(fixedOffsets[source.Ref]) > 0 {
+			continue
+		}
+		offsets, ok := jevSelectedBoundaryOffsets(source, counts[source.Ref], starts, startQuestions)
+		if !ok {
+			invalidBoundaries = true
+			break
+		}
+		selectedOffsets[source.Ref] = offsets
+	}
+	if invalidBoundaries {
+		starts, err = evaluate(state, startQuestions)
+		if err != nil {
+			return nil, err
+		}
+		for _, source := range sources {
+			if len(fixedOffsets[source.Ref]) > 0 {
+				continue
+			}
+			offsets, ok := jevSelectedBoundaryOffsets(source, counts[source.Ref], starts, startQuestions)
+			if !ok {
+				return nil, fmt.Errorf("jev task boundaries are invalid or out of order")
+			}
+			selectedOffsets[source.Ref] = offsets
+		}
+	}
 	var spans []jevIntentSpan
 	for _, source := range sources {
 		runes := []rune(source.Text)
 		offsets := fixedOffsets[source.Ref]
 		if len(offsets) == 0 {
-			offsets = []int{0}
-			for ordinal := 2; ordinal <= counts[source.Ref]; ordinal++ {
-				key := fmt.Sprintf("%s_start_%d", source.Ref, ordinal)
-				index, err := strconv.Atoi(starts.Answers[key].Choice)
-				if err != nil || index <= offsets[len(offsets)-1] || index >= len(runes) || !jevCandidateBoundary(runes, index) {
-					return nil, fmt.Errorf("jev task boundaries are invalid or out of order")
-				}
-				offsets = append(offsets, index)
-			}
+			offsets = selectedOffsets[source.Ref]
 		}
 		offsets = append(offsets, len(runes))
 		for index := 1; index < len(offsets); index++ {
@@ -318,6 +339,39 @@ func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevInten
 		}
 	}
 	return spans, nil
+}
+
+func jevSelectedBoundaryOffsets(source adapter.CurrentTurnSource, count int, starts jev.Response, questions map[string]jev.Question) ([]int, bool) {
+	runes := []rune(source.Text)
+	offsets := make([]int, 0, count)
+	offsets = append(offsets, 0)
+	seen := map[int]struct{}{0: {}}
+	for ordinal := 2; ordinal <= count; ordinal++ {
+		key := fmt.Sprintf("%s_start_%d", source.Ref, ordinal)
+		answer, ok := starts.Answers[key]
+		if !ok {
+			return nil, false
+		}
+		index, err := strconv.Atoi(answer.Choice)
+		if err != nil || index <= 0 || index >= len(runes) || !jevCandidateBoundary(runes, index) {
+			return nil, false
+		}
+		question, ok := questions[key]
+		if !ok {
+			return nil, false
+		}
+		criteria := question.Criteria
+		if _, ok := criteria[strconv.Itoa(index)]; !ok {
+			return nil, false
+		}
+		if _, duplicate := seen[index]; duplicate {
+			return nil, false
+		}
+		seen[index] = struct{}{}
+		offsets = append(offsets, index)
+	}
+	sort.Ints(offsets[1:])
+	return offsets, true
 }
 
 func jevExplicitTerminalOffsets(text string) []int {

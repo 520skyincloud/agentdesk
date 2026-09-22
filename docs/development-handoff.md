@@ -2,6 +2,51 @@
 
 本文件用于换电脑后继续当前 Codex 会话和 AgentDesk 开发。
 
+## 2026-09-23 PMS 只读与回复链路结构收口
+
+### 目标与文件
+
+本轮在 `codex/pms-live-from-weiwei-20260920`、基线 `225f57f` 上修复同会话 PMS 定位复用、
+续住日期计划、PMS 部分结果、维修拒绝人工、外卖机器人 Judge 超时和 JEV 多问题边界。
+修改仅位于 `internal/ai/runtime/executor` 及对应测试，并同步以下设计文档：
+
+- `docs/development/customer-service-pms-structural-optimization-20260922.md`
+- `docs/design/reply-runtime-engine.md`
+- `docs/development-handoff.md`
+
+没有 model、Migration、DTO、enum、外部 API、WebSocket、企微协议、Outbox、计费或前端变化；
+SQLite/MySQL 表结构均不变。PMS 保持 `enabled=true`、`allowWrite=false`，运行 allowlist 不含
+`renew`，不新增 `PMSOperation`。
+
+### 行为与权限边界
+
+- RunLog 定位复用必须满足同会话、同 Agent、同 session、PMS 成功、Task 含 PMS 事实和消息
+  已发送；当前消息的纠正优先，内部订单 ID 和完整手机号不得发给客户。
+- 续住仅查询可行性、日期库存和候选，不提交订单；升房、换房、延退同样只读。
+- 知识 Judge 超时后最多一次同协议紧凑恢复，总预算不增加；本地不增加业务语义裁决。
+- 客户拒绝人工时维修问题不自动转接；明确人工和知识库明确转接仍走现有人工链路。
+- Generate/Validate 全局失败不能恢复或覆盖已经成功、已发送的 sibling Task。
+
+### 验证、并行分支与回滚
+
+提交前验证：
+
+```bash
+go test -p=1 ./internal/pms ./internal/ai/runtime/... -count=2
+go test -race -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime/executor ./internal/ai/runtime/graphs -count=2
+make build-linux
+git diff --check
+```
+
+部署后每类至少两种问法验证：手机号查单连续追问、升房/换房、续住一晚/两晚、15:00/15:30
+延退、空调/漏水且拒绝人工、外卖自助边界、外卖机器人纠正、PMS+停车混合问题、明确人工和
+知识库明确转接。验收同时检查没有 PMS 写请求和新增 `PMSOperation`。
+
+共享高风险文件为 `internal/ai/runtime/executor`。开始和 push 前均需 `git fetch origin`，检查
+`codex/customer-audit`、`codex/ai-billing` 同文件修改；建议本提交作为独立 Runtime 收口提交
+合并。程序异常只回退 test-2 release，不恢复数据库；实施前回滚点为
+`/opt/agentdesk/releases/20260922-judge-budget-0279055`，消息和 PMS 数据保持现状。
+
 ## 代码与运行状态
 
 - 远端仓库：`git@github.com:520skyincloud/agentdesk.git`

@@ -165,6 +165,23 @@ func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackKeepsPMSClarification(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "price_difference", OutputKind: "text", ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "P1F1", Aspect: "pms_inventory_stay", Statement: "当前可选房型包括云漫和星旗，库存不代表已锁房。",
+		}},
+		MissingAspects: []string{"客户目标房型尚未与 PMS 返回的真实房型唯一匹配"},
+	}}})
+	got := deterministicGeneratedReplyFallback(collector)
+	for _, want := range []string{"当前可选房型包括云漫和星旗", "请告诉我您想换到的具体房型", "查询差价"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("PMS fallback lost %q: %q", want, got)
+		}
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackAddsExternalProxyBoundaryAndFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{

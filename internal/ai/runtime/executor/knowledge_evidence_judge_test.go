@@ -85,6 +85,131 @@ func TestJudgeAllowsOnlyTheNamedFacilityInherentPurpose(t *testing.T) {
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCompactRecoveryAnswersRobotCorrections(t *testing.T) {
+	for _, current := range []string{
+		"\u6211\u95ee\u7684\u662f\u673a\u5668\u4eba\u80fd\u4e0d\u80fd\u9001\u4e0a\u6765\u3002",
+		"\u5bf9\uff0c\u6211\u53ea\u95ee\u673a\u5668\u4eba\u914d\u9001\u3002",
+	} {
+		t.Run(current, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Intent: "hotel_info", OriginalText: current,
+				Query:     "[\u5386\u53f2\u6d88\u606f] \u5916\u5356\u5230\u4e86\uff0c\u673a\u5668\u4eba\u80fd\u9001\u5230\u623f\u95f4\u5417\uff1f\n\u5f53\u524d\u5ba2\u6237\u8865\u5145\uff08\u4ee5\u672c\u6b21\u4e3a\u51c6\uff09\uff1a" + current,
+				SubIntent: "food_delivery", Objective: "availability",
+				Candidates: []knowledgeEvidenceJudgeCandidate{
+					{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, RawRankNo: 1, Hit: judgeTestHit(3, 101, "\u5916\u5356\u673a\u5668\u4eba", "\u95ee\u9898\uff1a\u4f60\u4eec\u5bb6\u6709\u5916\u5356\u673a\u5668\u4eba\u5417\uff1f\n\u7b54\u6848\uff1a\u6709\u5916\u5356\u673a\u5668\u4eba\u7684\u3002", 0.95)},
+					{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerStore, RawRankNo: 2, Hit: judgeTestHit(3, 102, "\u623f\u95f4\u5145\u7535", "\u95ee\u9898\uff1a\u623f\u95f4\u6709USB\u63a5\u53e3\u5417\n\u7b54\u6848\uff1a\u623f\u95f4\u6709USB\u63a5\u53e3\u3002", 0.82)},
+				},
+			}
+			calls := 0
+			attempts := callKnowledgeEvidenceJudgeWithCompactRecovery(
+				context.Background(),
+				models.AIConfig{TimeoutMS: 90, MaxOutputTokens: 2048},
+				[]knowledgeEvidenceJudgeTask{task},
+				func(ctx context.Context, _ models.AIConfig, _ string, userPrompt string) (*ai.ChatCompletionResult, error) {
+					calls++
+					if calls == 1 {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					var prompt knowledgeEvidenceJudgePrompt
+					if err := json.Unmarshal([]byte(userPrompt), &prompt); err != nil {
+						t.Fatalf("decode compact prompt: %v", err)
+					}
+					if len(prompt.Tasks) != 1 || len(prompt.Tasks[0].Candidates) != 1 || prompt.Tasks[0].Candidates[0].CandidateID != "T1C1" {
+						t.Fatalf("compact recovery must retain only the best candidate per layer: %#v", prompt.Tasks)
+					}
+					return &ai.ChatCompletionResult{Content: `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"answerText":"\u53ef\u4ee5\u4f7f\u7528\u5916\u5356\u673a\u5668\u4eba\u5c06\u5916\u5356\u9001\u5230\u623f\u95f4\u3002","supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"\u95e8\u5e97\u6709\u5916\u5356\u673a\u5668\u4eba\u3002","criticalValues":[]}],"missingAspects":[]}]}]}`}, nil
+				},
+				nil,
+			)
+			if calls != 2 || len(attempts) != 2 || attempts[0].Err == nil || attempts[1].Err != nil {
+				t.Fatalf("expected one timeout and one successful compact recovery: calls=%d attempts=%#v", calls, attempts)
+			}
+			selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(attempts[1].Result.Content, attempts[1].Tasks)
+			if err != nil {
+				t.Fatalf("parse compact recovery response: %v", err)
+			}
+			selection := selections["T1"][knowledgeEvidenceLayerStore]
+			if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" {
+				t.Fatalf("robot correction was not recovered by Judge: %#v", selection)
+			}
+		})
+	}
+}
+
+func TestKnowledgeEvidenceJudgeCompactRecoveryDoesNotSelectUnrelatedCandidate(t *testing.T) {
+	task := knowledgeEvidenceJudgeTask{
+		TaskID: "T1", Intent: "hotel_info", OriginalText: "\u673a\u5668\u4eba\u80fd\u9001\u4e0a\u697c\u5417",
+		Query: "\u673a\u5668\u4eba\u80fd\u9001\u4e0a\u697c\u5417", SubIntent: "food_delivery", Objective: "availability",
+		Candidates: []knowledgeEvidenceJudgeCandidate{{
+			CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, RawRankNo: 1,
+			Hit: judgeTestHit(3, 101, "\u65e9\u9910", "\u95ee\u9898\uff1a\u65e9\u9910\u51e0\u70b9\n\u7b54\u6848\uff1a7:00-9:30\u3002", 0.99),
+		}},
+	}
+	calls := 0
+	attempts := callKnowledgeEvidenceJudgeWithCompactRecovery(
+		context.Background(),
+		models.AIConfig{TimeoutMS: 90, MaxOutputTokens: 2048},
+		[]knowledgeEvidenceJudgeTask{task},
+		func(ctx context.Context, _ models.AIConfig, _ string, _ string) (*ai.ChatCompletionResult, error) {
+			calls++
+			if calls == 1 {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return &ai.ChatCompletionResult{Content: `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"insufficient","hasUsableSelfService":false,"selectedCandidateIds":[],"answerText":"","supportedFacts":[],"missingAspects":["\u673a\u5668\u4eba\u914d\u9001\u80fd\u529b"]}]}]}`}, nil
+		},
+		nil,
+	)
+	if calls != 2 || len(attempts) != 2 || attempts[1].Err != nil {
+		t.Fatalf("unexpected recovery attempts: calls=%d attempts=%#v", calls, attempts)
+	}
+	selections, err := parseKnowledgeEvidenceJudgeRuntimeResponse(attempts[1].Result.Content, attempts[1].Tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := selections["T1"][knowledgeEvidenceLayerStore]
+	if selection.Decision != knowledgeEvidenceDecisionInsufficient || len(selection.SelectedCandidateIDs) != 0 || len(selection.SupportedFacts) != 0 {
+		t.Fatalf("unrelated compact candidate must remain unselected: %#v", selection)
+	}
+}
+
+func TestKnowledgeEvidenceJudgeTimeoutIsNotRelabeledAsCoverageFailure(t *testing.T) {
+	query := "\u673a\u5668\u4eba\u80fd\u9001\u4e0a\u697c\u5417"
+	hit := judgeTestHit(1, 101, "\u65e9\u9910", "\u95ee\u9898\uff1a\u65e9\u9910\u51e0\u70b9\n\u7b54\u6848\uff1a7:00-9:30\u3002", 0.99)
+	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
+		query: {
+			KnowledgeBaseIDs: []int64{1}, RawHits: []rag.RetrieveResult{hit}, Hits: []rag.RetrieveResult{hit},
+			ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+		},
+	})
+	judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+		return failedKnowledgeEvidenceJudgeOutcome(tasks, callbacks.KnowledgeEvidenceJudgeTraceData{
+			SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+			Status:        knowledgeEvidenceDecisionTimeout,
+			Reason:        "simulated timeout after compact recovery",
+		}, knowledgeEvidenceDecisionTimeout)
+	}}
+	intent := hotelInfoIntent()
+	intent.SemanticContractExpected = true
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+		Intent: "hotel_info", SubIntent: "food_delivery", Objective: "availability",
+		Text: query, ResolvedText: query, SourceRefs: []string{"U1"}, NeedsKnowledge: true,
+	}}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(buildReplyPlan(intent, selectIntentPromptPack(intent)))
+	_, err := judgeTestGate(retriever, judge).Evaluate(context.Background(), answerabilityGateInput{
+		Request: newKnowledgePolicyRunInput(query, "1"), Summary: &RunResult{}, Collector: collector, Intent: intent,
+	})
+	if err != nil {
+		t.Fatalf("Judge timeout should remain an isolated reply failure: %v", err)
+	}
+	trace := collector.Data.Pipeline.EvidenceJudge
+	if trace.Status != knowledgeEvidenceDecisionTimeout || trace.Status == "coverage_failed" {
+		t.Fatalf("Judge timeout was relabeled by coverage handling: %#v", trace)
+	}
+}
+
 func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing.T) {
 	const faq = "酒店有本子吗？"
 	const raw = "问题：" + faq + "\n答案：不好意思，酒店没有哈，建议您可以在美团上下个外卖订单。"
@@ -5837,7 +5962,9 @@ func TestKnowledgeEvidenceJudgeRecoversExactHandoffBeforeHonoringCurrentRejectio
 		t.Fatalf("current rejection must block the recovered knowledge handoff: summary=%#v ledger=%#v", summary, collector.Data.ActionLedger)
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].AnswerText == nil || !strings.Contains(*plan.TaskPlans[0].AnswerText, "我先不转接") {
+	if len(plan.TaskPlans) != 1 || plan.TaskPlans[0].AnswerText == nil ||
+		!strings.Contains(*plan.TaskPlans[0].AnswerText, "先不转接") ||
+		!strings.Contains(*plan.TaskPlans[0].AnswerText, "维修工单") {
 		t.Fatalf("recovered handoff did not enter the declined-handoff reply path: %#v", plan.TaskPlans)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge

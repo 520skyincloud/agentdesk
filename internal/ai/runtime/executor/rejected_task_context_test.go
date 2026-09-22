@@ -126,6 +126,29 @@ func TestRejectedAnswerDoesNotReplayCommittedSiblingAfterActionFailure(t *testin
 	}
 }
 
+func TestRejectedAnswerDoesNotReplayUncommittedSiblingAfterToolFailure(t *testing.T) {
+	previous := callbacks.RuntimeTraceData{Status: "error"}
+	previous.Error.Stage = "tool"
+	previous.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "parking", Text: "酒店有停车场吗", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T1F1", Statement: "酒店提供免费停车服务。"}},
+		},
+		{TaskID: "T2", Intent: "service_request", SubIntent: "create_ticket", Text: "帮我登记维修", NeedsTool: true},
+	}
+	previous.Pipeline.EvidenceJudge.Tasks = []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+		TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle,
+	}}
+	intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{{
+		Intent: "interaction", SubIntent: "frustration", Text: "刚才没处理好", RelationToPrevious: "answer_rejected",
+	}}}
+
+	if got, changed := rebindRuntimeRejectedTask(intent, previous); changed {
+		t.Fatalf("a tool failure must not make an unrelated text sibling retryable: %#v", got)
+	}
+}
+
 func TestRejectedAnswerRestoresUncommittedTaskAfterGlobalFailure(t *testing.T) {
 	previous := callbacks.RuntimeTraceData{Status: "error"}
 	previous.Error.Stage = "generate"
@@ -141,6 +164,57 @@ func TestRejectedAnswerRestoresUncommittedTaskAfterGlobalFailure(t *testing.T) {
 	got, changed := rebindRuntimeRejectedTask(intent, previous)
 	if !changed || got.IntentTasks[0].SubIntent != "parking" {
 		t.Fatalf("an uncommitted task must remain retryable after a global failure: %#v", got)
+	}
+}
+
+func TestRejectedAnswerDoesNotGuessAcrossTwoTasksAfterGlobalFailure(t *testing.T) {
+	previous := callbacks.RuntimeTraceData{Status: "error"}
+	previous.Error.Stage = "generate"
+	previous.Pipeline.Generate.Status = "failed"
+	previous.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "parking", Text: "酒店有停车场吗", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T1F1", Statement: "酒店提供免费停车服务。"}},
+		},
+		{
+			TaskID: "T2", Intent: "hotel_info", SubIntent: "wifi", Text: "无线网密码是什么", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T2F1", Statement: "房间内提供无线网络。"}},
+		},
+	}
+	intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{{
+		Intent: "interaction", SubIntent: "frustration", Text: "刚才没回答我", RelationToPrevious: "answer_rejected",
+	}}}
+
+	if got, changed := rebindRuntimeRejectedTask(intent, previous); changed {
+		t.Fatalf("a global failure across two uncommitted tasks must not guess a target: %#v", got)
+	}
+}
+
+func TestRejectedAnswerPrefersExplicitJudgeFailureOverGlobalSiblingFailure(t *testing.T) {
+	previous := callbacks.RuntimeTraceData{Status: "error"}
+	previous.Error.Stage = "generate"
+	previous.Pipeline.Generate.Status = "failed"
+	previous.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "parking", Text: "酒店有停车场吗", NeedsKnowledge: true,
+			OutputKind: "text", ReplyRequired: true, SelectedLayer: "store",
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "T1F1", Statement: "酒店提供免费停车服务。"}},
+		},
+		{TaskID: "T2", Intent: "hotel_info", SubIntent: "food_delivery", Text: "外卖机器人能送上来吗", NeedsKnowledge: true},
+	}
+	previous.Pipeline.EvidenceJudge.Tasks = []callbacks.KnowledgeEvidenceJudgeTaskTraceData{
+		{TaskID: "T1", Decision: knowledgeEvidenceDecisionDirectSingle},
+		{TaskID: "T2", Decision: knowledgeEvidenceDecisionInsufficient},
+	}
+	intent := callbacks.IntentTraceData{IntentTasks: []callbacks.IntentTaskTraceData{{
+		Intent: "interaction", SubIntent: "frustration", Text: "刚才没答对", RelationToPrevious: "correction",
+	}}}
+
+	got, changed := rebindRuntimeRejectedTask(intent, previous)
+	if !changed || got.IntentTasks[0].SubIntent != "food_delivery" || !strings.Contains(got.IntentTasks[0].ResolvedText, "外卖机器人") {
+		t.Fatalf("the explicit Judge failure must win over a global sibling failure: %#v", got)
 	}
 }
 
