@@ -119,6 +119,19 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
 		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
 	}
+	if prepareGroundedPMSDirectCommit(summary, collector) {
+		summary.Status = "completed"
+		summary.ModelName = req.AIConfig.ModelName
+		collector.Data.Status = summary.Status
+		collector.Data.Output.ReplyText = summary.ReplyText
+		collector.Data.Output.FinishReason = "grounded_pms_direct_commit"
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "single PMS task already has a customer-safe answer projected from structured query results"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "structured PMS answer passed protocol and send-safety validation"
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
 	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
@@ -586,6 +599,41 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	}
 	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n<<NEXT_MESSAGE>>\n"))
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
+	if summary == nil || collector == nil {
+		return false
+	}
+	intent := collector.Data.Pipeline.Intent
+	if intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || len(intent.ResourceActions) > 0 {
+		return false
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 {
+		return false
+	}
+	task := plan.TaskPlans[0]
+	if !isPMSRuntimeSubIntent(task.SubIntent) || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+		strings.TrimSpace(task.OutputKind) != "text" || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
+		!runtimeReplyTaskHasPMSFact(task) || len(task.MissingAspects) > 0 {
+		return false
+	}
+	reply, err := SanitizeGeneratedReplyText(strings.TrimSpace(*task.AnswerText))
+	if err != nil || reply == "" || strings.Contains(reply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(reply))) {
+		return false
+	}
+	previousOutput := collector.Data.Output
+	previousValidate := collector.Data.Pipeline.Validate
+	summary.ReplyText = reply
+	validation := enforceGeneratedReplyActionLedger(summary, collector)
+	if validation.RequestHandoffConfirmation || summary.ReplyText != reply {
+		summary.ReplyText = ""
+		collector.Data.Output = previousOutput
+		collector.Data.Pipeline.Validate = previousValidate
+		return false
+	}
+	return true
 }
 
 func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {

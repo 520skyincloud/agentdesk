@@ -77,6 +77,59 @@ func TestPrepareGroundedIndependentKnowledgeDirectCommit(t *testing.T) {
 	}
 }
 
+func TestPrepareGroundedPMSDirectCommit(t *testing.T) {
+	answer := "您现在住的是儿童房V05。沐阳在您当前入住期间还有房，当前可选房间有1501、1502、1503，具体差价还需要进一步核对。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change",
+		OutputKind: "text", Output: "text_reply", ReplyRequired: true, AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "P1F1", Aspect: "pms_order_recept", Statement: "PMS 当前有效订单：房型儿童房，房号V05。"},
+			{FactID: "P1F2", Aspect: "pms_inventory_stay", Statement: "PMS 当前日期区间的房型库存：沐阳可售1间。"},
+		},
+	}}}
+	summary := &RunResult{Status: "started"}
+
+	if !prepareGroundedPMSDirectCommit(summary, collector) {
+		t.Fatal("single grounded PMS answer should skip redundant Generate")
+	}
+	if summary.ReplyText != answer {
+		t.Fatalf("PMS direct commit changed the customer-safe answer: %q", summary.ReplyText)
+	}
+}
+
+func TestPrepareGroundedPMSDirectCommitKeepsIncompleteOrMixedTasksOnGenerate(t *testing.T) {
+	answer := "沐阳在您当前入住期间还有房。"
+	baseTask := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change",
+		OutputKind: "text", Output: "text_reply", ReplyRequired: true, AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: "pms_inventory_stay", Statement: "PMS 当前日期区间的房型库存：沐阳可售1间。"}},
+	}
+	for _, test := range []struct {
+		name   string
+		intent callbacks.IntentTraceData
+		plan   callbacks.ReplyPlanTraceData
+	}{
+		{name: "pending tool", intent: callbacks.IntentTraceData{NeedsTool: true}, plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{baseTask}}},
+		{name: "missing aspect", plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{func() callbacks.ReplyTaskPlanTraceData {
+			task := baseTask
+			task.MissingAspects = []string{"目标日期库存暂未确认"}
+			return task
+		}()}}},
+		{name: "mixed tasks", plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{baseTask, {TaskID: "task-2", Intent: "hotel_info", SubIntent: "parking", OutputKind: "text", ReplyRequired: true}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = test.intent
+			collector.Data.Pipeline.ReplyPlan = test.plan
+			if prepareGroundedPMSDirectCommit(&RunResult{Status: "started"}, collector) {
+				t.Fatal("incomplete or mixed PMS task must keep the normal Generate path")
+			}
+		})
+	}
+}
+
 func TestPrepareGroundedIndependentKnowledgeDirectCommitPreservesTaskOrder(t *testing.T) {
 	nearbyAnswer := "附近有罍街、包公园（包公祠）和逍遥津公园等游玩地点。"
 	parkingAnswer := "酒店提供免费停车服务，设有地上地下停车场。"
