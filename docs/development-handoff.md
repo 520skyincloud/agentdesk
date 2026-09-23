@@ -1284,6 +1284,9 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 新好友欢迎文本、欢迎图片、默认入住小程序和欢迎定位使用精确 `clientMsgID` 前缀识别。它们仍正常发送并保留为客户可见历史上下文，但不再作为更新客户轮次阻断首问；普通 AI 文本、小程序、员工消息和更新客户消息仍会使旧运行失效。
 - 当 ReplyPlan 中全部任务都是彼此独立的酒店知识文本任务、Judge 已分别给出完整 `AnswerText` 与受支持事实、且没有缺失维度、工具、资源或人工路由时，才尝试按原顺序直接提交；每条答案仍须通过内部协议、JSON、肯否极性、事实边界和动作安全校验。任一任务不满足即整体回到原 Generate 链路。上下文追问、纠正、PMS、工具、资源、服务请求和部分证据任务继续走原 Generate 链路。
 - 真实耗时定位：修复前样本 `conversation_id=2205/message_id=19240` 总耗时 `44703ms`，其中检索 `808ms`、Judge `12287ms`、Generate `30069ms`；Generate 第一次无客户可见输出后重试。新直出分支去掉该样本中重复的 Generate 阶段，不调整 JEV/Intent 或 Judge 模型。
+- test-2 真实验证：快速连续发送“附近有什么玩的地方”“酒店停车免费吗”，旧运行在 `1095ms` 内取消且未发送兜底，新运行在 `17220ms` 内按原顺序发送两条答案，`Generate=skipped`；新会话先问“酒店有没有咖啡”再追问“在哪拿”，正确承接为咖啡位置，没有被欢迎消息或停车上下文带偏。
+- 真实换房查询首次出现一次 `recept_order_by_phone` 短暂不可用，旧兜底错误回复“暂时没法准确回答”；同一问题重试后能查到订单、完整入住期间库存、房态和差价依据。只读 PMS GET 因此只对网络错误、响应读取错误或 5xx 自动重试一次，4xx 和业务错误不重试；换房规划同时接受预订单和接待单，失败兜底按当前订单/房态目标说明，不再误追问可由订单补齐的日期。
+- PMS 生成约束补充完整入住期间口径：订单日期派生的库存不得缩写成“今天满房”；任一入住日无库存时只能说明完整入住期间不能满足。聚焦及全量相关回归通过：`go test -p=1 ./internal/pms ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；`go test -p=1 ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`。
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
 - 验证通过：`go test -p=1 ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；`go test -p=1 ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；Linux amd64 构建通过；`git diff --check` 通过。
 - 并行影响：`origin/codex/customer-audit` 在本轮全部运行文件上均有同文件修改，合并时必须人工保留双方变更，禁止整文件覆盖。建议本提交独立 review/cherry-pick；无需 rebase 数据模型或迁移。回滚仅切回 test-2 上一 release，不回滚数据库、消息或“薇薇/薇薇2”。

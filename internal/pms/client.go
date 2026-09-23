@@ -131,24 +131,9 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 	if encoded := query.Encode(); encoded != "" {
 		requestURL += "?" + encoded
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	body, err := c.getQueryResponse(ctx, requestURL)
 	if err != nil {
-		return QueryResult{}, fmt.Errorf("PMS 查询地址配置无效")
-	}
-	c.applyHeaders(request)
-	request.Header.Set("Accept", "application/json")
-
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return QueryResult{}, fmt.Errorf("PMS 查询请求失败，请稍后重试")
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
-	if err != nil {
-		return QueryResult{}, fmt.Errorf("PMS 查询响应读取失败，请稍后重试")
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return QueryResult{}, fmt.Errorf("PMS 查询失败，HTTP %d", response.StatusCode)
+		return QueryResult{}, err
 	}
 	var payload map[string]any
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
@@ -188,6 +173,42 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 		Source: "hpms",
 		AsOf:   time.Now().Format(time.RFC3339),
 	}, nil
+}
+
+func (c *Client) getQueryResponse(ctx context.Context, requestURL string) ([]byte, error) {
+	const maxAttempts = 2
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("PMS 查询地址配置无效")
+		}
+		c.applyHeaders(request)
+		request.Header.Set("Accept", "application/json")
+
+		response, err := c.httpClient.Do(request)
+		if err != nil {
+			if attempt+1 < maxAttempts && ctx.Err() == nil {
+				continue
+			}
+			return nil, fmt.Errorf("PMS 查询请求失败，请稍后重试")
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+		_ = response.Body.Close()
+		if readErr != nil {
+			if attempt+1 < maxAttempts && ctx.Err() == nil {
+				continue
+			}
+			return nil, fmt.Errorf("PMS 查询响应读取失败，请稍后重试")
+		}
+		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			return body, nil
+		}
+		if response.StatusCode >= 500 && attempt+1 < maxAttempts && ctx.Err() == nil {
+			continue
+		}
+		return nil, fmt.Errorf("PMS 查询失败，HTTP %d", response.StatusCode)
+	}
+	return nil, fmt.Errorf("PMS 查询请求失败，请稍后重试")
 }
 
 // RenewRequest mirrors the documented HPMS renew payload. IDs stay int64 so

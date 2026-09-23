@@ -202,6 +202,27 @@ func TestDeterministicGeneratedReplyFallbackKeepsPMSClarification(t *testing.T) 
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackExplainsPMSFailureForCurrentGoal(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change", OutputKind: "text", ReplyRequired: true,
+		MissingAspects: []string{
+			"当前接待单信息暂未确认",
+			"PMS 查询暂时不可用",
+			"缺少完整有效的入住和离店日期",
+		},
+	}}})
+	got := deterministicGeneratedReplyFallback(collector)
+	for _, want := range []string{"订单", "入住期间房态", "是否有房和差价"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("PMS failure fallback lost %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "请告诉我想查询的入住和离店日期") || strings.Contains(got, "暂时没法准确回答") {
+		t.Fatalf("PMS failure must not become a false date clarification or generic knowledge refusal: %q", got)
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackAddsExternalProxyBoundaryAndFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{

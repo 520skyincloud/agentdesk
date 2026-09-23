@@ -176,13 +176,17 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 
 	t.Run("phone lookup binds room and dates without inventing a room", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "room_change", Phone: "13800138000"})
-		if len(plan.Steps) != 4 || containsPMSReadString(plan.Missing, "targetRoomTypeId") {
+		if len(plan.Steps) != 5 || containsPMSReadString(plan.Missing, "targetRoomTypeId") {
 			t.Fatalf("unexpected contextual room change plan: %#v", plan)
 		}
+		requirePMSReadStep(t, plan, "order.reserve")
+		requirePMSReadStep(t, plan, "order.recept")
 		room := requirePMSReadStep(t, plan, "room.status")
 		assertPMSReadBinding(t, room, "keyword", "order.recept")
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
+		assertPMSReadBinding(t, inventory, "beginTime", "order.reserve")
 		assertPMSReadBinding(t, inventory, "beginTime", "order.recept")
+		assertPMSReadBinding(t, inventory, "endTime", "order.reserve")
 		assertPMSReadBinding(t, inventory, "endTime", "order.recept")
 		if inventory.Args["roomTypeId"] != "" {
 			t.Fatalf("unknown target must list real options instead of reusing the current room type: %#v", inventory)

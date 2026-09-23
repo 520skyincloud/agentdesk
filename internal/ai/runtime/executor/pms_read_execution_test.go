@@ -1128,7 +1128,9 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
 		instruction := buildRuntimePMSResolvedInstruction(gotPlan)
-		if !strings.Contains(instruction, "不得再次调用 pms_query") || !strings.Contains(instruction, "不得在回复中原样复述完整手机号") {
+		if !strings.Contains(instruction, "不得再次调用 pms_query") ||
+			!strings.Contains(instruction, "不得在回复中原样复述完整手机号") ||
+			!strings.Contains(instruction, "完整入住期间") || !strings.Contains(instruction, "不能擅自缩写成今天满房") {
 			t.Fatalf("Generate boundary or phone privacy rule missing: %q", instruction)
 		}
 	}

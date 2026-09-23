@@ -7,10 +7,48 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"agent-desk/internal/pkg/config"
 )
+
+func TestClientQueryRetriesOneTransientServerFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "temporary", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"receptOrderId":101}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	if _, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{"phone": "13800000000"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("transient read must retry exactly once, calls=%d", calls.Load())
+	}
+}
+
+func TestClientQueryDoesNotRetryBusinessHTTPFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+	if _, err := client.Query(context.Background(), "recept_order_by_phone", map[string]string{"phone": "13800000000"}); err == nil {
+		t.Fatal("non-transient HTTP failure must remain visible")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("non-transient HTTP failure must not retry, calls=%d", calls.Load())
+	}
+}
 
 func TestClientQueryUsesConfiguredHeadersAndHotel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -516,6 +516,10 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 				parts = append(parts, text)
 				continue
 			}
+			if text := deterministicPMSMissingBoundary(plan, group.TaskID); text != "" {
+				parts = append(parts, text)
+				continue
+			}
 			if text := deterministicKnowledgeFallback(plan, group.TaskID); text != "" {
 				parts = append(parts, text)
 				continue
@@ -555,6 +559,10 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 			return ""
 		}
 		switch {
+		case strings.Contains(missing, "PMS 查询暂时不可用") || strings.Contains(missing, "PMS 查询请求失败") || strings.Contains(missing, "查询步骤未执行"):
+			return deterministicPMSUnavailableReply(task)
+		case strings.Contains(missing, "多条匹配订单"):
+			return "我查到不止一笔符合条件的订单，暂时不能替您选定其中一笔。您告诉我房号或入住日期，我再继续查。"
 		case strings.Contains(missing, "目标房型") || strings.Contains(missing, "targetRoomType"):
 			return "请告诉我您想换到的具体房型，我再帮您查询差价。"
 		case strings.Contains(missing, "手机号") || strings.Contains(missing, "customerLocator"):
@@ -569,6 +577,23 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 		return "当前查询信息还不完整，我暂时不能确认这一部分。"
 	}
 	return ""
+}
+
+func deterministicPMSUnavailableReply(task callbacks.ReplyTaskPlanTraceData) string {
+	switch pmsReadScenarioForSubIntent(task.SubIntent) {
+	case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
+		return "我刚才没能查到您的订单和入住期间房态，暂时还不能确认是否有房和差价。您稍后再问我一下，我继续帮您查。"
+	case pmsReadScenarioOrder:
+		return "我刚才没能查到您的订单信息，暂时还不能确认这笔订单的情况。您稍后再问我一下，我继续帮您查。"
+	case pmsReadScenarioDateInventory, pmsReadScenarioRoomStatus:
+		return "我刚才没能查到实时房态，暂时还不能确认是否有房。您稍后再问我一下，我继续帮您查。"
+	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
+		return "我刚才没能查到您的会员信息，暂时还不能确认当前等级和权益。您稍后再问我一下，我继续帮您查。"
+	case pmsReadScenarioRenewal, pmsReadScenarioLateCheckout:
+		return "我刚才没能查到您的订单和当前房态，暂时还不能确认这个方案。您稍后再问我一下，我继续帮您查。"
+	default:
+		return "我刚才没能查到实时信息，暂时还不能准确确认。您稍后再问我一下，我继续帮您查。"
+	}
 }
 
 func compactGeneratedReplyFallbackFacts(facts []replyFactRequirement) []replyFactRequirement {

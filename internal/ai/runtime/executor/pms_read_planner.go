@@ -132,7 +132,7 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		appendPMSReadMemberStep(&plan, input, false)
 		appendPMSReadPriceStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioRoomChange:
-		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
+		orderSteps := appendPMSReadOrderSteps(&plan, input, false)
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
 		appendPMSReadStayRoomAvailabilityStep(&plan, input, orderSteps, false)
 		appendPMSReadRoomStatusStep(&plan, input, orderSteps, false)
