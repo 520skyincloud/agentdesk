@@ -22,6 +22,11 @@ var internalReplyHeaderMarkers = []string{
 	"[人工作答]",
 }
 
+var internalBusinessDataMarkers = []string{
+	"PMS 当前", "PMS只读", "只读可分配评估", "pms_",
+	"预订单ID", "接待单ID", "supportedFacts", "missingAspects", "coveredFactIds",
+}
+
 // SanitizeGeneratedReplyText removes only exact internal headers at the start
 // of a generated message. Markers embedded in customer-visible prose are
 // rejected because their structure is ambiguous and must never be committed.
@@ -84,6 +89,11 @@ func sanitizeGeneratedReplyMessage(text string) (string, error) {
 	for _, marker := range internalReplyHeaderMarkers {
 		if strings.Contains(cleaned, marker) {
 			return "", fmt.Errorf("%w: internal reply header %s appears inside customer-visible content", errGeneratedReplyProtocol, marker)
+		}
+	}
+	for _, marker := range internalBusinessDataMarkers {
+		if strings.Contains(cleaned, marker) {
+			return "", fmt.Errorf("%w: internal business marker %s appears inside customer-visible content", errGeneratedReplyProtocol, marker)
 		}
 	}
 	return cleaned, nil

@@ -616,11 +616,14 @@ func TestQuestionCoverageClarificationRemainsAQuestionAtGeneration(t *testing.T)
 		t.Fatalf("clarification mode lost or applied to another task: %+v", groups)
 	}
 	prompt := buildMultiReplyOutputInstruction(plan, true)
-	if !strings.Contains(prompt, "T2：那个可以吗（仅澄清") || !strings.Contains(prompt, "不得擅自回答酒店有或没有") {
+	if !strings.Contains(prompt, "T2：那个可以吗（仅澄清") || !strings.Contains(prompt, "只提出一个真正缺失的关键问题") {
 		t.Fatal("Generate did not receive the existing clarification task mode")
 	}
 	plan.TaskPlans = plan.TaskPlans[1:]
-	if prompt := buildMultiReplyOutputInstruction(plan, false); !strings.Contains(prompt, "仅澄清") {
-		t.Fatal("single clarification task lost its mode")
+	if prompt := buildMultiReplyOutputInstruction(plan, false); prompt != "" {
+		t.Fatalf("single clarification must not require the multi-task JSON protocol: %q", prompt)
+	}
+	if got, err := normalizeGeneratedReplyPartsResult("请问您指的是哪项服务？", plan, false); err != nil || got != "请问您指的是哪项服务？" {
+		t.Fatalf("single clarification should allow one natural question: %q %v", got, err)
 	}
 }

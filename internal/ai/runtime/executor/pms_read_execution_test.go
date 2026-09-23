@@ -116,8 +116,9 @@ func TestRuntimePMSRenewalRelativeDatesUseCurrentCheckout(t *testing.T) {
 		}
 		task := callbacks.ReplyTaskPlanTraceData{ResolvedText: text}
 		appendRuntimePMSResolvedOrderLocator(&task, aggregated)
-		if !strings.Contains(task.ResolvedText, "预订单ID:RES-1") || !strings.Contains(task.ResolvedText, "接待单ID:REC-1") {
-			t.Fatalf("a unique PMS stay must retain its real internal order locators: %q", task.ResolvedText)
+		locator := runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator)
+		if !strings.Contains(locator, "预订单ID:RES-1") || !strings.Contains(locator, "接待单ID:REC-1") {
+			t.Fatalf("a unique PMS stay must retain its real internal order locators as metadata: %q", locator)
 		}
 		var inventoryCall *runtimePMSFakeCall
 		for index := range invoker.calls {
@@ -1087,7 +1088,8 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 		if !handled || gotIntent.NeedsTool || gotPlan.TaskPlans[0].NeedsTool || containsString(gotIntent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 			t.Fatalf("handled PMS task must leave Generate without the tool: intent=%#v plan=%#v", gotIntent, gotPlan)
 		}
-		if len(gotPlan.TaskPlans[0].SupportedFacts) != 3 || !containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
+		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || gotPlan.TaskPlans[0].AnswerText != nil ||
+			!containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
 		instruction := buildRuntimePMSResolvedInstruction(gotPlan)
@@ -1347,7 +1349,8 @@ func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
 			intent := callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{SubIntent: test.subIntent, NeedsTool: true}}}
 			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{TaskID: "T1", Intent: "hotel_info", SubIntent: test.subIntent, OriginalText: "查一下 13800138000 的会员", NeedsTool: true, OutputKind: "text", ReplyRequired: true}}}
 			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, nil, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker)
-			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" || len(gotPlan.TaskPlans[0].SupportedFacts) != 2 {
+			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" ||
+				len(gotPlan.TaskPlans[0].SupportedFacts) != 1 || gotPlan.TaskPlans[0].AnswerText != nil {
 				t.Fatalf("member route was not executed deterministically: test=%#v calls=%#v plan=%#v", test, invoker.calls, gotPlan)
 			}
 		}

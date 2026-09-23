@@ -2839,7 +2839,11 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 		Status:        "skipped",
 		Reason:        "no retrieved candidates required evidence judging",
 	}
-	checkCoverage := gate.coverageEnabled && intent.SemanticContractExpected &&
+	// JEV already owns current-turn task segmentation and context resolution.
+	// Running the knowledge Judge as a second semantic classifier can split or
+	// rewrite those tasks after PMS planning, so coverage repair remains only
+	// for legacy/non-JEV intent sources.
+	checkCoverage := gate.coverageEnabled && intent.SemanticContractExpected && !runtimeIntentOwnedByJEV(intent) &&
 		state.Input.Collector != nil && !strings.HasPrefix(req.UserMessage.RequestID, "manual_resume_")
 	if checkCoverage {
 		judgeTasks = appendRuntimeCoverageOnlyJudgeTasks(judgeTasks, state.Input.Collector.Data.Pipeline.ReplyPlan, nil)
@@ -3060,6 +3064,10 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	appendKnowledgeDecisionInstruction(&state.Decision, deferredInstruction)
 	state.recordAnswerability(answerabilityStatusHasContext, "retrieved context injected", nil)
 	return state, nil
+}
+
+func runtimeIntentOwnedByJEV(intent callbacks.IntentTraceData) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(intent.Reason)), "jev typed intent")
 }
 
 func routeExternalProxyNoEvidenceAsCapabilityBoundary(

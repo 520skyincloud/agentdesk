@@ -58,13 +58,22 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 		}
 		return messages
 	}
+	// Resolve live PMS facts before knowledge judging. This prevents an empty or
+	// unrelated FAQ result from turning an answerable order/room request into a
+	// handoff before the real-time source has had a chance to answer it.
+	plan.Intent, plan.ReplyPlan, _ = applyRuntimePMSReadPlans(ctx, req, history, plan.Intent, plan.ReplyPlan, summary, collector)
+	plan.ToolKnowledge = buildToolKnowledgeTrace(plan.Intent)
+	if collector != nil {
+		collector.Data.Pipeline.Intent = plan.Intent
+		collector.Data.Pipeline.ToolKnowledge = plan.ToolKnowledge
+		collector.SetReplyPlan(plan.ReplyPlan)
+	}
 	retrievedContext := appendRetrievedContext(ctx, req, plan.Intent, summary, collector, gate, &messages)
 	if collector != nil {
 		plan.Intent = collector.Data.Pipeline.Intent
 		plan.PromptSelect = collector.Data.Pipeline.PromptSelect
 		plan.ReplyPlan = collector.Data.Pipeline.ReplyPlan
 	}
-	plan.Intent, plan.ReplyPlan, _ = applyRuntimePMSReadPlans(ctx, req, history, plan.Intent, plan.ReplyPlan, summary, collector)
 	plan.ToolKnowledge = buildToolKnowledgeTrace(plan.Intent)
 	if collector != nil {
 		collector.Data.Pipeline.Intent = plan.Intent
@@ -431,7 +440,7 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 	}
 
 	var b strings.Builder
-	b.WriteString("【当前活跃回答任务】以下内容是 Generate 可使用的当前轮来源、补全问题和 Judge 已确认事实。更早原始历史与长期记忆默认不进入 Generate；只有明确依赖上下文的任务可以使用单独提供的有界会话上下文。不得补答未列出的旧问题，也不得根据一个事实推导未确认能力。\n")
+	b.WriteString("【当前活跃回答任务】以下内容是 Generate 可使用的当前轮来源、补全问题和已确认事实。更早原始历史与长期记忆默认不进入 Generate；只有明确依赖上下文的任务可以使用单独提供的有界会话上下文。先解决客户此刻的实际目标，只选与当前问题直接相关的事实；不得补答旧问题、倾倒全部查询结果或根据一个事实推导未确认能力。\n")
 	for taskIndex, task := range taskPlans {
 		taskID := strings.TrimSpace(task.TaskID)
 		if taskID == "" {
@@ -440,6 +449,16 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 		b.WriteString("\n任务 ")
 		b.WriteString(taskID)
 		b.WriteString("：\n")
+		if dialogueAct := strings.TrimSpace(task.DialogueAct); dialogueAct != "" {
+			b.WriteString("- 当前话语作用：")
+			b.WriteString(dialogueAct)
+			b.WriteString("\n")
+		}
+		if strategy := strings.TrimSpace(task.ReplyStrategy); strategy != "" {
+			b.WriteString("- 回复策略：")
+			b.WriteString(strategy)
+			b.WriteString("\n")
+		}
 
 		originalText := strings.TrimSpace(task.OriginalText)
 		if originalText == "" {
@@ -484,7 +503,7 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 			if factID == "" {
 				factID = fmt.Sprintf("F%d", factIndex+1)
 			}
-			b.WriteString("- 已确认事实 ")
+			b.WriteString("- 可用已确认事实 ")
 			b.WriteString(factID)
 			b.WriteString("：")
 			b.WriteString(statement)

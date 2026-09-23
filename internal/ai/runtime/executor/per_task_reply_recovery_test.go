@@ -92,7 +92,7 @@ func TestSixAnswersRecoverOnlyInconsistentTasks(t *testing.T) {
 				FactID: id + "F1", Statement: statements[i], CriticalValues: []string{values[i]},
 			}},
 		})
-		envelope.ReplyParts = append(envelope.ReplyParts, generatedReplyPart{TaskID: id, CoveredFactIDs: []string{id + "F1"}})
+		envelope.ReplyParts = append(envelope.ReplyParts, generatedReplyPart{TaskID: id, Content: statements[i], CoveredFactIDs: []string{id + "F1"}})
 	}
 	raw, _ := json.Marshal(envelope)
 	got, err := normalizeGeneratedReplyPartsResult(string(raw), plan, true)

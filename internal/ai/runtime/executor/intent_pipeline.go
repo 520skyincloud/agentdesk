@@ -72,7 +72,7 @@ func buildRuntimePipelinePlanWithModel(ctx context.Context, req RunInput, histor
 		ToolKnowledge: toolKnowledge,
 		ReplyPlan:     replyPlan,
 		Generate: callbacks.GenerateTraceData{
-			Policy: "只负责自然表达 ReplyPlan，不重新决定业务流程、资源发送或人工路由。",
+			Policy: "基于当前客户目标和已确认事实形成最终客服回复；可筛选相关事实、自然承接上下文并推荐下一步，但不得改变工具结果、资源发送或人工路由状态。",
 			Status: "pending",
 		},
 		Validate: callbacks.ValidateTraceData{
@@ -294,7 +294,7 @@ func buildContextTrace(req RunInput, history adapter.HistoryBuildResult, intent 
 
 func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPromptTraceData) callbacks.ReplyPlanTraceData {
 	goal := "回答当前用户问题"
-	doNot := []string{"不要假承诺", "不要答非所问", "不要长篇模板化"}
+	doNot := []string{"不要假承诺", "不要答非所问", "不要长篇模板化", "不要倾倒内部查询结果"}
 	useContext := []string{"currentTurn", "recentMessages", "compressedMemory", "mediaContext", "intentResources"}
 	taskPlans := buildReplyTaskPlans(intent)
 	switch intent.PrimaryIntent {
@@ -372,6 +372,7 @@ func buildIntentStagePrompt(prompt callbacks.IntentPromptTraceData, plan callbac
 	}
 	b.WriteString("【回复计划】\n")
 	b.WriteString("目标：" + plan.AnswerGoal + "\n")
+	b.WriteString("回复职责：先理解客户此刻要解决的实际问题，再从已确认事实中选择与该问题直接相关的内容组织答案。可以推荐一个有依据的选项、承接客户纠正或不满、指出唯一缺失字段；不要机械复述全部事实，也不要重新决定是否调用工具、发送资源或转人工。\n")
 	b.WriteString("上下文优先级：当前问题 > 最近原始上下文 > 媒体理解 > 压缩记忆 > 当前意图资源/知识库。必须持续参考上下文，但不要让无关旧信息盖过当前问题。\n")
 	if len(plan.TaskPlans) > 1 {
 		generateTasks := make([]callbacks.ReplyTaskPlanTraceData, 0, len(plan.TaskPlans))
@@ -554,6 +555,8 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 		}
 		plan.RelationToPrevious = task.RelationToPrevious
 		plan.ResolutionState = task.ResolutionState
+		plan.DialogueAct = task.DialogueAct
+		plan.ReplyStrategy = task.ReplyStrategy
 		plan.Entities = append([]callbacks.IntentEntityTraceData(nil), task.Entities...)
 		plan.Text = task.ResolvedText
 		plan.OriginalText = task.Text
@@ -583,6 +586,8 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		Intent:             task.Intent,
 		SubIntent:          task.SubIntent,
 		Objective:          task.Objective,
+		DialogueAct:        task.DialogueAct,
+		ReplyStrategy:      task.ReplyStrategy,
 		RelationToPrevious: task.RelationToPrevious,
 		ResolutionState:    task.ResolutionState,
 		Entities:           append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
@@ -600,6 +605,7 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 }
 
 func finalizeReplyTaskPlans(tasks []callbacks.ReplyTaskPlanTraceData) []callbacks.ReplyTaskPlanTraceData {
+	tasks = mergeActiveGoalSupportTasks(tasks)
 	hasBusinessTask := false
 	for _, task := range tasks {
 		if task.Intent != "interaction" {
@@ -636,6 +642,35 @@ func finalizeReplyTaskPlans(tasks []callbacks.ReplyTaskPlanTraceData) []callback
 		tasks[index].TaskID = "task-" + strconv.Itoa(taskIndex)
 	}
 	return tasks
+}
+
+func mergeActiveGoalSupportTasks(tasks []callbacks.ReplyTaskPlanTraceData) []callbacks.ReplyTaskPlanTraceData {
+	if len(tasks) < 2 {
+		return tasks
+	}
+	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(tasks))
+	for _, task := range tasks {
+		if strings.TrimSpace(task.DialogueAct) != "reason" || len(ret) == 0 {
+			ret = append(ret, task)
+			continue
+		}
+		previous := &ret[len(ret)-1]
+		if canonicalIntentCode(previous.Intent) != canonicalIntentCode(task.Intent) ||
+			strings.TrimSpace(previous.SubIntent) != strings.TrimSpace(task.SubIntent) {
+			ret = append(ret, task)
+			continue
+		}
+		if reason := strings.TrimSpace(task.OriginalText); reason != "" {
+			previous.ResolvedText = strings.TrimSpace(previous.ResolvedText) + "\n客户补充原因：" + reason
+			previous.Text = previous.ResolvedText
+		}
+		previous.SourceRefs = mergeReplyTaskSourceRefs(previous.SourceRefs, task.SourceRefs)
+		previous.DialogueAct = "follow_up"
+		previous.ReplyStrategy = "acknowledge_reason_and_continue_goal"
+		previous.NeedsKnowledge = previous.NeedsKnowledge || task.NeedsKnowledge
+		previous.NeedsTool = previous.NeedsTool || task.NeedsTool
+	}
+	return ret
 }
 
 func shouldCollapseInteractionTaskIntoContext(task callbacks.ReplyTaskPlanTraceData) bool {

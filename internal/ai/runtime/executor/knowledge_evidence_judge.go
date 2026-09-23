@@ -120,6 +120,7 @@ type knowledgeEvidenceJudgePromptTask struct {
 	TaskID           string                                  `json:"taskId"`
 	Candidates       []knowledgeEvidenceJudgePromptCandidate `json:"candidates"`
 	Intent           string                                  `json:"intent,omitempty"`
+	SubjectDomain    string                                  `json:"subjectDomain,omitempty"`
 	RetrievalQuery   string                                  `json:"retrievalQuery,omitempty"`
 	SubIntent        string                                  `json:"subIntent,omitempty"`
 	Objective        string                                  `json:"objective,omitempty"`
@@ -578,6 +579,7 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 		item := knowledgeEvidenceJudgePromptTask{
 			TaskID:           strings.TrimSpace(task.TaskID),
 			Intent:           canonicalIntentCode(task.Intent),
+			SubjectDomain:    knowledgeEvidenceSubjectDomain(task),
 			Question:         firstNonEmptyReplyTaskText(task.OriginalText, task.Query),
 			ResolvedQuestion: strings.TrimSpace(task.Query),
 			SourceContext:    append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
@@ -611,6 +613,26 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 		prompt.Tasks = append(prompt.Tasks, item)
 	}
 	return prompt
+}
+
+func knowledgeEvidenceSubjectDomain(task knowledgeEvidenceJudgeTask) string {
+	text := normalizeRuntimeKnowledgeQuery(strings.Join([]string{task.OriginalText, task.Query, task.SubIntent}, " "))
+	switch {
+	case containsAny(text, []string{"酒店会员", "住客会员", "会员权益", "会员等级", "生日福利", "会员优惠", "memberbenefit", "memberinfo"}):
+		return "hotel_customer_membership"
+	case containsAny(text, []string{"电视会员", "影视会员", "腾讯视频", "爱奇艺", "投屏会员"}):
+		return "in_room_entertainment_membership"
+	case containsAny(text, []string{"枕头同款", "枕头购买", "购买链接", "pillowproduct"}):
+		return "hotel_product_purchase"
+	case containsAny(text, []string{"换房", "升房", "房型", "房间", "roomchange", "roomupgrade"}):
+		return "hotel_room_and_stay"
+	case containsAny(text, []string{"外卖", "机器人", "fooddelivery"}):
+		return "hotel_food_delivery"
+	case containsAny(text, []string{"毛巾", "纸巾", "拖鞋", "牙刷", "用品", "roomsupplies"}):
+		return "hotel_room_service"
+	default:
+		return "hotel_guest_service"
+	}
 }
 
 func splitKnowledgeEvidenceFAQ(hit rag.RetrieveResult) (string, string) {
@@ -1040,6 +1062,8 @@ func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
 	return strings.TrimSpace(`你是酒店客服知识证据裁判。你为每个客户任务在每个知识层选择证据，并给出基于该层证据的简短答复answerText；不执行动作、不决定转人工、不声称接待已完成。
+
+每个任务可能提供 subjectDomain，它是当前问题的业务主体边界。候选必须属于同一主体才可选择；仅有“会员、房间、服务”等词重合不算相关。例如 hotel_customer_membership 只能使用酒店住客会员、等级和权益知识，不能使用电视、影视平台或投屏会员知识；in_room_entertainment_membership 也不能反向使用住客会员权益。主体不一致时直接忽略该候选，不能因后续追问变短而放宽主体。
 
 每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。不要把客户问能否自行完成某件事解读成酒店要替他执行；已有同目标的明确办理建议可以直接回答，不另外要求许可或执行能力证明。只有外部代办任务额外提供subIntent、objective来标注下述能力边界。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
 

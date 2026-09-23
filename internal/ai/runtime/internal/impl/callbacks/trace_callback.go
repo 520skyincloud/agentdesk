@@ -295,6 +295,8 @@ type IntentTaskTraceData struct {
 	Intent             string                  `json:"intent,omitempty"`
 	SubIntent          string                  `json:"subIntent,omitempty"`
 	Objective          string                  `json:"objective,omitempty"`
+	DialogueAct        string                  `json:"dialogueAct,omitempty"`
+	ReplyStrategy      string                  `json:"replyStrategy,omitempty"`
 	RelationToPrevious string                  `json:"relationToPrevious,omitempty"`
 	ResolutionState    string                  `json:"resolutionState,omitempty"`
 	Entities           []IntentEntityTraceData `json:"entities,omitempty"`
@@ -386,6 +388,8 @@ type ReplyTaskPlanTraceData struct {
 	Intent               string                           `json:"intent,omitempty"`
 	SubIntent            string                           `json:"subIntent,omitempty"`
 	Objective            string                           `json:"objective,omitempty"`
+	DialogueAct          string                           `json:"dialogueAct,omitempty"`
+	ReplyStrategy        string                           `json:"replyStrategy,omitempty"`
 	RelationToPrevious   string                           `json:"relationToPrevious,omitempty"`
 	ResolutionState      string                           `json:"resolutionState,omitempty"`
 	Entities             []IntentEntityTraceData          `json:"entities,omitempty"`

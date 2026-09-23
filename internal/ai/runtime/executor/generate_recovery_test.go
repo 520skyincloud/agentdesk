@@ -53,7 +53,7 @@ func TestRunGeneratedReplyWithRecoveryRetriesOnlyGenerate(t *testing.T) {
 	}
 }
 
-func TestLockedInputRecoversLocallyWithoutRetryingGenerate(t *testing.T) {
+func TestEvidenceBackedInputRetriesThenFallsBackSafely(t *testing.T) {
 	answer := "矿泉水免费。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
@@ -71,8 +71,8 @@ func TestLockedInputRecoversLocallyWithoutRetryingGenerate(t *testing.T) {
 			summary.ReplyText, err = normalizeGeneratedReplyPartsResult(`{"replyParts":[{"taskId":"T1","content":"","coveredFactIds":["F1"]}]}`, collector.Data.Pipeline.ReplyPlan, true)
 			return err
 		})
-	if err != nil || attempts != 1 || result.AttemptCount != 1 || result.FallbackMode != "" {
-		t.Fatalf("fixed input must not consume another Generate: %+v attempts=%d err=%v", result, attempts, err)
+	if err != nil || attempts != 2 || result.AttemptCount != 2 || result.FallbackMode != "supported_facts" {
+		t.Fatalf("evidence-backed reply must retry before safe fallback: %+v attempts=%d err=%v", result, attempts, err)
 	}
 	if !strings.Contains(summary.ReplyText, "两瓶") || !strings.Contains(summary.ReplyText, "免费") {
 		t.Fatalf("safe known facts lost: %q", summary.ReplyText)
@@ -175,10 +175,13 @@ func TestDeterministicGeneratedReplyFallbackKeepsPMSClarification(t *testing.T) 
 		MissingAspects: []string{"客户目标房型尚未与 PMS 返回的真实房型唯一匹配"},
 	}}})
 	got := deterministicGeneratedReplyFallback(collector)
-	for _, want := range []string{"当前可选房型包括云漫和星旗", "请告诉我您想换到的具体房型", "查询差价"} {
+	for _, want := range []string{"请告诉我您想换到的具体房型", "查询差价"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("PMS fallback lost %q: %q", want, got)
 		}
+	}
+	if strings.Contains(got, "当前可选房型包括云漫和星旗") || strings.Contains(got, "库存不代表已锁房") {
+		t.Fatalf("PMS fallback must not dump raw query facts: %q", got)
 	}
 }
 

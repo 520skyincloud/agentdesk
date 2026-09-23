@@ -332,7 +332,7 @@ func TestRuntimePMSRequiredSlotPreflightUsesReplacementPhoneBeforeCancellation(t
 			if !plan.Intent.NeedsTool || plan.Intent.NeedsClarification || !containsString(plan.Intent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 				t.Fatalf("replacement phone must keep PMS executable: %#v", plan.Intent)
 			}
-			if !strings.Contains(plan.Intent.IntentTasks[0].ResolvedText, "本次查询手机号：13800000000") {
+			if got := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(plan.Intent.IntentTasks[0].Entities, runtimeIntentEntityCustomerPhone)); got != "13800000000" {
 				t.Fatalf("replacement phone was not made authoritative: %#v", plan.Intent.IntentTasks[0])
 			}
 		})
@@ -433,8 +433,7 @@ func TestRuntimePMSRequiredSlotPreflightReusesConfirmedSessionPhone(t *testing.T
 			if !intent.NeedsTool || intent.NeedsClarification || !containsString(intent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 				t.Fatalf("confirmed session phone must prevent a repeated slot question: %#v", intent)
 			}
-			marker := "本次查询手机号：" + tc.wantPhone
-			if !strings.Contains(intent.IntentTasks[0].ResolvedText, marker) {
+			if got := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityCustomerPhone)); got != tc.wantPhone {
 				t.Fatalf("session phone was not normalized and rebound: %#v", intent.IntentTasks[0])
 			}
 		})
@@ -467,7 +466,7 @@ func TestRuntimePMSRequiredSlotPreflightReusesConfirmedSessionOrderLocator(t *te
 			if !intent.NeedsTool || intent.NeedsClarification {
 				t.Fatalf("confirmed session order locator must remain executable: %#v", intent)
 			}
-			if !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位："+tc.wantLocator) {
+			if got := runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityOrderLocator); got != tc.wantLocator {
 				t.Fatalf("session order locator was not rebound: %#v", intent.IntentTasks[0])
 			}
 		})
@@ -498,13 +497,12 @@ func TestRuntimePMSRequiredSlotPreflightCurrentCorrectionOverridesSessionLocator
 				t.Fatalf("current correction did not override the session locator: %#v", intent)
 			}
 			if tc.wantPhone == "" {
-				if intent.NeedsTool || strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号：13900000000") {
+				if intent.NeedsTool || runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityCustomerPhone) != "" {
 					t.Fatalf("rejected session phone was revived: %#v", intent)
 				}
 				return
 			}
-			if !intent.NeedsTool || !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号："+tc.wantPhone) ||
-				strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号：13900000000") {
+			if got := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityCustomerPhone)); !intent.NeedsTool || got != tc.wantPhone {
 				t.Fatalf("replacement phone was not authoritative: %#v", intent)
 			}
 		})
@@ -535,13 +533,12 @@ func TestRuntimePMSRequiredSlotPreflightCurrentOrderCorrectionOverridesSessionLo
 				t.Fatalf("current order correction did not override session history: %#v", intent)
 			}
 			if tc.wantLocator == "" {
-				if intent.NeedsTool || strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位：接待单ID:OLD-1001") {
+				if intent.NeedsTool || runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityOrderLocator) != "" {
 					t.Fatalf("rejected session order was revived: %#v", intent)
 				}
 				return
 			}
-			if !intent.NeedsTool || !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位："+tc.wantLocator) ||
-				strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询订单定位：接待单ID:OLD-1001") {
+			if got := runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityOrderLocator); !intent.NeedsTool || got != tc.wantLocator {
 				t.Fatalf("replacement order locator was not authoritative: %#v", intent)
 			}
 		})

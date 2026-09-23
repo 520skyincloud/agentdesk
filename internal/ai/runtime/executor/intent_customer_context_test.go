@@ -50,7 +50,8 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 			UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我是会员有啥优惠"},
 		}, history, nil)
 		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].SubIntent != "member_benefits" || !intent.IntentTasks[0].NeedsTool ||
-			intent.NeedsClarification || !strings.Contains(intent.IntentTasks[0].ResolvedText, "本次查询手机号：13800138000") {
+			intent.NeedsClarification || runtimeIntentEntityValue(intent.IntentTasks[0].Entities, runtimeIntentEntityCustomerPhone) != "13800138000" ||
+			strings.Contains(intent.IntentTasks[0].ResolvedText, "13800138000") {
 			t.Fatalf("personal member benefits did not reuse the confirmed phone: %#v", intent)
 		}
 	})

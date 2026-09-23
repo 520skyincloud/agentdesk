@@ -513,7 +513,7 @@ func buildRuntimePMSResolvedInstruction(plan callbacks.ReplyPlanTraceData) strin
 	if !hasPMSFacts {
 		return ""
 	}
-	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 只负责按客户问题整理这些事实，不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号；内部预订单/接待单 ID 也不得在回复中原样复述。"
+	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 要先理解客户此刻的目的，只选择能直接解决该目的的事实组织自然回复；不要复述全部库存、冲突检测、净脏房统计或内部评估过程。客户要求推荐时，可在真实候选中推荐一个并说明已有依据；没有可区分依据时应如实说明候选目前看起来条件相同，再给出一个可选建议。不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号；内部预订单/接待单 ID 也不得在回复中原样复述。"
 }
 
 func appendRuntimePMSResolvedOrderLocator(task *callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) {
@@ -538,7 +538,7 @@ func appendRuntimePMSResolvedOrderLocator(task *callbacks.ReplyTaskPlanTraceData
 	if len(locators) == 0 {
 		return
 	}
-	appendRuntimePMSLocatorMarkerToReplyTask(task, "本次查询订单定位："+strings.Join(locators, " "))
+	setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, strings.Join(locators, " "))
 }
 
 func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTraceData, marker string) {
@@ -550,7 +550,10 @@ func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTrace
 
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
 	text := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
-	phone := runtimePMSLastUsableCustomerPhone(text)
+	phone := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
+	if phone == "" {
+		phone = runtimePMSLastUsableCustomerPhone(text)
+	}
 	if phone == "" && !runtimePMSCurrentTextRejectsCustomerPhone(task.OriginalText) {
 		phone = sessionLocator.Phone
 	}
@@ -561,7 +564,11 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		RoomKeyword:        runtimePMSRoomKeyword(task),
 		TargetRoomTypeText: runtimePMSTargetRoomTypeText(task),
 	}
-	input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(text)
+	entityLocator := runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator)
+	input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(entityLocator)
+	if input.ReserveOrderID == "" && input.ReceptOrderID == "" && input.CustomerNo == "" {
+		input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(text)
+	}
 	if input.ReserveOrderID == "" && input.ReceptOrderID == "" && input.CustomerNo == "" {
 		reserveID, receptID, customerNo := runtimePMSOrderLocators(sessionLocator.OrderLocator)
 		input.ReserveOrderID = reserveID
@@ -1744,18 +1751,9 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, message)
 	}
-	if answer := runtimePMSCustomerAnswer(*task, plan, result); answer != "" {
-		factIndex++
-		task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{
-			FactID:    fmt.Sprintf("P%dF%d", taskIndex+1, factIndex),
-			Aspect:    "pms_customer_answer",
-			Statement: answer,
-		})
-		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
-			answer = strings.TrimSpace(answer + "\n" + strings.TrimSpace(*task.AnswerText))
-		}
-		task.AnswerText = &answer
-	}
+	// PMS contributes typed evidence only. Customer wording belongs to the
+	// final response model so it can answer the actual question, omit internal
+	// inventory detail and continue the active customer goal naturally.
 }
 
 func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {

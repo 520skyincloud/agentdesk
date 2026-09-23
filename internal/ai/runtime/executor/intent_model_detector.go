@@ -40,6 +40,11 @@ var runtimePMSCustomerPhoneValuePattern = regexp.MustCompile(`(?:\+?86[- ]?)?1[3
 
 var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})`)
 
+const (
+	runtimeIntentEntityCustomerPhone = "customer_phone"
+	runtimeIntentEntityOrderLocator  = "order_locator"
+)
+
 const runtimePMSOrderPhoneClarification = "请提供预订手机号。"
 
 const runtimePMSMemberPhoneClarification = "请提供会员绑定手机号。"
@@ -259,12 +264,12 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData, sess
 			continue
 		}
 		if phone := runtimePMSLastUsableCustomerPhone(task.Text); phone != "" {
-			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+phone)
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, phone)
 			continue
 		}
 		if !isMemberRuntimeSubIntent(task.SubIntent) {
 			if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
-				appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+locator)
+				setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, locator)
 				continue
 			}
 		}
@@ -284,23 +289,23 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData, sess
 			continue
 		}
 		if phone := runtimePMSPreferredCustomerPhone(*task); phone != "" {
-			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+phone)
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, phone)
 			continue
 		}
 		if !isMemberRuntimeSubIntent(task.SubIntent) {
 			if locator := runtimePMSPreferredOrderLocator(*task); locator != "" {
-				appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+locator)
+				setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, locator)
 				continue
 			}
 		}
 		phoneRejected := runtimePMSCurrentTextRejectsCustomerPhone(task.Text)
 		orderLocatorRejected := runtimePMSCurrentTextRejectsOrderLocator(task.Text)
 		if !isMemberRuntimeSubIntent(task.SubIntent) && !orderLocatorRejected && sessionLocator.OrderLocator != "" {
-			appendRuntimePMSLocatorMarker(task, "本次查询订单定位："+sessionLocator.OrderLocator)
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, sessionLocator.OrderLocator)
 			continue
 		}
 		if !phoneRejected && sessionLocator.Phone != "" {
-			appendRuntimePMSLocatorMarker(task, "本次查询手机号："+sessionLocator.Phone)
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, sessionLocator.Phone)
 			continue
 		}
 		if runtimePMSTaskHasCustomerLocator(*task) {
@@ -350,6 +355,35 @@ func appendRuntimePMSLocatorMarker(task *callbacks.IntentTaskTraceData, marker s
 	task.ResolvedText = strings.TrimSpace(task.ResolvedText) + "\n" + marker
 }
 
+func setRuntimeIntentEntity(entities *[]callbacks.IntentEntityTraceData, entityType, value string) {
+	if entities == nil {
+		return
+	}
+	entityType = strings.TrimSpace(entityType)
+	value = strings.TrimSpace(value)
+	if entityType == "" || value == "" {
+		return
+	}
+	ret := make([]callbacks.IntentEntityTraceData, 0, len(*entities)+1)
+	for _, entity := range *entities {
+		if strings.EqualFold(strings.TrimSpace(entity.Type), entityType) {
+			continue
+		}
+		ret = append(ret, entity)
+	}
+	ret = append(ret, callbacks.IntentEntityTraceData{Type: entityType, Text: value})
+	*entities = ret
+}
+
+func runtimeIntentEntityValue(entities []callbacks.IntentEntityTraceData, entityType string) string {
+	for index := len(entities) - 1; index >= 0; index-- {
+		if strings.EqualFold(strings.TrimSpace(entities[index].Type), strings.TrimSpace(entityType)) {
+			return strings.TrimSpace(entities[index].Text)
+		}
+	}
+	return ""
+}
+
 func runtimePMSTaskRequiresCustomerLocator(task callbacks.IntentTaskTraceData) bool {
 	switch strings.ToLower(strings.TrimSpace(task.SubIntent)) {
 	case "order_query", "order_detail", "order_status",
@@ -384,6 +418,9 @@ func runtimePMSPreferredCustomerPhone(task callbacks.IntentTaskTraceData) string
 	if runtimePMSCurrentTextRejectsCustomerPhone(task.Text) {
 		return ""
 	}
+	if phone := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone)); phone != "" {
+		return phone
+	}
 	for index := len(task.Entities) - 1; index >= 0; index-- {
 		if phone := runtimePMSLastUsableCustomerPhone(task.Entities[index].Text); phone != "" {
 			return phone
@@ -398,6 +435,9 @@ func runtimePMSPreferredOrderLocator(task callbacks.IntentTaskTraceData) string 
 	}
 	if runtimePMSCurrentTextRejectsOrderLocator(task.Text) {
 		return ""
+	}
+	if locator := strings.TrimSpace(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator)); locator != "" {
+		return locator
 	}
 	for index := len(task.Entities) - 1; index >= 0; index-- {
 		if locator := runtimePMSLastUsableOrderLocator(task.Entities[index].Text); locator != "" {

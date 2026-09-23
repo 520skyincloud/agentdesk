@@ -43,6 +43,35 @@ Outbox 或 PMS 数据。关键落地结果如下：
 自动验证要求为普通测试连续两轮、竞态测试连续两轮；部署后再对每类真实客户需求至少使用
 两种问法验证。最终发布身份与线上验证结果写入 `docs/development-handoff.md`。
 
+### 0.1 客户目标与最终回复职责二次收口
+
+在 `81e57dc` 基线上继续完成以下结构性修改：
+
+- JEV 增加 `dialogueAct/replyStrategy`，并读取最近唯一业务 Task 的结构化实体、已确认事实和
+  缺失方面。原因、推荐、候选选择、确认、纠正、不满和取消继续同一业务目标；同轮相邻的
+  原因 Task 合入目标 Task，不形成重复办理流程。
+- 手机号和内部订单定位改为 `customer_phone/order_locator` Entity，不再追加到
+  `resolvedText`。PMS 查询优先读取 Entity，同时保留旧 RunLog 文本的有界兼容。
+- PMS 只产生结构化事实，不再生成 `pms_customer_answer` 或向 `AnswerText` 注入预写客服句。
+  PMS 在知识 Judge 前执行，避免 FAQ 未命中先把可回答的实时问题判成不足或转人工。
+- Judge 增加酒店会员、影视会员、商品、房间、外卖和客房服务主体域提示；JEV 已完成拆题与
+  上下文补全时，不再让知识 coverage 二次重拆或重写 Task。
+- Generate 恢复最终回复组织权。有事实的 `AnswerText` 不锁定；只有无事实的服务端固定控制
+  话术仍确定性输出。单 Task 允许自然文本，多 Task 保留严格 Task ID、数量和顺序协议。
+- `coveredFactIds` 只校验模型实际声明采用的事实，不要求把全部库存和查询结果发给客户；
+  本地继续校验引用合法与声明事实中的电话、地址、数量、金额和日期等关键值。
+- PMS Generate 失败时不再拼接原始 PMS facts，改为缺失字段追问或安全重试提示；客户文本
+  新增 PMS 内部标记、订单内部 ID 和回复协议字段泄漏拦截。
+
+本轮没有新增或修改 model、Migration、DTO、enum、路由、WebSocket、数据库、外部 API、
+企微协议、计费或 Outbox 契约。共享高风险文件集中在 `internal/ai/runtime/executor` 与 Trace
+字段；`DialogueAct/ReplyStrategy` 以向后兼容的可选字符串字段加入现有 Trace。
+
+并行分支影响：`origin/codex/customer-audit` 与 `origin/codex/ai-billing` 均修改过回复执行器
+同目录，合并时应先保留本提交的 JEV/PMS/Judge/Generate 职责边界，再逐文件吸收对方变化；
+不建议直接覆盖 executor 文件。无数据库迁移，程序回滚即可撤回本轮行为，消息、PMS 数据和
+“薇薇/薇薇2”备份均不需要恢复。
+
 ## 1. 目标
 
 这次不是继续给“升房”“外卖”“手机号”各补一条特殊规则，而是修正现有链路中四个职责错位：
