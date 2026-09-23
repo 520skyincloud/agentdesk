@@ -1710,16 +1710,18 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		if plan.Scenario == pmsReadScenarioPrice && step.StepID == "inventory.stay" && hasUsablePriceFact {
 			continue
 		}
-		statement := runtimePMSReadFactStatement(plan, step)
-		if statement == "" {
-			continue
+		for _, fact := range runtimePMSReadFactsForTask(*task, plan, step) {
+			if strings.TrimSpace(fact.Statement) == "" || runtimePMSReadTaskHasFact(*task, fact.Aspect, fact.Statement) {
+				continue
+			}
+			factIndex++
+			task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{
+				FactID:         fmt.Sprintf("P%dF%d", taskIndex+1, factIndex),
+				Aspect:         fact.Aspect,
+				Statement:      fact.Statement,
+				CriticalValues: append([]string(nil), fact.CriticalValues...),
+			})
 		}
-		factIndex++
-		task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{
-			FactID:    fmt.Sprintf("P%dF%d", taskIndex+1, factIndex),
-			Aspect:    "pms_" + strings.ReplaceAll(step.StepID, ".", "_"),
-			Statement: statement,
-		})
 	}
 	for _, missing := range result.Unconfirmed {
 		if step, ok := runtimePMSReadPlanStepByID(plan, missing); ok &&
@@ -1754,6 +1756,122 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 	// PMS contributes typed evidence only. Customer wording belongs to the
 	// final response model so it can answer the actual question, omit internal
 	// inventory detail and continue the active customer goal naturally.
+}
+
+type runtimePMSReadTaskFact struct {
+	Aspect         string
+	Statement      string
+	CriticalValues []string
+}
+
+func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
+	if plan.Scenario == pmsReadScenarioOrder && (step.StepID == "order.reserve" || step.StepID == "order.recept") {
+		if fact, requested, ok := runtimePMSFocusedOrderFact(task, step.Data); ok {
+			return []runtimePMSReadTaskFact{fact}
+		} else if requested {
+			return nil
+		}
+	}
+	statement := runtimePMSReadFactStatement(plan, step)
+	if statement == "" {
+		return nil
+	}
+	return []runtimePMSReadTaskFact{{
+		Aspect:    "pms_" + strings.ReplaceAll(step.StepID, ".", "_"),
+		Statement: statement,
+	}}
+}
+
+func runtimePMSFocusedOrderFact(task callbacks.ReplyTaskPlanTraceData, data any) (runtimePMSReadTaskFact, bool, bool) {
+	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	type projection struct {
+		aspect string
+		label  string
+		match  bool
+		value  func(map[string]any) string
+	}
+	projections := []projection{
+		{
+			aspect: "pms_order_checkout_time", label: "当前订单离店时间",
+			match: containsAny(text, []string{"退房", "离店", "住到", "到几号", "到哪天", "到什么时候"}),
+			value: func(order map[string]any) string {
+				return firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate")
+			},
+		},
+		{
+			aspect: "pms_order_checkin_time", label: "当前订单入住时间",
+			match: containsAny(text, []string{"入住时间", "几点入住", "哪天入住", "什么时候入住", "到店时间"}),
+			value: func(order map[string]any) string {
+				return firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate")
+			},
+		},
+		{
+			aspect: "pms_order_room_number", label: "当前订单房号",
+			match: containsAny(text, []string{"房号", "哪间房", "住哪间", "什么房间"}),
+			value: func(order map[string]any) string { return firstRuntimePMSReadText(order, "homeName") },
+		},
+		{
+			aspect: "pms_order_room_type", label: "当前订单房型",
+			match: containsAny(text, []string{"房型", "什么房", "订的什么房"}),
+			value: func(order map[string]any) string { return strings.Join(runtimePMSOrderRoomNames(order), "/") },
+		},
+		{
+			aspect: "pms_order_amount", label: "当前订单金额",
+			match: containsAny(text, []string{"多少钱", "金额", "费用", "房费"}),
+			value: func(order map[string]any) string {
+				return firstRuntimePMSReadText(order, "payableAmount", "roomFee", "payAmount", "waitPayAmount")
+			},
+		},
+		{
+			aspect: "pms_order_status", label: "当前订单状态",
+			match: containsAny(text, []string{"订单状态", "预订状态", "成功了吗", "确认了吗"}),
+			value: runtimePMSCustomerOrderStatus,
+		},
+	}
+	for _, item := range projections {
+		if !item.match {
+			continue
+		}
+		values := runtimePMSUniqueOrderValues(data, item.value)
+		if len(values) != 1 {
+			return runtimePMSReadTaskFact{}, true, false
+		}
+		return runtimePMSReadTaskFact{
+			Aspect: item.aspect, Statement: item.label + "为" + values[0] + "。",
+			CriticalValues: []string{values[0]},
+		}, true, true
+	}
+	return runtimePMSReadTaskFact{}, false, false
+}
+
+func runtimePMSUniqueOrderValues(data any, value func(map[string]any) string) []string {
+	orders := runtimePMSOrderObjects(data)
+	ret := make([]string, 0, len(orders))
+	seen := make(map[string]struct{}, len(orders))
+	for _, order := range orders {
+		item := strings.TrimSpace(value(order))
+		if item == "" {
+			continue
+		}
+		key := strings.ToLower(item)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		ret = append(ret, item)
+	}
+	return ret
+}
+
+func runtimePMSReadTaskHasFact(task callbacks.ReplyTaskPlanTraceData, aspect, statement string) bool {
+	aspect = strings.TrimSpace(aspect)
+	statement = strings.TrimSpace(statement)
+	for _, fact := range task.SupportedFacts {
+		if strings.TrimSpace(fact.Aspect) == aspect && strings.TrimSpace(fact.Statement) == statement {
+			return true
+		}
+	}
+	return false
 }
 
 func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {

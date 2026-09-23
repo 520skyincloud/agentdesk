@@ -32,11 +32,14 @@ type responsesRequest struct {
 }
 
 type responsesResponse struct {
-	ID         string `json:"id"`
-	Object     string `json:"object"`
-	Status     string `json:"status"`
-	OutputText string `json:"output_text"`
-	Error      *struct {
+	ID                string `json:"id"`
+	Object            string `json:"object"`
+	Status            string `json:"status"`
+	OutputText        string `json:"output_text"`
+	IncompleteDetails *struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
+	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 		Code    string `json:"code"`
@@ -117,6 +120,16 @@ func (m *responsesChatModel) Generate(ctx context.Context, input []*schema.Messa
 	}
 	if parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
 		return nil, fmt.Errorf("responses api error: %s", parsed.Error.Message)
+	}
+	if status := strings.ToLower(strings.TrimSpace(parsed.Status)); status != "" && status != "completed" {
+		reason := ""
+		if parsed.IncompleteDetails != nil {
+			reason = strings.TrimSpace(parsed.IncompleteDetails.Reason)
+		}
+		if reason == "" {
+			reason = "unknown"
+		}
+		return nil, fmt.Errorf("responses api incomplete: status=%s reason=%s", status, reason)
 	}
 	content := strings.TrimSpace(parsed.OutputText)
 	if content == "" {

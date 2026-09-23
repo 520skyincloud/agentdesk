@@ -43,11 +43,14 @@ func setupMessageWelcomeTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	previousAIReplyHook := TriggerAIReplyAsyncHook
 	previousStandaloneReplyHook := TriggerStandaloneOneReplyAsyncHook
+	previousCancelReplyHook := CancelOlderAIReplyRunHook
 	TriggerAIReplyAsyncHook = nil
 	TriggerStandaloneOneReplyAsyncHook = nil
+	CancelOlderAIReplyRunHook = nil
 	t.Cleanup(func() {
 		TriggerAIReplyAsyncHook = previousAIReplyHook
 		TriggerStandaloneOneReplyAsyncHook = previousStandaloneReplyHook
+		CancelOlderAIReplyRunHook = previousCancelReplyHook
 	})
 
 	dbName := "message_welcome_test_" + strings.NewReplacer("/", "_").Replace(t.Name())
@@ -2067,9 +2070,11 @@ func TestStandaloneOneUsesIndependentReplyHook(t *testing.T) {
 
 	previousAIHook := TriggerAIReplyAsyncHook
 	previousStandaloneHook := TriggerStandaloneOneReplyAsyncHook
+	previousCancelHook := CancelOlderAIReplyRunHook
 	var aiHookCount int
 	var standaloneHookCount int
 	var standaloneMessageID int64
+	var cancelledBeforeRouteMessageID int64
 	TriggerAIReplyAsyncHook = func(models.Conversation, models.Message) {
 		aiHookCount++
 	}
@@ -2077,9 +2082,13 @@ func TestStandaloneOneUsesIndependentReplyHook(t *testing.T) {
 		standaloneHookCount++
 		standaloneMessageID = message.ID
 	}
+	CancelOlderAIReplyRunHook = func(_ int64, messageID int64) {
+		cancelledBeforeRouteMessageID = messageID
+	}
 	t.Cleanup(func() {
 		TriggerAIReplyAsyncHook = previousAIHook
 		TriggerStandaloneOneReplyAsyncHook = previousStandaloneHook
+		CancelOlderAIReplyRunHook = previousCancelHook
 	})
 
 	message, err := MessageService.SendCustomerMessageWithRequestID(
@@ -2097,6 +2106,9 @@ func TestStandaloneOneUsesIndependentReplyHook(t *testing.T) {
 	if standaloneHookCount != 1 || standaloneMessageID != message.ID || aiHookCount != 0 {
 		t.Fatalf("unexpected hook routing: standalone=%d message=%d ai=%d", standaloneHookCount, standaloneMessageID, aiHookCount)
 	}
+	if cancelledBeforeRouteMessageID != message.ID {
+		t.Fatalf("customer message must cancel an older run before standalone routing, got %d want %d", cancelledBeforeRouteMessageID, message.ID)
+	}
 
 	duplicate, err := MessageService.SendCustomerMessageWithRequestID(
 		conversation.ID,
@@ -2112,6 +2124,34 @@ func TestStandaloneOneUsesIndependentReplyHook(t *testing.T) {
 	}
 	if standaloneHookCount != 2 || aiHookCount != 0 {
 		t.Fatalf("duplicate did not retry independent hook: standalone=%d ai=%d", standaloneHookCount, aiHookCount)
+	}
+}
+
+func TestCanSendAIReplyRejectsSourceSupersededByNewerCustomerMessage(t *testing.T) {
+	db := setupMessageWelcomeTestDB(t)
+	aiAgent := createWelcomeTestAIAgent(t, db, "")
+	external := welcomeTestExternalUser("stale-ai-source")
+	conversation, err := ConversationService.Create(external, 11, aiAgent.ID)
+	if err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	first, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID, "stale-source-first", enums.IMMessageTypeText, "酒店有咖啡吗", "", external, "stale-source-first-request",
+	)
+	if err != nil {
+		t.Fatalf("send first customer message: %v", err)
+	}
+	second, err := MessageService.SendCustomerMessageWithRequestID(
+		conversation.ID, "stale-source-second", enums.IMMessageTypeText, "咖啡放在哪里", "", external, "stale-source-second-request",
+	)
+	if err != nil {
+		t.Fatalf("send second customer message: %v", err)
+	}
+	if MessageService.CanSendAIReply(conversation.ID, first.RequestID, first.ID) {
+		t.Fatal("an AI reply based on an older customer source must be rejected inside the commit gate")
+	}
+	if !MessageService.CanSendAIReply(conversation.ID, second.RequestID, second.ID) {
+		t.Fatal("the latest customer source must remain eligible for an AI reply")
 	}
 }
 

@@ -404,6 +404,10 @@ func generatedReplyNextModelCallSequence(calls []ModelUsageCall) int {
 
 func appendGeneratedReplyRepairInstruction(messages []*schema.Message, previousErr error) []*schema.Message {
 	ret := append([]*schema.Message(nil), messages...)
+	if isGeneratedReplyIncompleteError(previousErr) {
+		ret = append(ret, schema.SystemMessage("【完整输出】上一版模型响应未完成。请基于完全相同的任务和事实重新输出完整答复，保持简短自然、直接解决客户当前需求，并严格遵守原有输出格式；不要复述分析过程，也不要增加新事实。"))
+		return ret
+	}
 	reason := compactGeneratedReplyRecoveryError(previousErr)
 	instruction := "【输出协议修复】上一版回复未通过本地完整性校验。任务、来源和知识证据已经冻结，禁止重新解释问题或增加事实。请严格按任务输出契约重新输出全部 replyParts，并补齐所有缺少的 taskId、coveredFactIds 和关键值。"
 	if reason != "" {
@@ -411,6 +415,14 @@ func appendGeneratedReplyRepairInstruction(messages []*schema.Message, previousE
 	}
 	ret = append(ret, schema.SystemMessage(instruction))
 	return ret
+}
+
+func isGeneratedReplyIncompleteError(err error) bool {
+	if err == nil || !IsGeneratedReplyExecutionError(err) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "responses api incomplete") || strings.Contains(lower, "max_output_tokens")
 }
 
 func compactGeneratedReplyRecoveryError(err error) string {
@@ -443,6 +455,7 @@ func isRetryableGeneratedReplyError(err error) bool {
 	}
 	for _, marker := range []string{
 		"status 429", "too many requests", "rate limit",
+		"responses api incomplete", "max_output_tokens",
 		"connection reset", "connection refused", "broken pipe", "unexpected eof",
 		"timeout", "timed out", "temporarily unavailable", "temporary failure",
 	} {

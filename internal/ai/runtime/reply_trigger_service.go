@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -117,7 +118,14 @@ func (s *aiReplyService) resolveReplyTimeout(aiAgent models.AIAgent) time.Durati
 }
 
 func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, message models.Message) {
+	runCtx, runCancel := context.WithCancel(tracex.ContextWithRequestID(context.Background(), message.RequestID))
+	activeRun, accepted := s.activeRuns.begin(conversation.ID, message.ID, runCancel)
+	if !accepted {
+		return
+	}
 	go func() {
+		defer runCancel()
+		defer s.activeRuns.finish(activeRun)
 		if sqls.DB() == nil {
 			slog.Warn("skip async ai reply because database is not initialized", "conversation_id", conversation.ID, "message_id", message.ID)
 			return
@@ -128,10 +136,10 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 		}
 		startedAt := time.Now()
 		timeout := s.resolveReplyTimeout(aiAgent)
-		ctx, cancel := context.WithTimeout(tracex.ContextWithRequestID(context.Background(), message.RequestID), timeout)
+		ctx, cancel := context.WithTimeout(runCtx, timeout)
 		defer cancel()
 		err := s.TriggerReply(ctx, conversation, message, aiAgent)
-		if err != nil {
+		if err != nil && !isSupersededAsyncReplyError(runCtx, err) {
 			slog.Error("failed to trigger ai reply",
 				"requestId", message.RequestID,
 				"message_id", message.ID,
@@ -140,6 +148,13 @@ func (s *aiReplyService) TriggerReplyAsync(conversation models.Conversation, mes
 				"error", err)
 		}
 	}()
+}
+
+func isSupersededAsyncReplyError(runCtx context.Context, err error) bool {
+	if runCtx == nil || runCtx.Err() != context.Canceled || err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled")
 }
 
 func (s *aiReplyService) TriggerReplySync(ctx context.Context, conversation models.Conversation, message models.Message) error {
@@ -540,6 +555,9 @@ func (s *aiReplyService) executeReply(ctx context.Context, replyCtx aiReplyConte
 	})
 	replyCtx.setSummary(summary)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if summary != nil && summary.Interrupted {

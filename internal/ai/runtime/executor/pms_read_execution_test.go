@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -828,6 +829,40 @@ func TestRuntimePMSCustomerAnswerUsesTheCustomersActualGoal(t *testing.T) {
 	full := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我查一下订单"}, orderResult)
 	if full != "查到了，您订的是儿童房，房号V05，9月23日14点入住，9月25日12点前退房，订单金额376元。" {
 		t.Fatalf("order answer was not merged into one natural stay: %q", full)
+	}
+}
+
+func TestApplyRuntimePMSReadResultProjectsOnlyRequestedCheckoutFact(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query",
+		OriginalText: "我的房到几号", Text: "我的房到几号", ReplyRequired: true,
+	}
+	plan := pmsReadPlan{Scenario: pmsReadScenarioOrder}
+	result := pmsReadPlanResult{Status: pmsReadStepOK, Steps: []pmsReadStepResult{
+		{StepID: "order.reserve", Status: pmsReadStepOK, Data: map[string]any{
+			"roomName": "儿童房", "checkOutTime": "2026-09-25 12:00:00", "payableAmount": "376",
+		}},
+		{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"roomName": "儿童房", "homeName": "V05", "checkOutTime": "2026-09-25 12:00:00",
+		}},
+	}}
+
+	applyRuntimePMSReadResultToTask(&task, plan, result, 0)
+	if len(task.SupportedFacts) != 1 {
+		t.Fatalf("duplicate order sources must collapse to one customer-goal fact: %#v", task.SupportedFacts)
+	}
+	fact := task.SupportedFacts[0]
+	if fact.Aspect != "pms_order_checkout_time" || fact.Statement != "当前订单离店时间为2026-09-25 12:00:00。" {
+		t.Fatalf("checkout question exposed the wrong PMS fact: %#v", fact)
+	}
+	if len(fact.CriticalValues) != 1 || fact.CriticalValues[0] != "2026-09-25 12:00:00" {
+		t.Fatalf("checkout fact must preserve the exact critical value: %#v", fact)
+	}
+	joined, _ := json.Marshal(task.SupportedFacts)
+	for _, leaked := range []string{"V05", "儿童房", "376"} {
+		if strings.Contains(string(joined), leaked) {
+			t.Fatalf("checkout question must not expose unrelated order field %q: %s", leaked, joined)
+		}
 	}
 }
 

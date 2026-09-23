@@ -667,6 +667,9 @@ func TestNormalizeGeneratedReplyPartsKeepsDifferentScopeAndPolarity(t *testing.T
 }
 
 func TestGeneratedReplyAIConfigUsesConfiguredBudgetOnlyForMultipleTasks(t *testing.T) {
+	if generatedReplySingleTaskMaxOutputTokens != 1024 {
+		t.Fatalf("single-task output budget must leave room for reasoning and a complete answer, got %d", generatedReplySingleTaskMaxOutputTokens)
+	}
 	config := models.AIConfig{MaxOutputTokens: 1024}
 	singlePlan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "task-1", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true},

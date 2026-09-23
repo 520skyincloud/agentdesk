@@ -53,6 +53,23 @@ func TestRunGeneratedReplyWithRecoveryRetriesOnlyGenerate(t *testing.T) {
 	}
 }
 
+func TestAppendGeneratedReplyRepairInstructionHandlesIncompleteResponseAsCompletionRetry(t *testing.T) {
+	messages := appendGeneratedReplyRepairInstruction(
+		[]*schema.Message{schema.UserMessage("我的房住到几号？")},
+		fmt.Errorf("%w: responses api incomplete: status=incomplete reason=max_output_tokens", ErrGeneratedReplyExecution),
+	)
+	if len(messages) != 2 {
+		t.Fatalf("expected one retry instruction, got %#v", messages)
+	}
+	instruction := messages[1].Content
+	if !strings.Contains(instruction, "模型响应未完成") || !strings.Contains(instruction, "完整答复") {
+		t.Fatalf("incomplete response must request a concise complete answer, got %q", instruction)
+	}
+	if strings.Contains(instruction, "replyParts") || strings.Contains(instruction, "coveredFactIds") {
+		t.Fatalf("transport truncation must not be mislabeled as a reply protocol defect: %q", instruction)
+	}
+}
+
 func TestEvidenceBackedInputRetriesThenFallsBackSafely(t *testing.T) {
 	answer := "矿泉水免费。"
 	collector := callbacks.NewRuntimeTraceCollector()
@@ -640,6 +657,7 @@ func TestIsRetryableGeneratedReplyErrorClassifiesTransientExecutionFailures(t *t
 		{fmt.Errorf("%w: responses api status 429", ErrGeneratedReplyExecution), true},
 		{fmt.Errorf("%w: responses api status 503", ErrGeneratedReplyExecution), true},
 		{fmt.Errorf("%w: connection reset by peer", ErrGeneratedReplyExecution), true},
+		{fmt.Errorf("%w: responses api incomplete: status=incomplete reason=max_output_tokens", ErrGeneratedReplyExecution), true},
 		{fmt.Errorf("%w: responses api status 401", ErrGeneratedReplyExecution), false},
 		{fmt.Errorf("ordinary failure"), false},
 	}

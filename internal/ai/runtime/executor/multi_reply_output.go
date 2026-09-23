@@ -58,7 +58,10 @@ type generatedReplyTaskError struct {
 func (e *generatedReplyTaskError) Error() string { return e.err.Error() }
 func (e *generatedReplyTaskError) Unwrap() error { return e.err }
 
-const generatedReplySingleTaskMaxOutputTokens = 512
+// Reasoning-capable providers count hidden reasoning and customer-visible text
+// against the same output budget. Keep the full runtime allowance for a single
+// task so a short customer reply cannot be truncated after internal reasoning.
+const generatedReplySingleTaskMaxOutputTokens = 1024
 
 const externalProxyActionCapabilityBoundaryReply = "不好意思，这类外部操作我们没法直接替您完成。"
 

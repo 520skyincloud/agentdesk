@@ -707,6 +707,9 @@ func (s *messageService) sendValidatedMessageWithOptions(conversation *models.Co
 
 	// 客户发送消息，触发AI回复
 	if senderType == enums.IMSenderTypeCustomer {
+		if CancelOlderAIReplyRunHook != nil {
+			CancelOlderAIReplyRunHook(conversation.ID, message.ID)
+		}
 		if routeState := ConversationRouteService.GetByConversationID(conversation.ID); routeState != nil && routeState.StoreID > 0 {
 			if err := CustomerService.TouchStoreRelation(conversation.CustomerID, routeState.StoreID, routeState.WxWorkInstanceID, conversation.ID, now); err != nil {
 				slog.Warn("touch customer store relation failed", "conversation_id", conversation.ID, "customer_id", conversation.CustomerID, "store_id", routeState.StoreID, "error", err)
@@ -804,6 +807,12 @@ func (s *messageService) canSendAIReplyWithDB(db *gorm.DB, conversationID int64,
 		return AIManualResumeTaskService.canCommitRequestWithDB(db, state, conversationID, requestID, sourceMessageID)
 	}
 	if conversation.CurrentAssigneeID > 0 {
+		return false
+	}
+	if sourceMessageID > 0 && repositories.MessageRepository.Count(db, sqls.NewCnd().
+		Eq("conversation_id", conversationID).
+		Eq("sender_type", enums.IMSenderTypeCustomer).
+		Gt("id", sourceMessageID)) > 0 {
 		return false
 	}
 	return conversation.Status == enums.IMConversationStatusAIServing

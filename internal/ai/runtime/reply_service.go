@@ -13,6 +13,14 @@ func init() {
 	svc.TriggerAIReplyAsyncHook = AIReplyService.TriggerReplyAsync
 	svc.TriggerAIReplySyncHook = AIReplyService.TriggerReplySync
 	svc.TriggerStandaloneOneReplyAsyncHook = AIReplyService.TriggerStandaloneOneReplyAsync
+	svc.CancelOlderAIReplyRunHook = AIReplyService.CancelOlderReplyRun
+}
+
+func (s *aiReplyService) CancelOlderReplyRun(conversationID int64, messageID int64) {
+	if s == nil || s.activeRuns == nil {
+		return
+	}
+	s.activeRuns.cancelOlder(conversationID, messageID)
 }
 
 func newAIReplyService() *aiReplyService {
@@ -23,6 +31,7 @@ func newAIReplyService() *aiReplyService {
 		commit:      newReplyCommitService(),
 		runlog:      newReplyRunLogService(),
 		memory:      newConversationMemoryService(),
+		activeRuns:  newActiveAIReplyRunRegistry(),
 	}
 }
 
@@ -33,6 +42,7 @@ type aiReplyService struct {
 	commit      *replyCommitService
 	runlog      *replyRunLogService
 	memory      *conversationMemoryService
+	activeRuns  *activeAIReplyRunRegistry
 }
 
 func firstInvokedToolCode(summary *applicationruntime.Summary) string {
