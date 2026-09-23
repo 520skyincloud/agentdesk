@@ -298,14 +298,29 @@ func TestRuntimePMSTargetRoomTypeRequiresARealTarget(t *testing.T) {
 }
 
 func TestRuntimePMSTargetRoomTypePrefersCurrentSelectionOverHistoricalTarget(t *testing.T) {
-	task := callbacks.ReplyTaskPlanTraceData{
-		OriginalText:  "沐阳吧，差价多少",
-		ResolvedText:  "我想把儿童房换成大床房\n当前客户补充（以本次为准）：还有其他房型吗\n当前客户补充（以本次为准）：沐阳吧，差价多少",
-		DialogueAct:   "selection",
-		ReplyStrategy: "confirm_selection_and_continue_goal",
+	for _, task := range []callbacks.ReplyTaskPlanTraceData{
+		{
+			OriginalText:  "沐阳吧，差价多少",
+			ResolvedText:  "我想把儿童房换成大床房\n当前客户补充（以本次为准）：还有其他房型吗\n当前客户补充（以本次为准）：沐阳吧，差价多少",
+			DialogueAct:   "selection",
+			ReplyStrategy: "confirm_selection_and_continue_goal",
+		},
+		{
+			OriginalText:  "沐阳吧，差价多少",
+			ResolvedText:  "我想把儿童房换成大床房\n当前客户补充（以本次为准）：沐阳吧，差价多少",
+			DialogueAct:   "follow_up",
+			ReplyStrategy: "answer_current_goal",
+		},
+		{OriginalText: "沐阳差价多少", DialogueAct: "follow_up"},
+	} {
+		if got := runtimePMSTargetRoomTypeText(task); got != "沐阳" {
+			t.Fatalf("current room selection lost to historical target: task=%#v got=%q", task, got)
+		}
 	}
-	if got := runtimePMSTargetRoomTypeText(task); got != "沐阳" {
-		t.Fatalf("current room selection lost to historical target: got=%q", got)
+	for _, text := range []string{"差价多少", "有房吗，差价多少", "那个吧，差价多少"} {
+		if got := runtimePMSTargetRoomTypeText(callbacks.ReplyTaskPlanTraceData{OriginalText: text}); got != "" {
+			t.Fatalf("generic follow-up became a room type: text=%q got=%q", text, got)
+		}
 	}
 }
 

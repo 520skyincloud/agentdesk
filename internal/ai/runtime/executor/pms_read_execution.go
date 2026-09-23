@@ -770,23 +770,36 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 }
 
 func runtimePMSCurrentRoomTypeSelection(task callbacks.ReplyTaskPlanTraceData) string {
-	if strings.TrimSpace(task.DialogueAct) != "selection" && strings.TrimSpace(task.ReplyStrategy) != "confirm_selection_and_continue_goal" {
-		return ""
-	}
 	current := strings.TrimSpace(task.OriginalText)
 	if current == "" {
 		return ""
 	}
+	selectionCue := false
 	if index := strings.IndexAny(current, "，。！？,.!?\n"); index >= 0 {
 		current = strings.TrimSpace(current[:index])
+		selectionCue = strings.HasSuffix(current, "吧")
 	}
 	for _, prefix := range []string{"那就选", "就选", "选", "要", "换成", "换到", "升到", "升级到"} {
-		current = strings.TrimSpace(strings.TrimPrefix(current, prefix))
+		if strings.HasPrefix(current, prefix) {
+			selectionCue = true
+			current = strings.TrimSpace(strings.TrimPrefix(current, prefix))
+		}
+	}
+	if !selectionCue {
+		for _, marker := range []string{"差价", "补多少", "多少钱", "价格"} {
+			if index := strings.Index(current, marker); index > 0 {
+				current = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(current[:index]), "的"))
+				selectionCue = current != ""
+				break
+			}
+		}
 	}
 	for _, suffix := range []string{"就行", "可以", "吧", "吗"} {
 		current = strings.TrimSpace(strings.TrimSuffix(current, suffix))
 	}
-	if current == "" || len([]rune(current)) > 12 || runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(current)) {
+	if !selectionCue || current == "" || len([]rune(current)) > 12 ||
+		containsAny(current, []string{"有房", "空房", "差价", "价格", "多少钱", "其他", "别的", "可以", "能不能"}) ||
+		runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(current)) {
 		return ""
 	}
 	return current
@@ -2079,7 +2092,7 @@ func runtimePMSCustomerStay(result pmsReadPlanResult) (runtimePMSStayCandidate, 
 
 func runtimePMSGenericRoomChoice(value string) bool {
 	switch value {
-	case "", "吗", "吧", "可以", "其他", "别的", "另外", "另一", "随便", "都行", "其他的", "别的的":
+	case "", "吗", "吧", "可以", "其他", "别的", "另外", "另一", "随便", "都行", "其他的", "别的的", "这个", "那个", "它":
 		return true
 	default:
 		return false

@@ -1304,6 +1304,7 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 
 - 真实复测确认订单定位已复用：后续追问直接调用 `recept_order_detail`，没有再次按手机号查单；同时发现客户已选择“沐阳”，目标房型仍被历史“大床房”覆盖，且 Generate 空输出后发送了要求客户重发的机械兜底。
 - 当前轮明确选择现在优先于历史目标：`selection` / `confirm_selection_and_continue_goal` 只从当前客户原话提取本次房型，再用真实库存匹配房型 ID；历史文本仍用于订单、日期和目标上下文，不再覆盖客户最新选择。
+- 当前房型选择不再依赖 JEV 必须输出特定 `dialogueAct`：像“沐阳吧，差价多少”“沐阳差价多少”直接从当前客户原话提取候选，再交给真实库存唯一匹配；“差价多少”“有房吗”“那个吧”等泛指问法不会被当成房型。
 - PMS 正常仍向 Generate 提供类型化事实；同时从同一结构化查询结果保留一份客户侧安全回复，仅在模型无客户可见输出时使用。该兜底继续经过内部字段和协议泄漏清洗，但不再重复执行本地自然语言语义推断，避免把已确认的房型、入住区间和差价再次误杀。
 - 单个 PMS Task 在查询完成、无缺失项且已形成客户侧安全回复时直接提交，跳过无增益的 Generate；混合问题、缺失字段、仍需工具/资源/人工路由的任务继续走原链路。真实查询事实、只读边界、Commit、Outbox 和动作安全账本不变。
 - 相关回归覆盖当前选择覆盖历史目标、订单定位复用、安全 PMS 自然兜底及知识/人工路由既有链路。验证通过：`go test -p=1 ./internal/pms ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`。
