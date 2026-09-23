@@ -42,6 +42,27 @@ func IsAIServiceNoticeMessage(message *models.Message) bool {
 	return strings.Contains(strings.TrimSpace(message.Payload), `"serviceEvent"`)
 }
 
+// IsWxWorkWelcomeResourceMessage identifies the automatic welcome bundle.
+// These messages are real customer-visible context, but they must not make the
+// customer's first question look stale while the runtime is settling.
+func IsWxWorkWelcomeResourceMessage(message *models.Message) bool {
+	if message == nil || message.SenderType != enums.IMSenderTypeAI {
+		return false
+	}
+	clientMsgID := strings.TrimSpace(message.ClientMsgID)
+	for _, prefix := range []string{
+		"wx_welcome_text_",
+		"wx_welcome_image_",
+		"wx_default_weapp_",
+		"wx_default_location_",
+	} {
+		if strings.HasPrefix(clientMsgID, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func SanitizeMessageHTML(content string) string {
 	policy := bluemonday.UGCPolicy()
 	policy.AllowElements("img")

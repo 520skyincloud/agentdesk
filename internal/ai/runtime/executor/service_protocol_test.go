@@ -53,6 +53,125 @@ func TestCompleteIntentDetectUnavailableBlocksUngroundedGenerate(t *testing.T) {
 	}
 }
 
+func TestPrepareGroundedSingleKnowledgeDirectCommit(t *testing.T) {
+	answer := "酒店提供速溶咖啡，您可以在1313房间对面的洗衣房内自行取用。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsKnowledge: true}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "store_knowledge",
+		DialogueAct: "new_request", ReplyStrategy: "answer_current_goal", RelationToPrevious: "independent", ResolutionState: "clear",
+		NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+		SelectedLayer: "store", AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "task-1F1", Aspect: "existence", Statement: "酒店提供速溶咖啡。", CriticalValues: []string{"速溶咖啡"}},
+			{FactID: "task-1F2", Aspect: "location", Statement: "速溶咖啡放置在1313房间对面的洗衣房内，您可以自行取用。", CriticalValues: []string{"1313房间对面的洗衣房"}},
+		},
+	}}}
+	summary := &RunResult{Status: "started"}
+
+	if !prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("complete independent Judge-grounded knowledge answer should skip redundant Generate")
+	}
+	if summary.ReplyText != answer {
+		t.Fatalf("direct commit changed the Judge-grounded customer answer: %q", summary.ReplyText)
+	}
+}
+
+func TestPrepareGroundedSingleKnowledgeDirectCommitKeepsContextAndToolTasksOnGenerate(t *testing.T) {
+	answer := "酒店提供速溶咖啡。"
+	baseTask := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "store_knowledge",
+		DialogueAct: "new_request", ReplyStrategy: "answer_current_goal", RelationToPrevious: "independent", ResolutionState: "clear",
+		NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+		SelectedLayer: "store", AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: answer}},
+	}
+	tests := []struct {
+		name   string
+		intent callbacks.IntentTraceData
+		mutate func(*callbacks.ReplyTaskPlanTraceData)
+	}{
+		{name: "context follow up", intent: callbacks.IntentTraceData{NeedsKnowledge: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.RelationToPrevious = "follow_up" }},
+		{name: "tool task", intent: callbacks.IntentTraceData{NeedsKnowledge: true, NeedsTool: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.NeedsTool = true }},
+		{name: "partial evidence", intent: callbacks.IntentTraceData{NeedsKnowledge: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.MissingAspects = []string{"取用时间"} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := baseTask
+			tt.mutate(&task)
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = tt.intent
+			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}
+			if prepareGroundedSingleKnowledgeDirectCommit(&RunResult{Status: "started"}, collector) {
+				t.Fatal("contextual, tool or partial task must still use the normal Generate path")
+			}
+		})
+	}
+}
+
+func TestPrepareGroundedSingleKnowledgeDirectCommitRejectsUnsafeJudgeAnswer(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer string
+		facts  []callbacks.KnowledgeEvidenceFactTraceData
+	}{
+		{
+			name:   "unsupported staff action",
+			answer: "酒店有拖鞋，我帮您联系前台同事送到房间。",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: "酒店有拖鞋。", CriticalValues: []string{"拖鞋"}}},
+		},
+		{
+			name:   "capability beyond selected fact",
+			answer: "门店有外卖机器人，可以送到房间。",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: "门店有外卖机器人。", CriticalValues: []string{"外卖机器人"}}},
+		},
+		{
+			name:   "json envelope",
+			answer: `{"content":"房间有两瓶矿泉水。"}`,
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "quantity", Statement: "房间有两瓶矿泉水。", CriticalValues: []string{"两瓶"}}},
+		},
+		{
+			name:   "markdown fenced json envelope",
+			answer: "```json\n{\"content\":\"房间有两瓶矿泉水。\"}\n```",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "quantity", Statement: "房间有两瓶矿泉水。", CriticalValues: []string{"两瓶"}}},
+		},
+		{
+			name:   "unfinished markdown fenced json envelope",
+			answer: "```json\n{\"content\":\"房间有两瓶矿泉水。\"}",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "quantity", Statement: "房间有两瓶矿泉水。", CriticalValues: []string{"两瓶"}}},
+		},
+		{
+			name:   "opposite fact polarity",
+			answer: "酒店设有停车场。",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: "酒店没有停车场。", CriticalValues: []string{"停车场"}}},
+		},
+		{
+			name:   "opposite polarity in compound fact",
+			answer: "酒店不提供停车场。",
+			facts:  []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: "酒店不提供早餐，但提供停车场。", CriticalValues: []string{"停车场"}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsKnowledge: true}
+			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "task-1", Intent: "hotel_info", SubIntent: "store_knowledge",
+				DialogueAct: "new_request", ReplyStrategy: "answer_current_goal", RelationToPrevious: "independent", ResolutionState: "clear",
+				NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+				SelectedLayer: "store", AnswerText: &tt.answer, SupportedFacts: tt.facts,
+			}}}
+			summary := &RunResult{Status: "started"}
+			if prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+				t.Fatalf("unsafe Judge answer must fall back to the normal Generate path: %q", summary.ReplyText)
+			}
+			if summary.ReplyText != "" {
+				t.Fatalf("rejected direct answer leaked into summary: %q", summary.ReplyText)
+			}
+		})
+	}
+}
+
 func TestUngroundedKnowledgeReplyTaskIDsRequiresSelectedFacts(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
 		{TaskID: "missing-layer", Intent: "hotel_info", OutputKind: "text", ReplyRequired: true, SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Statement: "早餐时间是7:00到9:30。"}}},

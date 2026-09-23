@@ -825,7 +825,7 @@ func isStandaloneOneRuntimeMessage(message *models.Message) bool {
 	if message == nil {
 		return false
 	}
-	if utils.IsAIServiceNoticeMessage(message) {
+	if utils.IsAIServiceNoticeMessage(message) || utils.IsWxWorkWelcomeResourceMessage(message) {
 		return true
 	}
 	if message.SenderType == enums.IMSenderTypeCustomer &&

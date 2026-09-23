@@ -291,6 +291,72 @@ func TestReplyLatestMessageIgnoresAIServiceNotice(t *testing.T) {
 	}
 }
 
+func TestReplyLatestMessageIgnoresWxWorkWelcomeResources(t *testing.T) {
+	db := setupRuntimeReplyMessageTestDB(t)
+	now := time.Now()
+	conversationID := int64(9012)
+	customer := models.Message{
+		ID:             301,
+		ConversationID: conversationID,
+		SessionNo:      1,
+		ClientMsgID:    "first-customer-question",
+		SenderType:     enums.IMSenderTypeCustomer,
+		MessageType:    enums.IMMessageTypeText,
+		Content:        "酒店有没有咖啡",
+		SeqNo:          1,
+		SendStatus:     enums.IMMessageStatusSent,
+		SentAt:         ptrTime(now),
+	}
+	items := []models.Message{customer}
+	for index, item := range []struct {
+		clientMsgID string
+		messageType enums.IMMessageType
+	}{
+		{clientMsgID: "wx_welcome_text_test", messageType: enums.IMMessageTypeText},
+		{clientMsgID: "wx_welcome_image_test", messageType: enums.IMMessageTypeImage},
+		{clientMsgID: "wx_default_weapp_test", messageType: enums.IMMessageTypeMiniProgram},
+		{clientMsgID: "wx_default_location_test", messageType: enums.IMMessageTypeLocation},
+	} {
+		items = append(items, models.Message{
+			ID:             int64(302 + index),
+			ConversationID: conversationID,
+			SessionNo:      1,
+			ClientMsgID:    item.clientMsgID,
+			SenderType:     enums.IMSenderTypeAI,
+			MessageType:    item.messageType,
+			Content:        "欢迎资源",
+			SeqNo:          int64(2 + index),
+			SendStatus:     enums.IMMessageStatusSent,
+			SentAt:         ptrTime(now.Add(time.Duration(index+1) * time.Second)),
+		})
+	}
+	for _, item := range items {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create message %d: %v", item.ID, err)
+		}
+	}
+	service := newAIReplyService()
+	if !service.isStillLatestCustomerMessage(conversationID, customer.ID) {
+		t.Fatal("welcome resources must not make the first customer question stale")
+	}
+	if !service.canCommitReplyForMessage(conversationID, customer.ID) {
+		t.Fatal("welcome resources must not block the first customer reply commit")
+	}
+
+	ordinaryMiniProgram := items[len(items)-1]
+	ordinaryMiniProgram.ID = 306
+	ordinaryMiniProgram.SeqNo = 6
+	ordinaryMiniProgram.ClientMsgID = "ordinary-ai-mini-program"
+	ordinaryMiniProgram.Content = "客户主动索取的小程序"
+	ordinaryMiniProgram.SentAt = ptrTime(now.Add(6 * time.Second))
+	if err := db.Create(&ordinaryMiniProgram).Error; err != nil {
+		t.Fatalf("create ordinary mini program: %v", err)
+	}
+	if service.isStillLatestCustomerMessage(conversationID, customer.ID) || service.canCommitReplyForMessage(conversationID, customer.ID) {
+		t.Fatal("ordinary AI resources must still block an older customer run")
+	}
+}
+
 func TestResolveReplyTimeout(t *testing.T) {
 	service := newAIReplyService()
 	aiAgent := newAIAgentFixture()

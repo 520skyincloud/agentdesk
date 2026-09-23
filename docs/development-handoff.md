@@ -1277,3 +1277,13 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 企微入站 DTO 兼容字符串和对象型 `content`，597 商品卡完整保留商品与店铺协议字段。无数据库、Migration、外部 API、WebSocket、计费或 PMS 写入变化；`allowWrite=false` 保持不变。
 - 双轮通过：`go test -p=1 ./internal/ai/runtime/executor ./internal/pms ./internal/ai/runtime/tools -count=2`；枕头 DTO、Service、Intent、Commit 聚焦测试连续两轮通过；`internal/services` 全包单轮通过。全包 `-count=2` 会触发既有测试共享数据库的重复初始化失败，本轮未修改这些无关测试。
 - 并行影响：`customer-audit` 同样修改 `intent_model_detector.go`，后续合并需人工保留双方变更；`ai-billing` 无计费语义变化。部署仅更新 test-2，程序异常回退 release，不回滚数据库、消息或“薇薇/薇薇2”。
+
+## 2026-09-23 首问可靠性与知识回复延迟收口
+
+- 目标：修复新企微会话的首条客户问题被欢迎语/欢迎资源误判为过期，以及简单知识问题在 Judge 已形成完整答案后仍重复调用 Generate、出现空输出重试和约 45 秒延迟的问题。
+- 新好友欢迎文本、欢迎图片、默认入住小程序和欢迎定位使用精确 `clientMsgID` 前缀识别。它们仍正常发送并保留为客户可见历史上下文，但不再作为更新客户轮次阻断首问；普通 AI 文本、小程序、员工消息和更新客户消息仍会使旧运行失效。
+- 仅当 ReplyPlan 中只有一个独立知识文本任务、Judge 已给出完整 `AnswerText` 与受支持事实、没有缺失维度、工具、资源或人工路由时，才尝试直接提交；答案仍须通过内部协议、JSON、事实边界和动作安全校验。任一校验不满足即回到原 Generate 链路。上下文追问、纠正、多问题、PMS、工具、资源和部分证据任务继续走原 Generate 链路。
+- 真实耗时定位：修复前样本 `conversation_id=2205/message_id=19240` 总耗时 `44703ms`，其中检索 `808ms`、Judge `12287ms`、Generate `30069ms`；Generate 第一次无客户可见输出后重试。新直出分支去掉该样本中重复的 Generate 阶段，不调整 JEV/Intent 或 Judge 模型。
+- 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
+- 验证通过：`go test -p=1 ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；`go test -p=1 ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；Linux amd64 构建通过；`git diff --check` 通过。
+- 并行影响：`origin/codex/customer-audit` 在本轮全部运行文件上均有同文件修改，合并时必须人工保留双方变更，禁止整文件覆盖。建议本提交独立 review/cherry-pick；无需 rebase 数据模型或迁移。回滚仅切回 test-2 上一 release，不回滚数据库、消息或“薇薇/薇薇2”。

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -117,6 +118,19 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	}
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
 		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
+	}
+	if prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+		summary.Status = "completed"
+		summary.ModelName = req.AIConfig.ModelName
+		collector.Data.Status = summary.Status
+		collector.Data.Output.ReplyText = summary.ReplyText
+		collector.Data.Output.FinishReason = "grounded_single_knowledge_direct_commit"
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "single independent knowledge task already has a complete Judge-grounded customer answer"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "Judge-grounded answer passed protocol and send-safety validation"
+		summary.TraceData = collector.Marshal()
+		return summary, nil
 	}
 
 	toolDefs, err := factory.NewToolFactory().BuildMCPTools(req.AIAgent)
@@ -572,6 +586,67 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	}
 	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n<<NEXT_MESSAGE>>\n"))
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
+}
+
+func prepareGroundedSingleKnowledgeDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
+	if summary == nil || collector == nil {
+		return false
+	}
+	intent := collector.Data.Pipeline.Intent
+	if intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || len(intent.ResourceActions) > 0 {
+		return false
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) != 1 {
+		return false
+	}
+	task := plan.TaskPlans[0]
+	if strings.TrimSpace(task.Intent) != "hotel_info" || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+		strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" ||
+		task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 ||
+		isKnowledgeHandoffDirectiveContent(*task.AnswerText) {
+		return false
+	}
+	if relation := strings.TrimSpace(task.RelationToPrevious); relation != "" && relation != "independent" {
+		return false
+	}
+	if act := strings.TrimSpace(task.DialogueAct); act != "" && act != "new_request" {
+		return false
+	}
+	if state := strings.TrimSpace(task.ResolutionState); state != "" && state != "clear" {
+		return false
+	}
+	if strategy := strings.TrimSpace(task.ReplyStrategy); strategy != "" && strategy != "answer_current_goal" {
+		return false
+	}
+	groups := buildTextReplyTaskGroups(plan)
+	if len(groups) != 1 {
+		return false
+	}
+	group := groups[0]
+	group.EvidenceLocked = true
+	reply, err := validateLockedReplyContent(group)
+	if err != nil || strings.TrimSpace(reply) == "" {
+		return false
+	}
+	trimmedReply := strings.TrimSpace(reply)
+	if strings.Contains(trimmedReply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(trimmedReply))) {
+		return false
+	}
+	if err := validateGeneratedReplyFactAspectBoundaries(reply, group.Facts); err != nil {
+		return false
+	}
+	previousOutput := collector.Data.Output
+	previousValidate := collector.Data.Pipeline.Validate
+	summary.ReplyText = reply
+	validation := enforceGeneratedReplyActionLedger(summary, collector)
+	if validation.RequestHandoffConfirmation || summary.ReplyText != reply {
+		summary.ReplyText = ""
+		collector.Data.Output = previousOutput
+		collector.Data.Pipeline.Validate = previousValidate
+		return false
+	}
+	return true
 }
 
 func runtimeReplyPlanRequiresGeneratedText(plan callbacks.ReplyPlanTraceData) bool {

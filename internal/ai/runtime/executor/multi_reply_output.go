@@ -509,7 +509,8 @@ func validateGeneratedReplyFactAspectBoundaries(content string, facts []replyFac
 			if !generatedReplyTextHasBoundaryClaim(clause, boundary) {
 				continue
 			}
-			if generatedReplyBoundaryClaimGroundedByFacts(clause, evidence, boundary) {
+			if generatedReplyBoundaryClaimGroundedByFacts(clause, evidence, boundary) ||
+				generatedReplyBoundaryClaimGroundedByFactAspect(clause, facts, boundary) {
 				continue
 			}
 			return fmt.Errorf("content adds unsupported %s claim", boundary.Aspect)
@@ -525,6 +526,21 @@ func validateGeneratedReplyFactAspectBoundaries(content string, facts []replyFac
 		}
 	}
 	return nil
+}
+
+func generatedReplyBoundaryClaimGroundedByFactAspect(clause string, facts []replyFactRequirement, boundary generatedReplyFactAspectBoundary) bool {
+	for _, fact := range facts {
+		factSupportsBoundary := strings.TrimSpace(fact.Aspect) == boundary.Aspect || generatedReplyTextHasBoundaryClaim(fact.Statement, boundary)
+		if !factSupportsBoundary || len(fact.CriticalValues) == 0 {
+			continue
+		}
+		for _, value := range fact.CriticalValues {
+			if containsCriticalValue(clause, value) && criticalValuePolarityMatches(clause, fact.Statement, value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type generatedReplyFactAspectBoundary struct {

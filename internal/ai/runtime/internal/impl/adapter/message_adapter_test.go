@@ -172,6 +172,24 @@ func TestRuntimeHistoryMessageContentExcludesAIServiceNotice(t *testing.T) {
 	}
 }
 
+func TestRuntimeHistoryMessageContentKeepsWxWorkWelcomeResources(t *testing.T) {
+	items := []models.Message{
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "欢迎入住", ClientMsgID: "wx_welcome_text_test"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeImage, Content: "welcome.jpg", ClientMsgID: "wx_welcome_image_test"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeMiniProgram, Content: "入住小程序", ClientMsgID: "wx_default_weapp_test"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeLocation, Content: "酒店位置", ClientMsgID: "wx_default_location_test"},
+	}
+	for index := range items {
+		if got := RuntimeHistoryMessageContent(&items[index]); !strings.Contains(got, items[index].Content) {
+			t.Fatalf("welcome resource disappeared from runtime history: %q", got)
+		}
+	}
+	ordinary := models.Message{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeMiniProgram, Content: "客户索取的小程序", ClientMsgID: "ai_reply_ordinary_mini_program"}
+	if got := RuntimeHistoryMessageContent(&ordinary); !strings.Contains(got, ordinary.Content) {
+		t.Fatalf("ordinary AI resource was removed from history: %q", got)
+	}
+}
+
 func TestRuntimeHistoryMessageContentRejectsUnfinishedVoiceText(t *testing.T) {
 	for _, status := range []string{"", "pending", "failed", "empty"} {
 		message := models.Message{
