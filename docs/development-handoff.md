@@ -1309,3 +1309,5 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 单个 PMS Task 在查询完成、无缺失项且已形成客户侧安全回复时直接提交，跳过无增益的 Generate；混合问题、缺失字段、仍需工具/资源/人工路由的任务继续走原链路。真实查询事实、只读边界、Commit、Outbox 和动作安全账本不变。
 - 相关回归覆盖当前选择覆盖历史目标、订单定位复用、安全 PMS 自然兜底及知识/人工路由既有链路。验证通过：`go test -p=1 ./internal/pms ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`。
 - 无 JEV、model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；test-2 保持 `AGENT_DESK_PMS_ALLOW_WRITE=false`。
+- 最终 test-2 release：`/opt/agentdesk/releases/20260923-pms-current-selection-802b629`，切换前备份：`/opt/agentdesk/backups/20260923-pre-pms-current-selection-802b629`，Server SHA-256：`1e2438cc09c4d1569824a472d57d4582a5a9d4144912898e2d2e7ca1fab6fc6d`。服务 active、`NRestarts=0`、8083 HTTP 200。
+- 真实连续会话 `conversation_id=2208`、`message_id=19282` 验证：“沐阳吧，差价多少”在 Intent 标为 `follow_up` 时仍复用既有订单定位，4 个 PMS 查询均成功，回复当前房型、沐阳完整入住期间库存、候选房号及差价待核对边界；耗时 2383ms，`Generate=skipped`。未重复询问手机号，未暴露内部 ID/PMS 字段，未转人工，未宣称已经换房。
