@@ -540,6 +540,49 @@ func TestWxWorkProtocolMiniProgramMessageIsStructuredCard(t *testing.T) {
 	}
 }
 
+func TestWxWorkProtocolShopProductMessageKeepsCompleteObjectContent(t *testing.T) {
+	raw := `{
+		"content_type":597,
+		"msg_type":49,
+		"content":{
+			"product_appid":"wxca8d4b8e8feedc2a",
+			"product_page_path":"main/pages/productDetail/productDetail.html?productId=10001004185008",
+			"product_id":"10001004185008",
+			"product_cover_url":"https://example.com/pillow.jpg",
+			"product_title":"丽斯严选零压力护颈椎枕头",
+			"shop_info":{"shop_id":"1","url":"https://channels.weixin.qq.com/shop","extra_info":"original-extra-info"}
+		}
+	}`
+	var msg request.WxProtocolChatMsg
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal shop product callback: %v", err)
+	}
+	svc := &wxWorkProtocolService{}
+	if got := svc.resolveInboundMessageType(msg); got != enums.IMMessageTypeShopProduct {
+		t.Fatalf("expected shop product message type, got %s", got)
+	}
+	content, payload, err := svc.buildInboundMessageContent(nil, enums.IMMessageTypeShopProduct, msg)
+	if err != nil {
+		t.Fatalf("build shop product content: %v", err)
+	}
+	if content != "丽斯严选零压力护颈椎枕头" {
+		t.Fatalf("unexpected shop product content: %q", content)
+	}
+	var body struct {
+		Content map[string]any `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(payload), &body); err != nil {
+		t.Fatalf("unmarshal shop product payload: %v", err)
+	}
+	if body.Content["product_id"] != "10001004185008" || body.Content["product_appid"] != "wxca8d4b8e8feedc2a" {
+		t.Fatalf("shop product identity was not preserved: %#v", body.Content)
+	}
+	shopInfo, ok := body.Content["shop_info"].(map[string]any)
+	if !ok || shopInfo["extra_info"] != "original-extra-info" || shopInfo["url"] != "https://channels.weixin.qq.com/shop" {
+		t.Fatalf("nested shop info was not preserved: %#v", body.Content["shop_info"])
+	}
+}
+
 func TestNormalizeStoreRoomAtList(t *testing.T) {
 	got := normalizeStoreRoomAtList([]string{" staff-1 ", "", "staff-2", "staff-1", "0"})
 	if len(got) != 2 || got[0] != "staff-1" || got[1] != "staff-2" {

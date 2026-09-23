@@ -141,6 +141,61 @@ func TestStructuredVariableResourceTypesFromTraceIncludesPhone(t *testing.T) {
 	}
 }
 
+func TestPillowProductTraceBuildsControlledShopProductReply(t *testing.T) {
+	dbName := fmt.Sprintf("runtime_pillow_product_commit_%s_%d", strings.NewReplacer("/", "_").Replace(t.Name()), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{TablePrefix: "t_", SingularTable: true},
+	})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.WxWorkProtocolInstance{}, &models.ConversationRouteState{}); err != nil {
+		t.Fatalf("migrate sqlite: %v", err)
+	}
+	sqls.SetDB(db)
+	instance := &models.WxWorkProtocolInstance{ID: 17, Guid: "pillow-product-guid", Status: enums.StatusOk}
+	if err := db.Create(instance).Error; err != nil {
+		t.Fatalf("create instance: %v", err)
+	}
+	if err := db.Create(&models.ConversationRouteState{ConversationID: 199, WxWorkInstanceID: instance.ID}).Error; err != nil {
+		t.Fatalf("create route: %v", err)
+	}
+	trace := &aiReplyTraceData{Runtime: json.RawMessage(`{
+		"pipeline":{
+			"intent":{"primaryIntent":"hotel_variable","subIntent":"pillow_product","needsResource":true,"resourceAction":"provide_pillow_product","resourceActions":["provide_pillow_product"]},
+			"replyPlan":{"taskPlans":[{"taskId":"task-pillow","intent":"hotel_variable","subIntent":"pillow_product","outputKind":"resource","needsResource":true,"resourceAction":"provide_pillow_product","output":"structured_resource_commit"}]}
+		}
+	}`)}
+	service := newReplyCommitService()
+	replies := service.buildStructuredVariableReplies(replyCommitInput{
+		Conversation: models.Conversation{ID: 199},
+		Message:      models.Message{Content: "这个枕头多少钱，有购买链接吗"},
+		Trace:        trace,
+	})
+	if len(replies) != 1 || replies[0].ResourceType != "pillow_product" || replies[0].MessageType != enums.IMMessageTypeShopProduct {
+		t.Fatalf("expected one shop product reply, got %#v", replies)
+	}
+	if strings.Join(replies[0].TaskIDs, ",") != "task-pillow" || replies[0].Lead == "" {
+		t.Fatalf("product reply lost lead or task ownership: %#v", replies[0])
+	}
+	if !strings.Contains(replies[0].Payload, `"product_id":"10001004185008"`) || !strings.Contains(replies[0].Payload, `"product_appid":"wxca8d4b8e8feedc2a"`) || !strings.Contains(replies[0].Payload, `"shop_info":{`) {
+		t.Fatalf("product reply lost controlled nested payload: %s", replies[0].Payload)
+	}
+	parts := appendStructuredResourceLeadTextParts(replies, nil)
+	if len(parts) != 1 || parts[0].Content != replies[0].Lead || strings.Join(parts[0].TaskIDs, ",") != "task-pillow" {
+		t.Fatalf("product lead must be committed before the card with the same task: %#v", parts)
+	}
+
+	rejected := service.buildStructuredVariableReplies(replyCommitInput{
+		Conversation: models.Conversation{ID: 199},
+		Message:      models.Message{Content: "送两个枕头到房间"},
+		Trace:        trace,
+	})
+	if len(rejected) != 0 {
+		t.Fatalf("room-service request must not produce a product card: %#v", rejected)
+	}
+}
+
 func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 	dbName := fmt.Sprintf("runtime_knowledge_resource_commit_%s_%d", strings.NewReplacer("/", "_").Replace(t.Name()), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{

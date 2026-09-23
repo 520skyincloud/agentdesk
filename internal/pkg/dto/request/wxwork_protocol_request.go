@@ -1,6 +1,7 @@
 package request
 
 import (
+	"bytes"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -54,6 +55,31 @@ type WxProtocolChatMsg struct {
 	AppInfo        string                 `json:"appinfo"`
 	ReferID        json.RawMessage        `json:"referid,omitempty"`
 	CDN            WxProtocolMediaPayload `json:"cdn"`
+}
+
+func (m *WxProtocolChatMsg) UnmarshalJSON(data []byte) error {
+	type wxProtocolChatMsgAlias WxProtocolChatMsg
+	decoded := struct {
+		wxProtocolChatMsgAlias
+		Content json.RawMessage `json:"content"`
+	}{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*m = WxProtocolChatMsg(decoded.wxProtocolChatMsgAlias)
+	raw := bytes.TrimSpace(decoded.Content)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	if raw[0] == '"' {
+		return json.Unmarshal(raw, &m.Content)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return err
+	}
+	m.Content = compact.String()
+	return nil
 }
 
 func (m *WxProtocolChatMsg) Normalize() {

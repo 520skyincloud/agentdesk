@@ -35,6 +35,7 @@ type structuredVariableReply struct {
 	MessageType  enums.IMMessageType
 	Content      string
 	Payload      string
+	Lead         string
 	TaskIDs      []string
 }
 
@@ -68,6 +69,7 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
 	textParts := buildTextCommitParts(input.Trace, replyText)
 	textParts = bindFallbackResourceTextParts(input.Trace, structuredReplies, textParts)
+	textParts = appendStructuredResourceLeadTextParts(structuredReplies, textParts)
 	if isManualResume {
 		textParts = append([]textCommitPart{{Content: manualResumeCustomerNotice}}, textParts...)
 		textParts = capTextCommitParts(textParts, 3)
@@ -116,6 +118,27 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 		return nil, err
 	}
 	return replyMessage, nil
+}
+
+func appendStructuredResourceLeadTextParts(structuredReplies []structuredVariableReply, parts []textCommitPart) []textCommitPart {
+	for _, structured := range structuredReplies {
+		lead := strings.TrimSpace(structured.Lead)
+		if lead == "" {
+			continue
+		}
+		duplicate := false
+		for _, part := range parts {
+			if strings.TrimSpace(part.Content) == lead {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		parts = append(parts, textCommitPart{Content: lead, TaskIDs: normalizeCommitTaskIDs(structured.TaskIDs)})
+	}
+	return parts
 }
 
 func containsInternalReplyProtocolShape(text string) bool {
@@ -389,6 +412,22 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 			}
 			appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(reply.MessageType), 0, "prepared", "")})
 			ret = append(ret, reply)
+		case "pillow_product":
+			resource, err := svc.WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(input.Message.Content)
+			if err != nil {
+				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeShopProduct), 0, "missing", err.Error())})
+				continue
+			}
+			reply := structuredVariableReply{
+				ResourceType: resourceType,
+				MessageType:  resource.MessageType,
+				Content:      resource.Content,
+				Payload:      resource.Payload,
+				Lead:         resource.Lead,
+				TaskIDs:      resourceCommitTaskIDsFromTrace(input.Trace, resourceType),
+			}
+			appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(reply.MessageType), 0, "prepared", "")})
+			ret = append(ret, reply)
 		}
 	}
 	return ret
@@ -539,6 +578,8 @@ func structuredVariableResourceTypesFromTrace(trace *aiReplyTraceData) []string 
 			add("mini_program")
 		case "phone":
 			add("phone")
+		case "pillow_product":
+			add("pillow_product")
 		}
 	}
 	return ret
@@ -552,6 +593,8 @@ func structuredVariableResourceTypeFromAction(action string) string {
 		return "mini_program"
 	case "provide_phone":
 		return "phone"
+	case "provide_pillow_product":
+		return "pillow_product"
 	default:
 		return ""
 	}
@@ -568,6 +611,8 @@ func structuredRunLogReplyText(structured structuredVariableReply) string {
 		return "[位置] " + strings.TrimSpace(structured.Content)
 	case enums.IMMessageTypeMiniProgram:
 		return "[小程序] " + strings.TrimSpace(structured.Content)
+	case enums.IMMessageTypeShopProduct:
+		return "[商品] " + strings.TrimSpace(structured.Content)
 	default:
 		return strings.TrimSpace(structured.Content)
 	}
@@ -714,6 +759,8 @@ func actionFromStructuredVariableResourceType(resourceType string) string {
 		return "provide_mini_program"
 	case "phone":
 		return "provide_phone"
+	case "pillow_product":
+		return "provide_pillow_product"
 	case "knowledge_image":
 		return "send_knowledge_image"
 	default:
@@ -1135,7 +1182,7 @@ func resourceCommitTaskIDsFromTrace(trace *aiReplyTraceData, resourceType string
 		taskResourceType := structuredVariableResourceTypeFromAction(task.ResourceAction)
 		if taskResourceType == "" {
 			switch strings.TrimSpace(task.SubIntent) {
-			case "location", "mini_program", "phone":
+			case "location", "mini_program", "phone", "pillow_product":
 				taskResourceType = strings.TrimSpace(task.SubIntent)
 			}
 		}

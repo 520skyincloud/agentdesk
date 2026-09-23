@@ -311,8 +311,8 @@ func allowedQueryArgs(action string, args map[string]string) map[string]string {
 		"recept_order_detail":      {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
 		"recept_order_by_phone":    {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
 		"renew_candidates":         {"currentReceptOrderId": {}, "reserveOrderNo": {}, "reserveName": {}, "reservePhone": {}, "pageNum": {}, "pageSize": {}, "hotelId": {}, "tenantId": {}},
-		"room_status":              {"keyword": {}, "startDate": {}, "endDate": {}, "hotelId": {}, "tenantId": {}, "buildingId": {}, "floorId": {}, "roomId": {}, "roomTypeId": {}, "homeStatus": {}},
-		"inventory":                {"beginTime": {}, "endTime": {}, "metrics": {}, "roomId": {}, "roomTypeId": {}, "hotelId": {}, "tenantId": {}},
+		"room_status":              {"keyword": {}, "buildName": {}, "floorName": {}, "roomIdList": {}, "homeStatusList": {}, "channelTypeList": {}, "linkStatus": {}, "hotelId": {}, "tenantId": {}},
+		"inventory":                {"beginTime": {}, "endTime": {}, "roomId": {}, "channelType": {}, "hotelTargetId": {}, "hotelTargetType": {}, "orderType": {}, "hourDuration": {}, "hotelId": {}, "tenantId": {}},
 		"member_info_by_phone":     {"phone": {}},
 		"member_benefits_by_grade": {"gradeId": {}, "gradeCode": {}},
 	}
@@ -358,8 +358,8 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 		if strings.TrimSpace(ret["endTime"]) == "" {
 			ret["endTime"] = ret["endDate"]
 		}
-		if strings.TrimSpace(ret["metrics"]) == "" {
-			ret["metrics"] = "sold,sellable,occupied,maintenance"
+		if strings.TrimSpace(ret["roomId"]) == "" {
+			ret["roomId"] = ret["roomTypeId"]
 		}
 	}
 	if action == "renew_candidates" {

@@ -263,6 +263,9 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 	if len(groups) == 0 {
 		return "", nil
 	}
+	if len(groups) == 1 && groups[0].EvidenceLocked {
+		return renderLockedReplyContent(groups[0])
+	}
 	raw := strings.TrimSpace(text)
 	envelope, parsed := parseGeneratedReplyParts(raw)
 	if !parsed {
@@ -1037,13 +1040,15 @@ func buildTextReplyTaskGroups(plan callbacks.ReplyPlanTraceData) []textReplyTask
 		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
 			evidenceLocked = true
 		}
+		externalProxyAction := isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
+		clarificationOnly := task.Intent == "interaction" && task.SubIntent == "clarify"
 		groups = append(groups, textReplyTaskGroup{
 			TaskID:              taskID,
 			Texts:               []string{text},
 			Facts:               replyFactRequirements(task.SupportedFacts),
-			StructuredRequired:  task.ReplyRequired || strings.TrimSpace(task.TaskID) != "" || len(task.SupportedFacts) > 0,
-			ExternalProxyAction: isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective),
-			ClarificationOnly:   task.Intent == "interaction" && task.SubIntent == "clarify",
+			StructuredRequired:  len(task.SupportedFacts) > 0 || externalProxyAction || clarificationOnly,
+			ExternalProxyAction: externalProxyAction,
+			ClarificationOnly:   clarificationOnly,
 			EvidenceLocked:      evidenceLocked,
 			SelectedLayer:       task.SelectedLayer,
 			AnswerText:          task.AnswerText,

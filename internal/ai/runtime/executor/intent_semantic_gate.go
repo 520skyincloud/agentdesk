@@ -718,7 +718,7 @@ func isMemberRuntimeSubIntent(subIntent string) bool {
 
 func semanticGateAllowedResourceAction(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "provide_phone", "provide_location", "provide_mini_program":
+	case "provide_phone", "provide_location", "provide_mini_program", "provide_pillow_product":
 		return true
 	default:
 		return false

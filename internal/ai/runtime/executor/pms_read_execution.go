@@ -26,7 +26,7 @@ var (
 	runtimePMSExplicitDatePattern   = regexp.MustCompile(`(?P<year>20[0-9]{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
 	runtimePMSMonthDayPattern       = regexp.MustCompile(`(?P<month>1[0-2]|0?[1-9])月(?P<day>3[01]|[12][0-9]|0?[1-9])日?`)
 	runtimePMSDayOnlyPattern        = regexp.MustCompile(`(?P<day>3[01]|[12][0-9]|0?[1-9])(?:日|号)`)
-	runtimePMSTargetRoomPattern     = regexp.MustCompile(`(?:升级|升房|换房|换|改)(?:到|成|为)?\s*([^，。！？,.!?\n]{1,12}房)`)
+	runtimePMSTargetRoomPattern     = regexp.MustCompile(`(?:升级|升房|换房|换|改)(?:到|成|为|个)?\s*([^，。！？,.!?\n]{1,12})`)
 	runtimePMSLateClockPattern      = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*([01]?[0-9]|2[0-3])[:：]([0-5][0-9])`)
 	runtimePMSLateChinesePattern    = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*(?:(上午|下午|晚上|中午|凌晨)\s*)?([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?`)
 	runtimePMSPeriodCheckoutPattern = regexp.MustCompile(`(上午|下午|晚上|中午|凌晨)\s*([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?\s*退房`)
@@ -749,7 +749,11 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 		}
 	}
 	if match := runtimePMSTargetRoomPattern.FindStringSubmatch(combined); len(match) == 2 {
-		return strings.TrimSpace(match[1])
+		value := strings.TrimSpace(match[1])
+		for _, suffix := range []string{"就行", "可以", "吧", "吗"} {
+			value = strings.TrimSuffix(value, suffix)
+		}
+		return strings.TrimSpace(value)
 	}
 	return ""
 }
@@ -1138,7 +1142,7 @@ func isRuntimePMSReadOnlyAction(action string) bool {
 	switch strings.TrimSpace(action) {
 	case "reserve_order_detail", "reserve_order_by_phone",
 		"recept_order_detail", "recept_order_by_phone",
-		"renew_candidates", "room_status", "inventory",
+		"renew_candidates", "room_status", "inventory", "stay_room_availability",
 		"member_info_by_phone", "member_benefits_by_phone", "price_difference", "late_checkout_assessment":
 		return true
 	default:
@@ -1663,7 +1667,11 @@ func normalizeRuntimePMSRoomTypeText(text string) string {
 		}
 		b.WriteRune(r)
 	}
-	return b.String()
+	normalized := b.String()
+	for _, suffix := range []string{"房间", "房型", "房"} {
+		normalized = strings.TrimSuffix(normalized, suffix)
+	}
+	return normalized
 }
 
 func removePMSReadString(values []string, remove string) []string {
@@ -1736,6 +1744,339 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, message)
 	}
+	if answer := runtimePMSCustomerAnswer(*task, plan, result); answer != "" {
+		factIndex++
+		task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{
+			FactID:    fmt.Sprintf("P%dF%d", taskIndex+1, factIndex),
+			Aspect:    "pms_customer_answer",
+			Statement: answer,
+		})
+		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
+			answer = strings.TrimSpace(answer + "\n" + strings.TrimSpace(*task.AnswerText))
+		}
+		task.AnswerText = &answer
+	}
+}
+
+func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
+	switch plan.Scenario {
+	case pmsReadScenarioOrder:
+		return runtimePMSCustomerOrderAnswer(task, result)
+	case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade:
+		return runtimePMSCustomerRoomChoiceAnswer(task, plan, result)
+	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
+		return runtimePMSCustomerMemberAnswer(result)
+	default:
+		return ""
+	}
+}
+
+func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
+	stay, ok := runtimePMSCustomerStay(result)
+	if !ok {
+		return ""
+	}
+	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	checkIn := runtimePMSCustomerDateTime(firstRuntimePMSReadText(stay.data, "checkInTime", "checkInBusinessDate"))
+	checkOut := runtimePMSCustomerDateTime(firstRuntimePMSReadText(stay.data, "checkOutTime", "checkOutBusinessDate"))
+	roomType := firstNonEmpty(stay.roomName, strings.Join(runtimePMSOrderRoomNames(stay.data), "/"))
+	homeName := stay.homeName
+	amount := runtimePMSCustomerAmount(firstRuntimePMSReadText(stay.data, "payableAmount", "roomFee", "payAmount", "waitPayAmount"))
+	status := runtimePMSCustomerOrderStatus(stay.data)
+
+	switch {
+	case containsAny(text, []string{"退房", "离店"}) && checkOut != "":
+		return "查到了，您这笔订单是" + checkOut + "前退房。"
+	case containsAny(text, []string{"入住", "到店"}) && checkIn != "":
+		return "查到了，您这笔订单是" + checkIn + "入住。"
+	case containsAny(text, []string{"房号", "哪间房", "住哪"}) && homeName != "":
+		return "查到了，您当前安排的房号是" + homeName + "。"
+	case containsAny(text, []string{"多少钱", "金额", "费用", "房费"}) && amount != "":
+		return "查到了，您这笔订单的金额是" + amount + "。"
+	case (task.SubIntent == "order_status" || containsAny(text, []string{"状态", "成功了吗", "确认了吗"})) && status != "":
+		return "查到了，您这笔订单当前是" + status + "。"
+	}
+
+	fields := make([]string, 0, 5)
+	if roomType != "" {
+		fields = append(fields, "订的是"+roomType)
+	}
+	if homeName != "" {
+		fields = append(fields, "房号"+homeName)
+	}
+	if checkIn != "" {
+		fields = append(fields, checkIn+"入住")
+	}
+	if checkOut != "" {
+		fields = append(fields, checkOut+"前退房")
+	}
+	if amount != "" {
+		fields = append(fields, "订单金额"+amount)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return "查到了，您" + strings.Join(fields, "，") + "。"
+}
+
+func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
+	stay, hasStay := runtimePMSCustomerStay(result)
+	options := runtimePMSCustomerRoomOptions(result)
+	if !hasStay || len(options) == 0 {
+		return ""
+	}
+	currentRoom := firstNonEmpty(stay.roomName, strings.Join(runtimePMSOrderRoomNames(stay.data), "/"))
+	currentLabel := currentRoom
+	if stay.homeName != "" {
+		currentLabel += stay.homeName
+	}
+	targetText := runtimePMSTargetRoomTypeText(task)
+	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
+	if runtimePMSGenericRoomChoice(normalizedTarget) {
+		normalizedTarget = ""
+	}
+
+	if normalizedTarget != "" {
+		for _, option := range options {
+			if normalizeRuntimePMSRoomTypeText(option.name) != normalizedTarget {
+				continue
+			}
+			prefix := ""
+			if currentLabel != "" {
+				prefix = "您现在住的是" + currentLabel + "。"
+			}
+			if strings.TrimSpace(option.available) == "" {
+				return prefix + "我查到了" + option.name + "房型，但完整入住期间的可售数量还没返回，暂时不能确认有没有空房。"
+			}
+			if !runtimePMSPositiveAvailability(option.available) {
+				alternatives := runtimePMSAlternativeRoomNames(options, currentRoom, option.name, 3)
+				if len(alternatives) == 0 {
+					return prefix + option.name + "在您当前入住期间暂时没有可售房。"
+				}
+				return prefix + option.name + "在您当前入住期间暂时没有可售房，目前还可以看" + strings.Join(alternatives, "、") + "，您更想换哪一种？"
+			}
+			parts := []string{option.name + "在您当前入住期间还有房"}
+			if rooms := runtimePMSCustomerCandidateRooms(result, option.name, 3); len(rooms) > 0 {
+				parts = append(parts, "当前可选房间有"+strings.Join(rooms, "、"))
+			}
+			if price := runtimePMSCustomerPriceDifference(result); price != "" {
+				parts = append(parts, price)
+			} else if option.price != "" {
+				parts = append(parts, "当前房型价格为"+runtimePMSCustomerAmount(option.price))
+			} else {
+				parts = append(parts, "具体差价还需要进一步核对")
+			}
+			return prefix + strings.Join(parts, "，") + "。"
+		}
+	}
+
+	alternatives := runtimePMSAlternativeRoomNames(options, currentRoom, "", 3)
+	if len(alternatives) == 0 {
+		return ""
+	}
+	prefix := ""
+	if currentLabel != "" {
+		prefix = "您现在住的是" + currentLabel + "。"
+	}
+	verb := "换"
+	if plan.Scenario == pmsReadScenarioRoomUpgrade {
+		verb = "升级到"
+	}
+	return prefix + "当前完整入住期间可以" + verb + strings.Join(alternatives, "、") + "，您更想选哪一种？我再帮您核对具体房间和差价。"
+}
+
+type runtimePMSCustomerRoomOption struct {
+	id        string
+	name      string
+	available string
+	price     string
+}
+
+func runtimePMSCustomerRoomOptions(result pmsReadPlanResult) []runtimePMSCustomerRoomOption {
+	for _, step := range result.Steps {
+		if step.StepID != "inventory.stay" || (step.Status != pmsReadStepOK && step.Status != pmsReadStepPartial) {
+			continue
+		}
+		items, _ := step.Data.([]any)
+		expected, _ := runtimePMSStayDates(step.Args["beginTime"], step.Args["endTime"])
+		options := make([]runtimePMSCustomerRoomOption, 0, len(items))
+		for _, value := range items {
+			row, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := firstRuntimePMSReadText(row, "roomTypeName", "productName", "roomName")
+			if name == "" {
+				continue
+			}
+			options = append(options, runtimePMSCustomerRoomOption{
+				id: firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId"), name: name,
+				available: runtimePMSInventoryAvailability(row, expected), price: firstRuntimePMSReadText(row, "price"),
+			})
+		}
+		return options
+	}
+	return nil
+}
+
+func runtimePMSCustomerStay(result pmsReadPlanResult) (runtimePMSStayCandidate, bool) {
+	byStep := make(map[string]pmsReadStepResult, len(result.Steps))
+	for _, step := range result.Steps {
+		byStep[step.StepID] = step
+	}
+	candidates := runtimePMSStayCandidates(byStep, []string{"order.reserve", "order.recept"})
+	if len(candidates) != 1 {
+		return runtimePMSStayCandidate{}, false
+	}
+	return candidates[0], true
+}
+
+func runtimePMSGenericRoomChoice(value string) bool {
+	switch value {
+	case "", "吗", "吧", "可以", "其他", "别的", "另外", "另一", "随便", "都行", "其他的", "别的的":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimePMSAlternativeRoomNames(options []runtimePMSCustomerRoomOption, current, skip string, limit int) []string {
+	ret := make([]string, 0, limit)
+	for _, option := range options {
+		if option.name == "" || !runtimePMSPositiveAvailability(option.available) ||
+			normalizeRuntimePMSRoomTypeText(option.name) == normalizeRuntimePMSRoomTypeText(current) ||
+			normalizeRuntimePMSRoomTypeText(option.name) == normalizeRuntimePMSRoomTypeText(skip) {
+			continue
+		}
+		ret = appendIfMissing(ret, option.name)
+		if len(ret) >= limit {
+			break
+		}
+	}
+	return ret
+}
+
+func runtimePMSPositiveAvailability(value string) bool {
+	number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return err == nil && number > 0
+}
+
+func runtimePMSCustomerCandidateRooms(result pmsReadPlanResult, roomType string, limit int) []string {
+	for _, step := range result.Steps {
+		if step.StepID != "stay.room_availability" || (step.Status != pmsReadStepOK && step.Status != pmsReadStepPartial) {
+			continue
+		}
+		root, _ := step.Data.(map[string]any)
+		items, _ := root["candidates"].([]any)
+		ret := make([]string, 0, limit)
+		for _, value := range items {
+			candidate, ok := value.(map[string]any)
+			if !ok || normalizeRuntimePMSRoomTypeText(firstRuntimePMSReadText(candidate, "roomTypeName")) != normalizeRuntimePMSRoomTypeText(roomType) {
+				continue
+			}
+			if homeName := firstRuntimePMSReadText(candidate, "homeName"); homeName != "" {
+				ret = appendIfMissing(ret, homeName)
+			}
+			if len(ret) >= limit {
+				break
+			}
+		}
+		return ret
+	}
+	return nil
+}
+
+func runtimePMSCustomerPriceDifference(result pmsReadPlanResult) string {
+	for _, step := range result.Steps {
+		if step.StepID != "price.difference" || (step.Status != pmsReadStepOK && step.Status != pmsReadStepPartial) {
+			continue
+		}
+		root, _ := step.Data.(map[string]any)
+		assessment, _ := root["assessment"].(map[string]any)
+		if assessment == nil {
+			assessment = root
+		}
+		if firstRuntimePMSReadText(assessment, "status") != "exact" {
+			return ""
+		}
+		difference := firstRuntimePMSReadText(assessment, "difference")
+		if difference == "" {
+			return ""
+		}
+		value, err := strconv.ParseFloat(difference, 64)
+		if err != nil {
+			return "差价为" + runtimePMSCustomerAmount(difference)
+		}
+		switch {
+		case value > 0:
+			return "需要补" + runtimePMSCustomerAmount(difference)
+		case value < 0:
+			return "预计退回" + runtimePMSCustomerAmount(strings.TrimPrefix(difference, "-"))
+		default:
+			return "不需要补差价"
+		}
+	}
+	return ""
+}
+
+func runtimePMSCustomerMemberAnswer(result pmsReadPlanResult) string {
+	for _, step := range result.Steps {
+		if step.StepID != "member.info" && step.StepID != "member.benefits" {
+			continue
+		}
+		root, _ := step.Data.(map[string]any)
+		member, _ := root["member"].(map[string]any)
+		grade, _ := root["grade"].(map[string]any)
+		if member == nil {
+			member = root
+		}
+		gradeName := firstRuntimePMSReadText(member, "gradeName")
+		benefits := runtimePMSMemberBenefitTexts(grade)
+		if gradeName == "" && len(benefits) == 0 {
+			return ""
+		}
+		answer := "查到了"
+		if gradeName != "" {
+			answer += "，您当前是" + gradeName
+		}
+		if len(benefits) > 0 {
+			answer += "，可用权益包括" + strings.Join(benefits, "、")
+		}
+		return answer + "。"
+	}
+	return ""
+}
+
+func runtimePMSCustomerDateTime(value string) string {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", time.RFC3339} {
+		parsed, err := time.Parse(layout, value)
+		if err != nil {
+			continue
+		}
+		if parsed.Hour() == 0 && parsed.Minute() == 0 {
+			return fmt.Sprintf("%d月%d日", parsed.Month(), parsed.Day())
+		}
+		if parsed.Minute() == 0 {
+			return fmt.Sprintf("%d月%d日%d点", parsed.Month(), parsed.Day(), parsed.Hour())
+		}
+		return fmt.Sprintf("%d月%d日%02d:%02d", parsed.Month(), parsed.Day(), parsed.Hour(), parsed.Minute())
+	}
+	if date := normalizePMSReadDate(value); date != "" {
+		parsed, err := time.Parse("2006-01-02", date)
+		if err == nil {
+			return fmt.Sprintf("%d月%d日", parsed.Month(), parsed.Day())
+		}
+	}
+	return value
+}
+
+func runtimePMSCustomerAmount(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "元") {
+		return value
+	}
+	return value + "元"
 }
 
 func runtimePMSReadPlanStepByID(plan pmsReadPlan, stepID string) (pmsReadPlanStep, bool) {
@@ -1758,6 +2099,8 @@ func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.Reply
 		return plan.Scenario == pmsReadScenarioPrice || containsAny(text, []string{"差价", "补多少", "多少钱", "费用", "价格"})
 	case "room.status":
 		return plan.Scenario == pmsReadScenarioRoomStatus || containsAny(text, []string{"房态", "空净", "空脏", "住净", "住脏", "打扫", "清扫", "维修", "锁房"})
+	case "stay.room_availability":
+		return containsAny(text, []string{"具体房", "房号", "哪间", "可分配", "能安排"})
 	default:
 		return false
 	}
@@ -1792,6 +2135,8 @@ func runtimePMSReadFactStatement(plan pmsReadPlan, step pmsReadStepResult) strin
 		return runtimePMSPriceFact(step.Data)
 	case "room.status":
 		return runtimePMSRoomStatusFact(step.Data)
+	case "stay.room_availability":
+		return runtimePMSStayRoomAvailabilityFact(step.Data)
 	case "renew.candidates":
 		return runtimePMSRenewCandidateFact(step.Data)
 	case "late_checkout.assessment":
@@ -2141,6 +2486,68 @@ func runtimePMSRoomStatusFact(data any) string {
 	return "PMS 当前房态：" + strings.Join(parts, "；") + "。"
 }
 
+func runtimePMSStayRoomAvailabilityFact(data any) string {
+	root, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	status := firstRuntimePMSReadText(root, "status")
+	startDate := firstRuntimePMSReadText(root, "startDate")
+	endDate := firstRuntimePMSReadText(root, "endDate")
+	candidateCount := firstRuntimePMSReadText(root, "candidateCount")
+	readyNowCount := firstRuntimePMSReadText(root, "readyNowCount")
+	reason := firstRuntimePMSReadText(root, "reason")
+	roomNames := make([]string, 0, 6)
+	items, _ := root["candidates"].([]any)
+	for _, value := range items {
+		candidate, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		roomTypeName := firstRuntimePMSReadText(candidate, "roomTypeName")
+		homeName := firstRuntimePMSReadText(candidate, "homeName")
+		if homeName == "" {
+			continue
+		}
+		label := strings.TrimSpace(roomTypeName + " " + homeName)
+		roomNames = append(roomNames, label)
+		if len(roomNames) >= 6 {
+			break
+		}
+	}
+	rangeText := strings.TrimSpace(startDate + "至" + endDate)
+	switch status {
+	case pms.StayRoomAvailabilityAvailable:
+		parts := []string{"PMS 已逐间核对" + rangeText + "内返回的订单入住和离店区间"}
+		if candidateCount != "" {
+			parts = append(parts, "找到"+candidateCount+"间全程无占用冲突且未锁房、未维修的候选房")
+		}
+		if len(roomNames) > 0 {
+			parts = append(parts, "候选为"+strings.Join(roomNames, "、"))
+		}
+		if readyNowCount != "" {
+			parts = append(parts, "其中当前空净"+readyNowCount+"间")
+		}
+		return strings.Join(parts, "，") + "。这是只读可分配评估，尚未锁房或排房。"
+	case pms.StayRoomAvailabilityUnavailable:
+		if reason == "" {
+			reason = "未找到全程无占用冲突的具体房间"
+		}
+		return "PMS 已逐间核对" + rangeText + "内返回的订单区间，" + reason + "。"
+	case pms.StayRoomAvailabilityPartial:
+		parts := []string{"PMS 对" + rangeText + "的具体房间核对不完整"}
+		if reason != "" {
+			parts = append(parts, reason)
+		}
+		if len(roomNames) > 0 {
+			parts = append(parts, "当前仅能看到候选"+strings.Join(roomNames, "、"))
+		}
+		return strings.Join(parts, "，") + "，不能据此确认整个入住区间可分配。"
+	default:
+		return ""
+	}
+}
+
 func runtimePMSRenewCandidateFact(data any) string {
 	root, ok := data.(map[string]any)
 	if !ok {
@@ -2222,6 +2629,8 @@ func runtimePMSReadMissingAspect(value string) string {
 		return "最终差价暂未确认"
 	case "room.status":
 		return "当前房态暂未确认"
+	case "stay.room_availability":
+		return "完整入住区间的具体可分配房号暂未确认"
 	case "renew.candidates":
 		return "续住候选暂未确认"
 	default:

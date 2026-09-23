@@ -2,6 +2,26 @@
 
 本文件用于换电脑后继续当前 Codex 会话和 AgentDesk 开发。
 
+## 2026-09-23 HPMS 文档复核与完整入住区间房号计算
+
+- 重新逐字段核对三份原始文档：订单/房态/房情与批量改价、续住与手机号查单、会员只读查询。
+  `channelOrderNumber` 只在订单详情响应出现；实时房态 `keyword` 只写“订单号”，未明确渠道订单号，
+  因此只新增 `DeferredOperations.QueryOrderByChannelNumber` 契约，不注册工具、不发 HTTP 请求。
+- 新增只读 `stay_room_availability`：读取实时房态 `homeCardList`，合并每个房间的
+  `reserveOrderInfoList/checkInOrderInfoList`，按 `[checkInTime, checkOutTime)` 计算客户完整入住
+  期间是否冲突，排除锁房和维修房，并可排除客户自己的预订单/接待单占用。
+- 该计算不锁房、不排房。实时房态未来订单覆盖约 30 天；超出范围、订单时间缺失或房卡不完整时
+  返回 `partial`。普通升房/换房仍可使用房型库存回答，只有客户明确问具体房号、哪间或可分配房时，
+  具体房号查询失败才计入当前 Task 缺口。
+- 临街、安静、靠电梯等属性没有 PMS 正式字段，继续只按知识库回答，不根据楼层或房号推断。
+- 改房型、排房、在住换房、延迟退房只新增未注册的编译期 Adapter 契约。上下文仅使用已存在的
+  `hotelId/reserveOrderId/receptOrderId/roomId/homeId/checkInTime/checkOutTime/orderStatus/homeStatus/controlStatus`；
+  PMS 方补齐 endpoint、method、请求 DTO、操作原因、幂等键、版本/并发冲突、成功响应和回读规则前
+  不得启用。当前无 model、Migration、DTO、外部 API、数据库、Outbox、企微协议或 PMS 写入变化。
+- 聚焦验证连续两遍通过：
+  `go test -p=1 ./internal/pms ./internal/ai/runtime/tools ./internal/ai/runtime/executor -count=2`。
+  并行合并时需保留 `customer-audit` 对本文件的追加内容；`ai-billing` 无字段或计费语义影响。
+
 ## 2026-09-23 PMS 只读与回复链路结构收口
 
 ### 目标与文件
@@ -1198,3 +1218,16 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 双轮验证通过：`go test -p=1 ./internal/pms -count=2`、`go test -p=1 ./internal/ai/runtime/tools -count=2`、`go test -p=1 ./internal/ai/runtime/executor -count=2`、`go test -p=1 ./internal/ai/runtime/... -count=2`，以及 `git diff --check`。并发聚焦路径另通过 `go test -race ... -count=2`。
 - 并行影响：`customer-audit` 可能继续追加本文件，合并时保留双方段落；`ai-billing` 无字段和计费语义变化。建议本轮回复链路提交先独立 review，再合并其他同时修改 Intent/Judge/人工路由的提交。
 - 回滚边界：程序可回到部署前 release；数据库、消息、知识库和“薇薇2”不回滚。PMS 写能力始终关闭，不存在需要逆向撤销的 PMS 操作。
+
+## 2026-09-23 客户真实需求连续对话收口
+
+- 目标：修复其风会话中“个人退房时间被答成通用政策、查查我的丢上下文、查到订单后又说没查到、PMS 原始信息倾倒、换房不主动给选择、沐阳不带房字无法识别、枕头购买没有商品卡”等问题。
+- JEV 增加同 session 最近唯一业务 Task 上下文；只用于“查查我的、就是这个、那你回答”等真实省略续问，多业务题时不猜。成功 PMS RunLog 同时恢复 Intent/ReplyPlan 中的手机号和订单定位。
+- “我什么时候退房”进入个人订单查询；“你们有会员吗”走通用知识，“我是会员有啥优惠”走个人会员查询并复用已确认手机号。
+- 预订单和接待单按关联 ID/入住区间合并成一次住宿，客户侧只输出当前问题所需字段。完整结果不再追加通用缺失话术，也不展示 PMS 名称、内部状态码、订单 ID 或操作免责声明。
+- 换房未指定房型时排除当前房型和零库存，主动提供真实可选房型；指定“沐阳”等不带“房”字的真实房型时，核对完整入住期库存、候选房号和差价。价格或库存缺失时明确说明未知，不把空值当成免费或无房。
+- 单个已锁定 Judge/PMS 答案直接使用服务端内容；单个普通无事实 Task 可返回自然文本。多 Task、工具调用结果和事实覆盖仍保持严格 `replyParts` 协议。
+- 枕头购买新增 `provide_pillow_product -> pillow_product -> shop_product` 资源链，复用企微现有 Outbox 富媒体发送；商品 payload 来自其风历史真实 `content_type=597` 卡片。送/换/加枕头及脏、坏、不舒服仍走客房服务，夸赞枕头不自动营销。
+- 企微入站 DTO 兼容字符串和对象型 `content`，597 商品卡完整保留商品与店铺协议字段。无数据库、Migration、外部 API、WebSocket、计费或 PMS 写入变化；`allowWrite=false` 保持不变。
+- 双轮通过：`go test -p=1 ./internal/ai/runtime/executor ./internal/pms ./internal/ai/runtime/tools -count=2`；枕头 DTO、Service、Intent、Commit 聚焦测试连续两轮通过；`internal/services` 全包单轮通过。全包 `-count=2` 会触发既有测试共享数据库的重复初始化失败，本轮未修改这些无关测试。
+- 并行影响：`customer-audit` 同样修改 `intent_model_detector.go`，后续合并需人工保留双方变更；`ai-billing` 无计费语义变化。部署仅更新 test-2，程序异常回退 release，不回滚数据库、消息或“薇薇/薇薇2”。

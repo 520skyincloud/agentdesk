@@ -244,6 +244,7 @@ func detectRuntimeIntentWithModel(ctx context.Context, req RunInput, history ada
 
 func postprocessRuntimeModelIntent(intent callbacks.IntentTraceData, req RunInput, history adapter.HistoryBuildResult, configs []models.ReplyIntentConfig) callbacks.IntentTraceData {
 	intent = normalizeModelIntentTrace(intent, req, history, configs)
+	intent = applyRuntimeCustomerScenarioIntentCorrections(intent)
 	intent = applyRuntimePMSRequiredSlotPreflight(intent, runtimePMSSessionLocatorForRequest(req, history))
 	intent = retainRuntimeMemberQueryTool(intent)
 	return syncRuntimeIntentTraceMetadata(intent, configs)
@@ -555,34 +556,14 @@ func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildRes
 
 func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocator {
 	locator := runtimePMSSessionLocator{}
-	if req.Conversation.ID <= 0 || sqls.DB() == nil {
-		return locator
-	}
-	cnd := sqls.NewCnd().Eq("conversation_id", req.Conversation.ID).Desc("id").Limit(20)
-	if req.UserMessage.ID > 0 {
-		cnd.Lt("message_id", req.UserMessage.ID)
-	}
-	logs := services.AgentRunLogService.Find(cnd)
-	for _, log := range logs {
-		if strings.TrimSpace(log.FinalStatus) != "completed" || strings.TrimSpace(log.TraceData) == "" {
+	for _, recent := range runtimeRecentRunTraces(req) {
+		if strings.TrimSpace(recent.Log.FinalStatus) != "completed" {
 			continue
 		}
-		if req.AIAgent.ID > 0 && log.AIAgentID != req.AIAgent.ID {
+		if !runtimeTraceHasSuccessfulPMSRead(recent.Runtime) {
 			continue
 		}
-		if req.UserMessage.SessionNo > 0 {
-			source := services.MessageService.Get(log.MessageID)
-			if source == nil || source.SessionNo != req.UserMessage.SessionNo {
-				continue
-			}
-		}
-		var projection struct {
-			Runtime callbacks.RuntimeTraceData `json:"runtime"`
-		}
-		if json.Unmarshal([]byte(log.TraceData), &projection) != nil || !runtimeTraceHasSuccessfulPMSRead(projection.Runtime) {
-			continue
-		}
-		candidate := runtimePMSSessionLocatorFromTrace(projection.Runtime)
+		candidate := runtimePMSSessionLocatorFromTrace(recent.Runtime)
 		if candidate.Phone != "" || candidate.OrderLocator != "" {
 			return candidate
 		}
@@ -593,7 +574,10 @@ func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocat
 func runtimeTraceHasSuccessfulPMSRead(trace callbacks.RuntimeTraceData) bool {
 	hasSuccessfulCall := false
 	for _, item := range trace.Tools.Items {
-		if strings.TrimSpace(item.ToolCode) == toolx.BuiltinPMSQuery.Code && strings.TrimSpace(item.Status) == "ok" {
+		code := toolx.NormalizeToolCodeAlias(strings.TrimSpace(item.ToolCode))
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if (code == toolx.BuiltinPMSQuery.Code || strings.TrimSpace(item.ToolName) == toolx.BuiltinPMSQuery.Name) &&
+			(status == "ok" || status == "partial") {
 			hasSuccessfulCall = true
 			break
 		}
@@ -610,11 +594,42 @@ func runtimePMSSessionLocatorFromTrace(trace callbacks.RuntimeTraceData) runtime
 			continue
 		}
 		candidate := runtimePMSMergeLocatorText(runtimePMSSessionLocator{}, strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+		if intentTask := runtimePMSMatchingTraceIntentTask(task, trace.Pipeline.Intent.IntentTasks); intentTask != nil {
+			candidate = runtimePMSMergeLocatorText(candidate, strings.Join([]string{intentTask.Text, intentTask.ResolvedText}, "\n"))
+			for _, entity := range intentTask.Entities {
+				candidate = runtimePMSMergeLocatorText(candidate, entity.Text)
+			}
+		}
 		if candidate.Phone != "" || candidate.OrderLocator != "" {
 			return candidate
 		}
 	}
 	return locator
+}
+
+func runtimePMSMatchingTraceIntentTask(replyTask callbacks.ReplyTaskPlanTraceData, tasks []callbacks.IntentTaskTraceData) *callbacks.IntentTaskTraceData {
+	matched := -1
+	for index := range tasks {
+		task := &tasks[index]
+		if !isPMSRuntimeSubIntent(task.SubIntent) || strings.TrimSpace(task.SubIntent) != strings.TrimSpace(replyTask.SubIntent) {
+			continue
+		}
+		if runtimePMSStringSlicesEqual(task.SourceRefs, replyTask.SourceRefs) ||
+			runtimePMSNormalizedTaskText(task.Text) == runtimePMSNormalizedTaskText(firstNonEmptyReplyTaskText(replyTask.OriginalText, replyTask.Text)) ||
+			runtimePMSNormalizedTaskText(task.ResolvedText) == runtimePMSNormalizedTaskText(replyTask.ResolvedText) {
+			if matched >= 0 {
+				return nil
+			}
+			matched = index
+		}
+	}
+	if matched >= 0 {
+		return &tasks[matched]
+	}
+	if len(tasks) == 1 && isPMSRuntimeSubIntent(tasks[0].SubIntent) {
+		return &tasks[0]
+	}
+	return nil
 }
 
 func runtimeTraceSentPMSTaskIDs(trace callbacks.RuntimeTraceData) map[string]struct{} {
@@ -2177,6 +2192,8 @@ func normalizeHotelVariableResourceAction(action string, resourceType string, su
 		return "location", action
 	case "send_miniprogram", "provide_mini_program":
 		return "mini_program", "provide_mini_program"
+	case "provide_pillow_product":
+		return "pillow_product", action
 	case "provide_store_group":
 		return "store_group", action
 	}
@@ -2191,6 +2208,8 @@ func normalizeHotelVariableResourceAction(action string, resourceType string, su
 		return resourceType, "provide_location"
 	case "mini_program":
 		return resourceType, "provide_mini_program"
+	case "pillow_product":
+		return resourceType, "provide_pillow_product"
 	default:
 		return "store_variable", "provide_store_variable"
 	}
@@ -2490,6 +2509,8 @@ func normalizeHotelVariableResourceType(resourceType string) string {
 		return "location"
 	case "mini_program", "miniprogram", "miniProgram", "checkin_miniprogram", "send_miniprogram":
 		return "mini_program"
+	case "pillow_product", "shop_product", "hotel_pillow_product":
+		return "pillow_product"
 	case "store_group", "room_group":
 		return "store_group"
 	default:

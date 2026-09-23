@@ -234,8 +234,11 @@ func TestClientInventoryMapsToolDatesToHPMSParameters(t *testing.T) {
 		if q.Get("beginTime") != "2026-09-14" || q.Get("endTime") != "2026-09-15" {
 			t.Fatalf("unexpected date query: %s", r.URL.RawQuery)
 		}
-		if q.Get("metrics") != "sold,sellable,occupied,maintenance" {
-			t.Fatalf("unexpected metrics query: %s", r.URL.RawQuery)
+		if q.Get("metrics") != "" {
+			t.Fatalf("undocumented metrics query must not be forwarded: %s", r.URL.RawQuery)
+		}
+		if q.Get("roomId") != "ROOM-2" || q.Get("roomTypeId") != "" {
+			t.Fatalf("tool room type alias was not mapped to documented roomId: %s", r.URL.RawQuery)
 		}
 		if q.Get("startDate") != "" || q.Get("endDate") != "" {
 			t.Fatalf("legacy date names must not be forwarded: %s", r.URL.RawQuery)
@@ -246,8 +249,9 @@ func TestClientInventoryMapsToolDatesToHPMSParameters(t *testing.T) {
 
 	client := NewClient(config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
 	if _, err := client.Query(context.Background(), "inventory", map[string]string{
-		"startDate": "2026-09-14",
-		"endDate":   "2026-09-15",
+		"startDate":  "2026-09-14",
+		"endDate":    "2026-09-15",
+		"roomTypeId": "ROOM-2",
 	}); err != nil {
 		t.Fatal(err)
 	}

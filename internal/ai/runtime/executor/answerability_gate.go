@@ -3593,6 +3593,8 @@ func buildHotelVariableInstructionFromInstance(instance *models.WxWorkProtocolIn
 			parts = append(parts, "酒店变量-入住小程序："+buildMiniProgramResourceContext(instance))
 		case "phone":
 			parts = append(parts, "酒店变量-门店电话："+buildPhoneResourceContext(instance))
+		case "pillow_product":
+			parts = append(parts, "酒店变量-同款枕头商品：系统会发送受控微信小店商品卡；不要编造商品链接、商品编号或价格。")
 		default:
 			parts = append(parts, "酒店变量："+resourceType+" 未识别到可用变量动作，不能编造具体值。")
 		}
@@ -3626,6 +3628,8 @@ func requestedHotelVariableResourceTypes(currentText string, intent callbacks.In
 			add("mini_program")
 		case "provide_phone":
 			add("phone")
+		case "provide_pillow_product":
+			add("pillow_product")
 		default:
 			resourceType := strings.TrimSpace(intent.ResourceType)
 			add(resourceType)
@@ -3752,6 +3756,8 @@ func buildHotelVariableDirectReply(instance *models.WxWorkProtocolInstance, inte
 			parts = append(parts, buildMiniProgramDirectReply(instance))
 		case "phone":
 			parts = append(parts, buildPhoneDirectReply(instance))
+		case "pillow_product":
+			parts = append(parts, "这是我们酒店同款，您可以先看看，需要的话再下单就好。")
 		}
 	}
 	return strings.Join(nonEmptyStrings(parts), "\n")
@@ -3770,6 +3776,8 @@ func hotelVariableResourceTypeFromIntent(intent callbacks.IntentTraceData) strin
 		return "mini_program"
 	case "provide_phone":
 		return "phone"
+	case "provide_pillow_product":
+		return "pillow_product"
 	}
 	for _, value := range []string{intent.ResourceType, intent.SubIntent} {
 		switch strings.TrimSpace(value) {
@@ -3779,6 +3787,8 @@ func hotelVariableResourceTypeFromIntent(intent callbacks.IntentTraceData) strin
 			return "mini_program"
 		case "phone":
 			return "phone"
+		case "pillow_product":
+			return "pillow_product"
 		}
 	}
 	return ""
@@ -3792,6 +3802,8 @@ func hotelVariableResourceTypeFromAction(action string) string {
 		return "mini_program"
 	case "provide_phone":
 		return "phone"
+	case "provide_pillow_product":
+		return "pillow_product"
 	default:
 		return ""
 	}

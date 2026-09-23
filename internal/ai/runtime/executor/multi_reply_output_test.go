@@ -103,6 +103,31 @@ func TestDeclinedKnowledgeHandoffAnswerIsLockedWithoutKnowledgeFacts(t *testing.
 	}
 }
 
+func TestSingleLockedAnswerDoesNotDependOnModelReplyPartsFormatting(t *testing.T) {
+	answer := "查到了，您这笔订单是9月25日12点前退房。"
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail", OutputKind: "text", ReplyRequired: true,
+		AnswerText:     &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: "pms_customer_answer", Statement: answer}},
+	}}}
+	for _, raw := range []string{"普通文本", `{not-json`, `{"replyParts":[]}`} {
+		got, err := normalizeGeneratedReplyPartsResult(raw, plan, true)
+		if err != nil || got != answer {
+			t.Fatalf("locked server answer must survive model formatting: raw=%q got=%q err=%v", raw, got, err)
+		}
+	}
+}
+
+func TestSingleOrdinaryTaskAllowsPlainTextEvenWhenItHasATaskID(t *testing.T) {
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "interaction", SubIntent: "smalltalk", OutputKind: "text", ReplyRequired: true,
+	}}}
+	got, err := normalizeGeneratedReplyPartsResult("好的，您接着说。", plan, false)
+	if err != nil || got != "好的，您接着说。" {
+		t.Fatalf("ordinary single task should not require internal JSON: got=%q err=%v", got, err)
+	}
+}
+
 func TestJudgeOwnsProxySelfHelpAndPartialExplanation(t *testing.T) {
 	empty, address := "", "收货地址填写南七店加楼层房间号。"
 	partial := "酒店有外卖机器人。不好意思，能否送到房门口还不能确认。"

@@ -515,13 +515,20 @@ Generate 输入必须已经包含 Task 级事实和缺失项。它可以把事�
 → 输出可行方案
 ```
 
-当前接口可以支持房型级可售判断和当天房态，但没有专用“完整入住区间具体房号可分配”接口。因此第一版只能说：
+现有接口没有专用“完整入住区间具体房号可分配”端点，但实时房态已经返回每个具体房间及其
+预订单、在住单的入住/离店区间。因此当前实现按房间执行只读组合计算：
 
 ```text
-当前查询到某房型在相应日期有可售库存，具体房号需以门店最终排房为准。
+实时房态 homeCardList
+→ 排除锁房、维修房
+→ 合并 reserveOrderInfoList/checkInOrderInfoList
+→ 用 [checkInTime, checkOutTime) 检查完整入住区间冲突
+→ 返回全程无冲突的候选 homeId/homeName
 ```
 
-不能根据今天空净房推断整个入住期间同一房号可用。
+该结果不代表锁房或排房。客户自己的当前订单可从占用区间中排除；其他订单时间缺失、查询日期
+超出实时房态未来约 30 天覆盖范围或 PMS 未返回完整房卡时，结果必须标记 `partial`，不能确认
+具体房号。临街、安静、靠电梯等偏好不从楼层或房号推断，继续使用知识库。
 
 ### 8.6 差价评估
 
@@ -581,15 +588,14 @@ ok / empty / ambiguous / unavailable / unsupported
 
 ## 9. HPMS 与会员接口对照
 
-原始附件位于微信临时目录，当前已被系统清理，无法再次直接打开。当前对照依据是：
+2026-09-23 已重新读取用户提供的三份原始接口文档：
 
-1. 已提交的 HPMS 端点、参数白名单和响应投影。
-2. 根据接口文档编写的单元测试与真实联调结果。
-3. `docs/design/pms-service-recovery-active-operations.md`。
-4. `docs/design/pms-frontend-visible-fields.md`。
-5. `docs/design/pms-service-recovery-active-operations-api-requirements.md`。
+1. `HPMS订单房态房情与批量改价接口文档.md`。
+2. `HPMS续住与手机号查询订单详情接口文档.md`。
+3. `member-open-query-api.md`。
+4. 已提交的 HPMS 端点、参数白名单、响应投影和对应单元测试。
 
-正式实施前应把四份原始接口文档重新保存到仓库外的受控参考目录，逐字段做最后一次签字核对；在此之前不猜新端点或字段。
+未在上述三份文档出现的 endpoint、参数或写操作 DTO 仍不得猜测。
 
 | 文档能力 | 当前动作/端点 | 当前状态 | 已确认缺口 |
 | --- | --- | --- | --- |
@@ -599,8 +605,8 @@ ok / empty / ambiguous / unavailable / unsupported
 | 手机号查当前接待单 | `recept_order_by_phone` | 已接入 | 单接口失败时会影响整项回答，需要部分结果保留 |
 | 会员/协议客户号查当前订单 | 两个 `detailByPhone` 的 `customerNo` | 已接入 | 客户侧仍需明确来源，不能拿等级 ID 冒充客户编号 |
 | 当前有效订单关联字段 | 订单响应中的预订单/接待单 ID | 已投影 | 需要统一去重与唯一订单选择规则 |
-| 实时房态 | `room_status` | 已接入并真实通过 | 只代表当前房态，不能替代完整入住区间可分配校验 |
-| 房型库存/房情 | `inventory` | 端点和参数已接入 | 运行时未保证传日期；真实需求测试失败 |
+| 实时房态 | `room_status` | 已接入并真实通过 | 返回具体房卡及当前/未来订单区间；覆盖边界约为未来 30 天 |
+| 房型库存/房情 | `inventory` | 已接入并强制传有效日期 | `roomTypeId` 在 HPMS 请求中映射为文档字段 `roomId` |
 | 库存价格 | `inventory.price/bookings[date].price` | 已投影 | 真实环境可能为空；空值不能解释为免费 |
 | 换单续住候选 | `renew_candidates` | 端点已接入 | 续住 Task 未稳定调用；工具 Schema 未暴露 `pageNum/pageSize` |
 | 续住提交 | `renew` | Client 已实现 | 当前只读运行时明确关闭，不属于本轮开放范围 |
@@ -608,8 +614,8 @@ ok / empty / ambiguous / unavailable / unsupported
 | 等级权益查询 | `member_benefits_by_grade`，由手机号组合调用 | 已接入并真实通过 | 权益配置不等于已履约，需要与订单/库存分开表达 |
 | 升房差价 | 本地 `price_difference` 组合订单详情与库存 | 代码已实现 | 查询计划没有稳定调用；目标房型 ID 缺少确定性解析 |
 | 批量改价 | 原文档写接口 | 未接入客服运行时 | 当前只读范围明确不做 |
-| 按渠道订单号查询 | 当前仅返回 `channelOrderNumber` | 没有可执行查询动作 | 若原文档没有独立查询端点，不得猜实现 |
-| 完整入住区间具体可分配房号 | 无独立已确认端点 | 未实现 | 当前房态加房型库存不能证明具体房号全程可用 |
+| 按渠道订单号查询 | 详情响应返回 `channelOrderNumber`；房态 `keyword` 仅泛称订单号 | 只预留 Adapter，暂不启用 | 没有独立端点，也未明确 `keyword` 支持渠道订单号 |
+| 完整入住区间具体可分配房号 | 本地 `stay_room_availability` 组合实时房态的具体房卡与订单区间 | 已实现只读计算 | 不锁房、不排房；覆盖不完整时返回 `partial` |
 | 临街、靠电梯、安静等属性 | 无正式字段 | 未实现 | 只能按知识库明确内容回答，不能从楼层推断 |
 | 延迟退房办理 | 无已开放写动作 | 未实现 | 只做只读条件评估，不宣称办理成功 |
 
@@ -623,6 +629,19 @@ ok / empty / ambiguous / unavailable / unsupported
 - `price`、`currency`、`consumeAmountType` 在真实响应中的位置。
 - 续住候选的分页默认值和 `allowedHomeHandleTypes`。
 - 会员权益中免费升房、折扣和有效期的正式字段表达。
+
+写操作预留只使用文档已经存在的上下文字段：
+
+- 酒店与订单：`hotelId`、`reserveOrderId`、`receptOrderId`、`orderStatus`。
+- 房型与房间：`roomId`（房型 ID）、`homeId`（具体房间 ID）、`homeStatus`、`controlStatus`。
+- 入住区间：`checkInTime`、`checkOutTime`。
+- 续住已有正式字段：`renewType`、`renewPriceMode`、`renewHomeHandleType`、`startTime`、
+  `endTime`、`newReserveOrderId`、`newReceptOrderId`、`reserveRemark`、`priceDetails`。
+- 批量改价只沿用原文档已定义字段；它不等同于普通改房、排房、换房或延退接口。
+
+改房型、排房、在住换房和延迟退房要真正开放，PMS 方仍必须分别提供：正式 endpoint 与 HTTP
+method、完整请求 DTO、必填项/枚举、操作原因、幂等键、订单与房间版本号、并发冲突错误、成功
+响应、失败语义，以及执行后用哪个查询接口和哪些字段确认结果。补齐前只保留内部契约，不注册工具。
 
 ## 10. 知识检索与 Judge 优化
 
@@ -1053,6 +1072,8 @@ Generate 只组织已确认事实
 - 日期按客户原文顺序解析，支持完整日期、月日、日号、今晚、明晚和后天；“续住到某日”作为目标离店日处理，日期纠正只保留新值。
 - 目标房型只接受客户明确要换到或升级到的房型，不把当前房型或整句客户原话当成目标房型。
 - 库存按每个房型逐日校验完整入住区间，不把不同房型的零散日期拼成全程可售。
+- 具体房号按实时房态每个房卡的预订/在住区间检查完整入住期冲突，排除锁房和维修房；结果只读，
+  覆盖超出约 30 天或订单时间不完整时不确认。
 - 差价直接使用同轮已查询的订单和库存快照计算，不再二次调用订单和库存接口；同轮相同查询使用运行级缓存。
 - 订单客户事实同时读取根订单、`receptOrderList` 和 `reserveProductList` 中的客户侧白名单字段。
 - 混合知识/PMS Task 中，PMS 事实不能代替知识证据；知识不足只约束知识部分，已确认 PMS 事实继续回答。
@@ -1070,6 +1091,8 @@ Generate 只组织已确认事实
 
 - 只读 action allowlist 不包含 `renew`，续住只查询 `renew_candidates`。
 - 全链路没有调用 `Client.Renew`，没有改房、排房、换房、延退、改价或订单写入。
+- 渠道订单号查询、改房型、排房、在住换房和延迟退房仅有未注册的编译期 Adapter 契约，不存在
+  猜测 URL 或请求字段的 HTTP 实现。
 - PMS 原始响应先经过客户字段白名单投影；手机号、Token、证件、内部备注和接口原始错误不会进入客户回复。
 - 库存只表示查询时事实，不代表锁房；会员等级不等于免费升房；价格缺失不解释为免费。
 

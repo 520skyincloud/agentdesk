@@ -891,6 +891,9 @@ func (s *wxWorkProtocolService) resolveMessageType(msgType int) enums.IMMessageT
 }
 
 func (s *wxWorkProtocolService) resolveInboundMessageType(msg request.WxProtocolChatMsg) enums.IMMessageType {
+	if msg.ContentType == 597 {
+		return enums.IMMessageTypeShopProduct
+	}
 	if msg.ContentType == 6 || msg.Longitude != 0 || msg.Latitude != 0 {
 		return enums.IMMessageTypeLocation
 	}
@@ -915,6 +918,9 @@ func (s *wxWorkProtocolService) buildInboundMessageContent(instance *models.WxWo
 	}
 	if messageType == enums.IMMessageTypeMiniProgram {
 		return s.miniProgramMessageContent(msg), s.miniProgramMessagePayload(msg), nil
+	}
+	if messageType == enums.IMMessageTypeShopProduct {
+		return s.shopProductMessageContentAndPayload(msg)
 	}
 	if !isAssetBackedMessageType(messageType) {
 		if messageType == enums.IMMessageTypeLocation {
@@ -1202,6 +1208,25 @@ func (s *wxWorkProtocolService) miniProgramMessagePayload(msg request.WxProtocol
 	}
 	bytes, _ := json.Marshal(payload)
 	return string(bytes)
+}
+
+func (s *wxWorkProtocolService) shopProductMessageContentAndPayload(msg request.WxProtocolChatMsg) (string, string, error) {
+	raw := strings.TrimSpace(msg.Content)
+	if raw == "" {
+		return "", "", errorsx.InvalidParam("企微微信小店商品消息缺少 content")
+	}
+	content := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &content); err != nil {
+		return "", "", errorsx.InvalidParam("企微微信小店商品消息 content 不是有效 JSON")
+	}
+	title := firstNonBlank(strings.TrimSpace(fmt.Sprint(content["product_title"])), msg.Title, msg.Desc, "微信小店商品")
+	payloadBytes, err := json.Marshal(map[string]json.RawMessage{
+		"content": json.RawMessage(raw),
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return title, string(payloadBytes), nil
 }
 
 func (s *wxWorkProtocolService) locationMessageContent(msg request.WxProtocolChatMsg) string {

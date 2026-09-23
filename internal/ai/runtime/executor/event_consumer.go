@@ -32,6 +32,7 @@ func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.Agen
 		collector = callbacks.NewRuntimeTraceCollector()
 	}
 	suppressAssistantReply := false
+	sawToolCall := false
 	var protocolErr error
 	var executionErr error
 	for {
@@ -69,13 +70,14 @@ func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.Agen
 			}
 			// Tool-call events are intermediate output; usage was collected above.
 			if messageOutput.Message != nil && len(messageOutput.Message.ToolCalls) > 0 {
+				sawToolCall = true
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
 			replyText, err := normalizeGeneratedReplyPartsResult(
 				replyText,
 				collector.Data.Pipeline.ReplyPlan,
-				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff,
+				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff || sawToolCall,
 			)
 			if err == nil {
 				replyText, err = SanitizeGeneratedReplyText(replyText)

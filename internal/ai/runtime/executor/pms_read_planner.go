@@ -124,14 +124,17 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 			orderSteps = appendPMSReadOrderSteps(&plan, input, false)
 		}
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
+		appendPMSReadStayRoomAvailabilityStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioRoomUpgrade:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, false)
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
+		appendPMSReadStayRoomAvailabilityStep(&plan, input, orderSteps, false)
 		appendPMSReadMemberStep(&plan, input, false)
 		appendPMSReadPriceStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioRoomChange:
 		orderSteps := appendPMSReadOrderSteps(&plan, input, true)
 		appendPMSReadInventoryStep(&plan, input, orderSteps, pmsReadStayStartFields, pmsReadStayEndFields, true)
+		appendPMSReadStayRoomAvailabilityStep(&plan, input, orderSteps, false)
 		appendPMSReadRoomStatusStep(&plan, input, orderSteps, false)
 		appendPMSReadPriceStep(&plan, input, orderSteps, false)
 	case pmsReadScenarioPrice:
@@ -274,6 +277,39 @@ func appendPMSReadInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput, order
 		step.Bindings = append(step.Bindings, pmsReadBinding("endTime", orderSteps, endFields))
 	} else {
 		plan.Missing = append(plan.Missing, "inventoryEndDate")
+	}
+	if pmsReadStepCanResolveArgs(step) {
+		plan.Steps = append(plan.Steps, step)
+	}
+}
+
+func appendPMSReadStayRoomAvailabilityStep(plan *pmsReadPlan, input pmsReadPlanInput, orderSteps []string, required bool) {
+	if input.StartDate != "" && input.EndDate != "" && !validPMSReadDateRange(input.StartDate, input.EndDate) {
+		return
+	}
+	step := pmsReadPlanStep{
+		ID: "stay.room_availability", Action: "stay_room_availability",
+		Purpose: "按实时房态返回的具体房间及全部订单入住区间计算可分配房号", Required: required,
+		Args: map[string]string{}, RequiredArgs: []string{"beginTime", "endTime"},
+	}
+	if input.TargetRoomTypeID != "" {
+		step.Args["roomTypeId"] = input.TargetRoomTypeID
+	}
+	if input.StartDate != "" {
+		step.Args["beginTime"] = input.StartDate
+	} else if len(orderSteps) > 0 {
+		step.Bindings = append(step.Bindings, pmsReadBinding("beginTime", orderSteps, pmsReadStayStartFields))
+	}
+	if input.EndDate != "" {
+		step.Args["endTime"] = input.EndDate
+	} else if len(orderSteps) > 0 {
+		step.Bindings = append(step.Bindings, pmsReadBinding("endTime", orderSteps, pmsReadStayEndFields))
+	}
+	if len(orderSteps) > 0 {
+		step.Bindings = append(step.Bindings,
+			pmsReadBinding("excludeReserveOrderId", orderSteps, pmsReadReserveIDFields),
+			pmsReadBinding("excludeReceptOrderId", orderSteps, pmsReadReceptIDFields),
+		)
 	}
 	if pmsReadStepCanResolveArgs(step) {
 		plan.Steps = append(plan.Steps, step)

@@ -521,6 +521,9 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 			continue
 		}
 		missing := strings.Join(task.MissingAspects, "\n")
+		if strings.TrimSpace(missing) == "" {
+			return ""
+		}
 		switch {
 		case strings.Contains(missing, "目标房型") || strings.Contains(missing, "targetRoomType"):
 			return "请告诉我您想换到的具体房型，我再帮您查询差价。"

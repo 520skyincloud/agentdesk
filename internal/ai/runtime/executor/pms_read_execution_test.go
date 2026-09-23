@@ -301,16 +301,22 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 			"reserve_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
 				"reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
 			}}},
-			"inventory": {{Status: pmsReadStepOK, Data: []any{}}},
+			"inventory":              {{Status: pmsReadStepOK, Data: []any{}}},
+			"stay_room_availability": {{Status: pmsReadStepOK, Data: map[string]any{"status": "available"}}},
 		}}
 		input := pmsReadPlanInput{Scenario: pmsReadScenarioDateInventory, ReserveOrderID: "RES-1"}
 		results, _ := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		if len(results) != 2 || len(invoker.calls) != 2 {
+		if len(results) != 3 || len(invoker.calls) != 3 {
 			t.Fatalf("unexpected calls/results: calls=%#v results=%#v", invoker.calls, results)
 		}
-		inventory := invoker.calls[1]
-		if inventory.action != "inventory" || inventory.args["beginTime"] != "2026-09-22" || inventory.args["endTime"] != "2026-09-24" {
-			t.Fatalf("order dates were not bound into inventory: %#v", inventory)
+		var inventory *runtimePMSFakeCall
+		for index := range invoker.calls {
+			if invoker.calls[index].action == "inventory" {
+				inventory = &invoker.calls[index]
+			}
+		}
+		if inventory == nil || inventory.args["beginTime"] != "2026-09-22" || inventory.args["endTime"] != "2026-09-24" {
+			t.Fatalf("order dates were not bound into inventory: %#v", invoker.calls)
 		}
 	})
 
@@ -803,6 +809,59 @@ func TestRuntimePMSCustomerFactsStayFocusedOnTheCurrentDecision(t *testing.T) {
 	})
 }
 
+func TestRuntimePMSCustomerAnswerUsesTheCustomersActualGoal(t *testing.T) {
+	orderResult := pmsReadPlanResult{Steps: []pmsReadStepResult{
+		{StepID: "order.reserve", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "roomName": "儿童房", "checkInTime": "2026-09-23 14:00:00",
+			"checkOutTime": "2026-09-25 12:00:00", "payableAmount": "376",
+		}},
+		{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "roomName": "儿童房", "homeName": "V05",
+			"checkInTime": "2026-09-23 14:00:00", "checkOutTime": "2026-09-25 12:00:00",
+		}},
+	}}
+	checkout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我看看我什么时候退房"}, orderResult)
+	if checkout != "查到了，您这笔订单是9月25日12点前退房。" {
+		t.Fatalf("checkout answer was not projected to the customer goal: %q", checkout)
+	}
+	full := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我查一下订单"}, orderResult)
+	if full != "查到了，您订的是儿童房，房号V05，9月23日14点入住，9月25日12点前退房，订单金额376元。" {
+		t.Fatalf("order answer was not merged into one natural stay: %q", full)
+	}
+}
+
+func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *testing.T) {
+	result := pmsReadPlanResult{Steps: []pmsReadStepResult{
+		{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "roomName": "儿童房", "homeName": "V05",
+			"checkInTime": "2026-09-23 14:00:00", "checkOutTime": "2026-09-25 12:00:00",
+		}},
+		{StepID: "inventory.stay", Status: pmsReadStepOK, Args: map[string]string{"beginTime": "2026-09-23", "endTime": "2026-09-25"}, Data: []any{
+			map[string]any{"roomTypeId": "CHILD", "roomTypeName": "儿童房", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "1"}, "2026-09-24": map[string]any{"available": "1"}}},
+			map[string]any{"roomTypeId": "SUN", "roomTypeName": "沐阳", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "4"}, "2026-09-24": map[string]any{"available": "3"}}},
+			map[string]any{"roomTypeId": "ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "2"}, "2026-09-24": map[string]any{"available": "2"}}},
+		}},
+		{StepID: "stay.room_availability", Status: pmsReadStepOK, Data: map[string]any{"candidates": []any{
+			map[string]any{"roomTypeName": "沐阳", "homeName": "A302"},
+			map[string]any{"roomTypeName": "沐阳", "homeName": "A305"},
+		}}},
+		{StepID: "price.difference", Status: pmsReadStepOK, Data: map[string]any{"assessment": map[string]any{"status": "exact", "difference": "28"}}},
+	}}
+	plan := pmsReadPlan{Scenario: pmsReadScenarioRoomChange}
+	recommendation := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "换个其他房就行"}, plan, result)
+	for _, expected := range []string{"您现在住的是儿童房V05", "沐阳", "橙意", "您更想选哪一种"} {
+		if !strings.Contains(recommendation, expected) {
+			t.Fatalf("generic room change did not guide with real choices: %q missing %q", recommendation, expected)
+		}
+	}
+	targeted := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "换个沐阳"}, plan, result)
+	for _, expected := range []string{"沐阳在您当前入住期间还有房", "A302", "A305", "需要补28元"} {
+		if !strings.Contains(targeted, expected) {
+			t.Fatalf("targeted room change did not answer the actual request: %q missing %q", targeted, expected)
+		}
+	}
+}
+
 func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 	for _, target := range []string{"豪华大床房", " 豪华 大床房 "} {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
@@ -813,17 +872,19 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 				map[string]any{"roomTypeId": "ROOM-1", "roomTypeName": "大床房"},
 				map[string]any{"roomTypeId": "ROOM-2", "roomTypeName": "豪华大床房"},
 			}}},
+			"stay_room_availability":   {{Status: pmsReadStepOK, Data: map[string]any{"status": "available"}}},
 			"member_benefits_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"member": map[string]any{"gradeName": "金卡"}}}},
 		}}
 		input := pmsReadPlanInput{
 			Scenario: pmsReadScenarioRoomUpgrade, Phone: "13800138000", ReceptOrderID: "REC-1", TargetRoomTypeText: target,
 		}
 		results, plan := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		if len(results) != 4 || len(invoker.calls) != 3 {
-			t.Fatalf("upgrade must query order, inventory, member and price: plan=%#v calls=%#v results=%#v", plan, invoker.calls, results)
+		if len(results) != 5 || len(invoker.calls) != 4 {
+			t.Fatalf("upgrade must query order, inventory, specific rooms, member and price: plan=%#v calls=%#v results=%#v", plan, invoker.calls, results)
 		}
 		if !runtimePMSFakeCalled(invoker.calls, "recept_order_detail") || !runtimePMSFakeCalled(invoker.calls, "inventory") ||
-			!runtimePMSFakeCalled(invoker.calls, "member_benefits_by_phone") || runtimePMSFakeCalled(invoker.calls, "price_difference") {
+			!runtimePMSFakeCalled(invoker.calls, "stay_room_availability") || !runtimePMSFakeCalled(invoker.calls, "member_benefits_by_phone") ||
+			runtimePMSFakeCalled(invoker.calls, "price_difference") {
 			t.Fatalf("unexpected upgrade read sequence: %#v", invoker.calls)
 		}
 	}
@@ -1026,7 +1087,7 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 		if !handled || gotIntent.NeedsTool || gotPlan.TaskPlans[0].NeedsTool || containsString(gotIntent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 			t.Fatalf("handled PMS task must leave Generate without the tool: intent=%#v plan=%#v", gotIntent, gotPlan)
 		}
-		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || !containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
+		if len(gotPlan.TaskPlans[0].SupportedFacts) != 3 || !containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
 		instruction := buildRuntimePMSResolvedInstruction(gotPlan)
@@ -1286,7 +1347,7 @@ func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
 			intent := callbacks.IntentTraceData{NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code}, IntentTasks: []callbacks.IntentTaskTraceData{{SubIntent: test.subIntent, NeedsTool: true}}}
 			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{TaskID: "T1", Intent: "hotel_info", SubIntent: test.subIntent, OriginalText: "查一下 13800138000 的会员", NeedsTool: true, OutputKind: "text", ReplyRequired: true}}}
 			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, nil, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker)
-			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" || len(gotPlan.TaskPlans[0].SupportedFacts) != 1 {
+			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" || len(gotPlan.TaskPlans[0].SupportedFacts) != 2 {
 				t.Fatalf("member route was not executed deterministically: test=%#v calls=%#v plan=%#v", test, invoker.calls, gotPlan)
 			}
 		}

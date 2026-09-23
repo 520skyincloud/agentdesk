@@ -77,7 +77,7 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	action, ok := schema.Properties.Get("action")
-	if !ok || len(action.Enum) != 10 {
+	if !ok || len(action.Enum) != 11 {
 		t.Fatalf("unexpected read-only action schema: %#v", action)
 	}
 	for _, value := range action.Enum {
@@ -85,7 +85,7 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 			t.Fatalf("schema exposed an unsupported action: %#v", value)
 		}
 	}
-	for _, name := range []string{"phone", "roomTypeId", "metrics", "beginTime", "endTime"} {
+	for _, name := range []string{"phone", "roomTypeId", "metrics", "beginTime", "endTime", "excludeReserveOrderId", "excludeReceptOrderId"} {
 		if _, ok := schema.Properties.Get(name); !ok {
 			t.Fatalf("member query parameter missing: %s", name)
 		}
@@ -109,10 +109,9 @@ func TestPMSQueryToolPassesReadOnlyInventoryFilters(t *testing.T) {
 		}
 		query := r.URL.Query()
 		for key, want := range map[string]string{
-			"beginTime":  "2026-09-21",
-			"endTime":    "2026-09-23",
-			"roomTypeId": "ROOM-TYPE-1",
-			"metrics":    "sold,sellable",
+			"beginTime": "2026-09-21",
+			"endTime":   "2026-09-23",
+			"roomId":    "ROOM-TYPE-1",
 		} {
 			if got := query.Get(key); got != want {
 				t.Errorf("unexpected %s: got %q want %q", key, got, want)
@@ -120,6 +119,9 @@ func TestPMSQueryToolPassesReadOnlyInventoryFilters(t *testing.T) {
 		}
 		if query.Get("startDate") != "" || query.Get("endDate") != "" {
 			t.Errorf("tool date aliases must be normalized before forwarding: %s", r.URL.RawQuery)
+		}
+		if query.Get("roomTypeId") != "" || query.Get("metrics") != "" {
+			t.Errorf("undocumented inventory parameters must not be forwarded: %s", r.URL.RawQuery)
 		}
 		_, _ = w.Write([]byte(`{"code":200,"data":[]}`))
 	}))
@@ -148,6 +150,59 @@ func TestPMSQueryToolRejectsInventoryWithoutCompleteValidDates(t *testing.T) {
 		if !strings.Contains(got, `"status":"unavailable"`) || !strings.Contains(got, "入住和离店日期") {
 			t.Fatalf("invalid inventory dates must be blocked before HTTP: %s", got)
 		}
+	}
+}
+
+func TestPMSQueryToolStayRoomAvailabilityUsesRealRoomOrders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/admin-api/hpms/roomDetails/realTimeRoomStatus/select" {
+			t.Fatalf("unexpected PMS request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"date":"2026-09-23","list":[{"roomId":"ROOM-2","roomName":"高级大床房","homeCardList":[
+			{"homeId":"H-1501","homeName":"1501","homeStatus":"0017002","controlStatus":"0074001","reserveOrderInfoList":[]},
+			{"homeId":"H-1502","homeName":"1502","homeStatus":"0017002","controlStatus":"0074001","reserveOrderInfoList":[{"reserveOrderId":"OTHER","checkInTime":"2026-09-24 14:00:00","checkOutTime":"2026-09-26 12:00:00"}]},
+			{"homeId":"H-1503","homeName":"1503","homeStatus":"0017004","controlStatus":"0074001","checkInOrderInfoList":[{"reserveOrderId":"CURRENT","receptOrderId":"REC-CURRENT","checkInTime":"2026-09-22 14:00:00","checkOutTime":"2026-09-25 12:00:00"}]}
+			]}]}}`))
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{
+		"action":"stay_room_availability","roomTypeId":"ROOM-2",
+		"beginTime":"2026-09-23","endTime":"2026-09-25",
+		"excludeReserveOrderId":"CURRENT","excludeReceptOrderId":"REC-CURRENT"
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"status":"ok"`, `"candidateCount":2`, `"homeName":"1501"`, `"homeName":"1503"`} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("specific-room availability missing %s: %s", expected, got)
+		}
+	}
+	if strings.Contains(got, `"homeName":"1502"`) || strings.Contains(got, "OTHER") || strings.Contains(got, "REC-CURRENT") {
+		t.Fatalf("conflicting or internal order data leaked: %s", got)
+	}
+}
+
+func TestPMSQueryToolStayRoomAvailabilityKeepsCoverageBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"date":"2026-09-23","list":[{"roomId":"ROOM-2","roomName":"高级大床房","homeCardList":[
+			{"homeId":"H-1501","homeName":"1501","homeStatus":"0017002","controlStatus":"0074001"}
+			]}]}}`))
+	}))
+	defer server.Close()
+	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+
+	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{
+		"action":"stay_room_availability","roomTypeId":"ROOM-2",
+		"beginTime":"2026-10-22","endTime":"2026-10-25"
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"status":"ok"`) || !strings.Contains(got, `"coverageComplete":false`) || !strings.Contains(got, `"status":"partial"`) {
+		t.Fatalf("future coverage was overstated: %s", got)
 	}
 }
 
@@ -218,7 +273,7 @@ func TestPMSQueryToolPriceDifferenceUsesOnlyReadQueries(t *testing.T) {
 		case "/admin-api/hpms/changeInventory/query":
 			query := r.URL.Query()
 			if query.Get("beginTime") != "2026-09-21" || query.Get("endTime") != "2026-09-23" ||
-				query.Get("roomTypeId") != "ROOM-TYPE-2" || query.Get("metrics") != "sold,sellable" {
+				query.Get("roomId") != "ROOM-TYPE-2" || query.Get("roomTypeId") != "" || query.Get("metrics") != "" {
 				t.Fatalf("unexpected inventory query: %s", r.URL.RawQuery)
 			}
 			_, _ = w.Write([]byte(`{"code":0,"data":[{

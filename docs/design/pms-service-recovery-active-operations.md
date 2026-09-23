@@ -21,23 +21,36 @@ PMS 查询作为现有静态工具 `builtin/pms_query` 挂载，不新增 Agent 
 - 换单续住候选分页查询
 - 实时房态
 - 房情库存
+- 按实时房态中的具体房间及订单入住/离店区间，本地计算完整入住期间候选房号
 
 当前有效订单查询使用原有两个 `detailByPhone` 接口：`phone` 和
 `customerNo` 均为可选，但至少传一个；两者同时传入时由 PMS 做精确组合匹配。
 `customerNo` 表示会员编号或协议公司编号。该查询只作为测试环境的业务查询条件，
-不代表客户身份已验证；渠道订单号综合搜索、房间属性和普通改房/排房/换房/延迟
-退房接口仍未提供，因此只保留未来 Adapter 边界，不注册为可执行工具。
+不代表客户身份已验证。三份现有文档只在订单详情响应中返回 `channelOrderNumber`；实时
+房态的 `keyword` 虽支持“订单号”，但没有明确承诺支持渠道订单号精确查询，因此渠道订单号
+查询只保留 Adapter 契约，不注册工具、不发送 HTTP 请求。临街、安静、靠电梯等房间属性没有
+正式 PMS 字段，继续只按知识库回答。
 
-续住是本轮唯一受控写操作：工具先保存 10 分钟有效的续住预览，只有客户在同
-一会话发送明确确认后，服务端才调用文档中的 `renew` 接口，并读取接待单核对
-结果。`allowWrite=false` 时任何写请求都会被拒绝；重复确认复用已记录结果，
-不会再次提交。
+`stay_room_availability` 会读取实时房态返回的 `homeCardList`，对每个 `homeId/homeName`
+合并 `reserveOrderInfoList` 与 `checkInOrderInfoList` 的 `checkInTime/checkOutTime`，按
+`[checkIn, checkOut)` 判断客户完整入住区间是否冲突，并排除锁房、维修房。它只形成只读候选，
+不锁房、不排房；实时房态文档只覆盖当前房卡及未来约 30 天订单，超出覆盖范围或订单时间缺失时
+返回 `partial`，不得向客户确认具体房号可分配。
+
+续住文档提供了正式 `renew` 契约，但当前客服运行 allowlist 不包含 `renew`，只读取续住候选
+与库存；`allowWrite=false` 时任何写请求都会被拒绝。改房型、排房、在住换房和延迟退房没有
+正式 endpoint/method/request DTO，当前仅保留编译期 Adapter 契约，不注册为客户可执行工具。
 
 接口地址、认证信息和酒店 ID 从 `pms` 配置读取，也支持环境变量覆盖。工具结果会删除 Token、密码、身份证等敏感字段。
 
-白名单、实名认证、会员 ID 综合订单搜索、渠道订单号综合搜索、房间属性、排房、
-换房、改房型、延迟退房、改价明细和独立写操作结果查询接口，当前没有足够的
-接口文档，代码不会猜测实现。
+白名单、实名认证、会员 ID 综合订单搜索、渠道订单号综合搜索、房间属性、排房、换房、改房型、
+延迟退房和独立写操作结果查询接口，当前没有足够的接口文档，代码不会猜测实现。
+
+未来写操作目前只接收三份文档已经出现的业务上下文：`hotelId`、`reserveOrderId`、
+`receptOrderId`、`roomId`（房型 ID）、`homeId`（具体房间 ID）、`checkInTime`、
+`checkOutTime`、`orderStatus`、`homeStatus`、`controlStatus`。PMS 方仍需为每个动作补充正式
+endpoint、HTTP method、请求 DTO、操作原因、幂等键、订单/房间版本号、并发冲突响应、成功
+响应及执行后回读规则，补齐前不得启用。
 
 生产写操作由 `allowWrite=false` 默认关闭。续住记录存放在独立的
 `PMSOperation` 表中，不占用人工路由的 `pending_action`；它保存来源消息、预览、
