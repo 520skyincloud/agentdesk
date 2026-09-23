@@ -501,6 +501,8 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 		if generatedReplyGroupHasPMSFacts(group) {
 			if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
 				parts = append(parts, boundary)
+			} else if content := deterministicPMSCustomerFallback(group); content != "" {
+				parts = append(parts, content)
 			} else {
 				parts = append(parts, "我已经查到相关信息，但刚才没能整理成可靠的回复。麻烦您把刚才的问题再发一次，我接着帮您处理。")
 			}
@@ -547,6 +549,17 @@ func generatedReplyGroupHasPMSFacts(group textReplyTaskGroup) bool {
 		}
 	}
 	return false
+}
+
+func deterministicPMSCustomerFallback(group textReplyTaskGroup) string {
+	if group.AnswerText == nil {
+		return ""
+	}
+	content, err := SanitizeGeneratedReplyText(strings.TrimSpace(*group.AnswerText))
+	if err != nil || content == "" {
+		return ""
+	}
+	return content
 }
 
 func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID string) string {

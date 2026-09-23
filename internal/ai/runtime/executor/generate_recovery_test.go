@@ -202,6 +202,22 @@ func TestDeterministicGeneratedReplyFallbackKeepsPMSClarification(t *testing.T) 
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackUsesSafePMSCustomerAnswer(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	answer := "您现在住的是儿童房V05。沐阳在您当前入住期间还有房，需要补28元。"
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change", OutputKind: "text", ReplyRequired: true,
+		AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+			{FactID: "P1F1", Aspect: "pms_order_recept", Statement: "PMS 当前有效订单：房型儿童房，房号V05。"},
+			{FactID: "P1F2", Aspect: "pms_price_difference", Statement: "当前查询结果：目标房型有可售库存，差价为28元。"},
+		},
+	}}})
+	if got := deterministicGeneratedReplyFallback(collector); got != answer {
+		t.Fatalf("safe PMS recovery answer was not used: %q", got)
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackExplainsPMSFailureForCurrentGoal(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{

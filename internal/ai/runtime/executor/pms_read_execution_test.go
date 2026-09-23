@@ -297,6 +297,18 @@ func TestRuntimePMSTargetRoomTypeRequiresARealTarget(t *testing.T) {
 	}
 }
 
+func TestRuntimePMSTargetRoomTypePrefersCurrentSelectionOverHistoricalTarget(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		OriginalText:  "沐阳吧，差价多少",
+		ResolvedText:  "我想把儿童房换成大床房\n当前客户补充（以本次为准）：还有其他房型吗\n当前客户补充（以本次为准）：沐阳吧，差价多少",
+		DialogueAct:   "selection",
+		ReplyStrategy: "confirm_selection_and_continue_goal",
+	}
+	if got := runtimePMSTargetRoomTypeText(task); got != "沐阳" {
+		t.Fatalf("current room selection lost to historical target: got=%q", got)
+	}
+}
+
 func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 	t.Run("order dates bind into inventory", func(t *testing.T) {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
@@ -896,6 +908,17 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 			t.Fatalf("targeted room change did not answer the actual request: %q missing %q", targeted, expected)
 		}
 	}
+	selected := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
+		OriginalText:  "沐阳吧，差价多少",
+		ResolvedText:  "我想换成大床房\n当前客户补充（以本次为准）：沐阳吧，差价多少",
+		DialogueAct:   "selection",
+		ReplyStrategy: "confirm_selection_and_continue_goal",
+	}, plan, result)
+	for _, expected := range []string{"沐阳在您当前入住期间还有房", "A302", "A305", "需要补28元"} {
+		if !strings.Contains(selected, expected) {
+			t.Fatalf("current selection did not continue the active room-change goal: %q missing %q", selected, expected)
+		}
+	}
 }
 
 func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
@@ -1123,7 +1146,7 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 		if !handled || gotIntent.NeedsTool || gotPlan.TaskPlans[0].NeedsTool || containsString(gotIntent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 			t.Fatalf("handled PMS task must leave Generate without the tool: intent=%#v plan=%#v", gotIntent, gotPlan)
 		}
-		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || gotPlan.TaskPlans[0].AnswerText != nil ||
+		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || gotPlan.TaskPlans[0].AnswerText == nil || strings.TrimSpace(*gotPlan.TaskPlans[0].AnswerText) == "" ||
 			!containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
@@ -1387,7 +1410,7 @@ func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
 			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{TaskID: "T1", Intent: "hotel_info", SubIntent: test.subIntent, OriginalText: "查一下 13800138000 的会员", NeedsTool: true, OutputKind: "text", ReplyRequired: true}}}
 			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, nil, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker)
 			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" ||
-				len(gotPlan.TaskPlans[0].SupportedFacts) != 1 || gotPlan.TaskPlans[0].AnswerText != nil {
+				len(gotPlan.TaskPlans[0].SupportedFacts) != 1 || gotPlan.TaskPlans[0].AnswerText == nil || strings.TrimSpace(*gotPlan.TaskPlans[0].AnswerText) == "" {
 				t.Fatalf("member route was not executed deterministically: test=%#v calls=%#v plan=%#v", test, invoker.calls, gotPlan)
 			}
 		}

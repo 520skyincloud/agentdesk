@@ -7,7 +7,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
 
-func TestPMSReadResultProvidesEvidenceWithoutPrewritingCustomerAnswer(t *testing.T) {
+func TestPMSReadResultProvidesEvidenceAndSafeRecoveryAnswer(t *testing.T) {
 	task := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail",
 		OriginalText: "我几点退房", OutputKind: "text", ReplyRequired: true,
@@ -19,8 +19,8 @@ func TestPMSReadResultProvidesEvidenceWithoutPrewritingCustomerAnswer(t *testing
 			Data: map[string]any{"roomName": "沐阳大床房", "homeName": "1501", "checkOutTime": "2026-09-25 12:00:00"},
 		}},
 	}, 0)
-	if task.AnswerText != nil {
-		t.Fatalf("PMS must not prewrite customer wording: %#v", task.AnswerText)
+	if task.AnswerText == nil || *task.AnswerText != "查到了，您这笔订单是9月25日12点前退房。" {
+		t.Fatalf("PMS safe recovery answer mismatch: %#v", task.AnswerText)
 	}
 	if len(task.SupportedFacts) != 1 || task.SupportedFacts[0].Aspect == "pms_customer_answer" {
 		t.Fatalf("PMS should expose typed evidence only: %#v", task.SupportedFacts)

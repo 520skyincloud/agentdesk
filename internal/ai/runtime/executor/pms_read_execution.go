@@ -742,6 +742,9 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 			}
 		}
 	}
+	if currentSelection := runtimePMSCurrentRoomTypeSelection(task); currentSelection != "" {
+		return currentSelection
+	}
 	combined := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
 	for index := len(roomEntities) - 1; index >= 0; index-- {
 		roomType := roomEntities[index]
@@ -755,7 +758,8 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 			return roomType
 		}
 	}
-	if match := runtimePMSTargetRoomPattern.FindStringSubmatch(combined); len(match) == 2 {
+	if matches := runtimePMSTargetRoomPattern.FindAllStringSubmatch(combined, -1); len(matches) > 0 {
+		match := matches[len(matches)-1]
 		value := strings.TrimSpace(match[1])
 		for _, suffix := range []string{"就行", "可以", "吧", "吗"} {
 			value = strings.TrimSuffix(value, suffix)
@@ -763,6 +767,29 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 		return strings.TrimSpace(value)
 	}
 	return ""
+}
+
+func runtimePMSCurrentRoomTypeSelection(task callbacks.ReplyTaskPlanTraceData) string {
+	if strings.TrimSpace(task.DialogueAct) != "selection" && strings.TrimSpace(task.ReplyStrategy) != "confirm_selection_and_continue_goal" {
+		return ""
+	}
+	current := strings.TrimSpace(task.OriginalText)
+	if current == "" {
+		return ""
+	}
+	if index := strings.IndexAny(current, "，。！？,.!?\n"); index >= 0 {
+		current = strings.TrimSpace(current[:index])
+	}
+	for _, prefix := range []string{"那就选", "就选", "选", "要", "换成", "换到", "升到", "升级到"} {
+		current = strings.TrimSpace(strings.TrimPrefix(current, prefix))
+	}
+	for _, suffix := range []string{"就行", "可以", "吧", "吗"} {
+		current = strings.TrimSpace(strings.TrimSuffix(current, suffix))
+	}
+	if current == "" || len([]rune(current)) > 12 || runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(current)) {
+		return ""
+	}
+	return current
 }
 
 type runtimePMSDateMention struct {
@@ -1753,9 +1780,12 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, message)
 	}
-	// PMS contributes typed evidence only. Customer wording belongs to the
-	// final response model so it can answer the actual question, omit internal
-	// inventory detail and continue the active customer goal naturally.
+	// Generate still owns the normal response. Keep one customer-safe projection
+	// from the same structured result so an empty model response can recover the
+	// active goal without dumping PMS facts or asking the customer to repeat it.
+	if answer := strings.TrimSpace(runtimePMSCustomerAnswer(*task, plan, result)); answer != "" {
+		task.AnswerText = &answer
+	}
 }
 
 type runtimePMSReadTaskFact struct {
