@@ -2,6 +2,52 @@
 
 本文件用于换电脑后继续当前 Codex 会话和 AgentDesk 开发。
 
+## 2026-09-23 客户目标与事实回复链路结构收口发布
+
+- 运行提交：`cc2667e`，分支 `codex/pms-live-from-weiwei-20260920`，已推送到
+  `origin` 和 `weibao`。
+- JEV 现在区分新请求、追问、原因、推荐、候选选择、确认、纠正、不满和取消，并读取同
+  session 最近唯一业务 Task 的结构化实体、已确认事实与缺失方面；原因和选择继续原业务目标，
+  不再重新发起相同流程。
+- 手机号和内部订单定位改为 `customer_phone/order_locator` Entity；PMS 只产生 Task 级
+  结构化事实，不再预写 `pms_customer_answer`。PMS 查询先于知识 Judge，知识不足不能抢先
+  抹掉已经可以回答的实时订单、房态、会员或差价事实。
+- Judge 只裁决知识证据，并增加酒店会员、影视会员、商品、房间、外卖和客房服务主体隔离。
+  JEV 已负责拆题与上下文时，知识 coverage 不再二次重拆或改写 Task。
+- Generate 负责最终自然回复。有事实的 `AnswerText` 不锁定，单 Task 允许自然文本；多 Task
+  仍严格校验 Task ID、数量、顺序和最多三条消息。`coveredFactIds` 只引用实际采用的事实，
+  本地继续校验引用合法、必要字面值和内部协议泄漏，不做第二次自然语言语义裁决。
+- PMS Generate 失败不会把库存、冲突统计、净脏房、内部订单 ID 或原始 PMS facts 发给客户；
+  只追问明确缺失字段或给出安全重试提示。
+
+验证通过：
+
+```bash
+go test -p=1 ./internal/ai/runtime/executor -count=2
+go test -p=1 ./internal/ai/runtime/... -count=1
+go test -p=1 ./internal/services -count=1
+go test -race -p=1 ./internal/ai/runtime/executor \
+  -run 'Test(Jev|RuntimePMS|MultiReply|GeneratedReply|KnowledgeEvidence|Intent|QuestionCoverage|EvidenceBacked|GenerateOwns)' \
+  -count=1
+make build-linux
+git diff --check
+```
+
+- test-2 release：`/opt/agentdesk/releases/20260923-customer-goals-cc2667e`。
+- Linux amd64 二进制 SHA-256：
+  `481dcac8601e572decd3fca756ac96b97d8b9b038f520522cceae3a3f3245ab3`。
+- 部署前 release：`/opt/agentdesk/releases/20260923-customer-context-81e57dc`；配置、环境文件、
+  原 release 路径和旧二进制校验保存在
+  `/opt/agentdesk/backups/20260923-pre-customer-goals-cc2667e`。
+- 部署后 `agentdesk.service=active/running`、`NRestarts=0`、8083 HTTP 200；
+  `AGENT_DESK_PMS_ENABLED=true`、`AGENT_DESK_PMS_ALLOW_WRITE=false`。本轮无数据库、Migration、
+  DTO、enum、外部 API、WebSocket、企微协议、计费、Outbox 或 PMS 写入变更。
+- 日志中的 FastGPT usage 同步告警和企微坐席过期 `err_code=9003` 为部署前既有环境告警，
+  本次新进程未出现启动错误。异常时原子切回上述 `81e57dc` release，不恢复数据库、消息、
+  PMS 数据或“薇薇/薇薇2”备份。
+- `customer-audit` 与 `ai-billing` 均在 executor 同目录存在并行修改，合并时必须逐文件保留
+  本提交的 JEV/PMS/Judge/Generate 职责边界；不要整文件覆盖。无 Migration 合并顺序要求。
+
 ## 2026-09-23 HPMS 文档复核与完整入住区间房号计算
 
 - 重新逐字段核对三份原始文档：订单/房态/房情与批量改价、续住与手机号查单、会员只读查询。
