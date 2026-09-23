@@ -660,7 +660,11 @@ func TestRuntimePMSSessionLocatorRecoversOnlySuccessfulSameSessionRuns(t *testin
 	trace.Tools.Items = []callbacks.ToolTraceItem{{ToolCode: toolx.BuiltinPMSQuery.Code, Status: "ok"}}
 	trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "order_query",
-		ResolvedText:   "查询当前订单\n本次查询手机号：13800138000\n本次查询订单定位：接待单ID:REC-7102",
+		ResolvedText: "查询当前订单",
+		Entities: []callbacks.IntentEntityTraceData{
+			{Type: runtimeIntentEntityCustomerPhone, Text: "13800138000"},
+			{Type: runtimeIntentEntityOrderLocator, Text: "接待单ID:REC-7102"},
+		},
 		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: "pms_order_reserve", Statement: "当前订单已查询。"}},
 	}}
 	trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-1"}}}

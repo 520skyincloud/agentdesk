@@ -634,6 +634,9 @@ func runtimePMSSessionLocatorFromTrace(trace callbacks.RuntimeTraceData) runtime
 			continue
 		}
 		candidate := runtimePMSMergeLocatorText(runtimePMSSessionLocator{}, strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+		for _, entity := range task.Entities {
+			candidate = runtimePMSMergeLocatorText(candidate, entity.Text)
+		}
 		if intentTask := runtimePMSMatchingTraceIntentTask(task, trace.Pipeline.Intent.IntentTasks); intentTask != nil {
 			candidate = runtimePMSMergeLocatorText(candidate, strings.Join([]string{intentTask.Text, intentTask.ResolvedText}, "\n"))
 			for _, entity := range intentTask.Entities {

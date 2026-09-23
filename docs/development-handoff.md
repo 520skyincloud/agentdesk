@@ -1290,3 +1290,12 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
 - 验证通过：`go test -p=1 ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；`go test -p=1 ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；Linux amd64 构建通过；`git diff --check` 通过。
 - 并行影响：`origin/codex/customer-audit` 在本轮全部运行文件上均有同文件修改，合并时必须人工保留双方变更，禁止整文件覆盖。建议本提交独立 review/cherry-pick；无需 rebase 数据模型或迁移。回滚仅切回 test-2 上一 release，不回滚数据库、消息或“薇薇/薇薇2”。
+
+## 2026-09-23 PMS 连续追问订单定位复用
+
+- 目标：修复换房连续对话中首轮已成功查到订单，后续“沐阳吧，差价多少”仍退回手机号查单，因上游接口超时而无法继续回答的问题。
+- 根因：成功 PMS 运行会把规范化手机号和订单定位写入 `ReplyPlan.Task.Entities`，但会话定位恢复只读取 ReplyPlan 文本和 Intent Task 实体，遗漏了真实生产 Trace 中的 ReplyPlan 实体。
+- 修复：恢复同 session 最近成功 PMS 运行时合并 `ReplyPlan.Task.Entities`；仍只接受已成功工具调用、已发送消息和同一会话的数据，不扩大跨会话或失败运行复用范围。
+- 回归测试改为使用与生产一致的 ReplyPlan 实体形态，确认手机号和接待单/预订单定位均可恢复；无新模型阶段、判断门、数据库、Migration、DTO、enum、外部 API、WebSocket、Outbox、计费或 PMS 写入变化。
+- 验证通过：`go test -p=1 ./internal/ai/runtime/executor -run TestRuntimePMSSessionLocatorRecoversOnlySuccessfulSameSessionRuns -count=1`；`go test -p=1 ./internal/pms ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`。
+- 并行影响：本次 `git fetch origin` 后，`customer-audit` 和 `ai-billing` 相对共同基线均未新增目标文件修改；本提交可独立 review/cherry-pick。部署仅更新 test-2，并保持 `AGENT_DESK_PMS_ALLOW_WRITE=false`；回滚只切回上一 release，不回滚数据库、消息或“薇薇/薇薇2”。
