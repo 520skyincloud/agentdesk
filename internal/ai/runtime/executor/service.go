@@ -119,14 +119,14 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
 		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
 	}
-	if prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.ReplyText = summary.ReplyText
-		collector.Data.Output.FinishReason = "grounded_single_knowledge_direct_commit"
+		collector.Data.Output.FinishReason = "grounded_independent_knowledge_direct_commit"
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "single independent knowledge task already has a complete Judge-grounded customer answer"
+		collector.Data.Pipeline.Generate.Reason = "independent knowledge tasks already have complete Judge-grounded customer answers"
 		collector.Data.Pipeline.Validate.Status = "passed"
 		collector.Data.Pipeline.Validate.Reason = "Judge-grounded answer passed protocol and send-safety validation"
 		summary.TraceData = collector.Marshal()
@@ -588,7 +588,7 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
 }
 
-func prepareGroundedSingleKnowledgeDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
+func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
 	if summary == nil || collector == nil {
 		return false
 	}
@@ -597,50 +597,57 @@ func prepareGroundedSingleKnowledgeDirectCommit(summary *RunResult, collector *c
 		return false
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 {
+	if len(plan.TaskPlans) == 0 {
 		return false
 	}
-	task := plan.TaskPlans[0]
-	if strings.TrimSpace(task.Intent) != "hotel_info" || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-		strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" ||
-		task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 ||
-		isKnowledgeHandoffDirectiveContent(*task.AnswerText) {
-		return false
-	}
-	if relation := strings.TrimSpace(task.RelationToPrevious); relation != "" && relation != "independent" {
-		return false
-	}
-	if act := strings.TrimSpace(task.DialogueAct); act != "" && act != "new_request" {
-		return false
-	}
-	if state := strings.TrimSpace(task.ResolutionState); state != "" && state != "clear" {
-		return false
-	}
-	if strategy := strings.TrimSpace(task.ReplyStrategy); strategy != "" && strategy != "answer_current_goal" {
-		return false
+	for _, task := range plan.TaskPlans {
+		if strings.TrimSpace(task.Intent) != "hotel_info" || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+			strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" ||
+			task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 ||
+			isKnowledgeHandoffDirectiveContent(*task.AnswerText) {
+			return false
+		}
+		if relation := strings.TrimSpace(task.RelationToPrevious); relation != "" && relation != "independent" {
+			return false
+		}
+		if act := strings.TrimSpace(task.DialogueAct); act != "" && act != "new_request" {
+			return false
+		}
+		if state := strings.TrimSpace(task.ResolutionState); state != "" && state != "clear" {
+			return false
+		}
+		switch strategy := strings.TrimSpace(task.ReplyStrategy); strategy {
+		case "", "answer_current_goal", "recommend_one_supported_option":
+		default:
+			return false
+		}
 	}
 	groups := buildTextReplyTaskGroups(plan)
-	if len(groups) != 1 {
+	if len(groups) != len(plan.TaskPlans) {
 		return false
 	}
-	group := groups[0]
-	group.EvidenceLocked = true
-	reply, err := validateLockedReplyContent(group)
-	if err != nil || strings.TrimSpace(reply) == "" {
-		return false
-	}
-	trimmedReply := strings.TrimSpace(reply)
-	if strings.Contains(trimmedReply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(trimmedReply))) {
-		return false
-	}
-	if err := validateGeneratedReplyFactAspectBoundaries(reply, group.Facts); err != nil {
-		return false
+	parts := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group.EvidenceLocked = true
+		reply, err := validateLockedReplyContent(group)
+		if err != nil || strings.TrimSpace(reply) == "" {
+			return false
+		}
+		trimmedReply := strings.TrimSpace(reply)
+		if strings.Contains(trimmedReply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(trimmedReply))) {
+			return false
+		}
+		if err := validateGeneratedReplyFactAspectBoundaries(reply, group.Facts); err != nil {
+			return false
+		}
+		parts = append(parts, reply)
 	}
 	previousOutput := collector.Data.Output
 	previousValidate := collector.Data.Pipeline.Validate
-	summary.ReplyText = reply
+	summary.ReplyText = composeGeneratedReplyContents(parts, 3)
+	expectedReply := summary.ReplyText
 	validation := enforceGeneratedReplyActionLedger(summary, collector)
-	if validation.RequestHandoffConfirmation || summary.ReplyText != reply {
+	if validation.RequestHandoffConfirmation || summary.ReplyText != expectedReply {
 		summary.ReplyText = ""
 		collector.Data.Output = previousOutput
 		collector.Data.Pipeline.Validate = previousValidate

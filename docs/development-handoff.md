@@ -1282,7 +1282,7 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 
 - 目标：修复新企微会话的首条客户问题被欢迎语/欢迎资源误判为过期，以及简单知识问题在 Judge 已形成完整答案后仍重复调用 Generate、出现空输出重试和约 45 秒延迟的问题。
 - 新好友欢迎文本、欢迎图片、默认入住小程序和欢迎定位使用精确 `clientMsgID` 前缀识别。它们仍正常发送并保留为客户可见历史上下文，但不再作为更新客户轮次阻断首问；普通 AI 文本、小程序、员工消息和更新客户消息仍会使旧运行失效。
-- 仅当 ReplyPlan 中只有一个独立知识文本任务、Judge 已给出完整 `AnswerText` 与受支持事实、没有缺失维度、工具、资源或人工路由时，才尝试直接提交；答案仍须通过内部协议、JSON、事实边界和动作安全校验。任一校验不满足即回到原 Generate 链路。上下文追问、纠正、多问题、PMS、工具、资源和部分证据任务继续走原 Generate 链路。
+- 当 ReplyPlan 中全部任务都是彼此独立的酒店知识文本任务、Judge 已分别给出完整 `AnswerText` 与受支持事实、且没有缺失维度、工具、资源或人工路由时，才尝试按原顺序直接提交；每条答案仍须通过内部协议、JSON、肯否极性、事实边界和动作安全校验。任一任务不满足即整体回到原 Generate 链路。上下文追问、纠正、PMS、工具、资源、服务请求和部分证据任务继续走原 Generate 链路。
 - 真实耗时定位：修复前样本 `conversation_id=2205/message_id=19240` 总耗时 `44703ms`，其中检索 `808ms`、Judge `12287ms`、Generate `30069ms`；Generate 第一次无客户可见输出后重试。新直出分支去掉该样本中重复的 Generate 阶段，不调整 JEV/Intent 或 Judge 模型。
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
 - 验证通过：`go test -p=1 ./internal/pkg/utils ./internal/ai/runtime/internal/impl/adapter ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；`go test -p=1 ./internal/services ./internal/ai/runtime/internal/impl/factory ./internal/ai/runtime/executor ./internal/ai/runtime -count=1`；Linux amd64 构建通过；`git diff --check` 通过。

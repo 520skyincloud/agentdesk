@@ -53,7 +53,7 @@ func TestCompleteIntentDetectUnavailableBlocksUngroundedGenerate(t *testing.T) {
 	}
 }
 
-func TestPrepareGroundedSingleKnowledgeDirectCommit(t *testing.T) {
+func TestPrepareGroundedIndependentKnowledgeDirectCommit(t *testing.T) {
 	answer := "酒店提供速溶咖啡，您可以在1313房间对面的洗衣房内自行取用。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsKnowledge: true}
@@ -69,7 +69,7 @@ func TestPrepareGroundedSingleKnowledgeDirectCommit(t *testing.T) {
 	}}}
 	summary := &RunResult{Status: "started"}
 
-	if !prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+	if !prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 		t.Fatal("complete independent Judge-grounded knowledge answer should skip redundant Generate")
 	}
 	if summary.ReplyText != answer {
@@ -77,7 +77,42 @@ func TestPrepareGroundedSingleKnowledgeDirectCommit(t *testing.T) {
 	}
 }
 
-func TestPrepareGroundedSingleKnowledgeDirectCommitKeepsContextAndToolTasksOnGenerate(t *testing.T) {
+func TestPrepareGroundedIndependentKnowledgeDirectCommitPreservesTaskOrder(t *testing.T) {
+	nearbyAnswer := "附近有罍街、包公园（包公祠）和逍遥津公园等游玩地点。"
+	parkingAnswer := "酒店提供免费停车服务，设有地上地下停车场。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsKnowledge: true}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "task-1", Intent: "hotel_info", SubIntent: "surrounding_facilities",
+			DialogueAct: "new_request", ReplyStrategy: "recommend_one_supported_option", RelationToPrevious: "independent", ResolutionState: "clear",
+			NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+			SelectedLayer: "store", AnswerText: &nearbyAnswer,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: nearbyAnswer, CriticalValues: []string{"罍街", "包公园（包公祠）", "逍遥津公园"}}},
+		},
+		{
+			TaskID: "task-2", Intent: "hotel_info", SubIntent: "parking",
+			DialogueAct: "new_request", ReplyStrategy: "answer_current_goal", RelationToPrevious: "independent", ResolutionState: "clear",
+			NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+			SelectedLayer: "store", AnswerText: &parkingAnswer,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+				{FactID: "task-2F1", Aspect: "price", Statement: "酒店提供免费停车服务。", CriticalValues: []string{"免费停车服务"}},
+				{FactID: "task-2F2", Aspect: "existence", Statement: "酒店设有地上地下停车场。", CriticalValues: []string{"地上地下停车场"}},
+			},
+		},
+	}}
+	summary := &RunResult{Status: "started"}
+
+	if !prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("complete independent knowledge tasks should skip redundant Generate together")
+	}
+	want := nearbyAnswer + "\n<<NEXT_MESSAGE>>\n" + parkingAnswer
+	if summary.ReplyText != want {
+		t.Fatalf("direct commit changed task order or content: got %q want %q", summary.ReplyText, want)
+	}
+}
+
+func TestPrepareGroundedIndependentKnowledgeDirectCommitKeepsContextAndToolTasksOnGenerate(t *testing.T) {
 	answer := "酒店提供速溶咖啡。"
 	baseTask := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "store_knowledge",
@@ -102,14 +137,14 @@ func TestPrepareGroundedSingleKnowledgeDirectCommitKeepsContextAndToolTasksOnGen
 			collector := callbacks.NewRuntimeTraceCollector()
 			collector.Data.Pipeline.Intent = tt.intent
 			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}
-			if prepareGroundedSingleKnowledgeDirectCommit(&RunResult{Status: "started"}, collector) {
+			if prepareGroundedIndependentKnowledgeDirectCommit(&RunResult{Status: "started"}, collector) {
 				t.Fatal("contextual, tool or partial task must still use the normal Generate path")
 			}
 		})
 	}
 }
 
-func TestPrepareGroundedSingleKnowledgeDirectCommitRejectsUnsafeJudgeAnswer(t *testing.T) {
+func TestPrepareGroundedIndependentKnowledgeDirectCommitRejectsUnsafeJudgeAnswer(t *testing.T) {
 	tests := []struct {
 		name   string
 		answer string
@@ -162,7 +197,7 @@ func TestPrepareGroundedSingleKnowledgeDirectCommitRejectsUnsafeJudgeAnswer(t *t
 				SelectedLayer: "store", AnswerText: &tt.answer, SupportedFacts: tt.facts,
 			}}}
 			summary := &RunResult{Status: "started"}
-			if prepareGroundedSingleKnowledgeDirectCommit(summary, collector) {
+			if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 				t.Fatalf("unsafe Judge answer must fall back to the normal Generate path: %q", summary.ReplyText)
 			}
 			if summary.ReplyText != "" {
