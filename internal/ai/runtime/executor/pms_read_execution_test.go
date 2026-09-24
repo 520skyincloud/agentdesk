@@ -974,6 +974,29 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 			t.Fatalf("current selection did not continue the active room-change goal: %q missing %q", selected, expected)
 		}
 	}
+	recommended := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
+		OriginalText:  "你给我挑一间不就行了",
+		ResolvedText:  "我想换成沐阳\n当前客户补充（以本次为准）：你给我挑一间不就行了",
+		DialogueAct:   "recommendation",
+		ReplyStrategy: "recommend_one_supported_option",
+	}, plan, result)
+	for _, expected := range []string{"沐阳在您当前入住期间还有房", "我建议先选A302", "需要补28元"} {
+		if !strings.Contains(recommended, expected) {
+			t.Fatalf("room recommendation did not advance the active goal: %q missing %q", recommended, expected)
+		}
+	}
+	confirmedRoom := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
+		OriginalText:  "A302",
+		Text:          "A302",
+		ResolvedText:  "我想换成沐阳\n当前客户补充（以本次为准）：A302",
+		DialogueAct:   "selection",
+		ReplyStrategy: "confirm_selection_and_continue_goal",
+	}, plan, result)
+	for _, expected := range []string{"A302在您当前入住期间可以选择", "需要补28元", "还没有实际换房"} {
+		if !strings.Contains(confirmedRoom, expected) {
+			t.Fatalf("room-number selection did not continue the active goal: %q missing %q", confirmedRoom, expected)
+		}
+	}
 }
 
 func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {

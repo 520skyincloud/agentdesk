@@ -2046,6 +2046,18 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 	if stay.homeName != "" {
 		currentLabel += stay.homeName
 	}
+	selectedRoom := runtimePMSSelectedCandidateRoom(task, result)
+	if selectedRoom != "" {
+		prefix := ""
+		if currentLabel != "" {
+			prefix = "您现在住的是" + currentLabel + "。"
+		}
+		price := runtimePMSCustomerPriceDifference(result)
+		if price == "" {
+			price = "具体差价还需要进一步核对"
+		}
+		return prefix + selectedRoom + "在您当前入住期间可以选择，" + price + "。目前只是查询确认，还没有实际换房。"
+	}
 	targetText := runtimePMSTargetRoomTypeText(task)
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
 	if runtimePMSGenericRoomChoice(normalizedTarget) {
@@ -2073,7 +2085,11 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 			}
 			parts := []string{option.name + "在您当前入住期间还有房"}
 			if rooms := runtimePMSCustomerCandidateRooms(result, option.name, 3); len(rooms) > 0 {
-				parts = append(parts, "当前可选房间有"+strings.Join(rooms, "、"))
+				if task.ReplyStrategy == "recommend_one_supported_option" {
+					parts = append(parts, "我建议先选"+rooms[0])
+				} else {
+					parts = append(parts, "当前可选房间有"+strings.Join(rooms, "、"))
+				}
 			}
 			if price := runtimePMSCustomerPriceDifference(result); price != "" {
 				parts = append(parts, price)
@@ -2098,7 +2114,38 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 	if plan.Scenario == pmsReadScenarioRoomUpgrade {
 		verb = "升级到"
 	}
+	if task.ReplyStrategy == "recommend_one_supported_option" {
+		return prefix + "当前完整入住期间还有" + alternatives[0] + "可选，我建议先看这个房型；具体房间和差价还需要继续核对。"
+	}
 	return prefix + "当前完整入住期间可以" + verb + strings.Join(alternatives, "、") + "，您更想选哪一种？我再帮您核对具体房间和差价。"
+}
+
+func runtimePMSSelectedCandidateRoom(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
+	if task.ReplyStrategy != "confirm_selection_and_continue_goal" && task.DialogueAct != "selection" {
+		return ""
+	}
+	selected := strings.TrimSpace(runtimePMSRoomKeyword(callbacks.ReplyTaskPlanTraceData{
+		OriginalText: task.OriginalText,
+		Text:         task.Text,
+		Entities:     task.Entities,
+	}))
+	if selected == "" {
+		return ""
+	}
+	for _, step := range result.Steps {
+		if step.StepID != "stay.room_availability" || (step.Status != pmsReadStepOK && step.Status != pmsReadStepPartial) {
+			continue
+		}
+		root, _ := step.Data.(map[string]any)
+		items, _ := root["candidates"].([]any)
+		for _, value := range items {
+			candidate, _ := value.(map[string]any)
+			if strings.EqualFold(strings.TrimSpace(firstRuntimePMSReadText(candidate, "homeName")), selected) {
+				return firstRuntimePMSReadText(candidate, "homeName")
+			}
+		}
+	}
+	return ""
 }
 
 type runtimePMSCustomerRoomOption struct {

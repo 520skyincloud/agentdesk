@@ -6297,7 +6297,8 @@ func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutProviderR
 		taskCount      int
 		candidateCount int
 		want           int
-	}{{0, 1, 3, 15_000}, {3_000, 1, 3, 11_000}, {28_000, 1, 3, 28_000}, {45_000, 1, 3, 45_000}, {60_000, 1, 3, 45_000}, {4_000, 4, 28, 23_000}, {15_000, 8, 28, 28_000}, {60_000, 8, 28, 45_000}, {60_000, 100, 100, 45_000}} {
+		wantTokens     int
+	}{{0, 1, 3, 15_000, 1_024}, {3_000, 1, 3, 11_000, 1_024}, {28_000, 1, 3, 28_000, 1_024}, {45_000, 1, 3, 45_000, 1_024}, {60_000, 1, 3, 45_000, 1_024}, {4_000, 4, 28, 23_000, 4_096}, {15_000, 8, 28, 28_000, 4_096}, {60_000, 8, 28, 45_000, 4_096}, {60_000, 100, 100, 45_000, 4_096}} {
 		config := normalizeKnowledgeEvidenceJudgeConfig(models.AIConfig{
 			TimeoutMS:       tc.timeoutMS,
 			MaxOutputTokens: 8_192,
@@ -6306,8 +6307,8 @@ func TestNormalizeKnowledgeEvidenceJudgeConfigKeepsBatchCapacityWithoutProviderR
 		if config.TimeoutMS != tc.want {
 			t.Fatalf("expected configured timeout %dms to normalize to %dms, got %d", tc.timeoutMS, tc.want, config.TimeoutMS)
 		}
-		if config.MaxOutputTokens != 4_096 {
-			t.Fatalf("expected judge output cap 4096, got %d", config.MaxOutputTokens)
+		if config.MaxOutputTokens != tc.wantTokens {
+			t.Fatalf("expected judge output cap %d, got %d", tc.wantTokens, config.MaxOutputTokens)
 		}
 		if config.MaxRetryCount != 0 {
 			t.Fatalf("knowledge judge must not retry, got %d", config.MaxRetryCount)

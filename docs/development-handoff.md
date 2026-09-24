@@ -1311,3 +1311,13 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 无 JEV、model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；test-2 保持 `AGENT_DESK_PMS_ALLOW_WRITE=false`。
 - 最终 test-2 release：`/opt/agentdesk/releases/20260923-pms-current-selection-802b629`，切换前备份：`/opt/agentdesk/backups/20260923-pre-pms-current-selection-802b629`，Server SHA-256：`1e2438cc09c4d1569824a472d57d4582a5a9d4144912898e2d2e7ca1fab6fc6d`。服务 active、`NRestarts=0`、8083 HTTP 200。
 - 真实连续会话 `conversation_id=2208`、`message_id=19282` 验证：“沐阳吧，差价多少”在 Intent 标为 `follow_up` 时仍复用既有订单定位，4 个 PMS 查询均成功，回复当前房型、沐阳完整入住期间库存、候选房号及差价待核对边界；耗时 2383ms，`Generate=skipped`。未重复询问手机号，未暴露内部 ID/PMS 字段，未转人工，未宣称已经换房。
+
+## 2026-09-24 当前目标上下文与回复速度收口
+
+- 目标：修复真实会话中短句续问丢失对象、纠正后旧值继续参与、房间推荐和具体房号选择反复回到起点，以及单题知识 Judge 输出预算过大造成的等待。
+- JEV 继续作为意图识别入口，不新增模型阶段或本地语义判断门。当前明确问题优先；只有“放在哪里、多少钱、到几号、哪个好、那就这个”等省略表达才使用同 session 最近唯一业务目标。消息明确点名新主题时不继承旧目标；纠正或修改会替换旧补充值，但保留已确认的订单定位等结构化基础事实。
+- 活跃目标文本只保留最多三条基础信息和最近两条有效补充，避免整段历史不断累积。个人表达“我的房到几号/住到几号”按订单离店日期处理，不再误识别为房号询问。
+- 换房只读流程在客户要求推荐时给出一个真实候选；客户选择具体候选房号后继续核对可用性和差价，并明确当前只完成查询、尚未实际换房。没有开放 PMS 写入。
+- 单个知识 Task 的 Judge 输出预算收敛为协议所需的 `1024` tokens；多 Task 仍保留现有上限。Judge 继续负责知识语义裁决，没有增加本地语义旁路。
+- 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变更。`customer-audit` 只与本交接文档存在同文件追加，合并时保留双方记录；`ai-billing` 无同文件修改。
+- 自动验证通过：`go test -p=1 ./internal/ai/runtime/executor -count=1`、`go test -p=1 ./internal/ai/runtime/internal/impl/callbacks ./internal/ai/runtime -count=1`、`go test -p=1 ./internal/services ./internal/pms ./internal/pkg/utils -count=1`，以及 Linux amd64 构建和 `git diff --check`。

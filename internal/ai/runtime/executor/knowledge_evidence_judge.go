@@ -11233,7 +11233,11 @@ func normalizeKnowledgeEvidenceJudgeConfig(config models.AIConfig, taskCount int
 	if requiredOutputTokens > knowledgeEvidenceJudgeMaxOutputTokens {
 		requiredOutputTokens = knowledgeEvidenceJudgeMaxOutputTokens
 	}
-	if config.MaxOutputTokens <= 0 {
+	if taskCount == 1 {
+		// A single task has a small fixed protocol shape. A larger profile value
+		// only gives reasoning models room to delay the same compact JSON result.
+		config.MaxOutputTokens = requiredOutputTokens
+	} else if config.MaxOutputTokens <= 0 {
 		config.MaxOutputTokens = requiredOutputTokens
 	} else if config.MaxOutputTokens < requiredOutputTokens {
 		config.MaxOutputTokens = requiredOutputTokens

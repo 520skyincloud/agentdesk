@@ -327,6 +327,30 @@ func TestJevActiveGoalContextCompactsRepeatedSupplements(t *testing.T) {
 	}
 }
 
+func TestJevActiveGoalCorrectionReplacesStaleSupplements(t *testing.T) {
+	contextText := strings.Join([]string{
+		"帮我查订单",
+		"当前客户补充（以本次为准）：手机号13800138000",
+		"当前客户补充（以本次为准）：查退房时间",
+	}, "\n")
+	got := buildJevActiveGoalTextForCurrent(contextText, "不是这个号码，是13700137000", true)
+	if strings.Contains(got, "13800138000") || strings.Contains(got, "查退房时间") || !strings.Contains(got, "13700137000") {
+		t.Fatalf("correction kept stale supplements or lost the latest value: %q", got)
+	}
+	if strings.Count(got, "当前客户补充（以本次为准）：") != 1 {
+		t.Fatalf("correction must keep only one latest supplement: %q", got)
+	}
+}
+
+func TestJevRulesTreatColloquialStayDateAsCheckoutNotRoomNumber(t *testing.T) {
+	criteria, _ := jevIntentRouteCriteria()["order_detail"].(string)
+	for _, phrase := range []string{"我的房到几号", "我的房住到几号", "房到几号 means checkout date"} {
+		if !strings.Contains(jevIntentClassificationRules+criteria, phrase) {
+			t.Fatalf("JEV checkout rule is missing %q", phrase)
+		}
+	}
+}
+
 func TestJevHistoryStateStripsDisplayEnvelope(t *testing.T) {
 	history := adapter.HistoryBuildResult{RawItems: []models.Message{
 		{SenderType: enums.IMSenderTypeCustomer, Content: "酒店有没有咖啡"},
