@@ -39,11 +39,12 @@ func TestJevLiveIntentRouting(t *testing.T) {
 	}{
 		{name: "parking", input: "酒店有没有停车场？", routes: []string{"parking"}},
 		{name: "order_missing_phone", input: "我想查订单", routes: []string{"order_query"}},
+		{name: "order_compound_fields", input: "那我订的是哪种房，最晚几点退房？", history: pair("手机号13900000000，帮我查订单", "已经查到这笔订单。"), routes: []string{"order_detail"}},
 		{name: "phone_followup", input: "13900000000", history: pair("帮我查订单", "请提供预订手机号。"), routes: []string{"order_query"}},
 		{name: "phone_correction", input: "不是这个号码，是13900000001", history: pair("帮我查13900000000的订单", "这个手机号暂未查到订单。"), routes: []string{"order_query"}},
 		{name: "new_topic", input: "酒店有停车场吗", history: pair("查我的订单", "请提供手机号。"), routes: []string{"parking"}},
 		{name: "upgrade_inventory_member", input: "升级到大床房，现在有房吗，会员是否免差价？", routes: []string{"room_upgrade"}},
-		{name: "upgrade_price_followup", input: "房间小，换个好点的房型要补多少？", routes: []string{"room_upgrade"}},
+		{name: "upgrade_price_followup", input: "房间小，换个好点的房型要补多少？", routes: []string{"price_difference"}},
 		{name: "explicit_handoff", input: "帮我转人工", routes: []string{"explicit_handoff"}, human: true},
 		{name: "no_handoff", input: "不要转人工，帮我查订单", routes: []string{"order_query"}},
 		{name: "checkin_resource", input: "把入住小程序发我", routes: []string{"provide_mini_program"}},

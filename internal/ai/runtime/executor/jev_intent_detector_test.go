@@ -327,6 +327,57 @@ func TestJevActiveGoalContextCompactsRepeatedSupplements(t *testing.T) {
 	}
 }
 
+func TestJevHistoryStateStripsDisplayEnvelope(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{SenderType: enums.IMSenderTypeCustomer, Content: "酒店有没有咖啡"},
+		{SenderType: enums.IMSenderTypeAI, Content: "有的，酒店提供速溶咖啡。"},
+	}}
+	state := buildJevIntentState(RunInput{}, history, nil)
+	if len(state.History) != 2 || state.History[0].Text != "酒店有没有咖啡" || state.History[1].Text != "有的，酒店提供速溶咖啡。" {
+		t.Fatalf("JEV history kept display envelopes: %#v", state.History)
+	}
+}
+
+func TestJevMergesSameOrderObjectFieldsIntoOneTask(t *testing.T) {
+	tasks := []callbacks.IntentTaskTraceData{
+		{
+			Intent: "hotel_info", SubIntent: "order_detail", Objective: "compound_information",
+			DialogueAct: "follow_up", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+			Text: "那我订的是哪种房，", ResolvedText: "那我订的是哪种房，", SourceRefs: []string{"U1"}, NeedsTool: true,
+			Entities: []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityCustomerPhone, Text: "13800138000"}},
+		},
+		{
+			Intent: "hotel_info", SubIntent: "order_detail", Objective: "time",
+			DialogueAct: "new_request", RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+			Text: "最晚几点退房？", ResolvedText: "最晚几点退房？", SourceRefs: []string{"U1"}, NeedsTool: true,
+			Entities: []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityCustomerPhone, Text: "13800138000"}},
+		},
+	}
+	got := mergeJevCompositeIntentTasks(tasks)
+	if len(got) != 1 || got[0].Text != "那我订的是哪种房，最晚几点退房？" || got[0].Objective != "compound_information" ||
+		got[0].DialogueAct != "follow_up" || !got[0].NeedsTool {
+		t.Fatalf("same order fields were not merged: %#v", got)
+	}
+
+	other := tasks[1]
+	other.SubIntent = "parking"
+	if got = mergeJevCompositeIntentTasks([]callbacks.IntentTaskTraceData{tasks[0], other}); len(got) != 2 {
+		t.Fatalf("different business routes must remain separate: %#v", got)
+	}
+
+	contextual := append([]callbacks.IntentTaskTraceData(nil), tasks...)
+	for index := range contextual {
+		contextual[index].RelationToPrevious = "follow_up"
+		contextual[index].ResolutionState = runtimeIntentResolutionResolvedFromContext
+		contextual[index].ResolvedText = "帮我查这笔订单\n当前客户补充（以本次为准）：" + contextual[index].Text
+	}
+	got = mergeJevCompositeIntentTasks(contextual)
+	if len(got) != 1 || got[0].RelationToPrevious != "follow_up" || got[0].ResolutionState != runtimeIntentResolutionResolvedFromContext ||
+		!strings.Contains(got[0].ResolvedText, "哪种房") || !strings.Contains(got[0].ResolvedText, "几点退房") {
+		t.Fatalf("contextual order fields were not merged: %#v", got)
+	}
+}
+
 func TestJevWeakShortReplyInheritsSelectedBusinessRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name, current, priorSubIntent, dialogueAct, objective string

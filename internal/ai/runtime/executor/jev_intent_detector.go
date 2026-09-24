@@ -179,7 +179,7 @@ func buildJevIntentState(req RunInput, history adapter.HistoryBuildResult, sourc
 	}
 	for index := start; index < len(history.RawItems); index++ {
 		item := history.RawItems[index]
-		text := strings.TrimSpace(adapter.RuntimeHistoryMessageContent(&item))
+		text := stripJevIntentHistoryEnvelope(adapter.RuntimeHistoryMessageContent(&item))
 		if text == "" {
 			continue
 		}
@@ -784,10 +784,149 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			intent.IntentConfidence = routeAnswer.Confidence
 		}
 	}
+	intent.IntentTasks = mergeJevCompositeIntentTasks(intent.IntentTasks)
 	if len(intent.IntentTasks) == 0 {
 		return intent, fmt.Errorf("jev returned no current tasks")
 	}
 	return deriveModelIntentFromTasks(intent), nil
+}
+
+func stripJevIntentHistoryEnvelope(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "[历史消息]") {
+		return value
+	}
+	if end := strings.Index(value, "] "); end >= 0 {
+		return strings.TrimSpace(value[end+2:])
+	}
+	return value
+}
+
+func mergeJevCompositeIntentTasks(tasks []callbacks.IntentTaskTraceData) []callbacks.IntentTaskTraceData {
+	if len(tasks) < 2 {
+		return tasks
+	}
+	ret := make([]callbacks.IntentTaskTraceData, 0, len(tasks))
+	for _, task := range tasks {
+		if len(ret) == 0 || !shouldMergeJevCompositeIntentTasks(ret[len(ret)-1], task) {
+			ret = append(ret, task)
+			continue
+		}
+		merged := &ret[len(ret)-1]
+		merged.Text = mergeJevCurrentTaskText(merged.Text, task.Text)
+		merged.Objective = "compound_information"
+		if strings.TrimSpace(merged.DialogueAct) == "follow_up" || strings.TrimSpace(task.DialogueAct) == "follow_up" {
+			merged.DialogueAct = "follow_up"
+		} else {
+			merged.DialogueAct = "new_request"
+		}
+		if relation := firstJevContextRelation(merged.RelationToPrevious, task.RelationToPrevious); relation != "" {
+			merged.RelationToPrevious = relation
+		} else {
+			merged.RelationToPrevious = "independent"
+		}
+		if strings.TrimSpace(merged.ResolutionState) == runtimeIntentResolutionResolvedFromContext ||
+			strings.TrimSpace(task.ResolutionState) == runtimeIntentResolutionResolvedFromContext {
+			contextText := merged.ResolvedText
+			if strings.TrimSpace(merged.ResolutionState) != runtimeIntentResolutionResolvedFromContext {
+				contextText = task.ResolvedText
+			}
+			merged.ResolutionState = runtimeIntentResolutionResolvedFromContext
+			merged.ResolvedText = buildJevActiveGoalText(contextText, task.Text)
+		} else {
+			merged.ResolutionState = runtimeIntentResolutionClear
+			merged.ResolvedText = merged.Text
+		}
+		merged.ReplyStrategy = jevReplyStrategy(merged.DialogueAct, merged.Objective)
+		merged.NeedsKnowledge = merged.NeedsKnowledge || task.NeedsKnowledge
+		merged.NeedsTool = merged.NeedsTool || task.NeedsTool
+		for _, ref := range task.SourceRefs {
+			merged.SourceRefs = appendIfMissing(merged.SourceRefs, ref)
+		}
+		for _, entity := range task.Entities {
+			if !jevIntentEntitiesContain(merged.Entities, entity) {
+				merged.Entities = append(merged.Entities, entity)
+			}
+		}
+		if merged.SubIntent != "order_detail" && task.SubIntent == "order_detail" {
+			merged.SubIntent = task.SubIntent
+		}
+	}
+	return ret
+}
+
+func shouldMergeJevCompositeIntentTasks(left, right callbacks.IntentTaskTraceData) bool {
+	leftFamily := jevCompositeIntentTaskFamily(left.SubIntent)
+	if leftFamily == "" || leftFamily != jevCompositeIntentTaskFamily(right.SubIntent) ||
+		canonicalIntentCode(left.Intent) != canonicalIntentCode(right.Intent) ||
+		left.NeedsResource || right.NeedsResource || left.NeedsHumanRoute || right.NeedsHumanRoute {
+		return false
+	}
+	if len(left.SourceRefs) == 0 || len(right.SourceRefs) == 0 ||
+		strings.TrimSpace(left.SourceRefs[0]) != strings.TrimSpace(right.SourceRefs[0]) {
+		return false
+	}
+	for _, task := range []callbacks.IntentTaskTraceData{left, right} {
+		switch strings.TrimSpace(task.RelationToPrevious) {
+		case "", "independent", "follow_up", "clarification_answer", "reference_previous":
+		default:
+			return false
+		}
+		switch strings.TrimSpace(task.ResolutionState) {
+		case "", runtimeIntentResolutionClear, runtimeIntentResolutionResolvedFromContext:
+		default:
+			return false
+		}
+	}
+	for _, entityType := range []string{runtimeIntentEntityCustomerPhone, runtimeIntentEntityOrderLocator} {
+		leftValue := strings.TrimSpace(runtimeIntentEntityValue(left.Entities, entityType))
+		rightValue := strings.TrimSpace(runtimeIntentEntityValue(right.Entities, entityType))
+		if leftValue != "" && rightValue != "" && leftValue != rightValue {
+			return false
+		}
+	}
+	return true
+}
+
+func firstJevContextRelation(values ...string) string {
+	for _, value := range values {
+		switch strings.TrimSpace(value) {
+		case "follow_up", "clarification_answer", "reference_previous":
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func jevCompositeIntentTaskFamily(subIntent string) string {
+	switch strings.TrimSpace(subIntent) {
+	case "order_query", "order_detail", "order_status", "check_in_status", "check_out_status":
+		return "order"
+	default:
+		return ""
+	}
+}
+
+func mergeJevCurrentTaskText(left, right string) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" {
+		return right
+	}
+	if right == "" || left == right {
+		return left
+	}
+	return left + right
+}
+
+func jevIntentEntitiesContain(entities []callbacks.IntentEntityTraceData, candidate callbacks.IntentEntityTraceData) bool {
+	for _, entity := range entities {
+		if strings.TrimSpace(entity.Type) == strings.TrimSpace(candidate.Type) &&
+			strings.TrimSpace(entity.Text) == strings.TrimSpace(candidate.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyJevRouteToTask(task *callbacks.IntentTaskTraceData, route string, policyRequired bool) {
