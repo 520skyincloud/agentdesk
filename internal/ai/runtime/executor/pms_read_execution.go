@@ -215,7 +215,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			continue
 		}
 		input := runtimePMSReadPlanInputForTask(*task, sessionLocator, now)
-		if input.TargetRoomTypeText != "" && runtimePMSTargetRoomTypeText(*task) == "" {
+		if input.TargetRoomTypeText != "" && runtimeIntentEntityValue(task.Entities, runtimeIntentEntityTargetRoomType) == "" {
 			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityTargetRoomType, input.TargetRoomTypeText)
 		}
 		plan := buildPMSReadPlan(input)

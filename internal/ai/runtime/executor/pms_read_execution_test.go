@@ -1378,6 +1378,29 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 	}
 }
 
+func TestApplyRuntimePMSReadPlansPersistsResolvedTargetRoomTypeEntity(t *testing.T) {
+	resolved := "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：那换沐阳吧\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间"
+	intent := callbacks.IntentTraceData{
+		NeedsTool: true, ToolCodes: []string{toolx.BuiltinPMSQuery.Code},
+		IntentTasks: []callbacks.IntentTaskTraceData{{Intent: "hotel_info", SubIntent: "room_change", NeedsTool: true}},
+	}
+	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "room_change", Objective: "recommendation",
+		OriginalText: "房号我也不懂，你随便帮我选一间", Text: resolved, ResolvedText: resolved,
+		NeedsTool: true, OutputKind: "text", ReplyRequired: true,
+	}}}
+	_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(
+		context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, nil,
+		time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local), &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{}},
+	)
+	if !handled {
+		t.Fatal("room-change PMS plan was not handled")
+	}
+	if got := runtimeIntentEntityValue(gotPlan.TaskPlans[0].Entities, runtimeIntentEntityTargetRoomType); got != "沐阳" {
+		t.Fatalf("resolved target room type was not persisted for the next customer turn: %#v", gotPlan.TaskPlans[0])
+	}
+}
+
 func TestRuntimePMSKnowledgeHandoffUsesPMSFactsBeforeSameTaskTransfer(t *testing.T) {
 	invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 		"reserve_order_by_phone": {{Status: pmsReadStepOK, Data: map[string]any{"reserveOrderId": "RES-1", "roomName": "大床房"}}},
