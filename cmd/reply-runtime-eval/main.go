@@ -1392,7 +1392,7 @@ func productExperienceScenarios() []scenario {
 				textOutcome("房间号", "房间号", "楼层房间号"),
 			}),
 			customerTurn("那你直接帮我下单吧", []outcomeRequirement{
-				textOutcome("代下单边界", "不能直接代下单", "没法直接代下单", "无法直接代下单", "不能帮您下单"),
+				textOutcome("代下单边界", "不能直接代下单", "没法直接代下单", "无法直接代下单", "不能帮您下单", "没法直接替您完成"),
 			}),
 		},
 	}

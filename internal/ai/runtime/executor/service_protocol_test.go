@@ -99,7 +99,7 @@ func TestPrepareGroundedPMSDirectCommit(t *testing.T) {
 	}
 }
 
-func TestPrepareGroundedPMSDirectCommitKeepsIncompleteOrMixedTasksOnGenerate(t *testing.T) {
+func TestPrepareGroundedPMSDirectCommitKeepsUnansweredOrMixedTasksOnGenerate(t *testing.T) {
 	answer := "沐阳在您当前入住期间还有房。"
 	baseTask := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change",
@@ -112,8 +112,9 @@ func TestPrepareGroundedPMSDirectCommitKeepsIncompleteOrMixedTasksOnGenerate(t *
 		plan   callbacks.ReplyPlanTraceData
 	}{
 		{name: "pending tool", intent: callbacks.IntentTraceData{NeedsTool: true}, plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{baseTask}}},
-		{name: "missing aspect", plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{func() callbacks.ReplyTaskPlanTraceData {
+		{name: "missing aspect without answer", plan: callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{func() callbacks.ReplyTaskPlanTraceData {
 			task := baseTask
+			task.AnswerText = nil
 			task.MissingAspects = []string{"目标日期库存暂未确认"}
 			return task
 		}()}}},

@@ -599,7 +599,7 @@ func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildRes
 func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocator {
 	locator := runtimePMSSessionLocator{}
 	for _, recent := range runtimeRecentRunTraces(req) {
-		if strings.TrimSpace(recent.Log.FinalStatus) != "completed" {
+		if strings.TrimSpace(recent.Log.FinalStatus) != "completed" && strings.TrimSpace(recent.Runtime.Status) != "completed" {
 			continue
 		}
 		if !runtimeTraceHasSuccessfulPMSRead(recent.Runtime) {

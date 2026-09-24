@@ -618,15 +618,17 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 	hasPMSFact := false
 	for _, task := range plan.TaskPlans {
 		if !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-			strings.TrimSpace(task.OutputKind) != "text" || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
-			len(task.SupportedFacts) == 0 {
+			strings.TrimSpace(task.OutputKind) != "text" || len(task.SupportedFacts) == 0 {
 			return false
 		}
-		if len(task.MissingAspects) > 0 &&
-			!(runtimePMSTaskAsksRoomExplanation(task) && deterministicPMSMissingBoundary(plan, task.TaskID) != "") {
+		pmsTask := runtimeReplyTaskHasPMSFact(task)
+		if (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "") && deterministicPMSRoomExplanation(task) == "" {
 			return false
 		}
-		hasPMSFact = hasPMSFact || runtimeReplyTaskHasPMSFact(task)
+		if !pmsTask && len(task.MissingAspects) > 0 {
+			return false
+		}
+		hasPMSFact = hasPMSFact || pmsTask
 	}
 	if !hasPMSFact {
 		return false
@@ -640,7 +642,7 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 		task := plan.TaskPlans[index]
 		reply := ""
 		if runtimePMSTaskAsksRoomExplanation(task) {
-			reply = deterministicPMSMissingBoundary(plan, task.TaskID)
+			reply = deterministicPMSRoomExplanation(task)
 		}
 		if reply == "" && runtimeReplyTaskHasPMSFact(task) {
 			var err error
@@ -689,10 +691,13 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 		return false
 	}
 	for _, task := range plan.TaskPlans {
-		if strings.TrimSpace(task.Intent) != "hotel_info" || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-			strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" ||
-			task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 ||
-			isKnowledgeHandoffDirectiveContent(*task.AnswerText) {
+		externalProxy := isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
+		if (!externalProxy && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+			strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" || len(task.MissingAspects) > 0 {
+			return false
+		}
+		if !externalProxy && (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 ||
+			isKnowledgeHandoffDirectiveContent(*task.AnswerText)) {
 			return false
 		}
 		switch relation := strings.TrimSpace(task.RelationToPrevious); relation {
@@ -731,8 +736,10 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 		if strings.Contains(trimmedReply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(trimmedReply))) {
 			return false
 		}
-		if err := validateGeneratedReplyFactAspectBoundaries(reply, group.Facts); err != nil {
-			return false
+		if !group.ExternalProxyAction {
+			if err := validateGeneratedReplyFactAspectBoundaries(reply, group.Facts); err != nil {
+				return false
+			}
 		}
 		parts = append(parts, reply)
 	}

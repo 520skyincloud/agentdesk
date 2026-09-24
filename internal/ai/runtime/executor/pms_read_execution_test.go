@@ -112,14 +112,12 @@ func TestRuntimePMSReadPlanInputUsesCurrentAndSessionLocators(t *testing.T) {
 }
 
 func TestPrepareGroundedPMSDirectCommitAnswersRoomExplanationWithoutGenerate(t *testing.T) {
-	answer := "当前可选房型有儿童房、橙意和沐阳。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "task-room-explanation", Intent: "hotel_info", SubIntent: "room_change", Objective: "explanation",
 		OriginalText: "这些房都是什么意思，我不太懂", Text: "这些房都是什么意思，我不太懂",
-		OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true, AnswerText: &answer,
+		OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
 		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "儿童房、橙意和沐阳有房"}},
-		MissingAspects: []string{"targetRoomTypeId: 目标房型未指定"},
 	}}}
 	summary := &RunResult{}
 	if !prepareGroundedPMSDirectCommit(summary, collector) {
@@ -128,6 +126,22 @@ func TestPrepareGroundedPMSDirectCommitAnswersRoomExplanationWithoutGenerate(t *
 	want := "这些是酒店的房型名称。您更在意床型、空间还是楼层？我可以按您的需求帮您挑一个。"
 	if summary.ReplyText != want {
 		t.Fatalf("unexpected customer explanation: got=%q want=%q", summary.ReplyText, want)
+	}
+}
+
+func TestPrepareGroundedPMSDirectCommitKeepsKnownPriceFactsWhenDifferenceIsMissing(t *testing.T) {
+	answer := "您当前订单金额是376.00元，但沐阳的实时房价没有显示，所以现在还算不出准确差价，我先不乱报。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-price", Intent: "hotel_info", SubIntent: "price_difference", Objective: "price",
+		OriginalText: "那要补多少钱", Text: "那要补多少钱", OutputKind: "text", Output: "text_reply", ReplyRequired: true,
+		AnswerText:     &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_order_recept", Statement: "当前订单金额376.00元"}},
+		MissingAspects: []string{"目标房型的实时价格未返回"},
+	}}}
+	summary := &RunResult{}
+	if !prepareGroundedPMSDirectCommit(summary, collector) || summary.ReplyText != answer {
+		t.Fatalf("known price facts must be sent directly instead of being reduced by Generate: %#v %q", summary, summary.ReplyText)
 	}
 }
 

@@ -173,7 +173,7 @@ func TestRuntimePMSSessionLocatorUsesProductionTraceAcrossIntentAndReplyPlan(t *
 	}
 	if err := db.Create(&models.AgentRunLog{
 		ConversationID: conversation.ID, MessageID: source.ID, AIAgentID: 92,
-		FinalStatus: "completed", TraceData: runtimeProductionPMSOrderTraceFixture(),
+		FinalStatus: "runtime_prepared", TraceData: runtimeProductionPMSOrderTraceFixture(),
 	}).Error; err != nil {
 		t.Fatalf("create production-style run log: %v", err)
 	}

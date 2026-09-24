@@ -573,7 +573,7 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 		}
 		switch {
 		case runtimePMSTaskAsksRoomExplanation(task):
-			return "这些是酒店的房型名称。您更在意床型、空间还是楼层？我可以按您的需求帮您挑一个。"
+			return deterministicPMSRoomExplanation(task)
 		case strings.Contains(missing, "PMS 查询暂时不可用") || strings.Contains(missing, "PMS 查询请求失败") || strings.Contains(missing, "查询步骤未执行"):
 			return deterministicPMSUnavailableReply(task)
 		case strings.Contains(missing, "多条匹配订单"):
@@ -592,6 +592,13 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 		return "当前查询信息还不完整，我暂时不能确认这一部分。"
 	}
 	return ""
+}
+
+func deterministicPMSRoomExplanation(task callbacks.ReplyTaskPlanTraceData) string {
+	if !runtimePMSTaskAsksRoomExplanation(task) {
+		return ""
+	}
+	return "这些是酒店的房型名称。您更在意床型、空间还是楼层？我可以按您的需求帮您挑一个。"
 }
 
 func deterministicPMSUnavailableReply(task callbacks.ReplyTaskPlanTraceData) string {

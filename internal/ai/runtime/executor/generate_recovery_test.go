@@ -284,6 +284,25 @@ func TestDeterministicGeneratedReplyFallbackUsesOnlyBoundaryWithoutExternalProxy
 	}
 }
 
+func TestPrepareGroundedKnowledgeDirectCommitHandlesExternalProxyWithoutGenerate(t *testing.T) {
+	answer := "外卖地址填写丽斯未来酒店合肥南七店加楼层房间号。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-proxy", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		OriginalText: "那你直接帮我下单吧", Text: "那你直接帮我下单吧", OutputKind: "text", Output: "knowledge_text_reply",
+		ReplyRequired: true, NeedsKnowledge: true, AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "F1", Aspect: "location", Statement: answer}},
+	}}}
+	summary := &RunResult{}
+	if !prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("external proxy boundary should be committed directly after Judge")
+	}
+	want := externalProxyActionCapabilityBoundaryReply + answer
+	if summary.ReplyText != want {
+		t.Fatalf("unexpected external proxy direct reply: got=%q want=%q", summary.ReplyText, want)
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackCompactsContainedComplementaryFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
