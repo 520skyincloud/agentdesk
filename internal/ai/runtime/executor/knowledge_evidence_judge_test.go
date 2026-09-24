@@ -1465,8 +1465,8 @@ func TestBuildKnowledgeEvidenceJudgeTasksBudgetsAfterMultiFAQExpansion(t *testin
 	if len(tasks) != 1 || len(tasks[0].RawCandidates) != 30 {
 		t.Fatalf("all FAQ units must be available to pre-budget candidate selection: %#v", tasks)
 	}
-	if len(tasks[0].Candidates) != knowledgeEvidenceJudgeBatchCandidateBudget {
-		t.Fatalf("expanded candidates must still obey the shared %d-item Judge budget, got %d", knowledgeEvidenceJudgeBatchCandidateBudget, len(tasks[0].Candidates))
+	if len(tasks[0].Candidates) != knowledgeEvidenceJudgeDefaultTaskCandidates {
+		t.Fatalf("expanded single task must obey the %d-item per-task Judge budget, got %d", knowledgeEvidenceJudgeDefaultTaskCandidates, len(tasks[0].Candidates))
 	}
 	if len(batch.Questions[0].Result.RawHits) != 1 || batch.Questions[0].Result.RawHits[0].Content != rawContent {
 		t.Fatalf("budgeting expanded Judge candidates must not rewrite Retriever RawHits: %#v", batch.Questions[0].Result.RawHits)

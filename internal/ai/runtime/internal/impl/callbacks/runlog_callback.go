@@ -222,7 +222,8 @@ func (c *RuntimeTraceCollector) AddToolItem(item ToolTraceItem) {
 		if action, ok := item.Arguments["action"].(string); ok {
 			switch action {
 			case "reserve_order_detail", "recept_order_detail", "reserve_order_by_phone", "recept_order_by_phone",
-				"room_status", "inventory", "renew_candidates", "renew", "member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
+				"room_status", "inventory", "stay_room_availability", "renew_candidates", "renew",
+				"member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
 				arguments["action"] = action
 			}
 		}

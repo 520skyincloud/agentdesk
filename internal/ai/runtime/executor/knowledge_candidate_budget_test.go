@@ -42,6 +42,21 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetWeightsCompoundTasks(t *testing.T)
 	}
 }
 
+func TestKnowledgeEvidenceJudgeCandidateBudgetCapsSingleTaskBeforeBatchLimit(t *testing.T) {
+	task := candidateBudgetTask("T1", 10)
+	limited := limitKnowledgeEvidenceJudgeTaskCandidates(
+		[]knowledgeEvidenceJudgeTask{task},
+		map[string]string{"T1": "availability"},
+		knowledgeEvidenceJudgeBatchCandidateBudget,
+	)
+	if len(limited) != 1 || len(limited[0].Candidates) != knowledgeEvidenceJudgeDefaultTaskCandidates {
+		t.Fatalf("single ordinary task must use its per-task Judge budget: %#v", limited)
+	}
+	if len(limited[0].RawCandidates) != 10 {
+		t.Fatalf("single-task prompt cap must retain raw candidates for conflict checks: %#v", limited[0].RawCandidates)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeCompoundQuotaKeepsThirdStoreFactAndGeneralFallback(t *testing.T) {
 	task := knowledgeEvidenceJudgeTask{
 		TaskID: "T1",
@@ -683,7 +698,7 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetKeepsContextDependentShortAnswers(
 	}
 }
 
-func TestKnowledgeEvidenceJudgeCandidateBudgetStaysAtBatchLimitWithStableDiversity(t *testing.T) {
+func TestKnowledgeEvidenceJudgeCandidateBudgetCapsSingleCompoundTaskWithStableDiversity(t *testing.T) {
 	candidates := make([]knowledgeEvidenceJudgeCandidate, 0, 32)
 	for index := 1; index <= 32; index++ {
 		questionNumber := index
@@ -705,8 +720,8 @@ func TestKnowledgeEvidenceJudgeCandidateBudgetStaysAtBatchLimitWithStableDiversi
 		Query:      "停车规则",
 		Candidates: candidates,
 	}}, map[string]string{"T1": "compound_information"}, knowledgeEvidenceJudgeBatchCandidateBudget)
-	if len(limited) != 1 || len(limited[0].Candidates) != knowledgeEvidenceJudgeBatchCandidateBudget {
-		t.Fatalf("candidate budget must stay at %d after dedupe, got %#v", knowledgeEvidenceJudgeBatchCandidateBudget, limited)
+	if len(limited) != 1 || len(limited[0].Candidates) != knowledgeEvidenceJudgeCompoundTaskCandidates {
+		t.Fatalf("single compound task must stay at %d candidates after dedupe, got %#v", knowledgeEvidenceJudgeCompoundTaskCandidates, limited)
 	}
 	if limited[0].Candidates[0].CandidateID != "T1C1" {
 		t.Fatalf("highest-score candidate must remain first, got %#v", limited[0].Candidates)

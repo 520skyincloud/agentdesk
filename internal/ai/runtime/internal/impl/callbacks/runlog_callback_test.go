@@ -66,6 +66,21 @@ func TestRuntimeTraceCollectorKeepsCompositeMemberQueryAction(t *testing.T) {
 	}
 }
 
+func TestRuntimeTraceCollectorKeepsStayRoomAvailabilityAction(t *testing.T) {
+	collector := NewRuntimeTraceCollector()
+	collector.AddToolItem(ToolTraceItem{
+		ToolCode: toolx.BuiltinPMSQuery.Code,
+		Arguments: map[string]any{
+			"action":     "stay_room_availability",
+			"roomTypeId": "private-room-type",
+		},
+	})
+	if collector.Data.Tools.Items[0].Arguments["action"] != "stay_room_availability" ||
+		strings.Contains(collector.Marshal(), "private-room-type") {
+		t.Fatal("stay availability trace lost its safe action or leaked lookup data")
+	}
+}
+
 func TestRuntimeTraceCollectorDeepCopiesEvidenceAndReplyPlanFacts(t *testing.T) {
 	collector := NewRuntimeTraceCollector()
 	fact := KnowledgeEvidenceFactTraceData{

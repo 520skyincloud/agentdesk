@@ -1053,6 +1053,21 @@ func limitKnowledgeEvidenceJudgeTaskCandidates(tasks []knowledgeEvidenceJudgeTas
 	if budget <= 0 {
 		return nil
 	}
+	if len(prepared) == 1 {
+		target := knowledgeEvidenceJudgeDefaultTaskCandidates
+		preferDiversity := semanticGateNormalizeObjective(taskObjectives[strings.TrimSpace(prepared[0].TaskID)]) == "compound_information"
+		if preferDiversity {
+			target = knowledgeEvidenceJudgeCompoundTaskCandidates
+		}
+		if target > budget {
+			target = budget
+		}
+		if len(prepared[0].Candidates) > target {
+			item := prepared[0]
+			item.Candidates = selectKnowledgeEvidenceJudgeTaskCandidates(item, target, preferDiversity)
+			return []knowledgeEvidenceJudgeTask{item}
+		}
+	}
 	if total <= budget {
 		return prepared
 	}

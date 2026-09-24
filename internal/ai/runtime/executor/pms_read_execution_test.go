@@ -857,7 +857,10 @@ func TestRuntimePMSCustomerAnswerUsesTheCustomersActualGoal(t *testing.T) {
 	if roomTypeAndCheckout != "查到了，您订的是儿童房，9月25日12点前退房。" {
 		t.Fatalf("compound room type and checkout answer lost a requested field: %q", roomTypeAndCheckout)
 	}
-	roomNumberAndCheckIn := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "房号和入住日期呢？"}, orderResult)
+	roomNumberAndCheckIn := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{
+		OriginalText: "房号和入住日期呢？",
+		ResolvedText: "查询当前订单的房号、入住日期和上一轮退房时间",
+	}, orderResult)
 	if roomNumberAndCheckIn != "查到了，当前安排的房号是V05，入住时间是9月23日14点。" {
 		t.Fatalf("compound room number and check-in answer lost a requested field: %q", roomNumberAndCheckIn)
 	}

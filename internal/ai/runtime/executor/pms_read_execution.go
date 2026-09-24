@@ -1833,7 +1833,21 @@ type runtimePMSOrderFieldProjection struct {
 }
 
 func runtimePMSOrderFieldProjections(task callbacks.ReplyTaskPlanTraceData) []runtimePMSOrderFieldProjection {
-	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	currentText := firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
+	current := runtimePMSOrderFieldProjectionsForText(currentText)
+	for _, projection := range current {
+		if projection.match {
+			return current
+		}
+	}
+	resolvedText := strings.TrimSpace(task.ResolvedText)
+	if resolvedText != "" && runtimePMSNormalizedTaskText(resolvedText) != runtimePMSNormalizedTaskText(currentText) {
+		return runtimePMSOrderFieldProjectionsForText(resolvedText)
+	}
+	return current
+}
+
+func runtimePMSOrderFieldProjectionsForText(text string) []runtimePMSOrderFieldProjection {
 	return []runtimePMSOrderFieldProjection{
 		{
 			aspect: "pms_order_room_type", label: "当前订单房型",
