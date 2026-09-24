@@ -1318,6 +1318,6 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - JEV 继续作为意图识别入口，不新增模型阶段或本地语义判断门。当前明确问题优先；只有“放在哪里、多少钱、到几号、哪个好、那就这个”等省略表达才使用同 session 最近唯一业务目标。消息明确点名新主题时不继承旧目标；纠正或修改会替换旧补充值，但保留已确认的订单定位等结构化基础事实。
 - 活跃目标文本只保留最多三条基础信息和最近两条有效补充，避免整段历史不断累积。个人表达“我的房到几号/住到几号”按订单离店日期处理，不再误识别为房号询问。
 - 换房只读流程在客户要求推荐时给出一个真实候选；客户选择具体候选房号后继续核对可用性和差价，并明确当前只完成查询、尚未实际换房。没有开放 PMS 写入。
-- 单个知识 Task 的 Judge 输出预算收敛为协议所需的 `1024` tokens；多 Task 仍保留现有上限。Judge 继续负责知识语义裁决，没有增加本地语义旁路。
+- Judge 继续负责知识语义裁决，没有增加本地语义旁路。test-2 曾隔离对比单题 `1024` 输出预算及现有轻量模型；输出预算未改善 Luna 的实际延迟，DeepSeek、Qwen 和豆包候选均未稳定产出当前 Judge 协议，因此代码恢复原输出预算、线上恢复 `gpt-5.6-luna`，不保留无收益的配置改动。
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变更。`customer-audit` 只与本交接文档存在同文件追加，合并时保留双方记录；`ai-billing` 无同文件修改。
 - 自动验证通过：`go test -p=1 ./internal/ai/runtime/executor -count=1`、`go test -p=1 ./internal/ai/runtime/internal/impl/callbacks ./internal/ai/runtime -count=1`、`go test -p=1 ./internal/services ./internal/pms ./internal/pkg/utils -count=1`，以及 Linux amd64 构建和 `git diff --check`。
