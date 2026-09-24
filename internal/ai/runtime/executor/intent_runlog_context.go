@@ -77,6 +77,9 @@ func runtimeRecentUniqueBusinessTaskForRequest(req RunInput) *runtimeRecentBusin
 		candidates := runtimeTraceBusinessTasks(recent.Runtime)
 		switch len(candidates) {
 		case 0:
+			if runtimeTraceBlocksEarlierBusinessContext(recent.Runtime) {
+				return nil
+			}
 			continue
 		case 1:
 			return &runtimeRecentBusinessTask{RunLogID: recent.Log.ID, Task: candidates[0]}
@@ -87,6 +90,27 @@ func runtimeRecentUniqueBusinessTaskForRequest(req RunInput) *runtimeRecentBusin
 		}
 	}
 	return nil
+}
+
+func runtimeTraceBlocksEarlierBusinessContext(trace callbacks.RuntimeTraceData) bool {
+	tasks := trace.Pipeline.Intent.IntentTasks
+	if len(tasks) == 0 {
+		return false
+	}
+	for _, task := range tasks {
+		if canonicalIntentCode(task.Intent) != "interaction" {
+			return false
+		}
+		if strings.TrimSpace(task.RelationToPrevious) != "independent" ||
+			strings.TrimSpace(task.ResolutionState) == runtimeIntentResolutionResolvedFromContext {
+			return false
+		}
+		switch strings.TrimSpace(task.SubIntent) {
+		case "frustration", "answer_rejected":
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeTraceBusinessTasks(trace callbacks.RuntimeTraceData) []callbacks.ReplyTaskPlanTraceData {
@@ -119,10 +143,7 @@ func runtimeReplyTaskIsBusinessContext(task callbacks.ReplyTaskPlanTraceData) bo
 	if strings.TrimSpace(task.OutputKind) == "context_only" || canonicalIntentCode(task.Intent) == "interaction" {
 		return false
 	}
-	if task.NeedsResource || task.NeedsHumanRoute || strings.TrimSpace(task.OutputKind) == "resource" {
-		return false
-	}
-	if task.Intent == "service_request" && task.SubIntent == "create_ticket" {
+	if task.NeedsHumanRoute || strings.TrimSpace(task.OutputKind) == "handoff" {
 		return false
 	}
 	return strings.TrimSpace(task.Intent) != ""

@@ -130,6 +130,39 @@ func TestPrepareGroundedPMSDirectCommitKeepsIncompleteOrMixedTasksOnGenerate(t *
 	}
 }
 
+func TestPrepareGroundedPMSDirectCommitCombinesCompletePMSAndKnowledgeTasks(t *testing.T) {
+	pmsAnswer := "查到了，您这笔订单是9月25日12点前退房。"
+	parkingAnswer := "酒店提供免费停车服务，设有地上地下停车场。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsKnowledge: true}
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{
+		{
+			TaskID: "task-1", Intent: "hotel_info", SubIntent: "order_detail",
+			OutputKind: "text", Output: "text_reply", ReplyRequired: true, AnswerText: &pmsAnswer,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+				FactID: "P1F1", Aspect: "pms_order_recept", Statement: "PMS 当前接待单离店时间为2026-09-25 12:00:00。", CriticalValues: []string{"2026-09-25 12:00:00"},
+			}},
+		},
+		{
+			TaskID: "task-2", Intent: "hotel_info", SubIntent: "parking",
+			NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
+			SelectedLayer: "store", AnswerText: &parkingAnswer,
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+				FactID: "task-2F1", Aspect: "price", Statement: parkingAnswer, CriticalValues: []string{"免费停车服务", "地上地下停车场"},
+			}},
+		},
+	}}
+	summary := &RunResult{Status: "started"}
+
+	if !prepareGroundedPMSDirectCommit(summary, collector) {
+		t.Fatal("complete PMS and knowledge tasks should skip redundant Generate")
+	}
+	want := pmsAnswer + "\n<<NEXT_MESSAGE>>\n" + parkingAnswer
+	if summary.ReplyText != want {
+		t.Fatalf("mixed direct reply changed task order: got %q want %q", summary.ReplyText, want)
+	}
+}
+
 func TestPrepareGroundedIndependentKnowledgeDirectCommitPreservesTaskOrder(t *testing.T) {
 	nearbyAnswer := "附近有罍街、包公园（包公祠）和逍遥津公园等游玩地点。"
 	parkingAnswer := "酒店提供免费停车服务，设有地上地下停车场。"
@@ -165,7 +198,7 @@ func TestPrepareGroundedIndependentKnowledgeDirectCommitPreservesTaskOrder(t *te
 	}
 }
 
-func TestPrepareGroundedIndependentKnowledgeDirectCommitKeepsContextAndToolTasksOnGenerate(t *testing.T) {
+func TestPrepareGroundedIndependentKnowledgeDirectCommitHandlesSafeContextFollowup(t *testing.T) {
 	answer := "酒店提供速溶咖啡。"
 	baseTask := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "store_knowledge",
@@ -175,11 +208,16 @@ func TestPrepareGroundedIndependentKnowledgeDirectCommitKeepsContextAndToolTasks
 		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "task-1F1", Aspect: "existence", Statement: answer}},
 	}
 	tests := []struct {
-		name   string
-		intent callbacks.IntentTraceData
-		mutate func(*callbacks.ReplyTaskPlanTraceData)
+		name       string
+		intent     callbacks.IntentTraceData
+		mutate     func(*callbacks.ReplyTaskPlanTraceData)
+		wantDirect bool
 	}{
-		{name: "context follow up", intent: callbacks.IntentTraceData{NeedsKnowledge: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.RelationToPrevious = "follow_up" }},
+		{name: "context follow up", intent: callbacks.IntentTraceData{NeedsKnowledge: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) {
+			task.DialogueAct = "follow_up"
+			task.RelationToPrevious = "follow_up"
+			task.ResolutionState = runtimeIntentResolutionResolvedFromContext
+		}, wantDirect: true},
 		{name: "tool task", intent: callbacks.IntentTraceData{NeedsKnowledge: true, NeedsTool: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.NeedsTool = true }},
 		{name: "partial evidence", intent: callbacks.IntentTraceData{NeedsKnowledge: true}, mutate: func(task *callbacks.ReplyTaskPlanTraceData) { task.MissingAspects = []string{"取用时间"} }},
 	}
@@ -190,8 +228,9 @@ func TestPrepareGroundedIndependentKnowledgeDirectCommitKeepsContextAndToolTasks
 			collector := callbacks.NewRuntimeTraceCollector()
 			collector.Data.Pipeline.Intent = tt.intent
 			collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}
-			if prepareGroundedIndependentKnowledgeDirectCommit(&RunResult{Status: "started"}, collector) {
-				t.Fatal("contextual, tool or partial task must still use the normal Generate path")
+			got := prepareGroundedIndependentKnowledgeDirectCommit(&RunResult{Status: "started"}, collector)
+			if got != tt.wantDirect {
+				t.Fatalf("direct commit=%v, want %v", got, tt.wantDirect)
 			}
 		})
 	}

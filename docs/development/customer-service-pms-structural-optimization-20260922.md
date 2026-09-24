@@ -7,6 +7,37 @@
 **test-2 实施前程序：** `/opt/agentdesk/releases/20260923-pms-runtime-225f57f`
 **本文件性质：** 分析、实施边界与验收记录。
 
+## 2026-09-24 JEV 上下文与回复性能实施记录
+
+本轮目标是解决客户短回复无法承接、上下文持续膨胀以及已确认答案仍重复调用 Generate 的
+产品问题。改动仅涉及：
+
+- `internal/ai/runtime/executor/jev_intent_detector.go`
+- `internal/ai/runtime/executor/intent_runlog_context.go`
+- `internal/ai/runtime/executor/service.go`
+- 对应 executor 测试
+
+实施结果：
+
+- 单目标消息在一次 JEV 请求中同时完成目标数量判断与分类；多目标消息继续使用原边界协议。
+- JEV 输入限制为最近八条有界历史，并使用“原始业务目标 + 最近两条去重补充”的快照，避免
+  `resolvedText` 在连续追问中递归增长。
+- “放在哪里”“1501”“上面那个”“不是这个”等短回复，只有在 JEV 明确选择最近业务 Task，
+  且关系属于追问、选择、确认、纠正或不满时，才继承上一业务路由；完整新主题保持独立。
+- 独立招呼或闲聊成为旧主题屏障；对上一答复的拒绝和不满继续保留当前业务目标。
+- 完整的 Judge 知识答案和完整的 PMS + 知识多 Task 答案通过发送安全后直接 Commit，减少
+  一次 Generate 往返；缺失事实、资源、人工、待调用工具及不安全结果不进入快路径。
+
+本轮没有修改 model、Migration、DTO、enum、路由、WebSocket、数据库、外部 API、企微协议、
+计费、Outbox 或 PMS 配置；HPMS 仍为只读，写操作保持关闭。并行分支检查结果：
+`origin/codex/customer-audit` 与 `origin/codex/ai-billing` 未修改本轮三个运行文件，无需约定
+额外合并顺序。回滚只需切回上一程序 release，不恢复数据库，也不触碰“薇薇/薇薇2”备份。
+
+验证记录：executor 连续两轮、services 单轮、pkg/utils 单轮均通过；真实 JEV 14 个场景通过，
+单问题意图调用约 0.31-0.87 秒，六问题约 1.91 秒。最终线上会话验收需在部署后检查咖啡位置
+追问、订单退房追问、房型选择后询价、PMS 与停车混合问题及明确人工五类场景，并核对回复
+自然度、上下文长度、内部信息泄漏、重复索要手机号和投递耗时。
+
 ## 0. 2026-09-23 实施收口
 
 本轮已按下述结构方案完成运行代码修改，尚未改变数据库结构、外部 API、企微协议、

@@ -113,6 +113,25 @@ func TestJevStateUsesRecentUniqueBusinessTaskFromSameSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeIndependentInteractionBlocksStaleBusinessContext(t *testing.T) {
+	trace := callbacks.RuntimeTraceData{}
+	trace.Pipeline.Intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+		Intent: "interaction", SubIntent: "acknowledgement", Text: "你好",
+		RelationToPrevious: "independent", ResolutionState: runtimeIntentResolutionClear,
+	}}
+	if !runtimeTraceBlocksEarlierBusinessContext(trace) {
+		t.Fatal("an independent greeting must stop stale business context lookup")
+	}
+
+	trace.Pipeline.Intent.IntentTasks[0].SubIntent = "frustration"
+	trace.Pipeline.Intent.IntentTasks[0].Text = "你没回答我的问题"
+	trace.Pipeline.Intent.IntentTasks[0].RelationToPrevious = "answer_rejected"
+	trace.Pipeline.Intent.IntentTasks[0].ResolutionState = runtimeIntentResolutionResolvedFromContext
+	if runtimeTraceBlocksEarlierBusinessContext(trace) {
+		t.Fatal("a contextual rejection must preserve the active business goal")
+	}
+}
+
 func TestRuntimePMSSessionLocatorUsesProductionTraceAcrossIntentAndReplyPlan(t *testing.T) {
 	db := setupRuntimeIntentConfigTestDB(t)
 	conversation := models.Conversation{ID: 8301}

@@ -126,7 +126,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		collector.Data.Output.ReplyText = summary.ReplyText
 		collector.Data.Output.FinishReason = "grounded_pms_direct_commit"
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "single PMS task already has a customer-safe answer projected from structured query results"
+		collector.Data.Pipeline.Generate.Reason = "all reply tasks have customer-safe answers grounded by structured PMS or Judge evidence"
 		collector.Data.Pipeline.Validate.Status = "passed"
 		collector.Data.Pipeline.Validate.Reason = "structured PMS answer passed protocol and send-safety validation"
 		summary.TraceData = collector.Marshal()
@@ -137,9 +137,9 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.ModelName = req.AIConfig.ModelName
 		collector.Data.Status = summary.Status
 		collector.Data.Output.ReplyText = summary.ReplyText
-		collector.Data.Output.FinishReason = "grounded_independent_knowledge_direct_commit"
+		collector.Data.Output.FinishReason = "grounded_knowledge_direct_commit"
 		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "independent knowledge tasks already have complete Judge-grounded customer answers"
+		collector.Data.Pipeline.Generate.Reason = "knowledge tasks already have complete Judge-grounded customer answers, including resolved follow-ups"
 		collector.Data.Pipeline.Validate.Status = "passed"
 		collector.Data.Pipeline.Validate.Reason = "Judge-grounded answer passed protocol and send-safety validation"
 		summary.TraceData = collector.Marshal()
@@ -610,24 +610,55 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 		return false
 	}
 	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) != 1 {
+	if len(plan.TaskPlans) == 0 {
 		return false
 	}
-	task := plan.TaskPlans[0]
-	if !isPMSRuntimeSubIntent(task.SubIntent) || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-		strings.TrimSpace(task.OutputKind) != "text" || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
-		!runtimeReplyTaskHasPMSFact(task) || len(task.MissingAspects) > 0 {
+	hasPMSFact := false
+	for _, task := range plan.TaskPlans {
+		if !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+			strings.TrimSpace(task.OutputKind) != "text" || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
+			len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 {
+			return false
+		}
+		hasPMSFact = hasPMSFact || runtimeReplyTaskHasPMSFact(task)
+	}
+	if !hasPMSFact {
 		return false
 	}
-	reply, err := SanitizeGeneratedReplyText(strings.TrimSpace(*task.AnswerText))
-	if err != nil || reply == "" || strings.Contains(reply, "```") || json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(reply))) {
+	groups := buildTextReplyTaskGroups(plan)
+	if len(groups) != len(plan.TaskPlans) {
 		return false
+	}
+	parts := make([]string, 0, len(groups))
+	for index, group := range groups {
+		task := plan.TaskPlans[index]
+		reply := ""
+		if runtimeReplyTaskHasPMSFact(task) {
+			var err error
+			reply, err = SanitizeGeneratedReplyText(strings.TrimSpace(*task.AnswerText))
+			if err != nil {
+				return false
+			}
+		} else {
+			group.EvidenceLocked = true
+			var err error
+			reply, err = validateLockedReplyContent(group)
+			if err != nil || validateGeneratedReplyFactAspectBoundaries(reply, group.Facts) != nil {
+				return false
+			}
+		}
+		if strings.TrimSpace(reply) == "" || strings.Contains(reply, "```") ||
+			json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(reply))) {
+			return false
+		}
+		parts = append(parts, strings.TrimSpace(reply))
 	}
 	previousOutput := collector.Data.Output
 	previousValidate := collector.Data.Pipeline.Validate
-	summary.ReplyText = reply
+	summary.ReplyText = composeGeneratedReplyContents(parts, 3)
+	expectedReply := summary.ReplyText
 	validation := enforceGeneratedReplyActionLedger(summary, collector)
-	if validation.RequestHandoffConfirmation || summary.ReplyText != reply {
+	if validation.RequestHandoffConfirmation || summary.ReplyText != expectedReply {
 		summary.ReplyText = ""
 		collector.Data.Output = previousOutput
 		collector.Data.Pipeline.Validate = previousValidate
@@ -655,17 +686,23 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 			isKnowledgeHandoffDirectiveContent(*task.AnswerText) {
 			return false
 		}
-		if relation := strings.TrimSpace(task.RelationToPrevious); relation != "" && relation != "independent" {
+		switch relation := strings.TrimSpace(task.RelationToPrevious); relation {
+		case "", "independent", "follow_up", "clarification_answer", "reference_previous", "correction", "modify_previous":
+		default:
 			return false
 		}
-		if act := strings.TrimSpace(task.DialogueAct); act != "" && act != "new_request" {
+		switch act := strings.TrimSpace(task.DialogueAct); act {
+		case "", "new_request", "follow_up", "selection", "confirmation", "correction", "recommendation":
+		default:
 			return false
 		}
-		if state := strings.TrimSpace(task.ResolutionState); state != "" && state != "clear" {
+		switch state := strings.TrimSpace(task.ResolutionState); state {
+		case "", "clear", runtimeIntentResolutionResolvedFromContext:
+		default:
 			return false
 		}
 		switch strategy := strings.TrimSpace(task.ReplyStrategy); strategy {
-		case "", "answer_current_goal", "recommend_one_supported_option":
+		case "", "answer_current_goal", "recommend_one_supported_option", "confirm_selection_and_continue_goal", "continue_confirmed_goal":
 		default:
 			return false
 		}

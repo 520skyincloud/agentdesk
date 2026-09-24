@@ -305,6 +305,72 @@ func TestJevCurrentContextUsesEarlierSpansWithoutChangingSource(t *testing.T) {
 	}
 }
 
+func TestJevActiveGoalContextCompactsRepeatedSupplements(t *testing.T) {
+	contextText := strings.Join([]string{
+		"我想把现在的儿童房换成大床房，完整入住期间有空房吗，差价多少？",
+		"当前客户补充（以本次为准）：那还有其他房型可以换吗",
+		"当前客户补充（以本次为准）：沐阳吧",
+		"当前客户补充（以本次为准）：沐阳吧",
+		"当前客户补充（以本次为准）：沐阳吧",
+	}, "\n")
+	got := buildJevActiveGoalText(contextText, "差价多少")
+	if strings.Count(got, "沐阳吧") != 1 || strings.Count(got, "当前客户补充（以本次为准）：") != 2 {
+		t.Fatalf("active goal kept duplicate supplements: %q", got)
+	}
+	for _, expected := range []string{"儿童房换成大床房", "沐阳吧", "差价多少"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("active goal lost %q: %q", expected, got)
+		}
+	}
+	if len([]rune(got)) > jevResolvedContextLimit {
+		t.Fatalf("active goal exceeded context budget: %d", len([]rune(got)))
+	}
+}
+
+func TestJevWeakShortReplyInheritsSelectedBusinessRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, current, priorSubIntent, dialogueAct, objective string
+		wantIntent, wantSubIntent                             string
+		wantKnowledge, wantTool                               bool
+	}{
+		{
+			name: "coffee location followup", current: "放在哪里", priorSubIntent: "store_knowledge",
+			dialogueAct: "follow_up", objective: "location", wantIntent: "hotel_info", wantSubIntent: "store_knowledge", wantKnowledge: true,
+		},
+		{
+			name: "room candidate selection", current: "1501", priorSubIntent: "room_change",
+			dialogueAct: "selection", objective: "confirm", wantIntent: "hotel_info", wantSubIntent: "room_change", wantTool: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			span := jevIntentSpan{Ref: "T1", SourceRef: "U1", Text: tc.current}
+			state := jevIntentState{RecentBusinessTask: &jevIntentPriorTaskState{
+				Ref: "R1", Intent: "hotel_info", SubIntent: tc.priorSubIntent,
+				Text: "酒店有没有咖啡", ResolvedText: "酒店有没有咖啡",
+			}}
+			if tc.priorSubIntent == "room_change" {
+				state.RecentBusinessTask.Text = "帮我换个房间"
+				state.RecentBusinessTask.ResolvedText = "帮我换个房间\n当前客户补充（以本次为准）：沐阳吧"
+			}
+			questions, contexts := buildJevClassificationQuestions([]jevIntentSpan{span}, state)
+			intent, err := buildIntentTraceFromJev(jevTestResponse(questions, map[string]string{
+				"T1_route": "clarify", "T1_objective": tc.objective, "T1_dialogue_act": tc.dialogueAct,
+				"T1_relation": "follow_up", "T1_resolution": "resolved_from_context", "T1_context": "R1",
+			}, nil), []jevIntentSpan{span}, contexts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			task := intent.IntentTasks[0]
+			if task.Intent != tc.wantIntent || task.SubIntent != tc.wantSubIntent || task.NeedsKnowledge != tc.wantKnowledge || task.NeedsTool != tc.wantTool {
+				t.Fatalf("short reply did not inherit active business route: %#v", task)
+			}
+			if !strings.Contains(task.ResolvedText, tc.current) || strings.Count(task.ResolvedText, tc.current) != 1 {
+				t.Fatalf("short reply context was not compacted: %q", task.ResolvedText)
+			}
+		})
+	}
+}
+
 func TestJevHistoryReferencesRemainStableAndExcludeAssistantFacts(t *testing.T) {
 	history := adapter.HistoryBuildResult{}
 	for index := 0; index < 20; index++ {
@@ -322,18 +388,18 @@ func TestJevHistoryReferencesRemainStableAndExcludeAssistantFacts(t *testing.T) 
 	req := RunInput{UserMessage: models.Message{ID: 30, Content: "号码写错了，是13700137000", MessageType: enums.IMMessageTypeText}}
 	sources := adapter.BuildCurrentTurnSources(req.UserMessage)
 	state := buildJevIntentState(req, history, sources)
-	if len(state.History) != 15 || state.History[0].Ref != "H5" || state.History[14].Ref != "H19" {
+	if len(state.History) != jevIntentHistoryLimit || state.History[0].Ref != "H12" || state.History[7].Ref != "H19" {
 		t.Fatalf("bounded history has unstable references: %#v", state.History)
 	}
-	if state.History[13].Role != "customer" || state.History[14].Role != "service" {
-		t.Fatalf("history speaker roles lost: %#v", state.History[13:])
+	if state.History[6].Role != "customer" || state.History[7].Role != "service" {
+		t.Fatalf("history speaker roles lost: %#v", state.History[6:])
 	}
 	spans := jevTestSegment(t, sources, nil)
 	questions, contexts := buildJevClassificationQuestions(spans, state)
 	if _, exists := contexts["H19"]; exists {
 		t.Fatal("assistant facts can be selected as customer-provided context")
 	}
-	if contexts["H18"].Text != state.History[13].Text || !strings.Contains(contexts["H18"].Text, history.RawItems[18].Content) {
+	if contexts["H18"].Text != state.History[6].Text || !strings.Contains(contexts["H18"].Text, history.RawItems[18].Content) {
 		t.Fatalf("selected context does not match its stable reference: %#v", contexts["H18"])
 	}
 	response := jevTestResponse(questions, map[string]string{
@@ -504,7 +570,7 @@ func TestJevDetectRuntimeIntentUsesTypedEndpointWithoutDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 2 || len(result.IntentTasks) != 1 || result.IntentTasks[0].SubIntent != "order_query" ||
+	if calls.Load() != 1 || len(result.IntentTasks) != 1 || result.IntentTasks[0].SubIntent != "order_query" ||
 		!result.NeedsTool || result.NeedsHumanRoute || !result.SourceRefsValidated || !result.SemanticContractExpected {
 		t.Fatalf("raw Intent integration failed: calls=%d result=%#v", calls.Load(), result)
 	}

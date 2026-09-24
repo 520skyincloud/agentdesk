@@ -26,6 +26,8 @@ const (
 	jevBaseURLEnv           = "AGENT_DESK_JEV_BASE_URL"
 	jevModelEnv             = "AGENT_DESK_JEV_MODEL"
 	jevQuestionBatchSize    = 64
+	jevIntentHistoryLimit   = 8
+	jevResolvedContextLimit = 800
 )
 
 type jevIntentText struct {
@@ -75,6 +77,8 @@ type jevIntentSpan struct {
 type jevIntentContext struct {
 	Text      string
 	SourceRef string
+	Intent    string
+	SubIntent string
 }
 
 func (llmRuntimeIntentDetector) detectRuntimeIntentWithJev(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, config models.AIConfig) (callbacks.IntentTraceData, error) {
@@ -98,17 +102,33 @@ func (llmRuntimeIntentDetector) detectRuntimeIntentWithJev(ctx context.Context, 
 	evaluate := func(state any, questions map[string]jev.Question) (jev.Response, error) {
 		return evaluateJevIntentBatches(ctx, client, config, req, state, questions, &callIndex)
 	}
-	spans, err := segmentJevIntentSources(sources, state, evaluate)
-	if err != nil {
-		return callbacks.IntentTraceData{}, err
+	provisionalSpans := jevSingleGoalSpans(sources)
+	questions, contexts := buildJevClassificationQuestions(provisionalSpans, state)
+	countQuestions, _ := buildJevTaskCountQuestions(sources)
+	for key, question := range countQuestions {
+		questions[key] = question
 	}
-	questions, contexts := buildJevClassificationQuestions(spans, state)
 	classification, err := evaluate(struct {
 		jevIntentState
 		Tasks []jevIntentSpan `json:"tasks"`
-	}{state, spans}, questions)
+	}{state, provisionalSpans}, questions)
 	if err != nil {
 		return callbacks.IntentTraceData{}, err
+	}
+	spans := provisionalSpans
+	if !jevAllSourcesHaveOneGoal(sources, classification) {
+		spans, err = segmentJevIntentSourcesWithCounts(sources, state, evaluate, classification)
+		if err != nil {
+			return callbacks.IntentTraceData{}, err
+		}
+		questions, contexts = buildJevClassificationQuestions(spans, state)
+		classification, err = evaluate(struct {
+			jevIntentState
+			Tasks []jevIntentSpan `json:"tasks"`
+		}{state, spans}, questions)
+		if err != nil {
+			return callbacks.IntentTraceData{}, err
+		}
 	}
 	intent, err := buildIntentTraceFromJev(classification, spans, contexts)
 	if err != nil {
@@ -153,7 +173,7 @@ func buildJevIntentState(req RunInput, history adapter.HistoryBuildResult, sourc
 		state.Current = append(state.Current, jevIntentText{Ref: source.Ref, Role: "customer", Text: source.Text})
 	}
 	history = adapter.ExcludeCurrentTurnSources(history, req.UserMessage)
-	start := len(history.RawItems) - 15
+	start := len(history.RawItems) - jevIntentHistoryLimit
 	if start < 0 {
 		start = 0
 	}
@@ -168,7 +188,7 @@ func buildJevIntentState(req RunInput, history adapter.HistoryBuildResult, sourc
 			role = "customer"
 		}
 		state.History = append(state.History, jevIntentText{
-			Ref: fmt.Sprintf("H%d", index), Role: role, Text: text,
+			Ref: fmt.Sprintf("H%d", index), Role: role, Text: preview(text, 320),
 		})
 	}
 	if previous := runtimeRecentUniqueBusinessTaskForRequest(req); previous != nil {
@@ -180,7 +200,7 @@ func buildJevIntentState(req RunInput, history adapter.HistoryBuildResult, sourc
 			Objective:      strings.TrimSpace(task.Objective),
 			DialogueAct:    strings.TrimSpace(task.DialogueAct),
 			Text:           strings.TrimSpace(firstNonEmptyReplyTaskText(task.OriginalText, task.Text, task.ResolvedText)),
-			ResolvedText:   strings.TrimSpace(task.ResolvedText),
+			ResolvedText:   compactJevActiveGoalText(task.ResolvedText),
 			Entities:       append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
 			MissingAspects: compactGenerationContextStrings(task.MissingAspects),
 		}
@@ -201,6 +221,33 @@ func buildJevIntentState(req RunInput, history adapter.HistoryBuildResult, sourc
 	return state
 }
 
+func jevSingleGoalSpans(sources []adapter.CurrentTurnSource) []jevIntentSpan {
+	spans := make([]jevIntentSpan, 0, len(sources))
+	for _, source := range sources {
+		text := strings.TrimSpace(source.Text)
+		if text == "" {
+			continue
+		}
+		spans = append(spans, jevIntentSpan{
+			Ref: fmt.Sprintf("T%d", len(spans)+1), SourceRef: source.Ref, Text: text,
+		})
+	}
+	return spans
+}
+
+func jevAllSourcesHaveOneGoal(sources []adapter.CurrentTurnSource, response jev.Response) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	for _, source := range sources {
+		answer, ok := response.Answers[source.Ref+"_count"]
+		if !ok || answer.Choice != "1" {
+			return false
+		}
+	}
+	return true
+}
+
 func jevCandidateBoundary(runes []rune, index int) bool {
 	current, previous := runes[index], runes[index-1]
 	if unicode.IsSpace(current) || unicode.IsPunct(current) || unicode.IsSymbol(current) {
@@ -215,6 +262,10 @@ func jevCandidateBoundary(runes []rune, index int) bool {
 // Use joint count + ordinal choices instead of independent per-character yes/no
 // questions. The latter can produce mutually inconsistent Chinese boundaries.
 func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevIntentState, evaluate func(any, map[string]jev.Question) (jev.Response, error)) ([]jevIntentSpan, error) {
+	return segmentJevIntentSourcesWithCounts(sources, state, evaluate, jev.Response{})
+}
+
+func buildJevTaskCountQuestions(sources []adapter.CurrentTurnSource) (map[string]jev.Question, map[string][]int) {
 	countQuestions := make(map[string]jev.Question, len(sources)*2)
 	terminalOffsets := make(map[string][]int, len(sources))
 	for _, source := range sources {
@@ -246,9 +297,17 @@ func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevInten
 			}
 		}
 	}
-	countsResponse, err := evaluate(state, countQuestions)
-	if err != nil {
-		return nil, err
+	return countQuestions, terminalOffsets
+}
+
+func segmentJevIntentSourcesWithCounts(sources []adapter.CurrentTurnSource, state jevIntentState, evaluate func(any, map[string]jev.Question) (jev.Response, error), countsResponse jev.Response) ([]jevIntentSpan, error) {
+	countQuestions, terminalOffsets := buildJevTaskCountQuestions(sources)
+	if len(countsResponse.Answers) == 0 {
+		var err error
+		countsResponse, err = evaluate(state, countQuestions)
+		if err != nil {
+			return nil, err
+		}
 	}
 	counts := make(map[string]int, len(sources))
 	fixedOffsets := make(map[string][]int, len(sources))
@@ -333,6 +392,7 @@ func segmentJevIntentSources(sources []adapter.CurrentTurnSource, state jevInten
 		}
 	}
 	starts := jev.Response{}
+	var err error
 	if len(startQuestions) > 0 {
 		starts, err = evaluate(state, startQuestions)
 		if err != nil {
@@ -517,8 +577,10 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 			description += "\nStill missing or unconfirmed: " + strings.Join(task.MissingAspects, " | ")
 		}
 		historyOptions[task.Ref] = description
-		contextText := firstNonEmptyReplyTaskText(task.ResolvedText, task.Text)
-		contexts[task.Ref] = jevIntentContext{Text: contextText}
+		contextText := compactJevActiveGoalText(firstNonEmptyReplyTaskText(task.ResolvedText, task.Text))
+		contexts[task.Ref] = jevIntentContext{
+			Text: contextText, Intent: task.Intent, SubIntent: task.SubIntent,
+		}
 	}
 	for index, item := range state.History {
 		if item.Role != "customer" {
@@ -692,25 +754,7 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			Reason:             fmt.Sprintf("JEV route confidence %.3f", routeAnswer.Confidence),
 		}
 		task.ReplyStrategy = jevReplyStrategy(task.DialogueAct, task.Objective)
-		switch route {
-		case "provide_phone", "provide_location", "provide_mini_program", "provide_pillow_product":
-			task.Intent, task.ResourceAction, task.NeedsResource = "hotel_variable", route, true
-		case "explicit_handoff", "emergency_safety":
-			task.Intent, task.NeedsHumanRoute = "human_complaint_risk", true
-		case "room_supplies", "maintenance", "cleaning", "lost_item", "service_follow_up", "external_proxy_action", "refund_compensation", "create_ticket":
-			task.Intent, task.NeedsKnowledge = "service_request", true
-		case "answer_rejected", "weather_query", "conversation_recap", "acknowledgement", "chat", "clarify":
-			task.Intent = "interaction"
-			if route == "answer_rejected" {
-				task.SubIntent, task.RelationToPrevious = "frustration", "correction"
-			}
-			if route == "weather_query" {
-				task.NeedsTool, task.ResourceAction = true, "get_weather"
-			}
-		default:
-			task.NeedsTool = isPMSRuntimeSubIntent(route)
-			task.NeedsKnowledge = !task.NeedsTool || response.Answers[span.Ref+"_policy"].Noul >= 0.5
-		}
+		applyJevRouteToTask(&task, route, response.Answers[span.Ref+"_policy"].Noul >= 0.5)
 		ref := response.Answers[span.Ref+"_context"].Choice
 		if ref != "none" && ref != "" {
 			context, valid := contexts[ref]
@@ -719,7 +763,10 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			}
 			// Self-contained new topics must not inherit an old phone or request.
 			if task.ResolutionState == "resolved_from_context" || task.RelationToPrevious != "independent" {
-				task.ResolvedText = context.Text + "\n当前客户补充（以本次为准）：" + span.Text
+				if shouldInheritJevBusinessRoute(task, context) {
+					applyJevRouteToTask(&task, context.SubIntent, false)
+				}
+				task.ResolvedText = buildJevActiveGoalText(context.Text, span.Text)
 				task.ResolutionState = "resolved_from_context"
 				if context.SourceRef != "" {
 					task.RelationToPrevious = "independent"
@@ -741,6 +788,112 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 		return intent, fmt.Errorf("jev returned no current tasks")
 	}
 	return deriveModelIntentFromTasks(intent), nil
+}
+
+func applyJevRouteToTask(task *callbacks.IntentTaskTraceData, route string, policyRequired bool) {
+	if task == nil {
+		return
+	}
+	task.Intent = "hotel_info"
+	task.SubIntent = route
+	task.NeedsKnowledge = false
+	task.NeedsResource = false
+	task.NeedsTool = false
+	task.NeedsHumanRoute = false
+	task.ResourceAction = ""
+	switch route {
+	case "provide_phone", "provide_location", "provide_mini_program", "provide_pillow_product":
+		task.Intent, task.ResourceAction, task.NeedsResource = "hotel_variable", route, true
+	case "explicit_handoff", "emergency_safety":
+		task.Intent, task.NeedsHumanRoute = "human_complaint_risk", true
+	case "room_supplies", "maintenance", "cleaning", "lost_item", "service_follow_up", "external_proxy_action", "refund_compensation", "create_ticket":
+		task.Intent, task.NeedsKnowledge = "service_request", true
+	case "answer_rejected", "weather_query", "conversation_recap", "acknowledgement", "chat", "clarify":
+		task.Intent = "interaction"
+		if route == "answer_rejected" {
+			task.SubIntent, task.RelationToPrevious = "frustration", "correction"
+		}
+		if route == "weather_query" {
+			task.NeedsTool, task.ResourceAction = true, "get_weather"
+		}
+	default:
+		task.NeedsTool = isPMSRuntimeSubIntent(route)
+		task.NeedsKnowledge = !task.NeedsTool || policyRequired
+	}
+}
+
+func shouldInheritJevBusinessRoute(task callbacks.IntentTaskTraceData, context jevIntentContext) bool {
+	if strings.TrimSpace(context.SubIntent) == "" || strings.TrimSpace(context.Intent) == "interaction" {
+		return false
+	}
+	switch strings.TrimSpace(task.SubIntent) {
+	case "clarify", "chat", "acknowledgement", "frustration":
+	default:
+		return false
+	}
+	switch strings.TrimSpace(task.DialogueAct) {
+	case "follow_up", "reason", "recommendation", "selection", "confirmation", "correction", "frustration":
+		return true
+	}
+	switch strings.TrimSpace(task.RelationToPrevious) {
+	case "follow_up", "clarification_answer", "reference_previous", "correction", "modify_previous", "cancel_previous", "answer_rejected":
+		return true
+	}
+	return task.ResolutionState == "resolved_from_context"
+}
+
+func compactJevActiveGoalText(value string) string {
+	return buildJevActiveGoalText(value, "")
+}
+
+func buildJevActiveGoalText(contextText, currentText string) string {
+	const supplementPrefix = "当前客户补充（以本次为准）："
+	base := make([]string, 0, 4)
+	supplements := make([]string, 0, 3)
+	for _, line := range strings.Split(strings.TrimSpace(contextText), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, supplementPrefix) {
+			line = strings.TrimSpace(strings.TrimPrefix(line, supplementPrefix))
+			supplements = appendIfMissing(supplements, line)
+			continue
+		}
+		if strings.HasPrefix(line, "当前客户补充：") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "当前客户补充："))
+			supplements = appendIfMissing(supplements, line)
+			continue
+		}
+		base = appendIfMissing(base, line)
+	}
+	if currentText = strings.TrimSpace(currentText); currentText != "" {
+		supplements = appendIfMissing(supplements, currentText)
+	}
+	if len(base) > 3 {
+		base = append([]string{base[0]}, base[len(base)-2:]...)
+	}
+	for index := range base {
+		limit := 120
+		if index == 0 {
+			limit = 200
+		}
+		base[index] = preview(base[index], limit)
+	}
+	if len(supplements) > 2 {
+		supplements = supplements[len(supplements)-2:]
+	}
+	for index := range supplements {
+		supplements[index] = preview(supplements[index], 140)
+	}
+	parts := append([]string(nil), base...)
+	for _, supplement := range supplements {
+		if supplement == "" || stringSliceContains(parts, supplement) {
+			continue
+		}
+		parts = append(parts, supplementPrefix+supplement)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func jevReplyStrategy(dialogueAct, objective string) string {
