@@ -554,6 +554,9 @@ func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTrace
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
 	text := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
 	targetRoomTypeText := runtimePMSTargetRoomTypeText(task)
+	if runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(targetRoomTypeText)) {
+		targetRoomTypeText = ""
+	}
 	if runtimePMSCurrentTextRejectsTargetRoomType(task.OriginalText) {
 		targetRoomTypeText = ""
 	}

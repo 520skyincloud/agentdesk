@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 		}, adapter.HistoryBuildResult{}, nil)
 		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "service_request" ||
 			intent.IntentTasks[0].SubIntent != "external_proxy_action" || intent.IntentTasks[0].Objective != "action_request" ||
-			!intent.IntentTasks[0].NeedsKnowledge || intent.IntentTasks[0].NeedsHumanRoute {
+			intent.IntentTasks[0].NeedsKnowledge || intent.IntentTasks[0].NeedsHumanRoute {
 			t.Fatalf("external order request did not override the historical delivery-information route: %#v", intent)
 		}
 	})
@@ -69,17 +70,34 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 }
 
 func TestRuntimePMSSessionLocatorRetainsSuccessfulTargetRoomType(t *testing.T) {
-	trace := callbacks.RuntimeTraceData{}
-	trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
-		TaskID: "task-room", Intent: "hotel_info", SubIntent: "room_change", Objective: "selection",
-		OriginalText: "那换沐阳吧", Text: "那换沐阳吧", ResolvedText: "换到沐阳房型",
-		Entities:       []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityTargetRoomType, Text: "沐阳"}},
-		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "沐阳有房"}},
-	}}
-	trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-room"}}}
-	locator := runtimePMSSessionLocatorFromTrace(trace)
-	if locator.TargetRoomTypeText != "沐阳" {
-		t.Fatalf("successful room choice was not retained: %#v", locator)
+	for _, test := range []struct {
+		name     string
+		original string
+		resolved string
+		entities []callbacks.IntentEntityTraceData
+	}{
+		{
+			name: "structured target entity", original: "那换沐阳吧", resolved: "换到沐阳房型",
+			entities: []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityTargetRoomType, Text: "沐阳"}},
+		},
+		{
+			name: "selection retained only in resolved customer context", original: "房号我也不懂，你随便帮我选一间",
+			resolved: "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：那换沐阳吧\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			trace := callbacks.RuntimeTraceData{}
+			trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "task-room", Intent: "hotel_info", SubIntent: "room_change", Objective: "selection",
+				OriginalText: test.original, Text: test.resolved, ResolvedText: test.resolved, Entities: test.entities,
+				SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "沐阳有房"}},
+			}}
+			trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-room"}}}
+			locator := runtimePMSSessionLocatorFromTrace(trace)
+			if locator.TargetRoomTypeText != "沐阳" {
+				t.Fatalf("successful room choice was not retained: %#v", locator)
+			}
+		})
 	}
 }
 
@@ -185,6 +203,50 @@ func TestRuntimePMSSessionLocatorUsesProductionTraceAcrossIntentAndReplyPlan(t *
 	}, adapter.HistoryBuildResult{})
 	if locator.Phone != "13800138000" || locator.OrderLocator != "接待单ID:REC-8102" {
 		t.Fatalf("production trace did not restore both intent phone and resolved order: %#v", locator)
+	}
+}
+
+func TestRuntimePMSSessionLocatorRestoresTargetFromResolvedRunContext(t *testing.T) {
+	db := setupRuntimeIntentConfigTestDB(t)
+	conversation := models.Conversation{ID: 8501}
+	if err := db.Create(&conversation).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	source := models.Message{
+		ID: 8502, ConversationID: conversation.ID, SessionNo: 5, ClientMsgID: "room-choice-source", SeqNo: 1,
+		SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "房号我也不懂，你随便帮我选一间",
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+	trace := callbacks.RuntimeTraceData{Status: "completed"}
+	trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-room", Intent: "hotel_info", SubIntent: "room_change", Objective: "recommendation",
+		OriginalText: source.Content, Text: "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：那换沐阳吧\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间",
+		ResolvedText:   "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：那换沐阳吧\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间",
+		Entities:       []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityCustomerPhone, Text: "18569300806"}},
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "沐阳可售1间"}},
+	}}
+	trace.Tools.Items = []callbacks.ToolTraceItem{{ToolCode: "builtin/pms_query", ToolName: "pms_query", Status: "ok"}}
+	trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-room"}}}
+	raw, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if err := db.Create(&models.AgentRunLog{
+		ConversationID: conversation.ID, MessageID: source.ID, AIAgentID: 93,
+		FinalStatus: "runtime_prepared", TraceData: string(raw),
+	}).Error; err != nil {
+		t.Fatalf("create run log: %v", err)
+	}
+
+	locator := runtimePMSSessionLocatorForRequest(RunInput{
+		Conversation: conversation,
+		UserMessage:  models.Message{ID: 8600, ConversationID: conversation.ID, SessionNo: 5},
+		AIAgent:      models.AIAgent{ID: 93},
+	}, adapter.HistoryBuildResult{})
+	if locator.Phone != "18569300806" || locator.TargetRoomTypeText != "沐阳" {
+		t.Fatalf("resolved room choice was not restored from recent run: %#v", locator)
 	}
 }
 

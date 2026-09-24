@@ -1338,7 +1338,7 @@ func productExperienceScenarios() []scenario {
 				textOutcome("只读边界", "还没有实际换房", "没有实际换房", "候选房"),
 			}),
 			customerTurn("那要补多少钱", []outcomeRequirement{
-				textOutcome("当前订单金额", "376元", "376 元"),
+				textOutcome("当前订单金额", "376元", "376 元", "376.00元", "376.00 元"),
 				textOutcome("目标房价缺失", "实时房价没有显示", "算不出准确差价", "不能准确计算差价"),
 			}),
 		},

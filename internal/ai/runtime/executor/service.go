@@ -116,6 +116,19 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		summary.TraceData = collector.Marshal()
 		return summary, nil
 	}
+	if prepareDeterministicClarificationDirectCommit(summary, collector) {
+		summary.Status = "completed"
+		summary.ModelName = req.AIConfig.ModelName
+		collector.Data.Status = summary.Status
+		collector.Data.Output.ReplyText = summary.ReplyText
+		collector.Data.Output.FinishReason = "clarification_direct_commit"
+		collector.Data.Pipeline.Generate.Status = "skipped"
+		collector.Data.Pipeline.Generate.Reason = "the runtime already produced the exact customer clarification"
+		collector.Data.Pipeline.Validate.Status = "passed"
+		collector.Data.Pipeline.Validate.Reason = "deterministic clarification passed protocol and send-safety validation"
+		summary.TraceData = collector.Marshal()
+		return summary, nil
+	}
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
 		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
 	}
@@ -239,6 +252,38 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	syncSkillSummaryFromCollector(summary, collector)
 	summary.TraceData = collector.Marshal()
 	return summary, nil
+}
+
+func prepareDeterministicClarificationDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
+	if summary == nil || collector == nil {
+		return false
+	}
+	intent := collector.Data.Pipeline.Intent
+	if intent.NeedsKnowledge || intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || len(intent.ResourceActions) > 0 {
+		return false
+	}
+	plan := collector.Data.Pipeline.ReplyPlan
+	if len(plan.TaskPlans) == 0 {
+		return false
+	}
+	parts := make([]string, 0, len(plan.TaskPlans))
+	for _, task := range plan.TaskPlans {
+		if !task.ReplyRequired || task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+			strings.TrimSpace(task.OutputKind) != "text" || len(task.SupportedFacts) > 0 {
+			return false
+		}
+		reply := strings.TrimSpace(task.ResolvedText)
+		if reply != runtimePMSOrderPhoneClarification && reply != runtimePMSMemberPhoneClarification {
+			return false
+		}
+		cleaned, err := SanitizeGeneratedReplyText(reply)
+		if err != nil || strings.TrimSpace(cleaned) == "" {
+			return false
+		}
+		parts = append(parts, cleaned)
+	}
+	summary.ReplyText = composeGeneratedReplyContents(parts, 3)
+	return strings.TrimSpace(summary.ReplyText) != ""
 }
 
 func completeIntentDetectUnavailable(summary *RunResult, collector *callbacks.RuntimeTraceCollector) (*RunResult, error) {
@@ -692,11 +737,12 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 	}
 	for _, task := range plan.TaskPlans {
 		externalProxy := isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
-		if (!externalProxy && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || !task.NeedsKnowledge || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-			strings.TrimSpace(task.OutputKind) != "text" || strings.TrimSpace(task.Output) != "knowledge_text_reply" || len(task.MissingAspects) > 0 {
+		if (!externalProxy && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+			strings.TrimSpace(task.OutputKind) != "text" {
 			return false
 		}
-		if !externalProxy && (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 ||
+		if !externalProxy && (!task.NeedsKnowledge || strings.TrimSpace(task.Output) != "knowledge_text_reply" || len(task.MissingAspects) > 0 ||
+			task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 ||
 			isKnowledgeHandoffDirectiveContent(*task.AnswerText)) {
 			return false
 		}

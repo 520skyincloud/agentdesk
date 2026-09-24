@@ -90,6 +90,18 @@ func TestRuntimePMSReadPlanInputUsesCurrentAndSessionLocators(t *testing.T) {
 		}
 	})
 
+	t.Run("generic room wording does not override the confirmed target", func(t *testing.T) {
+		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
+			OriginalText: "那要补多少钱",
+			Text:         "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间\n当前客户补充（以本次为准）：那要补多少钱",
+			ResolvedText: "我想换个房间，手机号18569300806\n当前客户补充（以本次为准）：房号我也不懂，你随便帮我选一间\n当前客户补充（以本次为准）：那要补多少钱",
+			SubIntent:    "price_difference",
+		}, runtimePMSSessionLocator{Phone: "18569300806", TargetRoomTypeText: "沐阳"}, time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local))
+		if input.TargetRoomTypeText != "沐阳" {
+			t.Fatalf("generic room wording overrode the selected target room type: %#v", input)
+		}
+	})
+
 	t.Run("current target overrides the remembered room type", func(t *testing.T) {
 		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
 			OriginalText: "大床房要补多少钱",

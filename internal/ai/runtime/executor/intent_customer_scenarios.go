@@ -16,7 +16,7 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 			task.Intent = "service_request"
 			task.SubIntent = "external_proxy_action"
 			task.Objective = "action_request"
-			task.NeedsKnowledge = true
+			task.NeedsKnowledge = false
 			task.NeedsResource = false
 			task.NeedsTool = false
 			task.NeedsHumanRoute = false

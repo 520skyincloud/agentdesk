@@ -99,6 +99,21 @@ func TestPrepareGroundedPMSDirectCommit(t *testing.T) {
 	}
 }
 
+func TestPrepareDeterministicClarificationDirectCommit(t *testing.T) {
+	for _, clarification := range []string{runtimePMSOrderPhoneClarification, runtimePMSMemberPhoneClarification} {
+		collector := callbacks.NewRuntimeTraceCollector()
+		collector.Data.Pipeline.Intent = callbacks.IntentTraceData{NeedsClarification: true}
+		collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "task-1", Intent: "interaction", SubIntent: "order_detail", Objective: "identity",
+			ResolvedText: clarification, OutputKind: "text", Output: "text_reply", ReplyRequired: true,
+		}}}
+		summary := &RunResult{}
+		if !prepareDeterministicClarificationDirectCommit(summary, collector) || summary.ReplyText != clarification {
+			t.Fatalf("deterministic clarification should skip Generate: %#v %q", summary, summary.ReplyText)
+		}
+	}
+}
+
 func TestPrepareGroundedPMSDirectCommitKeepsUnansweredOrMixedTasksOnGenerate(t *testing.T) {
 	answer := "沐阳在您当前入住期间还有房。"
 	baseTask := callbacks.ReplyTaskPlanTraceData{

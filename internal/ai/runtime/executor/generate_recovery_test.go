@@ -303,6 +303,22 @@ func TestPrepareGroundedKnowledgeDirectCommitHandlesExternalProxyWithoutGenerate
 	}
 }
 
+func TestPrepareGroundedKnowledgeDirectCommitHandlesFactlessExternalProxyWithoutKnowledge(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-proxy", Intent: "service_request", SubIntent: "external_proxy_action", Objective: "action_request",
+		OriginalText: "那你直接帮我下单吧", Text: "那你直接帮我下单吧", OutputKind: "text", Output: "text_reply",
+		ReplyRequired: true,
+	}}}
+	summary := &RunResult{}
+	if !prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("factless external proxy boundary should skip knowledge and Generate")
+	}
+	if summary.ReplyText != externalProxyActionCapabilityBoundaryReply {
+		t.Fatalf("unexpected factless external proxy reply: %q", summary.ReplyText)
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackCompactsContainedComplementaryFacts(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
