@@ -1809,8 +1809,8 @@ type runtimePMSReadTaskFact struct {
 
 func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
 	if plan.Scenario == pmsReadScenarioOrder && (step.StepID == "order.reserve" || step.StepID == "order.recept") {
-		if fact, requested, ok := runtimePMSFocusedOrderFact(task, step.Data); ok {
-			return []runtimePMSReadTaskFact{fact}
+		if facts, requested := runtimePMSFocusedOrderFacts(task, step.Data); len(facts) > 0 {
+			return facts
 		} else if requested {
 			return nil
 		}
@@ -1825,28 +1825,20 @@ func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsR
 	}}
 }
 
-func runtimePMSFocusedOrderFact(task callbacks.ReplyTaskPlanTraceData, data any) (runtimePMSReadTaskFact, bool, bool) {
+type runtimePMSOrderFieldProjection struct {
+	aspect string
+	label  string
+	match  bool
+	value  func(map[string]any) string
+}
+
+func runtimePMSOrderFieldProjections(task callbacks.ReplyTaskPlanTraceData) []runtimePMSOrderFieldProjection {
 	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
-	type projection struct {
-		aspect string
-		label  string
-		match  bool
-		value  func(map[string]any) string
-	}
-	projections := []projection{
+	return []runtimePMSOrderFieldProjection{
 		{
-			aspect: "pms_order_checkout_time", label: "当前订单离店时间",
-			match: containsAny(text, []string{"退房", "离店", "住到", "到几号", "到哪天", "到什么时候"}),
-			value: func(order map[string]any) string {
-				return firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate")
-			},
-		},
-		{
-			aspect: "pms_order_checkin_time", label: "当前订单入住时间",
-			match: containsAny(text, []string{"入住时间", "几点入住", "哪天入住", "什么时候入住", "到店时间"}),
-			value: func(order map[string]any) string {
-				return firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate")
-			},
+			aspect: "pms_order_room_type", label: "当前订单房型",
+			match: containsAny(text, []string{"房型", "什么房", "哪种房", "订的什么房", "订的是哪种房"}),
+			value: func(order map[string]any) string { return strings.Join(runtimePMSOrderRoomNames(order), "/") },
 		},
 		{
 			aspect: "pms_order_room_number", label: "当前订单房号",
@@ -1854,9 +1846,18 @@ func runtimePMSFocusedOrderFact(task callbacks.ReplyTaskPlanTraceData, data any)
 			value: func(order map[string]any) string { return firstRuntimePMSReadText(order, "homeName") },
 		},
 		{
-			aspect: "pms_order_room_type", label: "当前订单房型",
-			match: containsAny(text, []string{"房型", "什么房", "订的什么房"}),
-			value: func(order map[string]any) string { return strings.Join(runtimePMSOrderRoomNames(order), "/") },
+			aspect: "pms_order_checkin_time", label: "当前订单入住时间",
+			match: containsAny(text, []string{"入住时间", "入住日期", "几点入住", "哪天入住", "什么时候入住", "到店时间"}),
+			value: func(order map[string]any) string {
+				return firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate")
+			},
+		},
+		{
+			aspect: "pms_order_checkout_time", label: "当前订单离店时间",
+			match: containsAny(text, []string{"退房", "离店", "住到", "到几号", "到哪天", "到什么时候"}),
+			value: func(order map[string]any) string {
+				return firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate")
+			},
 		},
 		{
 			aspect: "pms_order_amount", label: "当前订单金额",
@@ -1871,20 +1872,27 @@ func runtimePMSFocusedOrderFact(task callbacks.ReplyTaskPlanTraceData, data any)
 			value: runtimePMSCustomerOrderStatus,
 		},
 	}
+}
+
+func runtimePMSFocusedOrderFacts(task callbacks.ReplyTaskPlanTraceData, data any) ([]runtimePMSReadTaskFact, bool) {
+	projections := runtimePMSOrderFieldProjections(task)
+	facts := make([]runtimePMSReadTaskFact, 0, len(projections))
+	requested := false
 	for _, item := range projections {
 		if !item.match {
 			continue
 		}
+		requested = true
 		values := runtimePMSUniqueOrderValues(data, item.value)
 		if len(values) != 1 {
-			return runtimePMSReadTaskFact{}, true, false
+			continue
 		}
-		return runtimePMSReadTaskFact{
+		facts = append(facts, runtimePMSReadTaskFact{
 			Aspect: item.aspect, Statement: item.label + "为" + values[0] + "。",
 			CriticalValues: []string{values[0]},
-		}, true, true
+		})
 	}
-	return runtimePMSReadTaskFact{}, false, false
+	return facts, requested
 }
 
 func runtimePMSUniqueOrderValues(data any, value func(map[string]any) string) []string {
@@ -1935,7 +1943,6 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 	if !ok {
 		return ""
 	}
-	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
 	checkIn := runtimePMSCustomerDateTime(firstRuntimePMSReadText(stay.data, "checkInTime", "checkInBusinessDate"))
 	checkOut := runtimePMSCustomerDateTime(firstRuntimePMSReadText(stay.data, "checkOutTime", "checkOutBusinessDate"))
 	roomType := firstNonEmpty(stay.roomName, strings.Join(runtimePMSOrderRoomNames(stay.data), "/"))
@@ -1943,16 +1950,52 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 	amount := runtimePMSCustomerAmount(firstRuntimePMSReadText(stay.data, "payableAmount", "roomFee", "payAmount", "waitPayAmount"))
 	status := runtimePMSCustomerOrderStatus(stay.data)
 
-	switch {
-	case containsAny(text, []string{"退房", "离店"}) && checkOut != "":
-		return "查到了，您这笔订单是" + checkOut + "前退房。"
-	case containsAny(text, []string{"入住", "到店"}) && checkIn != "":
-		return "查到了，您这笔订单是" + checkIn + "入住。"
-	case containsAny(text, []string{"房号", "哪间房", "住哪"}) && homeName != "":
-		return "查到了，您当前安排的房号是" + homeName + "。"
-	case containsAny(text, []string{"多少钱", "金额", "费用", "房费"}) && amount != "":
-		return "查到了，您这笔订单的金额是" + amount + "。"
-	case (task.SubIntent == "order_status" || containsAny(text, []string{"状态", "成功了吗", "确认了吗"})) && status != "":
+	requested := make(map[string]bool)
+	for _, projection := range runtimePMSOrderFieldProjections(task) {
+		if projection.match {
+			requested[projection.aspect] = true
+		}
+	}
+	if len(requested) > 0 {
+		fields := make([]string, 0, len(requested))
+		if requested["pms_order_room_type"] && roomType != "" {
+			fields = append(fields, "您订的是"+roomType)
+		}
+		if requested["pms_order_room_number"] && homeName != "" {
+			fields = append(fields, "当前安排的房号是"+homeName)
+		}
+		if requested["pms_order_checkin_time"] && checkIn != "" {
+			fields = append(fields, "入住时间是"+checkIn)
+		}
+		if requested["pms_order_checkout_time"] && checkOut != "" {
+			fields = append(fields, checkOut+"前退房")
+		}
+		if requested["pms_order_amount"] && amount != "" {
+			fields = append(fields, "订单金额是"+amount)
+		}
+		if requested["pms_order_status"] && status != "" {
+			fields = append(fields, "订单当前是"+status)
+		}
+		if len(fields) == 1 {
+			switch {
+			case requested["pms_order_checkout_time"]:
+				return "查到了，您这笔订单是" + checkOut + "前退房。"
+			case requested["pms_order_checkin_time"]:
+				return "查到了，您这笔订单是" + checkIn + "入住。"
+			case requested["pms_order_room_number"]:
+				return "查到了，您当前安排的房号是" + homeName + "。"
+			case requested["pms_order_amount"]:
+				return "查到了，您这笔订单的金额是" + amount + "。"
+			case requested["pms_order_status"]:
+				return "查到了，您这笔订单当前是" + status + "。"
+			}
+		}
+		if len(fields) > 0 {
+			return "查到了，" + strings.Join(fields, "，") + "。"
+		}
+		return ""
+	}
+	if task.SubIntent == "order_status" && status != "" {
 		return "查到了，您这笔订单当前是" + status + "。"
 	}
 

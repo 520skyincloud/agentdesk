@@ -853,9 +853,46 @@ func TestRuntimePMSCustomerAnswerUsesTheCustomersActualGoal(t *testing.T) {
 	if checkout != "查到了，您这笔订单是9月25日12点前退房。" {
 		t.Fatalf("checkout answer was not projected to the customer goal: %q", checkout)
 	}
+	roomTypeAndCheckout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "那我订的是哪种房，最晚几点退房？"}, orderResult)
+	if roomTypeAndCheckout != "查到了，您订的是儿童房，9月25日12点前退房。" {
+		t.Fatalf("compound room type and checkout answer lost a requested field: %q", roomTypeAndCheckout)
+	}
+	roomNumberAndCheckIn := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "房号和入住日期呢？"}, orderResult)
+	if roomNumberAndCheckIn != "查到了，当前安排的房号是V05，入住时间是9月23日14点。" {
+		t.Fatalf("compound room number and check-in answer lost a requested field: %q", roomNumberAndCheckIn)
+	}
 	full := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我查一下订单"}, orderResult)
 	if full != "查到了，您订的是儿童房，房号V05，9月23日14点入住，9月25日12点前退房，订单金额376元。" {
 		t.Fatalf("order answer was not merged into one natural stay: %q", full)
+	}
+}
+
+func TestApplyRuntimePMSReadResultProjectsEveryRequestedOrderFact(t *testing.T) {
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail",
+		OriginalText: "那我订的是哪种房，最晚几点退房？", Text: "那我订的是哪种房，最晚几点退房？", ReplyRequired: true,
+	}
+	plan := pmsReadPlan{Scenario: pmsReadScenarioOrder}
+	result := pmsReadPlanResult{Status: pmsReadStepOK, Steps: []pmsReadStepResult{
+		{StepID: "order.reserve", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "roomName": "儿童房", "checkOutTime": "2026-09-25 12:00:00",
+		}},
+		{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "roomName": "儿童房", "homeName": "V05",
+			"checkOutTime": "2026-09-25 12:00:00",
+		}},
+	}}
+
+	applyRuntimePMSReadResultToTask(&task, plan, result, 0)
+	if len(task.SupportedFacts) != 2 {
+		t.Fatalf("compound order question must keep every requested fact and deduplicate sources: %#v", task.SupportedFacts)
+	}
+	got := make(map[string]string, len(task.SupportedFacts))
+	for _, fact := range task.SupportedFacts {
+		got[fact.Aspect] = fact.Statement
+	}
+	if got["pms_order_room_type"] != "当前订单房型为儿童房。" || got["pms_order_checkout_time"] != "当前订单离店时间为2026-09-25 12:00:00。" {
+		t.Fatalf("compound order facts were incomplete: %#v", got)
 	}
 }
 
