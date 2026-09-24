@@ -2407,7 +2407,7 @@ func runtimePMSCustomerPriceClause(task callbacks.ReplyTaskPlanTraceData, result
 	if currentAmount != "" {
 		currentClause = "您当前订单金额是" + currentAmount
 	}
-	label := "目标房型"
+	label := "您刚选的房型"
 	if target != "" {
 		label = target
 	}

@@ -591,6 +591,13 @@ func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildRes
 		} else if orderLocator != "" {
 			locator.OrderLocator = orderLocator
 		}
+		if runtimePMSCurrentTextRejectsTargetRoomType(text) {
+			locator.TargetRoomTypeText = ""
+		}
+		targetRoomType := runtimePMSTargetRoomTypeText(callbacks.ReplyTaskPlanTraceData{OriginalText: text})
+		if targetRoomType != "" && !runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(targetRoomType)) {
+			locator.TargetRoomTypeText = targetRoomType
+		}
 		phoneRequested = false
 	}
 	return locator

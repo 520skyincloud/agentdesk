@@ -101,6 +101,27 @@ func TestRuntimePMSSessionLocatorRetainsSuccessfulTargetRoomType(t *testing.T) {
 	}
 }
 
+func TestRuntimePMSSessionLocatorRestoresTargetFromCustomerHistory(t *testing.T) {
+	history := adapter.HistoryBuildResult{RawItems: []models.Message{
+		{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "我想换个房间，手机号18569300806"},
+		{SenderType: enums.IMSenderTypeAI, MessageType: enums.IMMessageTypeText, Content: "当前可以换橙意、沐阳，您更想选哪一种？"},
+		{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "那换沐阳吧"},
+		{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "房号我不懂，你随便选一间"},
+	}}
+	locator := runtimePMSSessionLocatorFromHistory(history)
+	if locator.Phone != "18569300806" || locator.TargetRoomTypeText != "沐阳" {
+		t.Fatalf("rapid customer turns lost the selected room type: %#v", locator)
+	}
+
+	history.RawItems = append(history.RawItems,
+		models.Message{SenderType: enums.IMSenderTypeCustomer, MessageType: enums.IMMessageTypeText, Content: "不换沐阳了，换橙意"},
+	)
+	locator = runtimePMSSessionLocatorFromHistory(history)
+	if locator.TargetRoomTypeText != "橙意" {
+		t.Fatalf("corrected room choice did not replace the old target: %#v", locator)
+	}
+}
+
 func TestJevStateUsesRecentUniqueBusinessTaskFromSameSession(t *testing.T) {
 	db := setupRuntimeIntentConfigTestDB(t)
 	conversation := models.Conversation{ID: 8101}

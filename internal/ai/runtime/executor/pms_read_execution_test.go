@@ -364,6 +364,7 @@ func TestRuntimePMSTargetRoomTypeRequiresARealTarget(t *testing.T) {
 		{text: "标准房太小，能升房吗", entities: []callbacks.IntentEntityTraceData{{Type: "room_type", Text: "标准房"}}, want: ""},
 		{text: "当前大床房，想换双床房", entities: []callbacks.IntentEntityTraceData{{Type: "room_type", Text: "大床房"}, {Type: "room_type", Text: "双床房"}}, want: "双床房"},
 		{text: "能换豪华大床房吗", want: "豪华大床房"},
+		{text: "那换沐阳吧", want: "沐阳"},
 		{text: "大床房和双床房哪个更好", entities: []callbacks.IntentEntityTraceData{{Type: "room_type", Text: "大床房"}, {Type: "room_type", Text: "双床房"}}, want: ""},
 	} {
 		got := runtimePMSTargetRoomTypeText(callbacks.ReplyTaskPlanTraceData{OriginalText: test.text, Entities: test.entities})
