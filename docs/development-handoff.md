@@ -1321,3 +1321,6 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - Judge 继续负责知识语义裁决，没有增加本地语义旁路。test-2 曾隔离对比单题 `1024` 输出预算及现有轻量模型；输出预算未改善 Luna 的实际延迟，DeepSeek、Qwen 和豆包候选均未稳定产出当前 Judge 协议，因此代码恢复原输出预算、线上恢复 `gpt-5.6-luna`，不保留无收益的配置改动。
 - 无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变更。`customer-audit` 只与本交接文档存在同文件追加，合并时保留双方记录；`ai-billing` 无同文件修改。
 - 自动验证通过：`go test -p=1 ./internal/ai/runtime/executor -count=1`、`go test -p=1 ./internal/ai/runtime/internal/impl/callbacks ./internal/ai/runtime -count=1`、`go test -p=1 ./internal/services ./internal/pms ./internal/pkg/utils -count=1`，以及 Linux amd64 构建和 `git diff --check`。
+- 最终 test-2 release：`/opt/agentdesk/releases/20260924-active-goal-71b8f12`；切换前备份：`/opt/agentdesk/backups/20260924-pre-active-goal-71b8f12`。服务 `active/running`、`NRestarts=0`、8083 健康检查通过，部署后无 error 级 systemd 日志；PMS 保持 `enabled=true`、`allowWrite=false`，Judge 已确认恢复 `gpt-5.6-luna`。
+- 真实隔离会话验证：订单连续追问 `conversation_id=2218` 3/3；换房与具体房号 `2220` 3/3；手机号纠正及纠正后退房日期 `2221` 的产品行为 3/3（首轮回复“没能查到”，旧测试断言未覆盖该同义表达）；知识续问和新主题切换 `2226` 3/3；让客服推荐房间并选择推荐房号 `2227` 3/3。PMS 场景墙钟约 2.2-3.3 秒，没有重复索要手机号、没有暴露内部字段、没有宣称已换房。
+- 已知剩余问题：知识检索约 0.9 秒，但 Luna Judge 单题仍约 11-16 秒，客户墙钟约 12-20 秒。缩小输出预算没有改善；DeepSeek v4 flash/pro、Qwen 3.7 plus、豆包 2.0 mini 的隔离对照均未稳定产出当前 Judge 协议，已经全部撤回，不能将速度标为已解决。后续需要优化 Judge 协议输入或提供兼容的低延迟 Judge 模型，不能用本地语义旁路牺牲准确性。
