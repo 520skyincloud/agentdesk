@@ -38,6 +38,13 @@
   无字段/状态冲突，无强制 rebase 依赖，建议本独立提交整体 cherry-pick。
 - 发布边界：仅 test-2 程序升级，保留旧 release `20260924-product-experience-570d05d`；
   回退只切程序链接，不恢复数据库，不改变已有消息和审计。
+- 已发布运行提交 `b628af1`，已推送 origin、weibao；test-2 当前目录为
+  `/opt/agentdesk/releases/20260924-goal-contract-b628af1`。18:27 发布后核对实际进程路径、
+  二进制 SHA-256、HTTP 200、active/running、NRestarts=0；启动后错误级日志无记录，
+  进程实际环境 `AGENT_DESK_PMS_ALLOW_WRITE=false`。
+- 发布前配置/环境/服务单元及旧二进制校验记录位于
+  `/opt/agentdesk/backups/20260924-pre-goal-contract-b628af1`，权限700；
+  服务端 SHA-256 为 `78ab900b6075f0f7236329ee97d0a21798d3375fa4a0b6f2f73d6d305b1442c5`。
 
 ## 2026-09-23 客户目标与事实回复链路结构收口发布
 
