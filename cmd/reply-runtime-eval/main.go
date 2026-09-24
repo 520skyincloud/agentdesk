@@ -1253,6 +1253,7 @@ func buildScenarios(round int) []scenario {
 
 	cases = append(cases, longScenario("L01"), longScenarioRoomExpiry("L02"), longScenarioStoreIsolation("L03"))
 	cases = append(cases, activeAnswerScenarios()...)
+	cases = append(cases, productExperienceScenarios()...)
 	if round%2 == 0 {
 		cases = append(cases, hundredTurnScenario())
 	}
@@ -1266,6 +1267,8 @@ func selectScenarioSuite(cases []scenario, suite string) ([]scenario, error) {
 	switch strings.ToLower(strings.TrimSpace(suite)) {
 	case "active-answer", "active-answer-focused":
 		return selectScenarioIDs(cases, []string{"AA01", "AA02", "AA03", "AA04", "AA05", "AA06", "AA07", "AA08"})
+	case "product-experience", "customer-journeys":
+		return selectScenarioIDs(cases, []string{"UX01", "UX02", "UX03", "UX04", "UX05"})
 	case "continuous50", "continuous50-safe":
 		return []scenario{continuous50SafeScenario()}, nil
 	case "continuous30":
@@ -1298,6 +1301,118 @@ func selectScenarioSuite(cases []scenario, suite string) ([]scenario, error) {
 	default:
 		return nil, fmt.Errorf("unknown scenario suite %q", suite)
 	}
+}
+
+func productExperienceScenarios() []scenario {
+	t := true
+	f := false
+	banned := []string{
+		"PMS", "taskId", "replyParts", "coveredFactIds", "没能整理", "可靠的回复", "再发一次",
+		"帮您转接", "转人工", "人工客服",
+	}
+	customerTurn := func(content string, required []outcomeRequirement) turn {
+		return turn{
+			Type: enums.IMMessageTypeText, Content: content, WaitForAI: true,
+			RequiredOutcomes: required, Banned: append([]string(nil), banned...), NeedsHumanRoute: &f,
+			MaxReplyMessages: 3, LatencyWarningMs: 12000, LatencyLimitMs: 30000,
+		}
+	}
+
+	roomChange := scenario{
+		ID: "UX01", Category: "product-experience", Name: "客户不懂房型并让客服代选后追问差价",
+		RecordEachTurn: true,
+		Turns: []turn{
+			customerTurn("我想换个房间，手机号18569300806", []outcomeRequirement{
+				textOutcome("换房选择", "房型", "沐阳", "橙意", "想换"),
+			}),
+			customerTurn("这些房都是什么意思，我不太懂", []outcomeRequirement{
+				textOutcome("房型解释", "房型名称", "房型"),
+				textOutcome("需求引导", "床型", "空间", "楼层"),
+			}),
+			customerTurn("那换沐阳吧", []outcomeRequirement{
+				textOutcome("沐阳库存", "沐阳"),
+				textOutcome("可选房间", "可选", "有房", "房间"),
+			}),
+			customerTurn("房号我也不懂，你随便帮我选一间", []outcomeRequirement{
+				textOutcome("客服代选", "先替您选", "替您选"),
+				textOutcome("只读边界", "还没有实际换房", "没有实际换房", "候选房"),
+			}),
+			customerTurn("那要补多少钱", []outcomeRequirement{
+				textOutcome("当前订单金额", "376元", "376 元"),
+				textOutcome("目标房价缺失", "实时房价没有显示", "算不出准确差价", "不能准确计算差价"),
+			}),
+		},
+	}
+	roomChange.Turns[3].Banned = append(roomChange.Turns[3].Banned, "我建议")
+	roomChange.Turns[4].Banned = append(roomChange.Turns[4].Banned, "目标房型", "null", "price")
+
+	orderFollowUp := scenario{
+		ID: "UX02", Category: "product-experience", Name: "个人订单补手机号后连续追问退房时间",
+		RecordEachTurn: true,
+		Turns: []turn{
+			customerTurn("我想看看我这次住到什么时候", []outcomeRequirement{
+				textOutcome("必要字段追问", "手机号", "订单号"),
+			}),
+			customerTurn("18569300806", []outcomeRequirement{
+				textOutcome("订单查询结果", "儿童房", "退房", "离店", "9月25日"),
+			}),
+			customerTurn("那我最晚几点退房", []outcomeRequirement{
+				textOutcome("个人退房时间", "9月25日12点", "12点前退房", "12:00"),
+			}),
+		},
+	}
+	orderFollowUp.Turns[2].Banned = append(orderFollowUp.Turns[2].Banned, "请提供手机号", "告诉我手机号")
+
+	knowledgeContext := scenario{
+		ID: "UX03", Category: "product-experience", Name: "知识回指后明确切换新主题",
+		RecordEachTurn: true,
+		Turns: []turn{
+			customerTurn("酒店有咖啡吗", []outcomeRequirement{
+				textOutcome("咖啡供应", "咖啡"),
+			}),
+			customerTurn("在哪拿", []outcomeRequirement{
+				textOutcome("咖啡位置", "咖啡", "领取", "自取", "拿"),
+			}),
+			customerTurn("停车场从哪边进", []outcomeRequirement{
+				textOutcome("停车入口", "昭潭路", "停车场", "入口"),
+			}),
+		},
+	}
+	knowledgeContext.Turns[2].Banned = append(knowledgeContext.Turns[2].Banned, "咖啡")
+
+	externalService := scenario{
+		ID: "UX04", Category: "product-experience", Name: "外卖知识与代下单能力边界",
+		RecordEachTurn: true,
+		Turns: []turn{
+			customerTurn("你们有外卖机器人吗", []outcomeRequirement{
+				robotExistenceOutcome(),
+			}),
+			customerTurn("那外卖地址怎么写", []outcomeRequirement{
+				textOutcome("酒店名称", "丽斯未来酒店合肥南七店"),
+				textOutcome("房间号", "房间号", "楼层房间号"),
+			}),
+			customerTurn("那你直接帮我下单吧", []outcomeRequirement{
+				textOutcome("代下单边界", "不能直接代下单", "没法直接代下单", "无法直接代下单", "不能帮您下单"),
+			}),
+		},
+	}
+	externalService.Turns[0].Banned = append(externalService.Turns[0].Banned, "送到房间", "送到房门", "送上来")
+
+	pillowProduct := scenario{
+		ID: "UX05", Category: "product-experience", Name: "同款枕头自然推荐并发送商品卡",
+		RecordEachTurn: true,
+		Turns: []turn{{
+			Type: enums.IMMessageTypeText, Content: "你们房间这个枕头睡着挺舒服，同款怎么买", WaitForAI: true,
+			RequiredOutcomes: []outcomeRequirement{
+				textOutcome("枕头推荐", "枕头", "同款", "商品"),
+				resourceOutcome("枕头商品卡", "pillow_product"),
+			},
+			Banned: append([]string(nil), banned...), NeedsResource: &t, NeedsHumanRoute: &f,
+			MaxReplyMessages: 3, LatencyWarningMs: 12000, LatencyLimitMs: 30000,
+		}},
+	}
+
+	return []scenario{roomChange, orderFollowUp, knowledgeContext, externalService, pillowProduct}
 }
 
 func activeAnswerScenarios() []scenario {

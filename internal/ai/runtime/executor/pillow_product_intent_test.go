@@ -64,6 +64,25 @@ func TestJevPillowRouteIsStructuredResource(t *testing.T) {
 	}
 }
 
+func TestPillowProductSkipsGenerateAndUsesStructuredCommit(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
+		PrimaryIntent: "hotel_variable", SubIntent: "pillow_product", NeedsResource: true,
+		ResourceAction: "provide_pillow_product", ResourceActions: []string{"provide_pillow_product"},
+		IntentTasks: []callbacks.IntentTaskTraceData{{
+			Intent: "hotel_variable", SubIntent: "pillow_product", Objective: "action_request",
+			Text: "你们房间这个枕头睡着挺舒服，同款怎么买", NeedsResource: true, ResourceAction: "provide_pillow_product",
+		}},
+	}
+	summary := &RunResult{}
+	if !prepareHotelVariableDirectCommit(RunInput{UserMessage: models.Message{Content: "你们房间这个枕头睡着挺舒服，同款怎么买"}}, summary, collector) {
+		t.Fatal("pillow product must skip Generate and enter the structured resource commit")
+	}
+	if summary.ReplyText != "" {
+		t.Fatalf("the product lead is owned by the structured commit and must not be duplicated: %q", summary.ReplyText)
+	}
+}
+
 func runtimePillowIntentFixture(text string, intent string, subIntent string, resourceAction string) callbacks.IntentTraceData {
 	return callbacks.IntentTraceData{
 		PrimaryIntent: intent, IntentConfidence: 0.95, ShouldReply: true,

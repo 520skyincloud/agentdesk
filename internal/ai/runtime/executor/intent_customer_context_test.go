@@ -11,6 +11,17 @@ import (
 )
 
 func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
+	t.Run("explicit external order request overrides delivery information context", func(t *testing.T) {
+		intent := postprocessRuntimeModelIntent(runtimeScenarioTestIntent("那你直接帮我下单吧", "food_delivery", false), RunInput{
+			UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "那你直接帮我下单吧"},
+		}, adapter.HistoryBuildResult{}, nil)
+		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "service_request" ||
+			intent.IntentTasks[0].SubIntent != "external_proxy_action" || intent.IntentTasks[0].Objective != "action_request" ||
+			!intent.IntentTasks[0].NeedsKnowledge || intent.IntentTasks[0].NeedsHumanRoute {
+			t.Fatalf("external order request did not override the historical delivery-information route: %#v", intent)
+		}
+	})
+
 	t.Run("personal checkout becomes order detail before locator preflight", func(t *testing.T) {
 		intent := postprocessRuntimeModelIntent(runtimeScenarioTestIntent("我几点退房", "checkout_process", false), RunInput{
 			UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我几点退房"},
@@ -55,6 +66,21 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 			t.Fatalf("personal member benefits did not reuse the confirmed phone: %#v", intent)
 		}
 	})
+}
+
+func TestRuntimePMSSessionLocatorRetainsSuccessfulTargetRoomType(t *testing.T) {
+	trace := callbacks.RuntimeTraceData{}
+	trace.Pipeline.ReplyPlan.TaskPlans = []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-room", Intent: "hotel_info", SubIntent: "room_change", Objective: "selection",
+		OriginalText: "那换沐阳吧", Text: "那换沐阳吧", ResolvedText: "换到沐阳房型",
+		Entities:       []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityTargetRoomType, Text: "沐阳"}},
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "沐阳有房"}},
+	}}
+	trace.Output.CommitMessages = []callbacks.CommitMessageTraceData{{Status: "sent", TaskIDs: []string{"task-room"}}}
+	locator := runtimePMSSessionLocatorFromTrace(trace)
+	if locator.TargetRoomTypeText != "沐阳" {
+		t.Fatalf("successful room choice was not retained: %#v", locator)
+	}
 }
 
 func TestJevStateUsesRecentUniqueBusinessTaskFromSameSession(t *testing.T) {

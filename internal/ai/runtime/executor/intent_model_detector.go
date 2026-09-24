@@ -41,8 +41,9 @@ var runtimePMSCustomerPhoneValuePattern = regexp.MustCompile(`(?:\+?86[- ]?)?1[3
 var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})`)
 
 const (
-	runtimeIntentEntityCustomerPhone = "customer_phone"
-	runtimeIntentEntityOrderLocator  = "order_locator"
+	runtimeIntentEntityCustomerPhone  = "customer_phone"
+	runtimeIntentEntityOrderLocator   = "order_locator"
+	runtimeIntentEntityTargetRoomType = "target_room_type"
 )
 
 const runtimePMSOrderPhoneClarification = "请提供预订手机号。"
@@ -68,8 +69,9 @@ type runtimeIntentDetectJSON struct {
 }
 
 type runtimePMSSessionLocator struct {
-	Phone        string
-	OrderLocator string
+	Phone              string
+	OrderLocator       string
+	TargetRoomTypeText string
 }
 
 type runtimeIntentTaskJSON struct {
@@ -604,8 +606,17 @@ func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocat
 			continue
 		}
 		candidate := runtimePMSSessionLocatorFromTrace(recent.Runtime)
-		if candidate.Phone != "" || candidate.OrderLocator != "" {
-			return candidate
+		if locator.Phone == "" {
+			locator.Phone = candidate.Phone
+		}
+		if locator.OrderLocator == "" {
+			locator.OrderLocator = candidate.OrderLocator
+		}
+		if locator.TargetRoomTypeText == "" {
+			locator.TargetRoomTypeText = candidate.TargetRoomTypeText
+		}
+		if locator.Phone != "" && locator.OrderLocator != "" && locator.TargetRoomTypeText != "" {
+			break
 		}
 	}
 	return locator
@@ -643,11 +654,32 @@ func runtimePMSSessionLocatorFromTrace(trace callbacks.RuntimeTraceData) runtime
 				candidate = runtimePMSMergeLocatorText(candidate, entity.Text)
 			}
 		}
-		if candidate.Phone != "" || candidate.OrderLocator != "" {
-			return candidate
+		if locator.Phone == "" {
+			locator.Phone = candidate.Phone
+		}
+		if locator.OrderLocator == "" {
+			locator.OrderLocator = candidate.OrderLocator
+		}
+		if locator.TargetRoomTypeText == "" && runtimePMSTaskRetainsTargetRoomType(task.SubIntent) {
+			target := runtimePMSTargetRoomTypeText(task)
+			if target != "" && !runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(target)) {
+				locator.TargetRoomTypeText = target
+			}
+		}
+		if locator.Phone != "" && locator.OrderLocator != "" && locator.TargetRoomTypeText != "" {
+			break
 		}
 	}
 	return locator
+}
+
+func runtimePMSTaskRetainsTargetRoomType(subIntent string) bool {
+	switch pmsReadScenarioForSubIntent(subIntent) {
+	case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimePMSMatchingTraceIntentTask(replyTask callbacks.ReplyTaskPlanTraceData, tasks []callbacks.IntentTaskTraceData) *callbacks.IntentTaskTraceData {

@@ -595,6 +595,8 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 			} else {
 				textParts = append(textParts, buildPhoneDirectReply(instance))
 			}
+		case "pillow_product":
+			hasStructuredCommit = true
 		}
 	}
 	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n<<NEXT_MESSAGE>>\n"))
@@ -617,7 +619,11 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 	for _, task := range plan.TaskPlans {
 		if !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
 			strings.TrimSpace(task.OutputKind) != "text" || task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" ||
-			len(task.SupportedFacts) == 0 || len(task.MissingAspects) > 0 {
+			len(task.SupportedFacts) == 0 {
+			return false
+		}
+		if len(task.MissingAspects) > 0 &&
+			!(runtimePMSTaskAsksRoomExplanation(task) && deterministicPMSMissingBoundary(plan, task.TaskID) != "") {
 			return false
 		}
 		hasPMSFact = hasPMSFact || runtimeReplyTaskHasPMSFact(task)
@@ -633,13 +639,16 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 	for index, group := range groups {
 		task := plan.TaskPlans[index]
 		reply := ""
-		if runtimeReplyTaskHasPMSFact(task) {
+		if runtimePMSTaskAsksRoomExplanation(task) {
+			reply = deterministicPMSMissingBoundary(plan, task.TaskID)
+		}
+		if reply == "" && runtimeReplyTaskHasPMSFact(task) {
 			var err error
 			reply, err = SanitizeGeneratedReplyText(strings.TrimSpace(*task.AnswerText))
 			if err != nil {
 				return false
 			}
-		} else {
+		} else if reply == "" {
 			group.EvidenceLocked = true
 			var err error
 			reply, err = validateLockedReplyContent(group)

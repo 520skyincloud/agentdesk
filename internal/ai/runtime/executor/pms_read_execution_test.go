@@ -79,6 +79,56 @@ func TestRuntimePMSReadPlanInputUsesCurrentAndSessionLocators(t *testing.T) {
 			t.Fatalf("rejected phone must stay invalidated, got %#v", input)
 		}
 	})
+
+	t.Run("price follow up reuses the last confirmed target room type", func(t *testing.T) {
+		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
+			OriginalText: "那要补多少钱",
+			SubIntent:    "price_difference",
+		}, runtimePMSSessionLocator{Phone: "13800138000", TargetRoomTypeText: "沐阳"}, time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local))
+		if input.TargetRoomTypeText != "沐阳" {
+			t.Fatalf("price follow-up lost the selected target room type: %#v", input)
+		}
+	})
+
+	t.Run("current target overrides the remembered room type", func(t *testing.T) {
+		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
+			OriginalText: "大床房要补多少钱",
+			SubIntent:    "price_difference",
+		}, runtimePMSSessionLocator{Phone: "13800138000", TargetRoomTypeText: "沐阳"}, time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local))
+		if input.TargetRoomTypeText != "大床房" {
+			t.Fatalf("current target did not override the remembered room type: %#v", input)
+		}
+	})
+
+	t.Run("rejected room type is not restored for a price follow up", func(t *testing.T) {
+		input := runtimePMSReadPlanInputForTask(callbacks.ReplyTaskPlanTraceData{
+			OriginalText: "不换沐阳了，差价先别查",
+			SubIntent:    "price_difference",
+		}, runtimePMSSessionLocator{Phone: "13800138000", TargetRoomTypeText: "沐阳"}, time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local))
+		if input.TargetRoomTypeText != "" {
+			t.Fatalf("rejected target room type was restored: %#v", input)
+		}
+	})
+}
+
+func TestPrepareGroundedPMSDirectCommitAnswersRoomExplanationWithoutGenerate(t *testing.T) {
+	answer := "当前可选房型有儿童房、橙意和沐阳。"
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-room-explanation", Intent: "hotel_info", SubIntent: "room_change", Objective: "explanation",
+		OriginalText: "这些房都是什么意思，我不太懂", Text: "这些房都是什么意思，我不太懂",
+		OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true, AnswerText: &answer,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "儿童房、橙意和沐阳有房"}},
+		MissingAspects: []string{"targetRoomTypeId: 目标房型未指定"},
+	}}}
+	summary := &RunResult{}
+	if !prepareGroundedPMSDirectCommit(summary, collector) {
+		t.Fatal("room-type explanation should be committed directly without waiting for Generate")
+	}
+	want := "这些是酒店的房型名称。您更在意床型、空间还是楼层？我可以按您的需求帮您挑一个。"
+	if summary.ReplyText != want {
+		t.Fatalf("unexpected customer explanation: got=%q want=%q", summary.ReplyText, want)
+	}
 }
 
 func TestRuntimePMSRenewalRelativeDatesUseCurrentCheckout(t *testing.T) {

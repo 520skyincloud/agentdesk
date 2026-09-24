@@ -215,6 +215,9 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			continue
 		}
 		input := runtimePMSReadPlanInputForTask(*task, sessionLocator, now)
+		if input.TargetRoomTypeText != "" && runtimePMSTargetRoomTypeText(*task) == "" {
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityTargetRoomType, input.TargetRoomTypeText)
+		}
 		plan := buildPMSReadPlan(input)
 		results, finalPlan := executeRuntimePMSReadPlan(ctx, plan, input, invoker)
 		aggregated, err := aggregatePMSReadPlanResults(finalPlan, results)
@@ -550,6 +553,10 @@ func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTrace
 
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
 	text := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
+	targetRoomTypeText := runtimePMSTargetRoomTypeText(task)
+	if runtimePMSCurrentTextRejectsTargetRoomType(task.OriginalText) {
+		targetRoomTypeText = ""
+	}
 	phone := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
 	if phone == "" {
 		phone = runtimePMSLastUsableCustomerPhone(text)
@@ -562,7 +569,11 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		SubIntent:          task.SubIntent,
 		Phone:              phone,
 		RoomKeyword:        runtimePMSRoomKeyword(task),
-		TargetRoomTypeText: runtimePMSTargetRoomTypeText(task),
+		TargetRoomTypeText: targetRoomTypeText,
+	}
+	if input.TargetRoomTypeText == "" && input.Scenario == pmsReadScenarioPrice &&
+		!runtimePMSCurrentTextRejectsTargetRoomType(task.OriginalText) {
+		input.TargetRoomTypeText = strings.TrimSpace(sessionLocator.TargetRoomTypeText)
 	}
 	entityLocator := runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator)
 	input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(entityLocator)
@@ -736,6 +747,9 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 	roomEntities := make([]string, 0, 2)
 	for _, entity := range task.Entities {
 		entityType := strings.ToLower(strings.TrimSpace(entity.Type))
+		if entityType == runtimeIntentEntityTargetRoomType {
+			return strings.TrimSpace(entity.Text)
+		}
 		if strings.Contains(entityType, "room_type") || strings.Contains(entityType, "房型") {
 			if text := strings.TrimSpace(entity.Text); text != "" {
 				roomEntities = append(roomEntities, text)
@@ -769,6 +783,14 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 	return ""
 }
 
+func runtimePMSCurrentTextRejectsTargetRoomType(text string) bool {
+	compact := compactRuntimePMSPhoneContext(strings.ToLower(text))
+	return containsAny(compact, []string{
+		"不换了", "先不换", "不要这个房型", "不是这个房型", "别用这个房型",
+		"不要沐阳", "不换沐阳", "换别的", "换其他", "其他房型", "别的房型", "重新选",
+	})
+}
+
 func runtimePMSCurrentRoomTypeSelection(task callbacks.ReplyTaskPlanTraceData) string {
 	current := strings.TrimSpace(task.OriginalText)
 	if current == "" {
@@ -795,6 +817,9 @@ func runtimePMSCurrentRoomTypeSelection(task callbacks.ReplyTaskPlanTraceData) s
 		}
 	}
 	for _, suffix := range []string{"就行", "可以", "吧", "吗"} {
+		current = strings.TrimSpace(strings.TrimSuffix(current, suffix))
+	}
+	for _, suffix := range []string{"需要", "要", "需"} {
 		current = strings.TrimSpace(strings.TrimSuffix(current, suffix))
 	}
 	if !selectionCue || current == "" || len([]rune(current)) > 12 ||
@@ -2067,7 +2092,7 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 				answer = strings.TrimSuffix(answer, "。") + "，" + price + "。"
 			}
 		}
-		return answer + "目前只是帮您确认了候选房，还没有实际换房。"
+		return answer + "目前只是选了一个候选房，还没有实际换房。"
 	}
 	targetText := runtimePMSTargetRoomTypeText(task)
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
@@ -2103,7 +2128,7 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 							answer += price + "。"
 						}
 					}
-					return answer + "目前只是帮您确认了候选房，还没有实际换房。"
+					return answer + "目前只是选了一个候选房，还没有实际换房。"
 				} else {
 					parts = append(parts, "当前可选房间有"+strings.Join(rooms, "、"))
 				}
@@ -2244,7 +2269,7 @@ func runtimePMSCustomerStay(result pmsReadPlanResult) (runtimePMSStayCandidate, 
 
 func runtimePMSGenericRoomChoice(value string) bool {
 	switch value {
-	case "", "吗", "吧", "可以", "其他", "别的", "另外", "另一", "随便", "都行", "其他的", "别的的", "这个", "那个", "它":
+	case "", "吗", "吧", "可以", "其他", "别的", "另外", "另一", "随便", "都行", "其他的", "别的的", "这个", "那个", "那", "它":
 		return true
 	default:
 		return false

@@ -12,6 +12,17 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 		task := &intent.IntentTasks[index]
 		text := strings.TrimSpace(task.Text)
 		switch {
+		case runtimeExternalProxyActionRequest(text, *task):
+			task.Intent = "service_request"
+			task.SubIntent = "external_proxy_action"
+			task.Objective = "action_request"
+			task.NeedsKnowledge = true
+			task.NeedsResource = false
+			task.NeedsTool = false
+			task.NeedsHumanRoute = false
+			task.ResourceAction = ""
+			task.Reason = appendIntentReason(task.Reason, "current customer message explicitly delegates an external order")
+			changed = true
 		case runtimePillowRoomServiceRequest(text):
 			task.Intent = "service_request"
 			task.SubIntent = "room_supplies"
@@ -61,6 +72,24 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 		return intent
 	}
 	return deriveModelIntentFromTasks(intent)
+}
+
+func runtimeExternalProxyActionRequest(text string, task callbacks.IntentTaskTraceData) bool {
+	compact := compactRuntimePillowIntentText(text)
+	if compact == "" || !containsAny(compact, []string{
+		"帮我下单", "替我下单", "帮我点", "替我点", "帮我买", "替我买",
+		"帮我叫车", "替我叫车", "帮我联系", "替我联系",
+	}) {
+		return false
+	}
+	externalContext := containsAny(compact, []string{
+		"外卖", "美团", "饿了么", "餐", "商品", "出租车", "网约车", "商家",
+	})
+	switch strings.TrimSpace(task.SubIntent) {
+	case "food_delivery", "external_proxy_action":
+		externalContext = true
+	}
+	return externalContext
 }
 
 func runtimePillowProductPurchaseRequest(text string, task callbacks.IntentTaskTraceData) bool {
