@@ -1335,3 +1335,13 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 最后兜底不再要求客户重发，也不暴露“没能整理/可靠回复”等内部生成状态。无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
 - 验证通过：`go test -p=1 ./internal/ai/runtime/executor -count=1`、`go test -p=1 ./internal/pms ./internal/services ./internal/ai/runtime -count=1` 及 `git diff --check`。`customer-audit` 仅与本交接文档存在同文件追加，合并时保留双方记录；`ai-billing` 无同文件修改。
 - 修复提交：`2632a24`，已推送 `origin` 与 `weibao`。test-2 release：`/opt/agentdesk/releases/20260924-room-choice-2632a24`；回滚点：`/opt/agentdesk/releases/20260924-active-goal-71b8f12`。部署后 `HTTP 200`、`active/running`、`NRestarts=0`，无 error 级日志；Server SHA-256：`9b5c5e7456683981886c6aa18842c4e437dac32628e48d0f26c0978b4d3d1`。
+
+## 2026-09-24 真实客户旅程端到端验收
+
+- 目标不是按内部功能清单自测，而是从住客视角验证五条连续旅程：换房并让客服代选后追问差价、个人订单补手机号后连续追问退房、知识回指后切换新主题、外卖知识与代下单边界、枕头同款购买与商品资源提交。评测场景位于 `cmd/reply-runtime-eval/main.go`，共 15 个客户轮次。
+- 本轮系列提交为 `a53e317`、`4a56347`、`42c20a0`、`570d05d`。运行文件主要涉及 Runtime 上下文恢复、PMS 只读客户侧回答和资源提交；最后一笔 `570d05d` 只补充快速连续消息下从客户历史恢复已选择房型，并把缺少目标价格时的兜底从内部术语“目标房型”改为“您刚选的房型”。
+- 最终真实运行 `rrt-20260924-154156-20f09776` 在 test-2 当前 release 上通过 `15/15`，事实槽位 `20/20`，错误 `0`，平均延迟 `4849ms`、P90 `14347ms`、最大 `18869ms`。换房链路能持续保留“沐阳”，回答订单金额 `376.00元`，并在目标价格缺失时明确不乱报；订单、知识回指、主题切换、外卖能力边界和枕头资源提交均通过。
+- 自动验证通过：`go test -p=1 ./internal/ai/runtime/executor ./internal/ai/runtime ./internal/services ./cmd/reply-runtime-eval -count=1` 及 `git diff --check`。Linux amd64 Server 与评测器构建并校验 SHA-256 后原子部署。
+- 当前 test-2 release：`/opt/agentdesk/releases/20260924-product-experience-570d05d`；回滚 release：`/opt/agentdesk/releases/20260924-product-experience-42c20a0`；部署后服务 `active/running`、`NRestarts=0`、8083 HTTP 健康检查通过。提交已推送 `origin` 与 `weibao`。
+- 本轮没有 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变更；PMS 继续 `enabled=true`、`allowWrite=false`。`customer-audit`、`ai-billing` 与本轮四个运行/测试文件均无同文件交集，不需要调整合并顺序。
+- 已知产品风险：咖啡知识首问和“在哪拿”本轮分别约 `14.35s`、`18.87s`，主要长尾仍在知识 Judge；正确性已通过但速度不能标为已解决。评测器使用真实模型、FastGPT、MySQL 和 PMS，但 `ChannelID=0`，只验证 Commit/资源创建，不等同于真实企微客户端已收到并打开商品卡。评测健康项中本机 `127.0.0.1:6333/readyz` 不可用，但本轮 FastGPT 检索请求正常完成。
