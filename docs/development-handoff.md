@@ -1324,3 +1324,13 @@ API、DTO、枚举或 WebSocket。最终提交后必须从干净 detached worktr
 - 最终 test-2 release：`/opt/agentdesk/releases/20260924-active-goal-71b8f12`；切换前备份：`/opt/agentdesk/backups/20260924-pre-active-goal-71b8f12`。服务 `active/running`、`NRestarts=0`、8083 健康检查通过，部署后无 error 级 systemd 日志；PMS 保持 `enabled=true`、`allowWrite=false`，Judge 已确认恢复 `gpt-5.6-luna`。
 - 真实隔离会话验证：订单连续追问 `conversation_id=2218` 3/3；换房与具体房号 `2220` 3/3；手机号纠正及纠正后退房日期 `2221` 的产品行为 3/3（首轮回复“没能查到”，旧测试断言未覆盖该同义表达）；知识续问和新主题切换 `2226` 3/3；让客服推荐房间并选择推荐房号 `2227` 3/3。PMS 场景墙钟约 2.2-3.3 秒，没有重复索要手机号、没有暴露内部字段、没有宣称已换房。
 - 已知剩余问题：知识检索约 0.9 秒，但 Luna Judge 单题仍约 11-16 秒，客户墙钟约 12-20 秒。缩小输出预算没有改善；DeepSeek v4 flash/pro、Qwen 3.7 plus、豆包 2.0 mini 的隔离对照均未稳定产出当前 Judge 协议，已经全部撤回，不能将速度标为已解决。后续需要优化 Judge 协议输入或提供兼容的低延迟 Judge 模型，不能用本地语义旁路牺牲准确性。
+
+## 2026-09-24 换房代选、汇总行与价格回复收口
+
+- 目标：修复其风连续换房对话中“随便选”被说成客服主观推荐、客户已选房号仍被归功于客服、房型解释问题重复库存、库存汇总行“合计”被当成房型，以及价格字段缺失时暴露“没能整理成可靠回复”等内部故障话术。
+- 当前客户说“随便选/帮我挑一间”时，回复明确为“先替您选”；客户直接指定具体房号时只确认该候选可用，不再声称是客服推荐。两者均保持只读边界，不宣称已经换房、锁房或排房。
+- `inventory` 中 `rowType=TOTAL/SUMMARY/SUBTOTAL/AGGREGATE` 及名称为“合计/总计/小计/汇总”的行统一从房型解析、目标匹配、库存覆盖和客户选项中排除。
+- 房型解释问题优先回答“这些是房型名称”，无真实房型配置字段时按床型、空间、楼层引导客户选择，不重复倾倒库存数据。
+- 真实接口核对结果：当前订单只返回订单金额 `376`，沐阳库存返回可售房与房型 ID，但 `price/currency/consumeAmountType` 及逐日价格为空；因此不能准确计算差价，也不能用订单总额按天拆算。客户回复改为说明已知订单金额、目标房价未显示并明确不乱报；接口返回精确差价时仍直接回复补/退金额。
+- 最后兜底不再要求客户重发，也不暴露“没能整理/可靠回复”等内部生成状态。无 model、Migration、DTO、enum、外部 API、WebSocket、数据库、企微协议、Outbox、计费或 PMS 写入变化；`AGENT_DESK_PMS_ALLOW_WRITE=false` 保持不变。
+- 验证通过：`go test -p=1 ./internal/ai/runtime/executor -count=1`、`go test -p=1 ./internal/pms ./internal/services ./internal/ai/runtime -count=1` 及 `git diff --check`。`customer-audit` 仅与本交接文档存在同文件追加，合并时保留双方记录；`ai-billing` 无同文件修改。

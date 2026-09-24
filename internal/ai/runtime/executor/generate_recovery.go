@@ -504,7 +504,7 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 			} else if content := deterministicPMSCustomerFallback(group); content != "" {
 				parts = append(parts, content)
 			} else {
-				parts = append(parts, "我已经查到相关信息，但刚才没能整理成可靠的回复。麻烦您把刚才的问题再发一次，我接着帮您处理。")
+				parts = append(parts, "这部分实时信息还不完整，我暂时没法给您一个准确结果，先不乱答。")
 			}
 			continue
 		}

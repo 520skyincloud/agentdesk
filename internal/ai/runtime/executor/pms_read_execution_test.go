@@ -943,6 +943,7 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 			map[string]any{"roomTypeId": "CHILD", "roomTypeName": "儿童房", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "1"}, "2026-09-24": map[string]any{"available": "1"}}},
 			map[string]any{"roomTypeId": "SUN", "roomTypeName": "沐阳", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "4"}, "2026-09-24": map[string]any{"available": "3"}}},
 			map[string]any{"roomTypeId": "ORANGE", "roomTypeName": "橙意", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "2"}, "2026-09-24": map[string]any{"available": "2"}}},
+			map[string]any{"rowType": "TOTAL", "roomTypeId": "TOTAL", "roomTypeName": "合计", "bookings": map[string]any{"2026-09-23": map[string]any{"available": "7"}, "2026-09-24": map[string]any{"available": "6"}}},
 		}},
 		{StepID: "stay.room_availability", Status: pmsReadStepOK, Data: map[string]any{"candidates": []any{
 			map[string]any{"roomTypeName": "沐阳", "homeName": "A302"},
@@ -957,11 +958,17 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 			t.Fatalf("generic room change did not guide with real choices: %q missing %q", recommendation, expected)
 		}
 	}
+	if strings.Contains(recommendation, "合计") {
+		t.Fatalf("inventory summary row must not become a customer room choice: %q", recommendation)
+	}
 	targeted := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "换个沐阳"}, plan, result)
-	for _, expected := range []string{"沐阳在您当前入住期间还有房", "A302", "A305", "需要补28元"} {
+	for _, expected := range []string{"沐阳在您当前入住期间还有房", "A302", "A305"} {
 		if !strings.Contains(targeted, expected) {
 			t.Fatalf("targeted room change did not answer the actual request: %q missing %q", targeted, expected)
 		}
+	}
+	if strings.Contains(targeted, "需要补28元") {
+		t.Fatalf("a room selection without a price question must not add an unasked price: %q", targeted)
 	}
 	selected := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
 		OriginalText:  "沐阳吧，差价多少",
@@ -980,10 +987,13 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 		DialogueAct:   "recommendation",
 		ReplyStrategy: "recommend_one_supported_option",
 	}, plan, result)
-	for _, expected := range []string{"沐阳在您当前入住期间还有房", "我建议先选A302", "需要补28元"} {
+	for _, expected := range []string{"好，那我先替您选A302", "还没有实际换房"} {
 		if !strings.Contains(recommended, expected) {
 			t.Fatalf("room recommendation did not advance the active goal: %q missing %q", recommended, expected)
 		}
+	}
+	if strings.Contains(recommended, "我建议") || strings.Contains(recommended, "需要补28元") {
+		t.Fatalf("delegated selection must not sound like an unsolicited recommendation or add an unasked price: %q", recommended)
 	}
 	confirmedRoom := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
 		OriginalText:  "A302",
@@ -992,10 +1002,65 @@ func TestRuntimePMSCustomerRoomChoiceGuidesFromNeedInsteadOfFeatureNames(t *test
 		DialogueAct:   "selection",
 		ReplyStrategy: "confirm_selection_and_continue_goal",
 	}, plan, result)
-	for _, expected := range []string{"A302在您当前入住期间可以选择", "需要补28元", "还没有实际换房"} {
+	for _, expected := range []string{"A302在您当前入住期间可以选择", "还没有实际换房"} {
 		if !strings.Contains(confirmedRoom, expected) {
 			t.Fatalf("room-number selection did not continue the active goal: %q missing %q", confirmedRoom, expected)
 		}
+	}
+	if strings.Contains(confirmedRoom, "建议") || strings.Contains(confirmedRoom, "替您选") {
+		t.Fatalf("a customer-selected room must not be claimed as the assistant's recommendation: %q", confirmedRoom)
+	}
+
+	explanation := runtimePMSCustomerRoomChoiceAnswer(callbacks.ReplyTaskPlanTraceData{
+		OriginalText: "这些房是啥意思",
+		Objective:    "explanation",
+	}, plan, result)
+	for _, expected := range []string{"酒店的房型名称", "床型、空间还是楼层"} {
+		if !strings.Contains(explanation, expected) {
+			t.Fatalf("room explanation repeated inventory instead of answering the question: %q missing %q", explanation, expected)
+		}
+	}
+	if strings.Contains(explanation, "合计") || strings.Contains(explanation, "需要补") {
+		t.Fatalf("room explanation exposed a summary row or unrelated price: %q", explanation)
+	}
+}
+
+func TestRuntimePMSCustomerPriceAnswerUsesKnownFactsWithoutInventingDifference(t *testing.T) {
+	result := pmsReadPlanResult{Steps: []pmsReadStepResult{
+		{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"reserveOrderId": "RES-1", "receptOrderId": "REC-1", "roomName": "儿童房", "homeName": "V05",
+			"checkInTime": "2026-09-23 14:00:00", "checkOutTime": "2026-09-25 12:00:00", "payableAmount": "376",
+		}},
+		{StepID: "inventory.stay", Status: pmsReadStepOK, Args: map[string]string{"beginTime": "2026-09-23", "endTime": "2026-09-25"}, Data: []any{
+			map[string]any{"roomTypeId": "SUN", "roomTypeName": "沐阳", "price": nil, "currency": nil, "bookings": map[string]any{
+				"2026-09-23": map[string]any{"available": "4"}, "2026-09-24": map[string]any{"available": "3"},
+			}},
+		}},
+		{StepID: "price.difference", Status: pmsReadStepOK, Data: map[string]any{"assessment": map[string]any{
+			"status": pms.PriceDifferenceUnavailable,
+		}}},
+	}}
+	task := callbacks.ReplyTaskPlanTraceData{
+		OriginalText: "要补多少钱",
+		ResolvedText: "我想换成沐阳\n当前客户补充（以本次为准）：要补多少钱",
+		SubIntent:    "price_difference",
+	}
+	answer := runtimePMSCustomerPriceAnswer(task, result)
+	for _, expected := range []string{"沐阳目前有房", "当前订单金额是376元", "沐阳的实时房价没有显示", "还算不出准确差价", "先不乱报"} {
+		if !strings.Contains(answer, expected) {
+			t.Fatalf("quote-only response lost a customer-useful fact: %q missing %q", answer, expected)
+		}
+	}
+	for _, leaked := range []string{"PMS", "price", "null", "没能整理", "再发一次"} {
+		if strings.Contains(answer, leaked) {
+			t.Fatalf("quote-only response leaked implementation wording %q: %q", leaked, answer)
+		}
+	}
+
+	result.Steps[len(result.Steps)-1].Data = map[string]any{"assessment": map[string]any{"status": "exact", "difference": "28"}}
+	exact := runtimePMSCustomerPriceAnswer(task, result)
+	if exact != "沐阳目前有房。需要补28元。" {
+		t.Fatalf("exact price difference changed: %q", exact)
 	}
 }
 

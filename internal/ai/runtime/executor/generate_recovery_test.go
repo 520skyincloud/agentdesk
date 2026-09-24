@@ -218,6 +218,25 @@ func TestDeterministicGeneratedReplyFallbackUsesSafePMSCustomerAnswer(t *testing
 	}
 }
 
+func TestDeterministicGeneratedReplyFallbackDoesNotExposeInternalGenerationFailure(t *testing.T) {
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "task-1", Intent: "hotel_info", SubIntent: "price_difference", OutputKind: "text", ReplyRequired: true,
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+			FactID: "P1F1", Aspect: "pms_price_difference", Statement: "当前价格依据不完整，暂时不能准确计算差价。",
+		}},
+	}}})
+	got := deterministicGeneratedReplyFallback(collector)
+	if got != "这部分实时信息还不完整，我暂时没法给您一个准确结果，先不乱答。" {
+		t.Fatalf("unexpected PMS last-resort reply: %q", got)
+	}
+	for _, leaked := range []string{"没能整理", "可靠的回复", "再发一次"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("PMS fallback exposed internal generation wording %q: %q", leaked, got)
+		}
+	}
+}
+
 func TestDeterministicGeneratedReplyFallbackExplainsPMSFailureForCurrentGoal(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{

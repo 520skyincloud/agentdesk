@@ -1137,7 +1137,7 @@ func validateRuntimePMSInventoryCoverage(result pmsReadStepResult) pmsReadStepRe
 	missingByRoom := make([]string, 0)
 	for _, value := range items {
 		row, ok := value.(map[string]any)
-		if !ok {
+		if !ok || !runtimePMSInventoryRoomTypeRow(row) {
 			continue
 		}
 		if targetRoomTypeID != "" && firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId") != targetRoomTypeID {
@@ -1676,7 +1676,7 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 	exactCandidates := make([]candidate, 0)
 	for _, value := range items {
 		row, ok := value.(map[string]any)
-		if !ok {
+		if !ok || !runtimePMSInventoryRoomTypeRow(row) {
 			continue
 		}
 		id := firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId")
@@ -1945,6 +1945,8 @@ func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsRea
 		return runtimePMSCustomerOrderAnswer(task, result)
 	case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade:
 		return runtimePMSCustomerRoomChoiceAnswer(task, plan, result)
+	case pmsReadScenarioPrice:
+		return runtimePMSCustomerPriceAnswer(task, result)
 	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
 		return runtimePMSCustomerMemberAnswer(result)
 	default:
@@ -2046,17 +2048,26 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 	if stay.homeName != "" {
 		currentLabel += stay.homeName
 	}
+	if runtimePMSTaskAsksRoomExplanation(task) {
+		alternatives := runtimePMSAlternativeRoomNames(options, currentRoom, "", 3)
+		if len(alternatives) == 0 {
+			return "这些是酒店的房型名称，不过目前没有查到其他可选房型。"
+		}
+		return strings.Join(alternatives, "、") + "是酒店的房型名称。这边暂时只查到余房，没有房型配置说明；您更在意床型、空间还是楼层？我按这个方向帮您选。"
+	}
 	selectedRoom := runtimePMSSelectedCandidateRoom(task, result)
 	if selectedRoom != "" {
 		prefix := ""
 		if currentLabel != "" {
 			prefix = "您现在住的是" + currentLabel + "。"
 		}
-		price := runtimePMSCustomerPriceDifference(result)
-		if price == "" {
-			price = "具体差价还需要进一步核对"
+		answer := prefix + selectedRoom + "在您当前入住期间可以选择。"
+		if runtimePMSTaskAsksPrice(task) {
+			if price := runtimePMSCustomerPriceClause(task, result); price != "" {
+				answer = strings.TrimSuffix(answer, "。") + "，" + price + "。"
+			}
 		}
-		return prefix + selectedRoom + "在您当前入住期间可以选择，" + price + "。目前只是查询确认，还没有实际换房。"
+		return answer + "目前只是帮您确认了候选房，还没有实际换房。"
 	}
 	targetText := runtimePMSTargetRoomTypeText(task)
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
@@ -2086,17 +2097,23 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 			parts := []string{option.name + "在您当前入住期间还有房"}
 			if rooms := runtimePMSCustomerCandidateRooms(result, option.name, 3); len(rooms) > 0 {
 				if task.ReplyStrategy == "recommend_one_supported_option" {
-					parts = append(parts, "我建议先选"+rooms[0])
+					answer := prefix + "好，那我先替您选" + rooms[0] + "，这间目前可以选择。"
+					if runtimePMSTaskAsksPrice(task) {
+						if price := runtimePMSCustomerPriceClause(task, result); price != "" {
+							answer += price + "。"
+						}
+					}
+					return answer + "目前只是帮您确认了候选房，还没有实际换房。"
 				} else {
 					parts = append(parts, "当前可选房间有"+strings.Join(rooms, "、"))
 				}
 			}
-			if price := runtimePMSCustomerPriceDifference(result); price != "" {
-				parts = append(parts, price)
-			} else if option.price != "" {
-				parts = append(parts, "当前房型价格为"+runtimePMSCustomerAmount(option.price))
-			} else {
-				parts = append(parts, "具体差价还需要进一步核对")
+			if runtimePMSTaskAsksPrice(task) {
+				if price := runtimePMSCustomerPriceClause(task, result); price != "" {
+					parts = append(parts, price)
+				} else if option.price != "" {
+					parts = append(parts, "当前房型价格为"+runtimePMSCustomerAmount(option.price))
+				}
 			}
 			return prefix + strings.Join(parts, "，") + "。"
 		}
@@ -2115,9 +2132,22 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 		verb = "升级到"
 	}
 	if task.ReplyStrategy == "recommend_one_supported_option" {
-		return prefix + "当前完整入住期间还有" + alternatives[0] + "可选，我建议先看这个房型；具体房间和差价还需要继续核对。"
+		return prefix + "那我先替您选" + alternatives[0] + "，这个房型在您当前入住期间还有房。您觉得可以的话，我再帮您看具体房间。"
 	}
-	return prefix + "当前完整入住期间可以" + verb + strings.Join(alternatives, "、") + "，您更想选哪一种？我再帮您核对具体房间和差价。"
+	return prefix + "当前完整入住期间可以" + verb + strings.Join(alternatives, "、") + "，您更想选哪一种？我再帮您看具体房间。"
+}
+
+func runtimePMSTaskAsksRoomExplanation(task callbacks.ReplyTaskPlanTraceData) bool {
+	current := firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
+	return strings.TrimSpace(task.Objective) == "explanation" || containsAny(current, []string{
+		"啥意思", "什么意思", "什么区别", "有啥不同", "有什么不同", "有何不同", "区别在哪", "哪里不一样",
+	})
+}
+
+func runtimePMSTaskAsksPrice(task callbacks.ReplyTaskPlanTraceData) bool {
+	current := firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
+	return pmsReadScenarioForSubIntent(task.SubIntent) == pmsReadScenarioPrice ||
+		containsAny(current, []string{"差价", "补多少", "多少钱", "费用", "价格"})
 }
 
 func runtimePMSSelectedCandidateRoom(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
@@ -2165,7 +2195,7 @@ func runtimePMSCustomerRoomOptions(result pmsReadPlanResult) []runtimePMSCustome
 		options := make([]runtimePMSCustomerRoomOption, 0, len(items))
 		for _, value := range items {
 			row, ok := value.(map[string]any)
-			if !ok {
+			if !ok || !runtimePMSInventoryRoomTypeRow(row) {
 				continue
 			}
 			name := firstRuntimePMSReadText(row, "roomTypeName", "productName", "roomName")
@@ -2180,6 +2210,24 @@ func runtimePMSCustomerRoomOptions(result pmsReadPlanResult) []runtimePMSCustome
 		return options
 	}
 	return nil
+}
+
+func runtimePMSInventoryRoomTypeRow(row map[string]any) bool {
+	if row == nil {
+		return false
+	}
+	rowType := strings.ToLower(strings.TrimSpace(firstRuntimePMSReadText(row, "rowType")))
+	switch rowType {
+	case "total", "summary", "subtotal", "aggregate":
+		return false
+	}
+	name := strings.TrimSpace(firstRuntimePMSReadText(row, "roomTypeName", "productName", "roomName"))
+	switch name {
+	case "合计", "总计", "小计", "汇总":
+		return false
+	default:
+		return name != ""
+	}
 }
 
 func runtimePMSCustomerStay(result pmsReadPlanResult) (runtimePMSStayCandidate, bool) {
@@ -2280,6 +2328,73 @@ func runtimePMSCustomerPriceDifference(result pmsReadPlanResult) string {
 		}
 	}
 	return ""
+}
+
+func runtimePMSCustomerPriceAnswer(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
+	clause := runtimePMSCustomerPriceClause(task, result)
+	if clause == "" {
+		return ""
+	}
+	target := runtimePMSTargetRoomTypeText(task)
+	if target != "" {
+		for _, option := range runtimePMSCustomerRoomOptions(result) {
+			if normalizeRuntimePMSRoomTypeText(option.name) != normalizeRuntimePMSRoomTypeText(target) {
+				continue
+			}
+			if runtimePMSPositiveAvailability(option.available) {
+				return option.name + "目前有房。" + clause + "。"
+			}
+			if option.available != "" {
+				return option.name + "目前没有可售房，暂时也没有需要核算的换房差价。"
+			}
+			break
+		}
+	}
+	return clause + "。"
+}
+
+func runtimePMSCustomerPriceClause(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
+	if exact := runtimePMSCustomerPriceDifference(result); exact != "" {
+		return exact
+	}
+	target := strings.TrimSpace(runtimePMSTargetRoomTypeText(task))
+	if runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(target)) {
+		target = ""
+	}
+	currentAmount := ""
+	if stay, ok := runtimePMSCustomerStay(result); ok {
+		currentAmount = runtimePMSCustomerAmount(firstRuntimePMSReadText(stay.data, "payableAmount", "roomFee", "originalRoomFee", "payAmount", "waitPayAmount"))
+	}
+	targetPrice := ""
+	for _, option := range runtimePMSCustomerRoomOptions(result) {
+		if target == "" || normalizeRuntimePMSRoomTypeText(option.name) != normalizeRuntimePMSRoomTypeText(target) {
+			continue
+		}
+		target = option.name
+		targetPrice = runtimePMSCustomerAmount(option.price)
+		break
+	}
+
+	currentClause := ""
+	if currentAmount != "" {
+		currentClause = "您当前订单金额是" + currentAmount
+	}
+	label := "目标房型"
+	if target != "" {
+		label = target
+	}
+	if targetPrice != "" {
+		priceClause := label + "当前显示价格为" + targetPrice
+		if currentClause != "" {
+			return currentClause + "，" + priceClause + "，但两边的计价口径还不完整，所以现在还算不出准确差价，我先不乱报"
+		}
+		return priceClause + "，但计价口径还不完整，所以现在还算不出准确差价，我先不乱报"
+	}
+	missingPriceClause := label + "的实时房价没有显示，所以现在还算不出准确差价，我先不乱报"
+	if currentClause != "" {
+		return currentClause + "，但" + missingPriceClause
+	}
+	return missingPriceClause
 }
 
 func runtimePMSCustomerMemberAnswer(result pmsReadPlanResult) string {
@@ -2532,7 +2647,7 @@ func runtimePMSInventoryFactForPlan(plan pmsReadPlan, step pmsReadStepResult) st
 	}
 	for _, value := range items {
 		row, ok := value.(map[string]any)
-		if !ok {
+		if !ok || !runtimePMSInventoryRoomTypeRow(row) {
 			continue
 		}
 		if targetRoomTypeID != "" && firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId") != targetRoomTypeID {
