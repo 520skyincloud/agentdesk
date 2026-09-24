@@ -686,7 +686,7 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 	for index, group := range groups {
 		task := plan.TaskPlans[index]
 		reply := ""
-		if runtimePMSTaskAsksRoomExplanation(task) {
+		if (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "") && runtimePMSTaskAsksRoomExplanation(task) {
 			reply = deterministicPMSRoomExplanation(task)
 		}
 		if reply == "" && runtimeReplyTaskHasPMSFact(task) {

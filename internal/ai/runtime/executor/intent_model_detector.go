@@ -72,6 +72,7 @@ type runtimePMSSessionLocator struct {
 	Phone              string
 	OrderLocator       string
 	TargetRoomTypeText string
+	SourceMessageID    int64
 }
 
 type runtimeIntentTaskJSON struct {
@@ -265,17 +266,8 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData, sess
 		if !task.NeedsTool || !runtimePMSTaskRequiresCustomerLocator(*task) {
 			continue
 		}
-		if phone := runtimePMSLastUsableCustomerPhone(task.Text); phone != "" {
-			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, phone)
-			continue
-		}
-		if !isMemberRuntimeSubIntent(task.SubIntent) {
-			if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
-				setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, locator)
-				continue
-			}
-		}
-		if runtimePMSTaskCancelsCustomerQuery(*task) {
+		explicitCancellation := task.Objective == "cancel" || task.RelationToPrevious == "cancel_previous" || task.DialogueAct == "cancellation"
+		if explicitCancellation || (runtimePMSTaskCancelsCustomerQuery(*task) && runtimePMSLastUsableCustomerPhone(task.Text) == "") {
 			task.Intent = "interaction"
 			task.SubIntent = "acknowledgement"
 			task.Objective = "cancel"
@@ -289,6 +281,31 @@ func applyRuntimePMSRequiredSlotPreflight(intent callbacks.IntentTraceData, sess
 			task.Reason = appendIntentReason(task.Reason, "customer cancelled PMS query")
 			changed = true
 			continue
+		}
+		if phone := runtimePMSLastUsableCustomerPhone(task.Text); phone != "" {
+			inheritedPhone := runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone)
+			if runtimePMSCurrentTextInvalidatesCustomerPhone(task.Text) ||
+				(inheritedPhone != "" && inheritedPhone != phone) ||
+				(sessionLocator.Phone != "" && sessionLocator.Phone != phone) {
+				entities := make([]callbacks.IntentEntityTraceData, 0, len(task.Entities))
+				for _, entity := range task.Entities {
+					if entity.Type != runtimeIntentEntityOrderLocator {
+						entities = append(entities, entity)
+					}
+				}
+				task.Entities = entities
+				if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
+					setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, locator)
+				}
+			}
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, phone)
+			continue
+		}
+		if !isMemberRuntimeSubIntent(task.SubIntent) {
+			if locator := runtimePMSLastUsableOrderLocator(task.Text); locator != "" {
+				setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityOrderLocator, locator)
+				continue
+			}
 		}
 		if phone := runtimePMSPreferredCustomerPhone(*task); phone != "" {
 			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, phone)
@@ -567,6 +584,9 @@ func runtimePMSSessionLocatorForRequest(req RunInput, history adapter.HistoryBui
 func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildResult, locator runtimePMSSessionLocator) runtimePMSSessionLocator {
 	phoneRequested := false
 	for _, item := range history.RawItems {
+		if locator.SourceMessageID > 0 && item.ID > 0 && item.ID <= locator.SourceMessageID {
+			continue
+		}
 		text := runtimePMSHistoryMessageText(item)
 		if text == "" {
 			continue
@@ -580,9 +600,11 @@ func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildRes
 		}
 
 		phone := runtimePMSLastUsableCustomerPhone(text)
-		if runtimePMSCurrentTextInvalidatesCustomerPhone(text) {
-			locator.Phone = phone
-		} else if phone != "" && (phoneRequested || runtimePMSCustomerMessageConfirmsLocator(text)) {
+		if runtimePMSCurrentTextInvalidatesCustomerPhone(text) ||
+			(phone != "" && (phoneRequested || locator.Phone != "" || runtimePMSCustomerMessageConfirmsLocator(text))) {
+			if phone != locator.Phone || runtimePMSCurrentTextInvalidatesCustomerPhone(text) {
+				locator.OrderLocator = ""
+			}
 			locator.Phone = phone
 		}
 		orderLocator := runtimePMSLastUsableOrderLocator(text)
@@ -594,39 +616,41 @@ func runtimePMSSessionLocatorFromHistoryWithBase(history adapter.HistoryBuildRes
 		if runtimePMSCurrentTextRejectsTargetRoomType(text) {
 			locator.TargetRoomTypeText = ""
 		}
-		targetRoomType := runtimePMSTargetRoomTypeText(callbacks.ReplyTaskPlanTraceData{OriginalText: text})
-		if targetRoomType != "" && !runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(targetRoomType)) {
-			locator.TargetRoomTypeText = targetRoomType
-		}
 		phoneRequested = false
 	}
 	return locator
 }
 
 func runtimePMSSessionLocatorFromRecentRuns(req RunInput) runtimePMSSessionLocator {
-	locator := runtimePMSSessionLocator{}
+	targetBlocked := false
 	for _, recent := range runtimeRecentRunTraces(req) {
 		if strings.TrimSpace(recent.Log.FinalStatus) != "completed" && strings.TrimSpace(recent.Runtime.Status) != "completed" {
 			continue
+		}
+		if runtimeTraceBlocksEarlierBusinessContext(recent.Runtime) {
+			targetBlocked = true
+		}
+		for _, task := range runtimeTraceBusinessTasks(recent.Runtime) {
+			if !runtimePMSTaskRetainsTargetRoomType(task.SubIntent) {
+				targetBlocked = true
+			}
 		}
 		if !runtimeTraceHasSuccessfulPMSRead(recent.Runtime) {
 			continue
 		}
 		candidate := runtimePMSSessionLocatorFromTrace(recent.Runtime)
-		if locator.Phone == "" {
-			locator.Phone = candidate.Phone
+		if candidate.Phone == "" && candidate.OrderLocator == "" {
+			continue
 		}
-		if locator.OrderLocator == "" {
-			locator.OrderLocator = candidate.OrderLocator
+		candidate.SourceMessageID = recent.Message.ID
+		if targetBlocked {
+			candidate.TargetRoomTypeText = ""
 		}
-		if locator.TargetRoomTypeText == "" {
-			locator.TargetRoomTypeText = candidate.TargetRoomTypeText
-		}
-		if locator.Phone != "" && locator.OrderLocator != "" && locator.TargetRoomTypeText != "" {
-			break
-		}
+		// Identity and its dependent order must come from one successful task,
+		// never from independently chosen fields across older runs.
+		return candidate
 	}
-	return locator
+	return runtimePMSSessionLocator{}
 }
 
 func runtimeTraceHasSuccessfulPMSRead(trace callbacks.RuntimeTraceData) bool {
@@ -661,20 +685,18 @@ func runtimePMSSessionLocatorFromTrace(trace callbacks.RuntimeTraceData) runtime
 				candidate = runtimePMSMergeLocatorText(candidate, entity.Text)
 			}
 		}
-		if locator.Phone == "" {
-			locator.Phone = candidate.Phone
-		}
-		if locator.OrderLocator == "" {
-			locator.OrderLocator = candidate.OrderLocator
-		}
-		if locator.TargetRoomTypeText == "" && runtimePMSTaskRetainsTargetRoomType(task.SubIntent) {
+		if runtimePMSTaskRetainsTargetRoomType(task.SubIntent) {
 			target := runtimePMSTargetRoomTypeText(task)
 			if target != "" && !runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(target)) {
-				locator.TargetRoomTypeText = target
+				candidate.TargetRoomTypeText = target
 			}
 		}
-		if locator.Phone != "" && locator.OrderLocator != "" && locator.TargetRoomTypeText != "" {
-			break
+		if locator.Phone != "" || locator.OrderLocator != "" {
+			if candidate.Phone != locator.Phone || candidate.OrderLocator != locator.OrderLocator {
+				return runtimePMSSessionLocator{}
+			}
+		} else {
+			locator = candidate
 		}
 	}
 	return locator
@@ -2438,7 +2460,8 @@ func normalizeRuntimeIntentEntities(entities []callbacks.IntentEntityTraceData) 
 			continue
 		}
 		entityType := semanticGateNormalizeValue(entity.Type)
-		if !isRuntimeIntentEntityType(entityType) {
+		if !isRuntimeIntentEntityType(entityType) && entityType != runtimeIntentEntityCustomerPhone &&
+			entityType != runtimeIntentEntityOrderLocator && entityType != runtimeIntentEntityTargetRoomType {
 			entityType = "other"
 		}
 		ret = append(ret, callbacks.IntentEntityTraceData{Text: text, Type: entityType})

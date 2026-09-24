@@ -74,12 +74,15 @@ func runtimeTraceFromRunLog(raw string) (callbacks.RuntimeTraceData, bool) {
 
 func runtimeRecentUniqueBusinessTaskForRequest(req RunInput) *runtimeRecentBusinessTask {
 	for _, recent := range runtimeRecentRunTraces(req) {
+		if recent.Log.FinalStatus != "completed" && recent.Runtime.Status != "completed" {
+			continue
+		}
+		if runtimeTraceBlocksEarlierBusinessContext(recent.Runtime) {
+			return nil
+		}
 		candidates := runtimeTraceBusinessTasks(recent.Runtime)
 		switch len(candidates) {
 		case 0:
-			if runtimeTraceBlocksEarlierBusinessContext(recent.Runtime) {
-				return nil
-			}
 			continue
 		case 1:
 			return &runtimeRecentBusinessTask{RunLogID: recent.Log.ID, Task: candidates[0]}
@@ -98,6 +101,9 @@ func runtimeTraceBlocksEarlierBusinessContext(trace callbacks.RuntimeTraceData) 
 		return false
 	}
 	for _, task := range tasks {
+		if task.Objective == "cancel" || task.DialogueAct == "cancellation" || task.RelationToPrevious == "cancel_previous" {
+			continue
+		}
 		if canonicalIntentCode(task.Intent) != "interaction" {
 			return false
 		}

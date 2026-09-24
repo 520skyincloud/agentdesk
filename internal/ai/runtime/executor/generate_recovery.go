@@ -604,17 +604,17 @@ func deterministicPMSRoomExplanation(task callbacks.ReplyTaskPlanTraceData) stri
 func deterministicPMSUnavailableReply(task callbacks.ReplyTaskPlanTraceData) string {
 	switch pmsReadScenarioForSubIntent(task.SubIntent) {
 	case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
-		return "我刚才没能查到您的订单和入住期间房态，暂时还不能确认是否有房和差价。您稍后再问我一下，我继续帮您查。"
+		return "这次订单和入住期间房态查询没能完成，暂时还不能确认是否有房和差价，需要我帮您联系同事核实吗？"
 	case pmsReadScenarioOrder:
-		return "我刚才没能查到您的订单信息，暂时还不能确认这笔订单的情况。您稍后再问我一下，我继续帮您查。"
+		return "这次订单查询没能完成，还不能确认您的预订情况，需要我帮您联系同事核实吗？"
 	case pmsReadScenarioDateInventory, pmsReadScenarioRoomStatus:
-		return "我刚才没能查到实时房态，暂时还不能确认是否有房。您稍后再问我一下，我继续帮您查。"
+		return "这次房态查询没能完成，还不能确认是否有空房，需要我帮您联系同事核实吗？"
 	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
-		return "我刚才没能查到您的会员信息，暂时还不能确认当前等级和权益。您稍后再问我一下，我继续帮您查。"
+		return "这次会员信息查询没能完成，还不能确认您的等级和权益，需要我帮您联系同事核实吗？"
 	case pmsReadScenarioRenewal, pmsReadScenarioLateCheckout:
-		return "我刚才没能查到您的订单和当前房态，暂时还不能确认这个方案。您稍后再问我一下，我继续帮您查。"
+		return "这次查询没能完成，暂时还不能确认能否延长入住，需要我帮您联系同事核实吗？"
 	default:
-		return "我刚才没能查到实时信息，暂时还不能准确确认。您稍后再问我一下，我继续帮您查。"
+		return "这次查询没能完成，暂时还不能确认，需要我帮您联系同事核实吗？"
 	}
 }
 

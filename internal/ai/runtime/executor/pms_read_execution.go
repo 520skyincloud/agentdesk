@@ -553,18 +553,26 @@ func appendRuntimePMSLocatorMarkerToReplyTask(task *callbacks.ReplyTaskPlanTrace
 
 func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessionLocator runtimePMSSessionLocator, now time.Time) pmsReadPlanInput {
 	text := strings.TrimSpace(strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n"))
-	targetRoomTypeText := runtimePMSTargetRoomTypeText(task)
+	targetRoomTypeText := ""
+	if runtimePMSTaskRetainsTargetRoomType(task.SubIntent) {
+		targetRoomTypeText = runtimePMSTargetRoomTypeText(task)
+	}
 	if runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(targetRoomTypeText)) {
 		targetRoomTypeText = ""
 	}
 	if runtimePMSCurrentTextRejectsTargetRoomType(task.OriginalText) {
 		targetRoomTypeText = ""
 	}
-	phone := runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
-	if phone == "" {
+	currentPhone := runtimePMSLastUsableCustomerPhone(task.OriginalText)
+	phoneRejected := runtimePMSCurrentTextRejectsCustomerPhone(task.OriginalText)
+	phone := currentPhone
+	if phone == "" && !phoneRejected {
+		phone = runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
+	}
+	if phone == "" && !phoneRejected {
 		phone = runtimePMSLastUsableCustomerPhone(text)
 	}
-	if phone == "" && !runtimePMSCurrentTextRejectsCustomerPhone(task.OriginalText) {
+	if phone == "" && !phoneRejected {
 		phone = sessionLocator.Phone
 	}
 	input := pmsReadPlanInput{
@@ -588,6 +596,16 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.ReserveOrderID = reserveID
 		input.ReceptOrderID = receptID
 		input.CustomerNo = customerNo
+	}
+	// A changed identity invalidates every order derived from the old identity.
+	// Only an order explicitly supplied in this turn may survive that change.
+	previousPhone := sessionLocator.Phone
+	if previousPhone == "" {
+		previousPhone = runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
+	}
+	if phoneRejected || runtimePMSCurrentTextRejectsOrderLocator(task.OriginalText) ||
+		(currentPhone != "" && currentPhone != previousPhone) {
+		input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
 	}
 	input.StartDate, input.EndDate = runtimePMSReadDates(task, input.Scenario, now)
 	if input.Scenario == pmsReadScenarioRenewal && input.EndDate == "" {
@@ -747,6 +765,20 @@ func runtimePMSRoomKeyword(task callbacks.ReplyTaskPlanTraceData) string {
 }
 
 func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string {
+	if currentSelection := runtimePMSCurrentRoomTypeSelection(task); currentSelection != "" {
+		return currentSelection
+	}
+	if task.DialogueAct == "selection" {
+		current := task
+		current.Entities = nil
+		current.Text = ""
+		current.ResolvedText = ""
+		current.DialogueAct = ""
+		if selected := runtimePMSTargetRoomTypeText(current); selected != "" &&
+			!runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(selected)) {
+			return selected
+		}
+	}
 	roomEntities := make([]string, 0, 2)
 	for _, entity := range task.Entities {
 		entityType := strings.ToLower(strings.TrimSpace(entity.Type))
@@ -758,9 +790,6 @@ func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string 
 				roomEntities = append(roomEntities, text)
 			}
 		}
-	}
-	if currentSelection := runtimePMSCurrentRoomTypeSelection(task); currentSelection != "" {
-		return currentSelection
 	}
 	combined := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
 	for index := len(roomEntities) - 1; index >= 0; index-- {
@@ -1870,7 +1899,22 @@ func runtimePMSOrderFieldProjections(task callbacks.ReplyTaskPlanTraceData) []ru
 	}
 	resolvedText := strings.TrimSpace(task.ResolvedText)
 	if resolvedText != "" && runtimePMSNormalizedTaskText(resolvedText) != runtimePMSNormalizedTaskText(currentText) {
-		return runtimePMSOrderFieldProjectionsForText(resolvedText)
+		current = runtimePMSOrderFieldProjectionsForText(resolvedText)
+		for _, projection := range current {
+			if projection.match {
+				return current
+			}
+		}
+	}
+	// Preserve the model's field family when the customer's wording does not
+	// match a specific field. A time question must not fall back to a full order.
+	for index := range current {
+		switch task.Objective {
+		case "time":
+			current[index].match = current[index].aspect == "pms_order_checkin_time" || current[index].aspect == "pms_order_checkout_time"
+		case "price":
+			current[index].match = current[index].aspect == "pms_order_amount"
+		}
 	}
 	return current
 }

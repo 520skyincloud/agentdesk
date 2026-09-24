@@ -79,6 +79,7 @@ type jevIntentContext struct {
 	SourceRef string
 	Intent    string
 	SubIntent string
+	Entities  []callbacks.IntentEntityTraceData
 }
 
 func (llmRuntimeIntentDetector) detectRuntimeIntentWithJev(ctx context.Context, req RunInput, history adapter.HistoryBuildResult, config models.AIConfig) (callbacks.IntentTraceData, error) {
@@ -580,6 +581,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 		contextText := compactJevActiveGoalText(firstNonEmptyReplyTaskText(task.ResolvedText, task.Text))
 		contexts[task.Ref] = jevIntentContext{
 			Text: contextText, Intent: task.Intent, SubIntent: task.SubIntent,
+			Entities: append([]callbacks.IntentEntityTraceData(nil), task.Entities...),
 		}
 	}
 	for index, item := range state.History {
@@ -765,6 +767,11 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			}
 			// Self-contained new topics must not inherit an old phone or request.
 			if task.ResolutionState == "resolved_from_context" || task.RelationToPrevious != "independent" {
+				// Carry structured context only from the subject selected by the
+				// model. Text compaction must not erase confirmed business slots.
+				if task.DialogueAct != "cancellation" && task.RelationToPrevious != "cancel_previous" {
+					task.Entities = append([]callbacks.IntentEntityTraceData(nil), context.Entities...)
+				}
 				if shouldInheritJevBusinessRoute(task, context) {
 					applyJevRouteToTask(&task, context.SubIntent, false)
 				}

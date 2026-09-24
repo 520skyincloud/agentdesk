@@ -446,6 +446,40 @@ func TestJevWeakShortReplyInheritsSelectedBusinessRoute(t *testing.T) {
 	}
 }
 
+func TestJevSelectedContextRetainsSlotsOutsideCompactedText(t *testing.T) {
+	span := jevIntentSpan{Ref: "T1", SourceRef: "U1", Text: "那还要加多少钱"}
+	state := jevIntentState{RecentBusinessTask: &jevIntentPriorTaskState{
+		Ref: "R1", Intent: "hotel_info", SubIntent: "room_change",
+		Text: "我想换房", ResolvedText: "我想换房\n当前客户补充（以本次为准）：请帮我挑一间",
+		Entities: []callbacks.IntentEntityTraceData{
+			{Type: runtimeIntentEntityTargetRoomType, Text: "庭院双床房"},
+			{Type: runtimeIntentEntityOrderLocator, Text: "接待单ID:REC-1"},
+		},
+	}}
+	questions, contexts := buildJevClassificationQuestions([]jevIntentSpan{span}, state)
+	choices := map[string]string{
+		"T1_route": "price_difference", "T1_objective": "price", "T1_dialogue_act": "follow_up",
+		"T1_relation": "follow_up", "T1_resolution": "resolved_from_context", "T1_context": "R1",
+	}
+	got, err := buildIntentTraceFromJev(jevTestResponse(questions, choices, nil), []jevIntentSpan{span}, contexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeIntentEntityValue(got.IntentTasks[0].Entities, runtimeIntentEntityTargetRoomType) != "庭院双床房" {
+		t.Fatalf("text compaction lost the confirmed choice: %#v", got)
+	}
+	choices["T1_context"] = "none"
+	choices["T1_relation"] = "independent"
+	choices["T1_resolution"] = "clear"
+	got, err = buildIntentTraceFromJev(jevTestResponse(questions, choices, nil), []jevIntentSpan{span}, contexts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.IntentTasks[0].Entities) != 0 {
+		t.Fatalf("unselected context leaked into a new task: %#v", got)
+	}
+}
+
 func TestJevHistoryReferencesRemainStableAndExcludeAssistantFacts(t *testing.T) {
 	history := adapter.HistoryBuildResult{}
 	for index := 0; index < 20; index++ {

@@ -42,6 +42,8 @@ type scenario struct {
 	MustContainAny       []string
 	MustContainAll       []string
 	RequiredOutcomes     []outcomeRequirement
+	BusinessOutcomes     []outcomeRequirement
+	NoTools              bool
 	Banned               []string
 	ExpectedIntent       string
 	ExpectedSubIntentAny []string
@@ -64,6 +66,8 @@ type turn struct {
 	MustContainAny       []string
 	MustContainAll       []string
 	RequiredOutcomes     []outcomeRequirement
+	BusinessOutcomes     []outcomeRequirement
+	NoTools              bool
 	Banned               []string
 	ExpectedIntent       string
 	ExpectedSubIntentAny []string
@@ -88,46 +92,47 @@ type outcomeRequirement struct {
 }
 
 type record struct {
-	ScenarioID                string         `json:"scenarioId"`
-	Category                  string         `json:"category"`
-	Name                      string         `json:"name"`
-	ConversationID            int64          `json:"conversationId"`
-	Messages                  []string       `json:"messages"`
-	MediaContext              []string       `json:"mediaContext,omitempty"`
-	ReplyText                 string         `json:"replyText"`
-	Status                    string         `json:"status"`
-	FinalAction               string         `json:"finalAction"`
-	LatencyMs                 int64          `json:"latencyMs"`
-	RuntimeLatencyMs          int64          `json:"runtimeLatencyMs"`
-	GenerateLatencyMs         int64          `json:"generateLatencyMs"`
-	AIConfigID                int64          `json:"aiConfigId"`
-	ModelSource               string         `json:"modelSource"`
-	ConfiguredMaxOutputTokens int            `json:"configuredMaxOutputTokens,omitempty"`
-	EffectiveMaxOutputTokens  int            `json:"effectiveMaxOutputTokens,omitempty"`
-	PromptTokens              int            `json:"promptTokens"`
-	CompletionTokens          int            `json:"completionTokens"`
-	TotalTokens               int            `json:"totalTokens"`
-	CachedTokens              int            `json:"cachedTokens"`
-	Intent                    string         `json:"intent"`
-	SubIntent                 string         `json:"subIntent"`
-	ResourceAction            string         `json:"resourceAction"`
-	ResourceActions           []string       `json:"resourceActions,omitempty"`
-	CommitMessages            []commitRecord `json:"commitMessages,omitempty"`
-	DeferredHandoff           bool           `json:"deferredHandoff,omitempty"`
-	DeferredHandoffReason     string         `json:"deferredHandoffReason,omitempty"`
-	KnowledgeHit              bool           `json:"knowledgeHit"`
-	KnowledgeExpected         bool           `json:"knowledgeExpected"`
-	ResourceExpected          bool           `json:"resourceExpected"`
-	HumanExpected             bool           `json:"humanExpected"`
-	RetrieverCount            int            `json:"retrieverCount"`
-	ToolCount                 int            `json:"toolCount"`
-	FactSlotsSatisfied        int            `json:"factSlotsSatisfied,omitempty"`
-	FactSlotsExpected         int            `json:"factSlotsExpected,omitempty"`
-	Score                     int            `json:"score"`
-	Passed                    bool           `json:"passed"`
-	Issues                    []string       `json:"issues,omitempty"`
-	TraceSummary              map[string]any `json:"traceSummary,omitempty"`
-	ErrorMessage              string         `json:"errorMessage,omitempty"`
+	ScenarioID                string            `json:"scenarioId"`
+	Category                  string            `json:"category"`
+	Name                      string            `json:"name"`
+	ConversationID            int64             `json:"conversationId"`
+	Messages                  []string          `json:"messages"`
+	MediaContext              []string          `json:"mediaContext,omitempty"`
+	ReplyText                 string            `json:"replyText"`
+	Status                    string            `json:"status"`
+	FinalAction               string            `json:"finalAction"`
+	LatencyMs                 int64             `json:"latencyMs"`
+	RuntimeLatencyMs          int64             `json:"runtimeLatencyMs"`
+	GenerateLatencyMs         int64             `json:"generateLatencyMs"`
+	AIConfigID                int64             `json:"aiConfigId"`
+	ModelSource               string            `json:"modelSource"`
+	ConfiguredMaxOutputTokens int               `json:"configuredMaxOutputTokens,omitempty"`
+	EffectiveMaxOutputTokens  int               `json:"effectiveMaxOutputTokens,omitempty"`
+	PromptTokens              int               `json:"promptTokens"`
+	CompletionTokens          int               `json:"completionTokens"`
+	TotalTokens               int               `json:"totalTokens"`
+	CachedTokens              int               `json:"cachedTokens"`
+	Intent                    string            `json:"intent"`
+	SubIntent                 string            `json:"subIntent"`
+	ResourceAction            string            `json:"resourceAction"`
+	ResourceActions           []string          `json:"resourceActions,omitempty"`
+	CommitMessages            []commitRecord    `json:"commitMessages,omitempty"`
+	DeferredHandoff           bool              `json:"deferredHandoff,omitempty"`
+	DeferredHandoffReason     string            `json:"deferredHandoffReason,omitempty"`
+	KnowledgeHit              bool              `json:"knowledgeHit"`
+	KnowledgeExpected         bool              `json:"knowledgeExpected"`
+	ResourceExpected          bool              `json:"resourceExpected"`
+	HumanExpected             bool              `json:"humanExpected"`
+	RetrieverCount            int               `json:"retrieverCount"`
+	ToolCount                 int               `json:"toolCount"`
+	FactSlotsSatisfied        int               `json:"factSlotsSatisfied,omitempty"`
+	FactSlotsExpected         int               `json:"factSlotsExpected,omitempty"`
+	Score                     int               `json:"score"`
+	Passed                    bool              `json:"passed"`
+	Acceptance                journeyAcceptance `json:"acceptance"`
+	Issues                    []string          `json:"issues,omitempty"`
+	TraceSummary              map[string]any    `json:"traceSummary,omitempty"`
+	ErrorMessage              string            `json:"errorMessage,omitempty"`
 }
 
 type aiReplyTrace struct {
@@ -455,7 +460,8 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 				turnRec = r.fillRecordFromRunLog(turnRec, turnScenario, log)
 				turnRec.FactSlotsSatisfied, turnRec.FactSlotsExpected = factSlotStats(turnScenario, turnRec)
 				turnRec.Score, turnRec.Issues = scoreRecord(turnScenario, turnRec)
-				turnRec.Passed = turnRec.Score >= 80 && turnRec.Status != "error"
+				turnRec.Acceptance = assessJourneyAcceptance(turnScenario, turnRec)
+				turnRec.Passed = turnRec.Acceptance.automatedChecksPassed()
 				r.records = append(r.records, turnRec)
 			} else {
 				rec = r.fillRecordFromRunLog(rec, sc, log)
@@ -483,7 +489,8 @@ func (r *runner) runScenario(ctx context.Context, sc scenario) (record, error) {
 	}
 	rec.FactSlotsSatisfied, rec.FactSlotsExpected = factSlotStats(sc, rec)
 	rec.Score, rec.Issues = scoreRecord(sc, rec)
-	rec.Passed = rec.Score >= 80 && rec.Status != "error"
+	rec.Acceptance = assessJourneyAcceptance(sc, rec)
+	rec.Passed = rec.Acceptance.automatedChecksPassed()
 	return rec, nil
 }
 
@@ -495,6 +502,8 @@ func scenarioFromTurn(sc scenario, index int, t turn) scenario {
 		MustContainAny:       t.MustContainAny,
 		MustContainAll:       t.MustContainAll,
 		RequiredOutcomes:     t.RequiredOutcomes,
+		BusinessOutcomes:     t.BusinessOutcomes,
+		NoTools:              t.NoTools,
 		Banned:               t.Banned,
 		ExpectedIntent:       t.ExpectedIntent,
 		ExpectedSubIntentAny: t.ExpectedSubIntentAny,
@@ -829,11 +838,15 @@ func scoreRecord(sc scenario, rec record) (int, []string) {
 	issues := make([]string, 0)
 	reply := strings.TrimSpace(rec.ReplyText)
 	scoreText := scoreableCustomerText(rec)
+	if sc.NoTools && rec.ToolCount > 0 {
+		score -= 30
+		issues = append(issues, "unexpected tool calls after cancellation")
+	}
 	if rec.ErrorMessage != "" || rec.Status == "error" {
 		score -= 60
 		issues = append(issues, "runtime error: "+preview(rec.ErrorMessage, 120))
 	}
-	if reply == "" && rec.Status != "completed" && rec.FinalAction != "interrupted" {
+	if scoreText == "" && !hasCommittedStructuredResource(rec.CommitMessages) && rec.FinalAction != "interrupted" {
 		score -= 30
 		issues = append(issues, "empty reply")
 	}
@@ -1086,11 +1099,11 @@ func requiredOutcomeSatisfied(rec record, requirement outcomeRequirement) bool {
 	if len(requirement.TextExcludesAny) > 0 && containsAnyLoose(text, requirement.TextExcludesAny) {
 		return false
 	}
-	if len(requirement.TextContainsAll) > 0 && containsAllLoose(text, requirement.TextContainsAll) {
-		return true
+	if len(requirement.TextContainsAll) > 0 && !containsAllLoose(text, requirement.TextContainsAll) {
+		return false
 	}
-	if len(requirement.TextContainsAny) > 0 && containsAnyLoose(text, requirement.TextContainsAny) {
-		return true
+	if len(requirement.TextContainsAny) > 0 && !containsAnyLoose(text, requirement.TextContainsAny) {
+		return false
 	}
 	if len(requirement.ResourceTypesAll) > 0 {
 		for _, resourceType := range requirement.ResourceTypesAll {
@@ -1098,11 +1111,13 @@ func requiredOutcomeSatisfied(rec record, requirement outcomeRequirement) bool {
 				return false
 			}
 		}
-		return true
 	}
-	return rec.DeferredHandoff &&
-		len(requirement.DeferredHandoffContainsAny) > 0 &&
-		containsAnyLoose(rec.DeferredHandoffReason, requirement.DeferredHandoffContainsAny)
+	if len(requirement.DeferredHandoffContainsAny) > 0 &&
+		(!rec.DeferredHandoff || !containsAnyLoose(rec.DeferredHandoffReason, requirement.DeferredHandoffContainsAny)) {
+		return false
+	}
+	return len(requirement.TextContainsAll)+len(requirement.TextContainsAny)+
+		len(requirement.ResourceTypesAll)+len(requirement.DeferredHandoffContainsAny) > 0
 }
 
 func factSlotStats(sc scenario, rec record) (satisfied int, expected int) {
@@ -1254,6 +1269,7 @@ func buildScenarios(round int) []scenario {
 	cases = append(cases, longScenario("L01"), longScenarioRoomExpiry("L02"), longScenarioStoreIsolation("L03"))
 	cases = append(cases, activeAnswerScenarios()...)
 	cases = append(cases, productExperienceScenarios()...)
+	cases = append(cases, customerGoalVariationScenarios()...)
 	if round%2 == 0 {
 		cases = append(cases, hundredTurnScenario())
 	}
@@ -1269,6 +1285,8 @@ func selectScenarioSuite(cases []scenario, suite string) ([]scenario, error) {
 		return selectScenarioIDs(cases, []string{"AA01", "AA02", "AA03", "AA04", "AA05", "AA06", "AA07", "AA08"})
 	case "product-experience", "customer-journeys":
 		return selectScenarioIDs(cases, []string{"UX01", "UX02", "UX03", "UX04", "UX05"})
+	case "goal-variations":
+		return selectScenarioIDs(cases, []string{"GV01", "GV02", "GV03"})
 	case "continuous50", "continuous50-safe":
 		return []scenario{continuous50SafeScenario()}, nil
 	case "continuous30":
@@ -1345,6 +1363,11 @@ func productExperienceScenarios() []scenario {
 	}
 	roomChange.Turns[3].Banned = append(roomChange.Turns[3].Banned, "我建议")
 	roomChange.Turns[4].Banned = append(roomChange.Turns[4].Banned, "目标房型", "null", "price")
+	roomChange.Turns[4].BusinessOutcomes = []outcomeRequirement{{
+		Label:           "差价已确认",
+		TextContainsAny: []string{"需要补", "不需要补差价", "预计退回"},
+		TextExcludesAny: []string{"算不出", "不能确认", "没有显示", "口径不完整"},
+	}}
 
 	orderFollowUp := scenario{
 		ID: "UX02", Category: "product-experience", Name: "个人订单补手机号后连续追问退房时间",
@@ -2373,7 +2396,8 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 		b.WriteString(fmt.Sprintf("- %s: `%s`\n", key, health[key]))
 	}
 	b.WriteString("\n## Summary\n\n")
-	b.WriteString(fmt.Sprintf("- passRate: %.1f%% (%d/%d)\n", percent(pass, total), pass, total))
+	b.WriteString(fmt.Sprintf("- automatedCheckRate (not product completion): %.1f%% (%d/%d)\n", percent(pass, total), pass, total))
+	b.WriteString("- business outcomes without explicit evidence remain unverified; naturalness requires human review; ChannelID=0 cannot verify actual delivery or card opening\n")
 	b.WriteString(fmt.Sprintf("- errors: %d\n", errors))
 	b.WriteString(fmt.Sprintf("- latency: avg=%dms, p90=%dms, max=%dms\n", avg, p90, max))
 	if len(generateLatencies) > 0 {
@@ -2429,6 +2453,8 @@ func (r *runner) renderMarkdown(startedAt time.Time, health map[string]string, u
 		}
 		b.WriteString(fmt.Sprintf("### %s %s %s\n\n", status, rec.ScenarioID, rec.Name))
 		b.WriteString(fmt.Sprintf("- category: `%s`, score: `%d`, status: `%s`, action: `%s`, latency: `%dms`, generateLatency: `%dms`\n", rec.Category, rec.Score, rec.Status, rec.FinalAction, rec.LatencyMs, rec.GenerateLatencyMs))
+		b.WriteString(fmt.Sprintf("- acceptance: responseChecks=%t, business=%s, latency=%t, naturalness=%s, delivery=%s\n",
+			rec.Acceptance.ResponseChecks, rec.Acceptance.Business, rec.Acceptance.LatencyWithinBudget, rec.Acceptance.Naturalness, rec.Acceptance.Delivery))
 		b.WriteString(fmt.Sprintf("- intent: `%s/%s`, resourceAction: `%s`, knowledge: `%t`, tokens: `%d`, cached: `%d`\n", rec.Intent, rec.SubIntent, rec.ResourceAction, rec.KnowledgeHit, rec.TotalTokens, rec.CachedTokens))
 		if rec.FactSlotsExpected > 0 {
 			b.WriteString(fmt.Sprintf("- required fact slots: `%d/%d`\n", rec.FactSlotsSatisfied, rec.FactSlotsExpected))
