@@ -319,6 +319,48 @@ func TestPMSQueryToolPriceDifferenceRequiresRealIdentifiers(t *testing.T) {
 	}
 }
 
+func TestPMSQueryToolEnrichesAssociatedReservationPrices(t *testing.T) {
+	for _, idJSON := range []string{`"295976948675801088"`, `295976948675801088`} {
+		t.Run(idJSON, func(t *testing.T) {
+			var reserveQueries atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("unexpected write: %s", r.Method)
+					http.Error(w, "write forbidden", 405)
+					return
+				}
+				switch r.URL.Path {
+				case "/admin-api/hpms/orderManage/receptOrder/detail":
+					_, _ = w.Write([]byte(`{"code":0,"data":{
+						"receptOrderId":"REC-1","reserveOrderId":` + idJSON + `,
+						"roomId":"ROOM-1","roomName":"标准房","roomFee":"100",
+						"checkInTime":"2026-09-28 14:00:00","checkOutTime":"2026-09-29 12:00:00"}}`))
+				case "/admin-api/hpms/orderManage/reserveOrder/detail":
+					if r.URL.Query().Get("reserveOrderId") != "295976948675801088" {
+						t.Errorf("long reservation ID changed: %s", r.URL.RawQuery)
+					}
+					reserveQueries.Add(1)
+					_, _ = w.Write([]byte(`{"code":0,"data":{"reserveOrderId":` + idJSON + `,
+						"reserveProductList":[{"roomId":"ROOM-1","roomName":"标准房","reserveHomeCount":1,
+						"productDetailPriceList":[{"date":"2026-09-28","consumeAmount":"100","consumeAmountType":"ROOM_FEE","currency":"CNY"}]}]}}`))
+				case "/admin-api/hpms/changeInventory/query":
+					_, _ = w.Write([]byte(`{"code":0,"data":[{"productId":"ROOM-2","bookings":{
+						"2026-09-28":{"available":1,"price":"128","consumeAmountType":"ROOM_FEE","currency":"CNY"}}}]}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL, HotelID: "hotel-1"})
+			got, err := NewPMSQueryTool().InvokableRun(context.Background(),
+				`{"action":"price_difference","receptOrderId":"REC-1","roomTypeId":"ROOM-2"}`)
+			if err != nil || reserveQueries.Load() != 1 || !strings.Contains(got, `"difference":"28.00"`) {
+				t.Fatalf("associated per-night prices not used: %s %v queries=%d", got, err, reserveQueries.Load())
+			}
+		})
+	}
+}
+
 func TestPMSQueryToolRejectsWritesEvenWhenWriteConfigIsEnabled(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -462,7 +504,7 @@ func TestPMSQueryToolBenefitsStopsWhenMemberLookupFails(t *testing.T) {
 	defer server.Close()
 	usePMSQueryToolConfig(t, config.PMSConfig{Enabled: true, BaseURL: server.URL})
 	got, err := NewPMSQueryTool().InvokableRun(context.Background(), `{"action":"member_benefits_by_phone","phone":"13800138000"}`)
-	if err != nil || !strings.Contains(got, `"status":"unavailable"`) || requests.Load() != 1 {
+	if err != nil || !strings.Contains(got, `"status":"empty"`) || requests.Load() != 1 {
 		t.Fatalf("member failure must stop the lookup: %s %v reads=%d", got, err, requests.Load())
 	}
 	if strings.Contains(got, "private-member") || strings.Contains(got, "13800138000") {

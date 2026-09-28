@@ -127,12 +127,13 @@ func TestBuildPMSReadPlanRoomUpgrade(t *testing.T) {
 			SubIntent: "room_upgrade", Phone: "13800138000", ReceptOrderID: "REC-1",
 			TargetRoomTypeID: "ROOM-2", StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected upgrade plan: %#v", plan)
 		}
-		for _, id := range []string{"order.recept", "inventory.stay", "stay.room_availability", "member.benefits", "price.difference"} {
+		for _, id := range []string{"order.recept", "order.reserve", "inventory.stay", "stay.room_availability", "member.benefits", "price.difference"} {
 			requirePMSReadStep(t, plan, id)
 		}
+		assertPMSReadBinding(t, requirePMSReadStep(t, plan, "order.reserve"), "reserveOrderId", "order.recept")
 		price := requirePMSReadStep(t, plan, "price.difference")
 		if price.Required || price.Args["receptOrderId"] != "REC-1" || price.Args["roomTypeId"] != "ROOM-2" {
 			t.Fatalf("upgrade price step must remain optional and grounded: %#v", price)
@@ -165,7 +166,7 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 			Scenario: pmsReadScenarioRoomChange, ReceptOrderID: "REC-1", RoomKeyword: "1401",
 			TargetRoomTypeID: "ROOM-2", StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected room change plan: %#v", plan)
 		}
 		room := requirePMSReadStep(t, plan, "room.status")
@@ -364,6 +365,7 @@ func TestAggregatePMSReadPlanResultsPreservesPartialSuccess(t *testing.T) {
 		})
 		result, err := aggregatePMSReadPlanResults(plan, []pmsReadStepResult{
 			{StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{"roomName": "标准房"}},
+			{StepID: "order.reserve", Status: pmsReadStepOK, Data: map[string]any{"reserveOrderId": "RES-1"}},
 			{StepID: "inventory.stay", Status: pmsReadStepOK, Data: []any{map[string]any{"roomTypeId": "ROOM-2"}}},
 			{StepID: "stay.room_availability", Status: pmsReadStepOK, Data: map[string]any{"status": "available", "candidateCount": 1}},
 			{StepID: "member.benefits", Status: pmsReadStepUnavailable, Message: "会员查询失败"},
@@ -372,7 +374,7 @@ func TestAggregatePMSReadPlanResultsPreservesPartialSuccess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Status != "partial" || len(result.Confirmed) != 3 ||
+		if result.Status != "partial" || len(result.Confirmed) != 4 ||
 			result.Confirmed["order.recept"] == nil || result.Confirmed["inventory.stay"] == nil ||
 			result.Confirmed["stay.room_availability"] == nil ||
 			!reflect.DeepEqual(result.Unconfirmed, []string{"member.benefits", "price.difference"}) {

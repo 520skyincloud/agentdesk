@@ -174,7 +174,15 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		}
 	}
 	if err != nil {
-		payload, marshalErr := json.Marshal(map[string]any{"status": "unavailable", "message": err.Error()})
+		failure := pms.QueryErrorDetails(err)
+		status := "unavailable"
+		if failure.Kind == "empty" || failure.Kind == "ambiguous" {
+			status = failure.Kind
+		}
+		payload, marshalErr := json.Marshal(map[string]any{
+			"status": status, "message": failure.Message, "errorKind": failure.Kind,
+			"businessCode": failure.Code, "httpStatus": failure.HTTPStatus,
+		})
 		if marshalErr != nil {
 			return "", marshalErr
 		}
@@ -335,6 +343,25 @@ func queryPriceDifference(ctx context.Context, client *pms.Client, reserveOrderI
 	if err != nil {
 		return pms.QueryResult{}, err
 	}
+	var reserveData any
+	if receptOrderID != "" {
+		if record, ok := orderData.(map[string]any); ok {
+			if linkedID := pmsQueryOrderID(record["reserveOrderId"]); linkedID != "" {
+				reserve, queryErr := client.Query(ctx, "reserve_order_detail", map[string]string{"reserveOrderId": linkedID})
+				if queryErr != nil {
+					return pms.QueryResult{}, queryErr
+				}
+				reserveData, err = pms.CustomerQueryData(reserve.Action, reserve.Data)
+				if err != nil {
+					return pms.QueryResult{}, err
+				}
+			}
+		}
+	}
+	orderData, err = pms.PriceOrderData(orderData, reserveData)
+	if err != nil {
+		return pms.QueryResult{}, err
+	}
 	if strings.TrimSpace(startDate) == "" {
 		startDate = orderDate(orderData, "checkInTime", "checkInBusinessDate")
 	}
@@ -383,6 +410,17 @@ func orderDate(orderData any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func pmsQueryOrderID(value any) string {
+	switch value := value.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case json.Number:
+		return value.String()
+	default:
+		return ""
+	}
 }
 
 func queryDate(value string) string {

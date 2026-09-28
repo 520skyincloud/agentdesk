@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildPillowProductMessageUsesControlledShopProduct(t *testing.T) {
-	resource, err := WxWorkProtocolShopProductResourceService.BuildPillowProductMessage("你们酒店同款枕头怎么买，有购买链接吗")
+	resource, err := WxWorkProtocolShopProductResourceService.BuildPillowProductMessage()
 	if err != nil {
 		t.Fatalf("build pillow product: %v", err)
 	}
@@ -31,18 +31,13 @@ func TestBuildPillowProductMessageUsesControlledShopProduct(t *testing.T) {
 	}
 }
 
-func TestBuildPillowProductMessageRequiresExplicitPurchaseIntent(t *testing.T) {
-	for _, text := range []string{"你们家枕头好舒服", "这个枕头看起来不错"} {
-		if _, err := WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(text); err == nil {
-			t.Fatalf("expected no product card for compliment %q", text)
-		}
-	}
-}
-
-func TestBuildPillowProductMessageRejectsRoomServiceRequests(t *testing.T) {
-	for _, text := range []string{"送两个枕头到房间", "帮我换个枕头", "枕头脏了", "这个枕头不舒服"} {
-		if _, err := WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(text); err == nil || !strings.Contains(err.Error(), "客房枕头服务请求") {
-			t.Fatalf("expected room-service rejection for %q, got %v", text, err)
+func TestBuildPillowProductMessageRejectsInvalidBoundResource(t *testing.T) {
+	original := pillowProductPayload
+	t.Cleanup(func() { pillowProductPayload = original })
+	for _, payload := range []string{"{}", `{"content":{"product_id":"other"}}`} {
+		pillowProductPayload = payload
+		if _, err := WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(); err == nil {
+			t.Fatal("invalid resource must not be prepared")
 		}
 	}
 }

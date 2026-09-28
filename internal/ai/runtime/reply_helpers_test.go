@@ -186,16 +186,40 @@ func TestPillowProductTraceBuildsControlledShopProductReply(t *testing.T) {
 		t.Fatalf("product lead must be committed before the card with the same task: %#v", parts)
 	}
 
+	for _, text := range []string{"你们家枕头不错，有同款吗", "有同款吗"} {
+		prepared := service.buildStructuredVariableReplies(replyCommitInput{
+			Conversation: models.Conversation{ID: 199}, Message: models.Message{Content: text}, Trace: trace,
+		})
+		if len(prepared) != 1 {
+			t.Fatalf("resolved product intent was rejected for wording %q", text)
+		}
+	}
 	rejected := service.buildStructuredVariableReplies(replyCommitInput{
 		Conversation: models.Conversation{ID: 199},
 		Message:      models.Message{Content: "送两个枕头到房间"},
-		Trace:        trace,
+		Trace:        &aiReplyTraceData{Runtime: json.RawMessage(`{"pipeline":{"intent":{"primaryIntent":"service_request","subIntent":"room_supplies"}}}`)},
 	})
 	if len(rejected) != 0 {
 		t.Fatalf("room-service request must not produce a product card: %#v", rejected)
 	}
 }
 
+func TestMissingResourcesAlwaysHaveAnAttributableReply(t *testing.T) {
+	for _, resource := range []string{"pillow_product", "mini_program"} {
+		raw := fmt.Sprintf(`{"pipeline":{"intent":{"needsResource":true,"resourceActions":["provide_%s"]},"replyPlan":{"taskPlans":[{"taskId":"r1","outputKind":"resource","needsResource":true,"resourceAction":"provide_%s"}]}}}`, resource, resource)
+		trace := &aiReplyTraceData{Runtime: json.RawMessage(raw)}
+		parts := appendMissingResourceReplies(trace, nil, nil)
+		if len(parts) != 1 || parts[0].Content == "" || parts[0].FallbackResourceType != resource {
+			t.Fatalf("missing resource was silent: %s %#v", resource, parts)
+		}
+		if duplicate := appendMissingResourceReplies(trace, nil, parts); len(duplicate) != 1 {
+			t.Fatal("resource failure reply duplicated")
+		}
+		if success := appendMissingResourceReplies(trace, []structuredVariableReply{{ResourceType: resource}}, nil); len(success) != 0 {
+			t.Fatal("successful resource received failure text")
+		}
+	}
+}
 func TestKnowledgeResourceTraceBuildsOrderedImageCommitMessages(t *testing.T) {
 	dbName := fmt.Sprintf("runtime_knowledge_resource_commit_%s_%d", strings.NewReplacer("/", "_").Replace(t.Name()), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", dbName)), &gorm.Config{

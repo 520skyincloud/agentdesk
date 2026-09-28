@@ -86,6 +86,11 @@ func AssessStayRoomAvailability(data any, request StayRoomAvailabilityRequest) (
 			if start.Before(snapshot) {
 				start = snapshot
 			}
+			if !end.After(start) {
+				return StayRoomAvailabilityResult{}, &QueryFailure{
+					Kind: "invalid_state", Message: "查询入住区间已经结束，当前房态不能用于判断过去的房间可用性",
+				}
+			}
 			if end.After(snapshot.AddDate(0, 0, 30)) {
 				result.CoverageComplete = false
 				result.Reason = "实时房态只确认未来30天内的具体房间占用"

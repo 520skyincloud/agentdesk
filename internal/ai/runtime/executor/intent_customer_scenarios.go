@@ -54,10 +54,9 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 			changed = true
 		case isMemberRuntimeSubIntent(task.SubIntent) && runtimeGenericMembershipProgramQuestion(text):
 			task.Intent = "hotel_info"
-			task.SubIntent = "store_knowledge"
-			task.NeedsKnowledge = true
-			task.NeedsTool = false
-			task.Reason = appendIntentReason(task.Reason, "general membership program question does not identify a customer")
+			task.SubIntent = "member_program"
+			task.NeedsTool = true
+			task.Reason = appendIntentReason(task.Reason, "public membership rules do not require identifying a customer")
 			changed = true
 		case !isMemberRuntimeSubIntent(task.SubIntent) && runtimePersonalMemberBenefitsQuestion(text):
 			task.Intent = "hotel_info"

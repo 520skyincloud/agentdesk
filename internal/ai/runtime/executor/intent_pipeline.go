@@ -154,7 +154,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 }
 
 func memberQueryRuntimeInstruction() string {
-	return "会员状态、等级、权益和等级规则必须使用只读 pms_query，不用知识库猜客户身份或权益。只查基础信息使用 member_info_by_phone；查询权益、升级或保级规则使用 member_benefits_by_phone，由工具自动取得当前会员的真实等级并查询规则。跨轮追问沿用会话中客户提供的准确手机号，不要求客户提供等级 ID，不得用中文等级名称猜编码；缺少手机号才追问。会员冻结/挂失或 gradeAvailable=false 时如实回答，不能承诺权益可用；权益配置不是实际订单报价，也不代表已升房、延退、发券或执行其他办理。"
+	return "会员状态、等级、权益和等级规则必须使用只读 pms_query，不用知识库猜客户身份或权益。只查个人基础信息使用 member_info_by_phone；查询个人权益、升级或保级规则使用 member_benefits_by_phone，由工具自动取得当前会员的真实等级并查询规则。跨轮追问沿用会话中客户提供的准确手机号，不要求客户提供等级 ID，不得用中文等级名称猜编码；个人查询缺少手机号才追问。询问酒店有哪些会员等级、各等级权益和升级条件属于公开会员体系 member_program，不要求手机号，不用个人等级冒充完整等级目录；目录查询未接入时如实说明范围，已知个人权益可以补充但不能替代客户原问题。会员冻结/挂失或 gradeAvailable=false 时如实回答，不能承诺权益可用；权益配置不是实际订单报价，也不代表已升房、延退、发券或执行其他办理。"
 }
 
 func hasRuntimeMemberQueryTask(intent callbacks.IntentTraceData) bool {

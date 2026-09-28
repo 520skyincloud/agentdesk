@@ -12,6 +12,9 @@ type ToolTraceItem struct {
 	LatencyMs     int64          `json:"latencyMs,omitempty"`
 	Status        string         `json:"status,omitempty"`
 	ErrorMessage  string         `json:"errorMessage,omitempty"`
+	ErrorKind     string         `json:"errorKind,omitempty"`
+	BusinessCode  string         `json:"businessCode,omitempty"`
+	HTTPStatus    int            `json:"httpStatus,omitempty"`
 	Blocked       bool           `json:"blocked,omitempty"`
 	BlockedReason string         `json:"blockedReason,omitempty"`
 }
@@ -137,6 +140,19 @@ type KnowledgeEvidenceJudgeLayerTraceData struct {
 	SupportedFacts       []KnowledgeEvidenceFactTraceData `json:"supportedFacts,omitempty"`
 	MissingAspects       []string                         `json:"missingAspects,omitempty"`
 	AnswerText           *string                          `json:"answerText,omitempty"`
+}
+
+type PMSOutcomeTraceData struct {
+	Status        string              `json:"status"`
+	MissingFields []string            `json:"missingFields,omitempty"`
+	Issues        []PMSIssueTraceData `json:"issues,omitempty"`
+}
+
+type PMSIssueTraceData struct {
+	StepID       string `json:"stepId"`
+	Kind         string `json:"kind"`
+	BusinessCode string `json:"businessCode,omitempty"`
+	HTTPStatus   int    `json:"httpStatus,omitempty"`
 }
 
 type KnowledgeEvidenceFactTraceData struct {
@@ -384,6 +400,7 @@ type ReplyPlanTraceData struct {
 }
 
 type ReplyTaskPlanTraceData struct {
+	PMSOutcome           *PMSOutcomeTraceData             `json:"pmsOutcome,omitempty"`
 	TaskID               string                           `json:"taskId,omitempty"`
 	Intent               string                           `json:"intent,omitempty"`
 	SubIntent            string                           `json:"subIntent,omitempty"`

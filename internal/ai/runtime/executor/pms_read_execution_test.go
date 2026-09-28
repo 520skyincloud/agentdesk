@@ -1145,8 +1145,9 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 	for _, target := range []string{"豪华大床房", " 豪华 大床房 "} {
 		invoker := &runtimePMSFakeInvoker{results: map[string][]pmsReadStepResult{
 			"recept_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{
-				"receptOrderId": "REC-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
+				"receptOrderId": "REC-1", "reserveOrderId": "RES-1", "checkInTime": "2026-09-22 18:00:00", "checkOutTime": "2026-09-24 13:00:00",
 			}}},
+			"reserve_order_detail": {{Status: pmsReadStepOK, Data: map[string]any{"reserveOrderId": "RES-1"}}},
 			"inventory": {{Status: pmsReadStepOK, Data: []any{
 				map[string]any{"roomTypeId": "ROOM-1", "roomTypeName": "大床房"},
 				map[string]any{"roomTypeId": "ROOM-2", "roomTypeName": "豪华大床房"},
@@ -1158,10 +1159,10 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 			Scenario: pmsReadScenarioRoomUpgrade, Phone: "13800138000", ReceptOrderID: "REC-1", TargetRoomTypeText: target,
 		}
 		results, plan := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		if len(results) != 5 || len(invoker.calls) != 4 {
+		if len(results) != 6 || len(invoker.calls) != 5 {
 			t.Fatalf("upgrade must query order, inventory, specific rooms, member and price: plan=%#v calls=%#v results=%#v", plan, invoker.calls, results)
 		}
-		if !runtimePMSFakeCalled(invoker.calls, "recept_order_detail") || !runtimePMSFakeCalled(invoker.calls, "inventory") ||
+		if !runtimePMSFakeCalled(invoker.calls, "recept_order_detail") || !runtimePMSFakeCalled(invoker.calls, "reserve_order_detail") || !runtimePMSFakeCalled(invoker.calls, "inventory") ||
 			!runtimePMSFakeCalled(invoker.calls, "stay_room_availability") || !runtimePMSFakeCalled(invoker.calls, "member_benefits_by_phone") ||
 			runtimePMSFakeCalled(invoker.calls, "price_difference") {
 			t.Fatalf("unexpected upgrade read sequence: %#v", invoker.calls)

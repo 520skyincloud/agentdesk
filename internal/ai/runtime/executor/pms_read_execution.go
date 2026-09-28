@@ -74,6 +74,9 @@ func (i runtimePMSReadToolInvoker) Invoke(ctx context.Context, action string, ar
 			Status:       traceStatus,
 			LatencyMs:    latency,
 			ErrorMessage: result.Message,
+			ErrorKind:    result.ErrorKind,
+			BusinessCode: result.BusinessCode,
+			HTTPStatus:   result.HTTPStatus,
 		})
 	}
 	return result
@@ -155,9 +158,12 @@ func parseRuntimePMSReadToolResult(raw string, invokeErr error) pmsReadStepResul
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	var envelope struct {
-		Status  string `json:"status"`
-		Data    any    `json:"data"`
-		Message string `json:"message"`
+		Status       string `json:"status"`
+		Data         any    `json:"data"`
+		Message      string `json:"message"`
+		ErrorKind    string `json:"errorKind"`
+		BusinessCode string `json:"businessCode"`
+		HTTPStatus   int    `json:"httpStatus"`
 	}
 	if err := decoder.Decode(&envelope); err != nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 查询返回无法解析"}
@@ -172,7 +178,8 @@ func parseRuntimePMSReadToolResult(raw string, invokeErr error) pmsReadStepResul
 	default:
 		status = pmsReadStepUnavailable
 	}
-	return pmsReadStepResult{Status: status, Data: envelope.Data, Message: strings.TrimSpace(envelope.Message)}
+	return pmsReadStepResult{Status: status, Data: envelope.Data, Message: strings.TrimSpace(envelope.Message),
+		ErrorKind: envelope.ErrorKind, BusinessCode: envelope.BusinessCode, HTTPStatus: envelope.HTTPStatus}
 }
 
 func runtimePMSReadDataEmpty(data any) bool {
@@ -1059,7 +1066,31 @@ func executeRuntimePMSReadSteps(ctx context.Context, steps []pmsReadPlanStep, by
 				continue
 			}
 			if status != "" {
-				waveResults[index] = pmsReadStepResult{StepID: step.ID, Status: status, Message: message, Args: args}
+				result := pmsReadStepResult{StepID: step.ID, Status: status, Message: message, Args: args, ErrorKind: "needs_input"}
+				for _, binding := range step.Bindings {
+					if strings.TrimSpace(args[binding.Argument]) != "" {
+						continue
+					}
+					// A missing value from a completed dependency is not a missing customer input.
+					if len(binding.Sources) > 0 {
+						result.ErrorKind = "dependency_failed"
+					}
+				}
+				if result.ErrorKind == "needs_input" {
+					for _, field := range step.RequiredArgs {
+						if strings.TrimSpace(args[field]) == "" {
+							result.MissingFields = append(result.MissingFields, field)
+						}
+					}
+				}
+				waveResults[index] = result
+				continue
+			}
+			if runtimePMSReadStepUsesClosedStay(step, byStep) {
+				waveResults[index] = pmsReadStepResult{
+					StepID: step.ID, Status: pmsReadStepUnavailable, ErrorKind: "invalid_state",
+					Message: "这笔接待单已退房，不能继续按在住订单评估换房或延长入住", Args: args,
+				}
 				continue
 			}
 
@@ -1098,6 +1129,25 @@ func executeRuntimePMSReadSteps(ctx context.Context, steps []pmsReadPlanStep, by
 	}
 }
 
+func runtimePMSReadStepUsesClosedStay(step pmsReadPlanStep, results map[string]pmsReadStepResult) bool {
+	if step.Action == "reserve_order_detail" || step.Action == "recept_order_detail" {
+		return false
+	}
+	for _, id := range runtimePMSReadOrderBindingSourceIDs(step.Bindings) {
+		record := results[id]
+		if record.Status != pmsReadStepOK {
+			continue
+		}
+		candidates := runtimePMSStayCandidateData(record.Data)
+		for _, order := range candidates {
+			if firstRuntimePMSReadText(order, "orderStatus") == "0015003" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func runtimePMSReadStepDependenciesComplete(step pmsReadPlanStep, byStep map[string]pmsReadStepResult, knownStepIDs map[string]struct{}) bool {
 	dependencies := make(map[string]struct{})
 	for _, binding := range step.Bindings {
@@ -1131,7 +1181,11 @@ func assessRuntimePMSPriceDifference(results map[string]pmsReadStepResult, args 
 	}
 	startDate := firstNonEmpty(args["beginTime"], inventory.Args["beginTime"])
 	endDate := firstNonEmpty(args["endTime"], inventory.Args["endTime"])
-	assessment, err := pms.AssessPriceDifference(order.data, inventory.Data, args["roomTypeId"], startDate, endDate)
+	priceOrder, err := pms.PriceOrderData(order.data, results["order.reserve"].Data)
+	if err != nil {
+		return pmsReadStepResult{Status: pmsReadStepUnavailable, ErrorKind: "partial", Message: err.Error()}
+	}
+	assessment, err := pms.AssessPriceDifference(priceOrder, inventory.Data, args["roomTypeId"], startDate, endDate)
 	if err != nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 差价评估暂时不可用"}
 	}
@@ -1792,6 +1846,9 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 	if task == nil {
 		return
 	}
+	task.PMSOutcome = &callbacks.PMSOutcomeTraceData{
+		Status: string(result.Status), MissingFields: append([]string(nil), plan.Missing...),
+	}
 	hasUsablePriceFact := false
 	for _, step := range result.Steps {
 		if step.StepID == "price.difference" && (step.Status == pmsReadStepOK || step.Status == pmsReadStepPartial) {
@@ -1844,6 +1901,14 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		if plannedStep && !planned.Required && !runtimePMSOptionalStepRelevantToTask(plan, *task, step.StepID) {
 			continue
 		}
+		kind := step.ErrorKind
+		if kind == "" {
+			kind = string(step.Status)
+		}
+		task.PMSOutcome.Issues = append(task.PMSOutcome.Issues, callbacks.PMSIssueTraceData{
+			StepID: step.StepID, Kind: kind, BusinessCode: step.BusinessCode, HTTPStatus: step.HTTPStatus,
+		})
+		task.PMSOutcome.MissingFields = append(task.PMSOutcome.MissingFields, step.MissingFields...)
 		message := strings.TrimSpace(step.Message)
 		if message == "" {
 			message = runtimePMSReadMissingAspect(step.StepID)
@@ -1855,6 +1920,10 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 	// active goal without dumping PMS facts or asking the customer to repeat it.
 	if answer := strings.TrimSpace(runtimePMSCustomerAnswer(*task, plan, result)); answer != "" {
 		task.AnswerText = &answer
+	} else if len(task.SupportedFacts) == 0 {
+		if answer := runtimePMSOutcomeBoundary(*task); answer != "" {
+			task.AnswerText = &answer
+		}
 	}
 }
 
@@ -2021,6 +2090,8 @@ func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsRea
 		return runtimePMSCustomerPriceAnswer(task, result)
 	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
 		return runtimePMSCustomerMemberAnswer(result)
+	case pmsReadScenarioMemberProgram:
+		return runtimePMSCustomerMemberAnswer(result) + "其他会员等级的完整权益和升级条件，我这边暂时还查不到，不能给您不准确的说明。"
 	default:
 		return ""
 	}
@@ -2037,6 +2108,12 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 	homeName := stay.homeName
 	amount := runtimePMSCustomerAmount(firstRuntimePMSReadText(stay.data, "payableAmount", "roomFee", "payAmount", "waitPayAmount"))
 	status := runtimePMSCustomerOrderStatus(stay.data)
+	if status == "已退房" {
+		if checkOut != "" {
+			return "这笔订单已经退房，离店时间是" + checkOut + "。"
+		}
+		return "这笔订单已经退房。"
+	}
 
 	requested := make(map[string]bool)
 	for _, projection := range runtimePMSOrderFieldProjections(task) {
@@ -2112,7 +2189,13 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
 	stay, hasStay := runtimePMSCustomerStay(result)
 	options := runtimePMSCustomerRoomOptions(result)
-	if !hasStay || len(options) == 0 {
+	if !hasStay {
+		return ""
+	}
+	if runtimePMSCustomerOrderStatus(stay.data) == "已退房" {
+		return "这笔订单已经退房，不能再按这次住宿换房。您是想查询另一笔订单吗？"
+	}
+	if len(options) == 0 {
 		return ""
 	}
 	currentRoom := firstNonEmpty(stay.roomName, strings.Join(runtimePMSOrderRoomNames(stay.data), "/"))
@@ -2544,7 +2627,7 @@ func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.Reply
 	case "order.reserve", "order.recept":
 		return true
 	case "member.benefits":
-		return plan.Scenario == pmsReadScenarioMemberBenefit || containsAny(text, []string{"会员", "权益", "免差", "免费升", "等级"})
+		return plan.Scenario == pmsReadScenarioMemberBenefit || plan.Scenario == pmsReadScenarioMemberProgram || containsAny(text, []string{"会员", "权益", "免差", "免费升", "等级"})
 	case "price.difference":
 		return plan.Scenario == pmsReadScenarioPrice || containsAny(text, []string{"差价", "补多少", "多少钱", "费用", "价格"})
 	case "room.status":
@@ -2658,6 +2741,9 @@ func runtimePMSOrderFact(data any) string {
 func runtimePMSCustomerOrderStatus(order map[string]any) string {
 	if status := firstRuntimePMSReadText(order, "orderStatusName", "reserveStatusName", "statusName"); status != "" {
 		return status
+	}
+	if firstRuntimePMSReadText(order, "orderStatus") == "0015003" {
+		return "已退房"
 	}
 	if firstRuntimePMSReadText(order, "orderStatus", "reserveStatus") != "" {
 		return "暂未返回可读状态"
@@ -2821,7 +2907,7 @@ func runtimePMSMemberFactForPlan(plan pmsReadPlan, data any) string {
 
 func runtimePMSMemberBenefitTextsForScenario(grade map[string]any, scenario pmsReadScenario) []string {
 	benefits := runtimePMSMemberBenefitTexts(grade)
-	if scenario == "" || scenario == pmsReadScenarioMemberBenefit || scenario == pmsReadScenarioMemberInfo {
+	if scenario == "" || scenario == pmsReadScenarioMemberBenefit || scenario == pmsReadScenarioMemberInfo || scenario == pmsReadScenarioMemberProgram {
 		return benefits
 	}
 	keywords := []string(nil)

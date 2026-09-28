@@ -69,6 +69,7 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 	isManualResume := strings.HasPrefix(strings.TrimSpace(input.Message.RequestID), "manual_resume_")
 	textParts := buildTextCommitParts(input.Trace, replyText)
 	textParts = bindFallbackResourceTextParts(input.Trace, structuredReplies, textParts)
+	textParts = appendMissingResourceReplies(input.Trace, structuredReplies, textParts)
 	textParts = appendStructuredResourceLeadTextParts(structuredReplies, textParts)
 	if isManualResume {
 		textParts = append([]textCommitPart{{Content: manualResumeCustomerNotice}}, textParts...)
@@ -118,6 +119,40 @@ func (s *replyCommitService) SendAIReply(input replyCommitInput) (*models.Messag
 		return nil, err
 	}
 	return replyMessage, nil
+}
+
+func appendMissingResourceReplies(trace *aiReplyTraceData, replies []structuredVariableReply, parts []textCommitPart) []textCommitPart {
+	for _, resourceType := range structuredVariableResourceTypesFromTrace(trace) {
+		covered := false
+		for _, reply := range replies {
+			covered = covered || reply.ResourceType == resourceType
+		}
+		for _, part := range parts {
+			covered = covered || part.FallbackResourceType == resourceType
+			for _, fallback := range part.FallbackResourceTypes {
+				covered = covered || fallback == resourceType
+			}
+		}
+		if covered {
+			continue
+		}
+		content := "您要的内容暂时发不过来，抱歉。"
+		switch resourceType {
+		case "pillow_product":
+			content = "同款枕头的商品卡暂时发不过来，抱歉。"
+		case "mini_program":
+			content = "小程序入口暂时发不过来，抱歉。"
+		case "location":
+			content = "定位暂时发不过来，抱歉。"
+		case "phone":
+			content = "我暂时没查到可以提供的联系电话，抱歉。"
+		}
+		parts = append(parts, textCommitPart{
+			Content: content, TaskIDs: resourceCommitTaskIDsFromTrace(trace, resourceType),
+			FallbackResourceType: resourceType,
+		})
+	}
+	return capTextCommitParts(parts, 3)
 }
 
 func appendStructuredResourceLeadTextParts(structuredReplies []structuredVariableReply, parts []textCommitPart) []textCommitPart {
@@ -413,7 +448,7 @@ func (s *replyCommitService) buildStructuredVariableReplies(input replyCommitInp
 			appendRuntimeTraceActionLedger(input.Trace, "preparedActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(reply.MessageType), 0, "prepared", "")})
 			ret = append(ret, reply)
 		case "pillow_product":
-			resource, err := svc.WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(input.Message.Content)
+			resource, err := svc.WxWorkProtocolShopProductResourceService.BuildPillowProductMessage()
 			if err != nil {
 				appendRuntimeTraceActionLedger(input.Trace, "missingActions", []map[string]any{buildResourceActionLedgerItem(resourceType, string(enums.IMMessageTypeShopProduct), 0, "missing", err.Error())})
 				continue

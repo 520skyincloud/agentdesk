@@ -278,7 +278,8 @@ func buildJevTaskCountQuestions(sources []adapter.CurrentTurnSource) (map[string
 			Type: "choice",
 			Instructions: map[string]any{
 				"sourceRef": source.Ref, "text": source.Text,
-				"question": "How many independent customer reply goals are in this CURRENT message? Count complete questions/requests, not words, sentences, fields, clauses or punctuation. Independent hotel topics stay separate. Availability, membership waiver, price difference and policy conditions that jointly decide ONE room-upgrade, room-change, renewal or late-checkout request are dimensions of that one decision goal, not duplicate goals. A standalone later question asking only a new price, date or policy remains a separate goal. Details, corrected phone values and conditions supporting one request stay together even across sentence punctuation. An order lookup asking all its fields is one goal. Greetings, thanks and denial of handoff accompanying a business request do NOT add a goal. A standalone phone, social turn or unclear message counts as one. Use history only to understand the current message, never count historical questions. If state.repair is present, use coverageIssues to correct only the reported omission, merge or query problem; preserve unaffected previousIntentTasks and never count repair metadata as customer text.",
+				"sharedGoal": "A membership-program overview asking levels, upgrade conditions and benefits is ONE complete goal. Keep its subject and all requested dimensions together; do not split off fragments such as 有哪些. Unrelated topics such as parking remain separate.",
+				"question":   "How many independent customer reply goals are in this CURRENT message? Count complete questions/requests, not words, sentences, fields, clauses or punctuation. Independent hotel topics stay separate. Availability, membership waiver, price difference and policy conditions that jointly decide ONE room-upgrade, room-change, renewal or late-checkout request are dimensions of that one decision goal, not duplicate goals. A standalone later question asking only a new price, date or policy remains a separate goal. Details, corrected phone values and conditions supporting one request stay together even across sentence punctuation. An order lookup asking all its fields is one goal. Greetings, thanks and denial of handoff accompanying a business request do NOT add a goal. A standalone phone, social turn or unclear message counts as one. Use history only to understand the current message, never count historical questions. If state.repair is present, use coverageIssues to correct only the reported omission, merge or query problem; preserve unaffected previousIntentTasks and never count repair metadata as customer text.",
 			},
 			Criteria: options,
 		}
@@ -656,10 +657,10 @@ Short elliptical questions such as "放在哪里", "多少钱", "到几号", "�
 Corrections replace conflicting prior values or subjects instead of adding another equal value. "不是13800138000，是13700137000" uses only the new phone; "我说的是咖啡放在哪里" keeps the coffee question and discards the mistaken subject. Current explicit wording always wins.
 PMS is READ ONLY: order, inventory, room upgrades/changes, fees, membership and renewal CONSULTATIONS are answerable by query, not human handoff. Missing phone/date is a tool slot, not an unclear intent.
 First-person requests for the customer's own checkout/departure time, such as "我几点退房", "我的退房时间", "我的房到几号", "我的房住到几号" or "我什么时候离店", are order_detail even when the locator is still missing; downstream preflight asks for the locator. "房到几号/住到几号" asks for the checkout date, not the room number; a room-number question must explicitly ask "房号/哪间房/住哪间". When history has already identified a specific order, a follow-up asking "this order", "my original/latest checkout time" or "when do I leave" is also order_detail and must use that order's PMS facts. checkout_process is only for general hotel checkout policy with no personalized order wording or specific order context.
-General questions about whether the hotel has a membership program, how to join it or what the program offers are store_knowledge and do not require a phone. Questions about this customer's actual membership benefits, such as "我是会员有啥优惠", are member_benefits and should reuse a verified session phone when available.
+General questions about membership levels, their upgrade rules and benefits use member_program, not store_knowledge. They ask about the HOTEL membership system, not TV/video memberships, and do not require a customer phone. All dimensions of one membership-program overview stay in one complete task, including "有哪些等级，怎么升级，各项权益有哪些". Questions about this customer's actual membership benefits, such as "我是会员有啥优惠", are member_benefits and reuse a customer-supplied session phone when available; reuse does not imply verified identity.
 Physical service requests use hotel knowledge first, not automatic handoff. Complaints, wrong answers, corrections, prices and compensation are not permission to transfer.
 Only explicit current requests for a human use explicit_handoff; "不要转人工" cancels/rejects it. Current serious injury/fire/emergency uses emergency_safety. Do not inherit old handoff or risk topics.
-Public facts about the hotel/owner and around the hotel use knowledge. "How to check in" uses checkin_process; "send the checkin mini program" uses provide_mini_program. Explicit requests to buy the hotel's same pillow, ask for its purchase link, price or ordering path use provide_pillow_product. Asking to send, replace or add a pillow, or reporting that a pillow is dirty, broken or uncomfortable, is room_supplies and must never use provide_pillow_product.
+Public facts about the hotel/owner and around the hotel use knowledge. "How to check in" uses checkin_process; "send the checkin mini program" uses provide_mini_program. Asking whether the hotel's pillow is available as a product ("有同款吗"), where to buy it, its purchase link, price or ordering path uses provide_pillow_product; the customer need not promise to buy. Asking to send, replace or add a pillow to the room, or reporting that a pillow is dirty, broken or uncomfortable, is room_supplies and must never use provide_pillow_product.
 Weather requires a weather query; unrelated everyday chat remains chat. A supplied phone after an order question stays order_query; a supplied phone after a member query stays member_info.`
 
 func jevIntentRouteCriteria() map[string]any {
@@ -677,16 +678,17 @@ func jevIntentRouteCriteria() map[string]any {
 		"food_delivery":          "Delivery address/robot/rules; customer orders themselves.",
 		"surrounding_facilities": "Nearby places, dining, activities or transport.",
 		"company_profile":        "Public facts about hotel, brand, owner or company.",
-		"store_knowledge":        "Other specific hotel information or policy, including whether the hotel has a membership program, how to join it and general non-personal membership program descriptions.",
+		"store_knowledge":        "Other specific hotel information or static service policy. HOTEL membership levels, upgrade rules and benefits use member_program.",
 		"provide_phone":          "Request THIS HOTEL's phone number, not supply one's own phone.",
 		"provide_location":       "Request THIS HOTEL's address/location/navigation.",
 		"provide_mini_program":   "Request THIS HOTEL's check-in mini-program.",
-		"provide_pillow_product": "Explicitly buy THIS HOTEL's same pillow or request its purchase link, ordering path or product price. Never use for room delivery/replacement/addition, dirty/broken pillows, discomfort or compliments.",
+		"provide_pillow_product": "Ask whether THIS HOTEL's pillow is available as a product (有同款吗), or ask for its purchase link, ordering path or price. Never use for room delivery/replacement/addition, dirty/broken pillows, discomfort or a compliment without any product inquiry.",
 		"order_query":            "Find current orders by customer phone/order ID; repeated lookup or corrected phone also belongs here.",
 		"order_detail":           "Specific order room, dates, rate, payment or status, including first-person requests for the customer's own checkout/departure time such as 我的房到几号/住到几号, and contextual follow-ups such as this order's original/latest checkout time. 房到几号 means checkout date, not room number.",
 		"room_status":            "Live room status/cleanliness.",
 		"room_inventory":         "Available room types or inventory for a date range.",
 		"member_info":            "Customer membership, level or validity; identify a member by phone.",
+		"member_program":         "Public HOTEL membership program: available levels, how to reach them and their benefits, including a combined overview. No customer phone is required. Not room upgrades or TV/video memberships.",
 		"member_benefits":        "This customer's actual membership benefits, tier upgrade/retention rules or birthday benefits; personalized wording such as '我是会员有啥优惠' requires live member lookup.",
 		"room_upgrade":           "One room-upgrade decision, including its availability, membership waiver and price dimensions when asked together; not membership tier upgrade. Do not emit duplicate upgrade tasks for those dimensions.",
 		"room_change":            "One room-change decision, including alternative availability, policy and price dimensions when asked together.",
@@ -912,6 +914,8 @@ func jevCompositeIntentTaskFamily(subIntent string) string {
 	switch strings.TrimSpace(subIntent) {
 	case "order_query", "order_detail", "order_status", "check_in_status", "check_out_status":
 		return "order"
+	case "member_program":
+		return "member_program"
 	default:
 		return ""
 	}

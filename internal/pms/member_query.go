@@ -59,17 +59,17 @@ func validateMemberQuery(action string, query url.Values) error {
 func memberQueryBusinessError(code string) error {
 	switch code {
 	case "561":
-		return fmt.Errorf("会员查询缺少租户上下文")
+		return queryBusinessFailure(code, "会员查询缺少租户上下文")
 	case "640":
-		return fmt.Errorf("手机号不能为空或格式不正确")
+		return queryBusinessFailure(code, "手机号不能为空或格式不正确")
 	case "563":
-		return fmt.Errorf("会员不存在")
+		return queryBusinessFailure(code, "会员不存在")
 	case "512":
-		return fmt.Errorf("当前等级无效")
+		return queryBusinessFailure(code, "当前等级无效")
 	case "401", "403":
-		return fmt.Errorf("会员查询认证或权限不足")
+		return queryBusinessFailure(code, "会员查询认证或权限不足")
 	default:
-		return fmt.Errorf("会员查询暂时不可用，请稍后重试")
+		return queryBusinessFailure(code, "会员查询暂时不可用，请稍后重试")
 	}
 }
 

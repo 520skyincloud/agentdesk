@@ -709,7 +709,7 @@ func isPMSRuntimeSubIntent(subIntent string) bool {
 
 func isMemberRuntimeSubIntent(subIntent string) bool {
 	switch strings.ToLower(strings.TrimSpace(subIntent)) {
-	case "member_info", "member_benefits", "member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
+	case "member_info", "member_benefits", "member_program", "member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
 		return true
 	default:
 		return false

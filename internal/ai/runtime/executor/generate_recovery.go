@@ -567,6 +567,9 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 		if strings.TrimSpace(task.TaskID) != strings.TrimSpace(taskID) || !isPMSRuntimeSubIntent(task.SubIntent) {
 			continue
 		}
+		if task.PMSOutcome != nil {
+			return runtimePMSOutcomeBoundary(task)
+		}
 		missing := strings.Join(task.MissingAspects, "\n")
 		if strings.TrimSpace(missing) == "" {
 			return ""
@@ -584,7 +587,7 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 			return runtimePMSOrderPhoneClarification
 		case strings.Contains(missing, "目标退房时间") || strings.Contains(missing, "targetCheckoutTime"):
 			return "请告诉我您想延迟到几点退房。"
-		case strings.Contains(missing, "入住和离店日期") || strings.Contains(missing, "日期"):
+		case strings.Contains(missing, "缺少完整有效的入住和离店日期") || strings.Contains(missing, "入住和离店日期不能为空"):
 			return "请告诉我想查询的入住和离店日期。"
 		case strings.Contains(missing, "价格") || strings.Contains(missing, "差价"):
 			return "当前价格依据还不完整，暂时不能确认差价。"
@@ -592,6 +595,59 @@ func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID s
 		return "当前查询信息还不完整，我暂时不能确认这一部分。"
 	}
 	return ""
+}
+
+func runtimePMSOutcomeBoundary(task callbacks.ReplyTaskPlanTraceData) string {
+	outcome := task.PMSOutcome
+	if outcome == nil {
+		return ""
+	}
+	for _, issue := range outcome.Issues {
+		switch issue.Kind {
+		case "denied", "unavailable":
+			return deterministicPMSUnavailableReply(task)
+		case "invalid_state":
+			return "这笔订单目前的状态不支持这样办理，不能继续按在住订单处理。"
+		case "ambiguous":
+			return "查到不止一笔符合条件的订单，您告诉我房号或入住日期，我再帮您确认是哪一笔。"
+		}
+	}
+	for _, issue := range outcome.Issues {
+		if issue.Kind == "empty" {
+			if strings.HasPrefix(issue.StepID, "member.") {
+				return "这个手机号暂时没查到有效会员信息。"
+			}
+			return "这个手机号暂时没查到当前有效订单，不代表没有历史预订。您问的是之前的住宿，还是另一笔订单？"
+		}
+	}
+	for _, field := range outcome.MissingFields {
+		switch field {
+		case "customerLocator", "receptOrderLocator", "phone", "memberPhone":
+			if isMemberRuntimeSubIntent(task.SubIntent) {
+				return "请发一下会员绑定手机号，我帮您查。"
+			}
+			return runtimePMSOrderPhoneClarification
+		case "targetCheckoutTime":
+			return "您想延迟到几点退房？"
+		case "targetRoomTypeId", "targetRoomTypeAmbiguous":
+			return "您想换哪种房型？我再帮您对比空房和差价。"
+		case "inventoryStartDate", "inventoryEndDate", "validInventoryDateRange":
+			return "您打算哪天入住、哪天离店？我按这个时间帮您查。"
+		case "stayDates", "beginTime", "endTime", "startDate", "endDate", "renewalEndDate":
+			return "您打算住到哪天？我按这个时间帮您查。"
+		case "memberGradeCatalog":
+			return "完整的会员等级、权益和升级条件，我这边暂时还查不到，不能给您不准确的说明。"
+		}
+	}
+	for _, issue := range outcome.Issues {
+		if issue.Kind == "dependency_failed" {
+			return deterministicPMSUnavailableReply(task)
+		}
+	}
+	if outcome.Status == "ok" {
+		return ""
+	}
+	return "已有的信息还不足以确认这一点，我暂时不能给您一个确定答复。"
 }
 
 func deterministicPMSRoomExplanation(task callbacks.ReplyTaskPlanTraceData) string {

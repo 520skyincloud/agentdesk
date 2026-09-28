@@ -641,7 +641,11 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 				textParts = append(textParts, buildPhoneDirectReply(instance))
 			}
 		case "pillow_product":
-			hasStructuredCommit = true
+			if _, err := services.WxWorkProtocolShopProductResourceService.BuildPillowProductMessage(); err == nil {
+				hasStructuredCommit = true
+			} else {
+				textParts = append(textParts, "同款枕头的商品卡暂时发不过来，抱歉。")
+			}
 		}
 	}
 	summary.ReplyText = strings.TrimSpace(strings.Join(nonEmptyStrings(textParts), "\n<<NEXT_MESSAGE>>\n"))

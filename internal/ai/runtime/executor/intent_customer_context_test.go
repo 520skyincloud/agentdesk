@@ -47,8 +47,8 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 		intent := postprocessRuntimeModelIntent(runtimeScenarioTestIntent("你们有会员吗", "member_benefits", true), RunInput{
 			UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "你们有会员吗"},
 		}, adapter.HistoryBuildResult{}, nil)
-		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].SubIntent != "store_knowledge" || intent.IntentTasks[0].NeedsTool ||
-			!intent.IntentTasks[0].NeedsKnowledge || intent.NeedsClarification {
+		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].SubIntent != "member_program" || !intent.IntentTasks[0].NeedsTool ||
+			intent.NeedsClarification {
 			t.Fatalf("general membership program incorrectly required customer identity: %#v", intent)
 		}
 	})

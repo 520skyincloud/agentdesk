@@ -206,7 +206,11 @@ func (c *Client) getQueryResponse(ctx context.Context, requestURL string) ([]byt
 		if response.StatusCode >= 500 && attempt+1 < maxAttempts && ctx.Err() == nil {
 			continue
 		}
-		return nil, fmt.Errorf("PMS 查询失败，HTTP %d", response.StatusCode)
+		kind := "unavailable"
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			kind = "denied"
+		}
+		return nil, &QueryFailure{Kind: kind, HTTPStatus: response.StatusCode, Message: fmt.Sprintf("PMS 查询失败，HTTP %d", response.StatusCode)}
 	}
 	return nil, fmt.Errorf("PMS 查询请求失败，请稍后重试")
 }
@@ -475,6 +479,13 @@ func isSuccessfulResponse(payload map[string]any) bool {
 }
 
 func safeQueryBusinessError(payload map[string]any) error {
+	code := firstString(payload, "code", "status")
+	switch code {
+	case "1010005013", "1010005035":
+		return queryBusinessFailure(code, "未查到符合当前查询条件的订单")
+	case "1010005016":
+		return queryBusinessFailure(code, "当前订单状态不支持此操作")
+	}
 	message := firstString(payload, "msg", "message", "error")
 	for _, known := range []string{
 		"检测到多条匹配订单", "接待单不存在", "预订单不存在",
@@ -482,14 +493,18 @@ func safeQueryBusinessError(payload map[string]any) error {
 		"手机号码和会员编号/协议公司编号必须要有一个",
 	} {
 		if strings.Contains(message, known) {
-			return fmt.Errorf("%s", known)
+			failure := queryBusinessFailure(code, known)
+			if known == "检测到多条匹配订单" {
+				failure.Kind = "ambiguous"
+			}
+			return failure
 		}
 	}
 	switch firstString(payload, "code", "status") {
 	case "401", "403":
-		return fmt.Errorf("PMS 查询认证或权限不足")
+		return queryBusinessFailure(code, "PMS 查询认证或权限不足")
 	default:
-		return fmt.Errorf("PMS 查询暂时不可用，请稍后重试")
+		return queryBusinessFailure(code, "PMS 查询暂时不可用，请稍后重试")
 	}
 }
 

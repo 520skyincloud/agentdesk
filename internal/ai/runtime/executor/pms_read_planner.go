@@ -14,6 +14,7 @@ const (
 	pmsReadScenarioDateInventory pmsReadScenario = "date_inventory"
 	pmsReadScenarioMemberInfo    pmsReadScenario = "member_info"
 	pmsReadScenarioMemberBenefit pmsReadScenario = "member_benefits"
+	pmsReadScenarioMemberProgram pmsReadScenario = "member_program"
 	pmsReadScenarioRoomUpgrade   pmsReadScenario = "room_upgrade"
 	pmsReadScenarioRoomChange    pmsReadScenario = "room_change"
 	pmsReadScenarioPrice         pmsReadScenario = "price_difference"
@@ -77,11 +78,15 @@ const (
 )
 
 type pmsReadStepResult struct {
-	StepID  string
-	Status  pmsReadStepStatus
-	Data    any
-	Message string
-	Args    map[string]string
+	StepID        string
+	Status        pmsReadStepStatus
+	Data          any
+	Message       string
+	Args          map[string]string
+	ErrorKind     string
+	BusinessCode  string
+	HTTPStatus    int
+	MissingFields []string
 }
 
 type pmsReadPlanResult struct {
@@ -157,6 +162,13 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		appendPMSReadMemberInfoStep(&plan, input)
 	case pmsReadScenarioMemberBenefit:
 		appendPMSReadMemberStep(&plan, input, true)
+	case pmsReadScenarioMemberProgram:
+		// No documented grade-directory endpoint is connected. Do not invent one
+		// or request a phone as if it could unlock all public membership levels.
+		plan.Missing = append(plan.Missing, "memberGradeCatalog")
+		if input.Phone != "" {
+			appendPMSReadMemberStep(&plan, input, false)
+		}
 	default:
 		plan.Missing = append(plan.Missing, "supportedScenario")
 	}
@@ -204,6 +216,8 @@ func pmsReadScenarioForSubIntent(subIntent string) pmsReadScenario {
 		return pmsReadScenarioMemberInfo
 	case "member_benefits", "member_benefits_by_grade", "member_benefits_by_phone":
 		return pmsReadScenarioMemberBenefit
+	case "member_program":
+		return pmsReadScenarioMemberProgram
 	default:
 		return ""
 	}
@@ -226,6 +240,17 @@ func appendPMSReadOrderSteps(plan *pmsReadPlan, input pmsReadPlanInput, receptOn
 		stepIDs = append(stepIDs, "order.reserve")
 	}
 	if len(stepIDs) > 0 {
+		switch plan.Scenario {
+		case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
+			if input.ReserveOrderID == "" && input.ReceptOrderID != "" {
+				plan.Steps = append(plan.Steps, pmsReadPlanStep{
+					ID: "order.reserve", Action: "reserve_order_detail", Purpose: "读取关联预订单的逐日价格", Required: false,
+					Args: map[string]string{}, RequiredArgs: []string{"reserveOrderId"},
+					Bindings: []pmsReadPlanBinding{pmsReadBinding("reserveOrderId", []string{"order.recept"}, pmsReadReserveIDFields)},
+				})
+				stepIDs = append(stepIDs, "order.reserve")
+			}
+		}
 		return stepIDs
 	}
 
