@@ -70,6 +70,13 @@ func TestCatalogFollowupsUseCurrentTurnLocatorAndDates(t *testing.T) {
 	}
 }
 
+func TestMembershipClassificationKeepsConditionedBenefitsTogether(t *testing.T) {
+	if !strings.Contains(jevIntentClassificationRules, "one member_program task") ||
+		!strings.Contains(jevIntentRouteCriteria()["checkout_process"].(string), "conditioned on a membership tier") {
+		t.Fatal("membership-conditioned checkout must not become an unrelated generic policy")
+	}
+}
+
 func TestPublicDiamondBenefitsAndDatedBoardProjection(t *testing.T) {
 	answer := runtimePMSProgramAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "钻石会员有哪些权益，怎么保级？"},
 		map[string]any{"grades": []any{
