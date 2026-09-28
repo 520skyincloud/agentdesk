@@ -13,8 +13,8 @@ func TestPMSProgramFactsAnswerOnlyRequestedMembershipAspect(t *testing.T) {
 		"upgradeRuleSummary":   "累计入住房夜 >= 12 且 等级成长积分 >= 2000",
 		"keepGradeRuleSummary": "等级成长积分 >= 2000 或 新增入住房夜 >= 12",
 		"benefits": []any{
-			map[string]any{"label": "会员价", "contentText": "8.5折"},
-			map[string]any{"label": "延迟退房", "contentText": "15:00", "benefitDescription": "仅适用会员渠道全天房"},
+			map[string]any{"benefitType": "MEMBER_PRICE", "benefitName": "会员价", "label": "会员价：8.5折", "contentText": nil, "contentValue": "8.5"},
+			map[string]any{"benefitType": "LATE_CHECKOUT", "benefitName": "延迟退房", "label": "延迟至15:00", "contentText": "延迟至15:00", "contentValue": "15:00", "benefitDescription": "仅适用会员渠道全天房"},
 		},
 	}
 	data := map[string]any{"grades": []any{
@@ -41,6 +41,18 @@ func TestPMSProgramFactsAnswerOnlyRequestedMembershipAspect(t *testing.T) {
 		text := runtimePMSFactStatementsForTest(facts)
 		if !strings.Contains(text, "15:00") || !strings.Contains(text, "仅适用会员渠道全天房") {
 			t.Fatalf("checkout benefit or its condition lost: %s", text)
+		}
+		if len(facts) != 2 || facts[1].Aspect != "pms_member_checkout_time" ||
+			len(facts[1].CriticalValues) != 1 || facts[1].CriticalValues[0] != "15:00" ||
+			strings.Count(text, "15:00") != 1 {
+			t.Fatalf("real benefit type must produce one checkout fact and one critical time: %#v", facts)
+		}
+		task.PMSOutcome = &callbacks.PMSOutcomeTraceData{Status: string(pmsReadStepOK)}
+		for _, fact := range facts {
+			task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{Aspect: fact.Aspect, Statement: fact.Statement})
+		}
+		if missing := runtimePMSRequestedProjectionMissing(task); len(missing) != 0 {
+			t.Fatalf("returned diamond checkout benefit was falsely marked missing: %#v", missing)
 		}
 		for _, unwanted := range []string{"8.5", "2000", "普通会员", "12个月"} {
 			if strings.Contains(text, unwanted) {
@@ -98,16 +110,73 @@ func TestPMSPersonalMembershipFactsDoNotRepeatOtherBenefits(t *testing.T) {
 	data := map[string]any{
 		"member": map[string]any{"gradeName": "银卡会员", "statusName": "启用", "gradeAvailable": true},
 		"grade": map[string]any{"benefits": []any{
-			map[string]any{"label": "会员价", "contentText": "9.5折"},
-			map[string]any{"label": "早餐", "contentText": "1份"},
-			map[string]any{"label": "延迟退房", "contentText": "13:00"},
+			map[string]any{"benefitType": "MEMBER_PRICE", "benefitName": "会员价", "label": "会员价：9.5折", "contentValue": "9.5"},
+			map[string]any{"benefitType": "FREE_BREAKFAST", "benefitName": "免费早餐", "label": "1份早餐", "contentText": "1份早餐", "contentValue": "1"},
+			map[string]any{"benefitType": "LATE_CHECKOUT", "benefitName": "延迟退房", "label": "延迟至13:00", "contentText": "延迟至13:00", "contentValue": "13:00"},
 		}},
 	}
 	for _, question := range []string{"我的卡也能到刚才说的15点吗？", "帮我查查本人会员能几点退？"} {
 		task := callbacks.ReplyTaskPlanTraceData{OriginalText: question, SubjectScope: runtimeSubjectPersonalMembership, RequestedAspects: []string{"checkout_time"}}
-		text := runtimePMSFactStatementsForTest(runtimePMSPersonalMemberFacts(task, data))
+		facts := runtimePMSPersonalMemberFacts(task, data)
+		text := runtimePMSFactStatementsForTest(facts)
 		if !strings.Contains(text, "银卡会员") || !strings.Contains(text, "13:00") || strings.Contains(text, "9.5") || strings.Contains(text, "早餐") {
 			t.Fatalf("personal checkout facts are incomplete or unfocused: %s", text)
+		}
+		last := facts[len(facts)-1]
+		if last.Aspect != "pms_member_checkout_time" || len(last.CriticalValues) != 1 ||
+			last.CriticalValues[0] != "13:00" || strings.Count(text, "13:00") != 1 {
+			t.Fatalf("personal benefit must retain the typed checkout fact once: %#v", facts)
+		}
+		task.PMSOutcome = &callbacks.PMSOutcomeTraceData{Status: string(pmsReadStepOK)}
+		for _, fact := range facts {
+			task.SupportedFacts = append(task.SupportedFacts, callbacks.KnowledgeEvidenceFactTraceData{Aspect: fact.Aspect, Statement: fact.Statement})
+		}
+		if missing := runtimePMSRequestedProjectionMissing(task); len(missing) != 0 {
+			t.Fatalf("returned personal checkout benefit was falsely marked missing: %#v", missing)
+		}
+	}
+}
+
+func TestPMSBenefitsUseTypeThenNameButNeverDisplayLabel(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		benefit map[string]any
+		aspect  string
+	}{
+		{"type", map[string]any{"benefitType": "LATE_CHECKOUT", "label": "延迟至15:00"}, "checkout_time"},
+		{"name_fallback", map[string]any{"benefitName": "延迟退房", "label": "延迟至15:00"}, "checkout_time"},
+		{"type_precedence", map[string]any{"benefitType": "MEMBER_PRICE", "benefitName": "延迟退房", "label": "延迟至15:00"}, "price"},
+		{"unknown_type_not_inferred", map[string]any{"benefitType": "UNSUPPORTED", "benefitName": "延迟退房"}, ""},
+		{"label_not_type", map[string]any{"label": "延迟退房至15:00"}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimePMSBenefitRequestedAspect(test.benefit); got != test.aspect {
+				t.Fatalf("aspect = %q, want %q", got, test.aspect)
+			}
+		})
+	}
+}
+
+func TestPMSBenefitProjectionPreservesPriceAndQuantityUnits(t *testing.T) {
+	grade := map[string]any{"benefits": []any{
+		map[string]any{"benefitType": "MEMBER_PRICE", "benefitName": "会员价", "label": "会员价：8.5折", "contentValue": "8.5"},
+		map[string]any{"benefitType": "FREE_BREAKFAST", "benefitName": "免费早餐", "label": "2份早餐", "contentText": "2份早餐", "contentValue": "2"},
+	}}
+	for _, test := range []struct {
+		questions []string
+		aspect    string
+		want      string
+		unwanted  string
+	}{
+		{[]string{"钻石卡房费有打折吗？", "这一档会员订房什么折扣？"}, "price", "8.5折", "早餐"},
+		{[]string{"钻石会员有几份早餐？", "这张卡每天给多少早餐？"}, "quantity", "2份早餐", "8.5"},
+	} {
+		for _, question := range test.questions {
+			task := callbacks.ReplyTaskPlanTraceData{OriginalText: question, RequestedAspects: []string{test.aspect}}
+			text := runtimePMSFactStatementsForTest(runtimePMSGradeFacts(task, grade, "钻石会员"))
+			if strings.Count(text, test.want) != 1 || strings.Contains(text, test.unwanted) {
+				t.Fatalf("benefit units lost or unrelated benefit included: %s", text)
+			}
 		}
 	}
 }

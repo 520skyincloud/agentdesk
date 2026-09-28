@@ -834,7 +834,9 @@ func TestRuntimeIntentPromptClassifiesExternalProxyActionsWithoutChangingInterna
 	for _, expected := range []string{
 		"service_request/external_proxy_action",
 		"objective=action_request",
-		"needsKnowledge=false",
+		"needsKnowledge=true",
+		"needsTool=false",
+		"自助入口、地址和办理方法",
 		"酒店内部送物、补用品、维修、开门、换房、打扫",
 		"禁止归入 external_proxy_action",
 	} {

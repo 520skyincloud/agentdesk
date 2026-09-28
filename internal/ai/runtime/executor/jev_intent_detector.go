@@ -107,6 +107,7 @@ func jevCurrentPhoneCandidates(spans []jevIntentSpan) []jevIntentPhoneCandidate 
 
 type jevIntentContext struct {
 	Text             string
+	DateValue        string
 	SourceRef        string
 	Intent           string
 	SubIntent        string
@@ -665,7 +666,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 			"follow_up":      "Asks another question or adds a condition inside the active goal.",
 			"reason":         "Explains why the active request is needed, such as a room problem supporting a room-change request; it is not a second independent service goal.",
 			"recommendation": "Asks the service to choose or recommend among already relevant options.",
-			"selection":      "Selects a previously offered candidate, including a bare room number, date or option value.",
+			"selection":      "Explicitly names a room or room type to inspect/select, or selects a previously offered candidate, including a bare room number, date or option value. A first request naming a desired room type is also selection, even if no options were offered yet. Pronouns without a known referent are not an explicit named selection.",
 			"confirmation":   "Confirms a proposed interpretation or next step without creating a new topic.",
 			"correction":     "Corrects a value, subject, misunderstanding or prior answer.",
 			"frustration":    "Expresses dissatisfaction with the answer or service while still expecting the active problem to be solved.",
@@ -696,7 +697,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 			contexts[earlier.Ref] = jevIntentContext{Text: earlier.Text, SourceRef: earlier.SourceRef}
 		}
 		questions[span.Ref+"_context"] = jev.Question{Type: "choice", Instructions: instructions("Select the ONE prior customer task needed to understand this task (phone supplied after an order lookup question, correction, subject of 'how much', or an elliptical continuation such as '查查我的', '就是这个', '那你回答啊'), or none for self-contained tasks. recentBusinessTask is a real prior runtime task from the same conversation session and is the preferred context when it uniquely matches an omitted subject. Choose the most recent still-relevant subject, not an unrelated topic. A service reply is context, not a new customer request."), Criteria: options}
-		questions[span.Ref+"_policy"] = jev.Question{Type: "noul", Instructions: instructions("In addition to live PMS facts, does this task need hotel policy/knowledge (upgrade eligibility, service recovery, waiver conditions, late-checkout policy)? Pure order details, phone lookup and current room counts do not need a FAQ."), Criteria: map[string]any{
+		questions[span.Ref+"_policy"] = jev.Question{Type: "noul", Instructions: instructions("In addition to live PMS facts, does this task need hotel policy/knowledge (upgrade eligibility, service recovery, waiver conditions, late-checkout policy, or recorded room descriptions such as quiet, street-facing, near elevators)? Room attributes require hotel knowledge and cannot be inferred from a floor number or room name. Pure order details, phone lookup and current room counts do not need a FAQ."), Criteria: map[string]any{
 			"true":  "A hotel-specific policy, eligibility condition, remedy or service explanation is requested alongside live facts.",
 			"false": "Only live factual data or no PMS data is requested.",
 		}}
@@ -716,6 +717,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 			},
 		}
 	}
+	addJevGoalSlotQuestions(spans, questions, contexts)
 	return questions, contexts
 }
 
@@ -730,6 +732,7 @@ First-person requests for the customer's own checkout/departure time, such as "�
 General questions about membership levels, their upgrade rules and benefits use member_program, not store_knowledge. They ask about the HOTEL membership system, not TV/video memberships, and do not require a customer phone. All dimensions of one membership-program overview stay in one complete task, including "有哪些等级，怎么升级，各项权益有哪些". Questions about this customer's actual membership benefits, such as "我是会员有啥优惠", are member_benefits and reuse a customer-supplied session phone when available; reuse does not imply verified identity. A current membership condition takes priority over old order context: "我这个会员能几点退" and "那我也能到三点吗" after discussing a tier's 15:00 benefit ask about PERSONAL MEMBER ELIGIBILITY, not historical checkout records. Select member_benefits and checkout_time; explain applicability using personal and named-tier facts. Explicit order wording such as "这笔订单约定几点退" remains order_detail.
 A named membership tier also scopes its breakfast, room discount, points and checkout-time questions. "钻石会员有什么福利，最晚能几点退房" is one member_program task. Do not strip the membership condition to create breakfast/checkout_process tasks or retrieve standard policy for those dependent benefit questions. These are live member benefits, not additional hotel-specific policies, unless the customer explicitly asks for a separate general hotel policy.
 Physical service requests use hotel knowledge first, not automatic handoff. Complaints, wrong answers, corrections, prices and compensation are not permission to transfer.
+An external_proxy_action still uses hotel knowledge for the relevant self-service address, entry point and steps after explaining that the assistant cannot perform the external action. Never turn this query into a write tool, claim it was placed/completed, or transfer merely because execution is unavailable.
 Only explicit current requests for a human use explicit_handoff; "不要转人工" cancels/rejects it. Current serious injury/fire/emergency uses emergency_safety. Do not inherit old handoff or risk topics.
 Public facts about the hotel/owner and around the hotel use knowledge. "How to check in" uses checkin_process; "send the checkin mini program" uses provide_mini_program. Asking whether the hotel's pillow is available as a product ("有同款吗"), where to buy it, its purchase link, price or ordering path uses provide_pillow_product; the customer need not promise to buy. Asking to send, replace or add a pillow to the room, or reporting that a pillow is dirty, broken or uncomfortable, is room_supplies and must never use provide_pillow_product.
 Weather requires a weather query; unrelated everyday chat remains chat.
@@ -862,7 +865,8 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			task.SelectionSource, task.SelectionRef = "customer", span.SourceRef
 		}
 		task.ReplyStrategy = jevReplyStrategy(task.DialogueAct, task.Objective)
-		applyJevRouteToTask(&task, route, response.Answers[span.Ref+"_policy"].Noul >= 0.5)
+		policyRequired := response.Answers[span.Ref+"_policy"].Noul >= 0.5
+		applyJevRouteToTask(&task, route, policyRequired)
 		if task.SubjectScope == "" && task.Intent == "hotel_info" && task.NeedsKnowledge {
 			task.SubjectScope = runtimeSubjectPublicPolicy
 		}
@@ -874,23 +878,40 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 			task.RequestedAspects = nil
 		}
 		ref := response.Answers[span.Ref+"_context"].Choice
+		scope := response.Answers[span.Ref+"_scope"].Choice
+		targetRef := response.Answers[span.Ref+"_target_ref"].Choice
+		if (ref == "none" || ref == "") && targetRef != "" && targetRef != "none" && targetRef != "current" {
+			ref = targetRef
+		}
+		switch scope {
+		case "latest_history":
+			task.SubjectScope = runtimeSubjectHistoricalOrder
+		case runtimeSubjectHistoricalOrder, runtimeSubjectCurrentOrder, runtimeSubjectCurrentStay,
+			runtimeSubjectRoomCandidates, runtimeSubjectPersonalMembership, runtimeSubjectPublicMembership, runtimeSubjectPublicPolicy:
+			task.SubjectScope = scope
+		}
 		if ref != "none" && ref != "" && !cancelled {
 			context, valid := contexts[ref]
-			if !valid {
+			if !valid || context.DateValue != "" {
 				return intent, fmt.Errorf("jev context reference is invalid")
 			}
 			// Self-contained new topics must not inherit an old phone or request.
-			if task.ResolutionState == "resolved_from_context" || task.RelationToPrevious != "independent" {
+			if scope == "inherit_context" || targetRef == ref ||
+				task.ResolutionState == "resolved_from_context" || task.RelationToPrevious != "independent" {
+				if scope == "inherit_context" && context.SubjectScope != "" {
+					task.SubjectScope = context.SubjectScope
+				}
 				// Carry structured context only from the subject selected by the
 				// model. Text compaction must not erase confirmed business slots.
 				if task.DialogueAct != "cancellation" && task.RelationToPrevious != "cancel_previous" {
 					task.Entities = runtimeIntentContextEntitiesForScope(context.Entities, task.SubjectScope)
 				}
-				if shouldInheritJevBusinessRoute(task, context) {
-					applyJevRouteToTask(&task, context.SubIntent, false)
-					task.SubjectScope = context.SubjectScope
-					if task.SubjectScope == "" {
-						task.SubjectScope = jevTaskSubjectScope(context.SubIntent)
+				inheritStayRoute := scope == "inherit_context" && context.SubjectScope == runtimeSubjectCurrentStay &&
+					pmsReadScenarioForSubIntent(task.SubIntent) == pmsReadScenarioDateInventory
+				if inheritStayRoute || shouldInheritJevBusinessRoute(task, context) {
+					applyJevRouteToTask(&task, context.SubIntent, policyRequired)
+					if scope == "inherit_context" || scope == "none" {
+						task.SubjectScope = firstNonEmptyReplyTaskText(context.SubjectScope, jevTaskSubjectScope(context.SubIntent))
 					}
 				}
 				task.Entities = runtimeIntentContextEntitiesForScope(task.Entities, task.SubjectScope)
@@ -908,7 +929,8 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 					task.RequestedAspects = append([]string(nil), context.RequestedAspects...)
 					task.Objective = context.Objective
 				}
-				if task.SubjectScope == runtimeSubjectCurrentOrder && context.SubjectScope == runtimeSubjectHistoricalOrder &&
+				if (scope == "inherit_context" || scope == "none") &&
+					task.SubjectScope == runtimeSubjectCurrentOrder && context.SubjectScope == runtimeSubjectHistoricalOrder &&
 					task.DialogueAct != "new_request" && task.DialogueAct != "correction" {
 					task.SubjectScope = runtimeSubjectHistoricalOrder
 				}
@@ -930,6 +952,11 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 						task.SourceRefs = append(task.SourceRefs, context.SourceRef)
 					}
 				}
+			}
+		}
+		if !cancelled {
+			if err := applyJevTaskGoalSlots(&task, span, response, contexts); err != nil {
+				return intent, err
 			}
 		}
 		if !cancelled && isPMSRuntimeSubIntent(task.SubIntent) {
@@ -963,6 +990,11 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 		}
 		if currentContext, exists := contexts[span.Ref]; exists {
 			currentContext.Entities = append([]callbacks.IntentEntityTraceData(nil), task.Entities...)
+			currentContext.Intent, currentContext.SubIntent = task.Intent, task.SubIntent
+			currentContext.SubjectScope, currentContext.Objective = task.SubjectScope, task.Objective
+			currentContext.RequestedAspects = append([]string(nil), task.RequestedAspects...)
+			currentContext.SelectionSource, currentContext.SelectionRef = task.SelectionSource, task.SelectionRef
+			currentContext.Text = task.ResolvedText
 			contexts[span.Ref] = currentContext
 		}
 		if task.ResolutionState == "ambiguous" || task.ResolutionState == "unresolved" {

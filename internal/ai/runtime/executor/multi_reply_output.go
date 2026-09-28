@@ -120,6 +120,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、重复或增加 taskId。每个 content 先回答对应客户目标，再补必要条件；复杂问题可以换行，不硬凑句数。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只填写本条回复实际采用的事实 ID，不要求展示所有查询结果；无关库存、内部判断和未被客户询问的字段必须省略。严格遵守事实的主体、范围和确定程度，不能把可售说成已锁房或已办理。程序会按任务顺序合并为最多三条客户消息。\n")
 	b.WriteString("自然改写必须保留原事实的主体、条件、范围和确定程度：权益不同不等于价格不同，需要或建议驾车不等于不能步行，已确认包括某些房型不等于只有这些房型。不得把未知属性写成肯定或否定结论；不要用‘因此、所以’补出证据没有确认的能力或限制。\n")
 	b.WriteString("普通互动自然接话；明确要求推荐时，应在已确认候选中给出一个具体建议并说明已知依据。客户在补充原因、纠正、选择或表达不满时，要继续当前目标，不要重新启动同一流程。标注‘仅澄清’的任务只提出一个真正缺失的关键问题。\n")
+	b.WriteString("采用带日期的事实时，保留具体月日和时刻，不只写今天、明天或中午；采用区间库存时保留入住和离店两个端点。可以自然分句，不必照抄事实整句；未采用的事实不要填入coveredFactIds。\n")
 	if hasExternalProxyAction {
 		b.WriteString("外部代执行任务由程序直接使用固定能力边界和 Judge 选中的自助事实合成；该任务的 content 留空且省略 coveredFactIds，不要自行补充能否代办、地址、电话、入口或步骤。\n")
 	}
@@ -495,7 +496,8 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 
 func containsReplyCriticalValue(content, value string) bool {
 	normalizedValue := normalizeReplyCriticalValueText(value)
-	if strings.Contains(normalizeReplyCriticalValueText(content), normalizedValue) {
+	normalizedContent := normalizeReplyCriticalValueText(content)
+	if strings.Contains(normalizedContent, normalizedValue) || containsSeparatedReplyDateTime(normalizedContent, normalizedValue) {
 		return true
 	}
 	if strings.ContainsRune(normalizedValue, 0) {
@@ -510,6 +512,39 @@ func containsReplyCriticalValue(content, value string) bool {
 	}
 	withoutQuotes := strings.NewReplacer("“", "", "”", "", "‘", "", "’", "").Replace(content)
 	return containsCriticalValue(withoutQuotes, value)
+}
+
+var generatedReplyDatePattern = regexp.MustCompile(`(?:[0-9]{4}年)?[0-9]{1,2}月[0-9]{1,2}日`)
+var generatedReplyDatedClockPattern = regexp.MustCompile(`^((?:[0-9]{4}年)?[0-9]{1,2}月[0-9]{1,2}日)(\x00clock:[^\x00]+\x00)$`)
+var generatedReplyNormalizedClockPattern = regexp.MustCompile(`\x00clock:[^\x00]+\x00`)
+var generatedReplyDateSwitchPattern = regexp.MustCompile(`明天|后天|昨天|前天|翌日|次日|第二天|隔天|[0-9]{1,2}[日号]`)
+
+// Date and time may be separated by ordinary prose, but never by another date.
+func containsSeparatedReplyDateTime(content, value string) bool {
+	expected := generatedReplyDatedClockPattern.FindStringSubmatch(value)
+	if len(expected) != 3 {
+		return false
+	}
+	dates := generatedReplyDatePattern.FindAllStringIndex(content, -1)
+	for index, bounds := range dates {
+		if content[bounds[0]:bounds[1]] != expected[1] {
+			continue
+		}
+		end := len(content)
+		if index+1 < len(dates) {
+			end = dates[index+1][0]
+		}
+		between := content[bounds[1]:end]
+		if stop := strings.IndexAny(between, "。！？!?；;"); stop >= 0 {
+			between = between[:stop]
+		}
+		clock := generatedReplyNormalizedClockPattern.FindStringIndex(between)
+		if clock != nil && between[clock[0]:clock[1]] == expected[2] &&
+			!generatedReplyDateSwitchPattern.MatchString(between[:clock[0]]) {
+			return true
+		}
+	}
+	return false
 }
 
 var generatedReplyCriticalAmountPattern = regexp.MustCompile(`[+-]?[0-9]+(?:\.[0-9]+)?元`)

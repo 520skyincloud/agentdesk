@@ -84,7 +84,8 @@ func runtimeIntentContextEntitiesForScope(entities []callbacks.IntentEntityTrace
 		}
 		if scope == runtimeSubjectPersonalMembership {
 			switch entity.Type {
-			case runtimeIntentEntityOrderLocator, runtimeIntentEntityTargetRoomType:
+			case runtimeIntentEntityOrderLocator, runtimeIntentEntityTargetRoomType,
+				runtimeIntentEntityStayStartDate, runtimeIntentEntityStayEndDate, runtimeIntentEntityHistoryChoice:
 				continue
 			}
 		}

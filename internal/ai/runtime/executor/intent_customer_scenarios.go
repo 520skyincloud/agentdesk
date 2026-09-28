@@ -15,11 +15,11 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 		}
 		text := strings.TrimSpace(task.Text)
 		switch {
-		case runtimeExternalProxyActionRequest(text, *task):
+		case task.SubIntent == "external_proxy_action" || runtimeExternalProxyActionRequest(text, *task):
 			task.Intent = "service_request"
 			task.SubIntent = "external_proxy_action"
 			task.Objective = "action_request"
-			task.NeedsKnowledge = false
+			task.NeedsKnowledge = true
 			task.NeedsResource = false
 			task.NeedsTool = false
 			task.NeedsHumanRoute = false

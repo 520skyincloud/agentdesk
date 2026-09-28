@@ -18,7 +18,7 @@ func TestRuntimeCustomerScenarioIntentCorrections(t *testing.T) {
 		}, adapter.HistoryBuildResult{}, nil)
 		if len(intent.IntentTasks) != 1 || intent.IntentTasks[0].Intent != "service_request" ||
 			intent.IntentTasks[0].SubIntent != "external_proxy_action" || intent.IntentTasks[0].Objective != "action_request" ||
-			intent.IntentTasks[0].NeedsKnowledge || intent.IntentTasks[0].NeedsHumanRoute {
+			!intent.IntentTasks[0].NeedsKnowledge || intent.IntentTasks[0].NeedsHumanRoute || intent.IntentTasks[0].NeedsTool {
 			t.Fatalf("external order request did not override the historical delivery-information route: %#v", intent)
 		}
 	})

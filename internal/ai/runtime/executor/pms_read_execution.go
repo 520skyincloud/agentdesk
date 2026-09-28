@@ -651,6 +651,12 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
 	}
 	input.StartDate, input.EndDate = runtimePMSReadDates(task, input.Scenario, now)
+	if task.SubjectScope == runtimeSubjectCurrentStay {
+		switch input.Scenario {
+		case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade, pmsReadScenarioPrice:
+			input.EarliestStartDate = now.In(runtimeHotelLocation()).Format("2006-01-02")
+		}
+	}
 	if input.Scenario == pmsReadScenarioRenewal && input.EndDate == "" {
 		input.ExtensionDays = runtimePMSExtensionDays(task)
 	}
@@ -852,6 +858,9 @@ func runtimePMSRoomKeyword(task callbacks.ReplyTaskPlanTraceData) string {
 		}
 	}
 	for _, text := range []string{task.OriginalText, task.Text, task.ResolvedText} {
+		for _, date := range runtimePMSDateMentions(text, time.Now().In(runtimeHotelLocation())) {
+			text = strings.ReplaceAll(text, text[date.start:date.end], strings.Repeat(" ", date.end-date.start))
+		}
 		if match := runtimePMSStandaloneRoomPattern.FindStringSubmatch(text); len(match) == 2 {
 			return strings.TrimSpace(match[1])
 		}
@@ -860,6 +869,9 @@ func runtimePMSRoomKeyword(task callbacks.ReplyTaskPlanTraceData) string {
 }
 
 func runtimePMSTargetRoomTypeText(task callbacks.ReplyTaskPlanTraceData) string {
+	if task.SubjectScope != "" {
+		return strings.TrimSpace(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityTargetRoomType))
+	}
 	if currentSelection := runtimePMSCurrentRoomTypeSelection(task); currentSelection != "" {
 		return currentSelection
 	}
@@ -970,6 +982,25 @@ type runtimePMSDateMention struct {
 }
 
 func runtimePMSReadDates(task callbacks.ReplyTaskPlanTraceData, scenario pmsReadScenario, now time.Time) (string, string) {
+	if task.SubjectScope != "" {
+		start := normalizePMSReadDate(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityStayStartDate))
+		end := normalizePMSReadDate(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityStayEndDate))
+		if start != "" && end == "" {
+			days := 0
+			if scenario == pmsReadScenarioRenewal {
+				days = runtimePMSExtensionDays(task)
+			} else if task.SubjectScope == runtimeSubjectRoomCandidates {
+				days = 1
+			}
+			if days > 0 {
+				date, err := time.Parse("2006-01-02", start)
+				if err == nil {
+					end = date.AddDate(0, 0, days).Format("2006-01-02")
+				}
+			}
+		}
+		return start, end
+	}
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err == nil {
 		now = now.In(location)
@@ -1470,6 +1501,14 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		if binding.DateOffsetDays != 0 {
 			values = offsetRuntimePMSBindingDates(values, binding.DateOffsetDays)
 		}
+		if binding.DateFloor != "" {
+			for index, value := range values {
+				if date := normalizePMSReadDate(value); date != "" && date < binding.DateFloor {
+					values[index] = binding.DateFloor
+				}
+			}
+			values = uniquePMSReadStrings(values)
+		}
 		switch len(values) {
 		case 0:
 			continue
@@ -1494,6 +1533,12 @@ func resolveRuntimePMSReadStepArgs(step pmsReadPlanStep, results map[string]pmsR
 		}
 		if !hasAny {
 			return args, pmsReadStepUnavailable, "缺少必要查询定位信息"
+		}
+	}
+	switch step.Action {
+	case "inventory", "stay_room_availability", "room_prices":
+		if !validPMSReadDateRange(args["beginTime"], args["endTime"]) {
+			return args, pmsReadStepUnavailable, "订单日期与本次入住区间无法形成有效查询范围，需要确认这次希望住到哪天"
 		}
 	}
 	return args, "", ""
@@ -2204,11 +2249,16 @@ func runtimePMSOrderOverviewFacts(data any, scope string) []runtimePMSReadTaskFa
 	} {
 		values := runtimePMSUniqueOrderValues(data, field.value)
 		if len(values) == 1 {
+			originalValue := values[0]
 			if field.aspect == "pms_order_checkin_time" || field.aspect == "pms_order_checkout_time" {
 				values[0] = runtimePMSCustomerDateTime(values[0])
 			}
+			statement := scope + "的" + field.label + "：" + values[0] + "。"
+			if field.aspect == "pms_order_checkout_time" && scope == "查询定位的住宿" {
+				statement = runtimePMSCurrentCheckoutStatement(originalValue, time.Now())
+			}
 			facts = append(facts, runtimePMSReadTaskFact{
-				Aspect: field.aspect, Statement: scope + "的" + field.label + "：" + values[0] + "。",
+				Aspect: field.aspect, Statement: statement,
 				CriticalValues: append([]string(nil), values...),
 			})
 		}
@@ -2229,18 +2279,32 @@ func runtimePMSFocusedOrderFacts(task callbacks.ReplyTaskPlanTraceData, data any
 		if len(values) != 1 {
 			continue
 		}
+		originalValue := values[0]
 		if item.aspect == "pms_order_checkin_time" || item.aspect == "pms_order_checkout_time" {
 			values[0] = runtimePMSCustomerDateTime(values[0])
 		}
 		if item.aspect == "pms_order_amount" {
 			values[0] = runtimePMSCustomerAmount(values[0])
 		}
+		statement := item.label + "为" + values[0] + "。"
+		if item.aspect == "pms_order_checkout_time" &&
+			(task.SubjectScope == runtimeSubjectCurrentOrder || task.SubjectScope == runtimeSubjectCurrentStay) {
+			statement = runtimePMSCurrentCheckoutStatement(originalValue, time.Now())
+		}
 		facts = append(facts, runtimePMSReadTaskFact{
-			Aspect: item.aspect, Statement: item.label + "为" + values[0] + "。",
+			Aspect: item.aspect, Statement: statement,
 			CriticalValues: []string{values[0]},
 		})
 	}
 	return facts, requested
+}
+
+func runtimePMSCurrentCheckoutStatement(value string, now time.Time) string {
+	display := runtimePMSCustomerDateTime(value)
+	if checkout, ok := runtimePMSHotelTime(value); ok && !checkout.After(now) {
+		return "当前订单原定离店时间为" + display + "，该时间已过；本次查询未确认实际退房或续住结果。"
+	}
+	return "当前订单约定离店时间为" + display + "。"
 }
 
 func runtimePMSUniqueOrderValues(data any, value func(map[string]any) string) []string {

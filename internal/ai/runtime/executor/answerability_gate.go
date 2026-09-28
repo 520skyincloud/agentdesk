@@ -1848,12 +1848,23 @@ func applyKnowledgeEvidenceJudgeOutcome(batch *runtimeKnowledgeRetrieveBatch, ta
 		taskTrace.Candidates = buildKnowledgeEvidenceCandidateTrace(task, taskTrace.SelectedCandidateIDs)
 		if selectedLayer == "" {
 			taskTrace.Decision, taskTrace.DecisionSource = knowledgeEvidenceTaskFailureDecisionAndSource(selections)
+			for _, layer := range []string{knowledgeEvidenceLayerStore, knowledgeEvidenceLayerGeneral} {
+				selection := selections[layer]
+				if selection.Decision != knowledgeEvidenceDecisionInsufficient {
+					continue
+				}
+				for _, missing := range selection.MissingAspects {
+					if missing = strings.TrimSpace(missing); missing != "" {
+						taskTrace.MissingAspects = appendIfMissing(taskTrace.MissingAspects, missing)
+					}
+				}
+			}
 		}
 		retrievers.RebuildKnowledgeRetrieveSelection(question.Result, selectedHits)
 		appendKnowledgeEvidenceFactBoundary(question.Result, task.TaskID, selectedSelection)
 		question.Decision = taskTrace.Decision
 		question.Disposition = disposition
-		question.MissingAspects = append([]string(nil), selectedSelection.MissingAspects...)
+		question.MissingAspects = append([]string(nil), taskTrace.MissingAspects...)
 		trace.Tasks = append(trace.Tasks, taskTrace)
 	}
 	batch.Merged = mergeRuntimeKnowledgeQuestionResults(batch.Merged.KnowledgeBaseIDs, batch.Merged.Options, batch.Merged.Query, batch.Questions)
@@ -2112,7 +2123,10 @@ func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) 
 	}
 	items := make([]runtimeKnowledgeQuestionDisposition, 0, len(batch.Questions))
 	for _, question := range batch.Questions {
-		item := runtimeKnowledgeQuestionDisposition{TaskID: question.TaskID, Query: question.Query, Disposition: question.Disposition}
+		item := runtimeKnowledgeQuestionDisposition{
+			TaskID: question.TaskID, Query: question.Query, Disposition: question.Disposition,
+			MissingAspects: append([]string(nil), question.MissingAspects...),
+		}
 		result := question.Result
 		switch question.Disposition {
 		case runtimeKnowledgeDispositionJudgeProtocolRetry:
@@ -2136,7 +2150,6 @@ func runtimeKnowledgeQuestionDispositions(batch *runtimeKnowledgeRetrieveBatch) 
 			continue
 		case runtimeKnowledgeDispositionAnswerThenHandoff:
 			item.HasAnswer = true
-			item.MissingAspects = append([]string(nil), question.MissingAspects...)
 			if question.HandoffHit.Content != "" {
 				item.HandoffHit = question.HandoffHit
 				item.NeedsHandoff = true
@@ -2497,7 +2510,7 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 			matched, ok = matchKnowledgeEvidenceTraceTask(*planTask, trace.Tasks, questionByTaskID, used)
 		}
 		matchedTaskID := strings.TrimSpace(matched.TaskID)
-		if !ok || used[matchedTaskID] || strings.TrimSpace(matched.SelectedLayer) == "" {
+		if !ok || used[matchedTaskID] {
 			continue
 		}
 		used[matchedTaskID] = true
@@ -2512,7 +2525,10 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 		if planTask.PMSOutcome != nil || len(pmsFacts) > 0 {
 			pmsMissing = append(pmsMissing, planTask.MissingAspects...)
 		}
-		planTask.SupportedFacts = append(append([]callbacks.KnowledgeEvidenceFactTraceData(nil), pmsFacts...), matched.SupportedFacts...)
+		planTask.SupportedFacts = append([]callbacks.KnowledgeEvidenceFactTraceData(nil), pmsFacts...)
+		if strings.TrimSpace(matched.SelectedLayer) != "" {
+			planTask.SupportedFacts = append(planTask.SupportedFacts, matched.SupportedFacts...)
+		}
 		for factIndex := range planTask.SupportedFacts {
 			planTask.SupportedFacts[factIndex].CriticalValues = append([]string(nil), planTask.SupportedFacts[factIndex].CriticalValues...)
 		}
@@ -2544,7 +2560,7 @@ func matchKnowledgeEvidenceTraceTask(planTask callbacks.ReplyTaskPlanTraceData, 
 	if query != "" {
 		for _, task := range traces {
 			taskID := strings.TrimSpace(task.TaskID)
-			if used[taskID] || strings.TrimSpace(task.SelectedLayer) == "" {
+			if used[taskID] {
 				continue
 			}
 			candidateQuery := strings.TrimSpace(questions[taskID])
@@ -2831,8 +2847,8 @@ func buildRuntimeKnowledgeProtocolIsolationDecision(retry []runtimeKnowledgeQues
 	}
 	instruction := "【知识证据裁决隔离】\n" +
 		"仅以下任务的 Judge 结果发生协议异常，不能使用这些任务的原始候选资料：" + strings.Join(labels, "；") + "。\n" +
-		"这些任务只能使用 active ReplyPlan 中 runtime_safe_fallback 提供的固定安全事实，不得自行补充酒店事实，也不得把其他任务的证据挪过来。\n" +
-		"此异常不代表整个知识库不可用；其他已选知识答案、结构化资源和已经确定的接待动作继续按各自计划执行。\n" +
+		"这些任务保留客户当前目标和真实缺口，用自然短句说明尚不能确认的方面，或只追问一个确实能够推进当前需求的必要条件；不得虚构酒店事实、故障处理办法、价格或政策，不得把固定兜底话术当作证据，也不得挪用其他任务的资料。\n" +
+		"此异常不代表整个知识库不可用；其他任务的已选知识、PMS事实和结构化资源继续按原来源回答或发送，已经明确授权的接待动作按原计划执行。\n" +
 		"不得因为该异常新增、取消或重复转人工，也不得向客户解释 Judge、协议、候选或内部处理过程。"
 	return knowledgeGuardDecision{Instructions: []*schema.Message{schema.SystemMessage(instruction)}}
 }

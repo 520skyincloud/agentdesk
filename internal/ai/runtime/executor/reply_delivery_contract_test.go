@@ -12,6 +12,72 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+func TestDatedCriticalValuesAllowNaturalSentenceStructure(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "T1", Facts: []replyFactRequirement{{
+		FactID: "P1", Aspect: "pms_order_checkout_time", Statement: "原定离店时间为9月28日12点。",
+		CriticalValues: []string{"9月28日12点"},
+	}}}
+	for _, content := range []string{
+		"这笔订单原定9月28日退房，时间是中午12点。",
+		"查到的原定离店时间是9月28日，中午12:00。",
+	} {
+		if err := validateCoveredFacts(generatedReplyPart{Content: content, CoveredFactIDs: []string{"P1"}}, group); err != nil {
+			t.Fatalf("equivalent date/time was blocked: %s: %v", content, err)
+		}
+	}
+	for _, content := range []string{
+		"原定9月28日退房，时间是下午2点。",
+		"9月28日入住，9月29日中午12点退房。",
+		"今天中午12点退房。",
+		"9月28日入住。退房是中午12点。",
+		"9月28日10点退房，12点可以办理入住。",
+		"9月28日办理入住，第二天中午12点退房。",
+		"9月28日办理入住，29日中午12点退房。",
+	} {
+		if err := validateCoveredFacts(generatedReplyPart{Content: content, CoveredFactIDs: []string{"P1"}}, group); err == nil {
+			t.Fatalf("missing or changed date/time passed: %s", content)
+		}
+	}
+}
+
+func TestMissingKnowledgeStillAllowsGroundedCustomerGuidance(t *testing.T) {
+	instruction := buildMissingKnowledgeReplyInstruction([]string{"T2", "T3"})
+	for _, required := range []string{
+		"T2、T3", "没有足够的已选门店知识", "先答已知部分", "不把未知说成没有或不提供",
+		"不再次追问同意转接", "已经开放的只读选项", "不能声称有房", "不重复索要已有资料",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Fatalf("missing knowledge boundary %q in %s", required, instruction)
+		}
+	}
+}
+
+func TestPartialSelfServiceUsesJudgedAnswerWithoutInventingDeliveryPolicy(t *testing.T) {
+	for _, question := range []string{"能送条毛巾吗？先不用人工。", "房间毛巾不够，能再给一条吗？"} {
+		collector := callbacks.NewRuntimeTraceCollector()
+		answer := "您可以到1313房间对面的洗衣房自行取用面巾。"
+		collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+			TaskID: "T1", Intent: "service_request", SubIntent: "item_request", Text: question,
+			ReplyRequired: true, NeedsKnowledge: true, OutputKind: "text", Output: "knowledge_text_reply",
+			SelectedLayer: "store", AnswerText: &answer, MissingAspects: []string{"是否提供送房"},
+			SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{
+				FactID: "K1", Aspect: "method", Statement: answer, CriticalValues: []string{"1313房间对面的洗衣房"},
+			}},
+		}}})
+		collector.Data.Pipeline.EvidenceJudge.Tasks = []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: "T1", SelectedLayer: "store", Decision: knowledgeEvidenceDecisionPartial, HasUsableSelfService: true,
+		}}
+		summary := &RunResult{}
+		if !prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) || summary.ReplyText != answer {
+			t.Fatalf("usable knowledge was not delivered unchanged: %#v", summary)
+		}
+		collector.Data.Pipeline.EvidenceJudge.Tasks[0].HasUsableSelfService = false
+		if prepareGroundedIndependentKnowledgeDirectCommit(&RunResult{}, collector) {
+			t.Fatal("failed or declined self-service was committed as a new solution")
+		}
+	}
+}
+
 func TestReplyRecoveryOnlyRegeneratesFailedTask(t *testing.T) {
 	for _, secondQuestion := range []string{"我这次几点退房？", "那我最晚什么时候走？"} {
 		t.Run(secondQuestion, func(t *testing.T) {

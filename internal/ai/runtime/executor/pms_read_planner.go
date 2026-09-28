@@ -36,6 +36,7 @@ type pmsReadPlanInput struct {
 	TargetRoomTypeID   string
 	TargetRoomTypeText string
 	StartDate          string
+	EarliestStartDate  string
 	EndDate            string
 	ExtensionDays      int
 	TargetCheckoutTime string
@@ -64,6 +65,7 @@ type pmsReadPlanBinding struct {
 	Argument       string
 	Sources        []pmsReadPlanSource
 	DateOffsetDays int
+	DateFloor      string
 }
 
 type pmsReadPlanSource struct {
@@ -222,6 +224,10 @@ func normalizePMSReadPlanInput(input pmsReadPlanInput) pmsReadPlanInput {
 	input.TargetRoomTypeID = strings.TrimSpace(input.TargetRoomTypeID)
 	input.TargetRoomTypeText = strings.TrimSpace(input.TargetRoomTypeText)
 	input.StartDate = normalizePMSReadDate(input.StartDate)
+	input.EarliestStartDate = normalizePMSReadDate(input.EarliestStartDate)
+	if input.StartDate != "" && input.StartDate < input.EarliestStartDate {
+		input.StartDate = input.EarliestStartDate
+	}
 	input.EndDate = normalizePMSReadDate(input.EndDate)
 	if input.ExtensionDays < 0 {
 		input.ExtensionDays = 0
@@ -328,7 +334,9 @@ func appendPMSReadInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput, order
 	if input.StartDate != "" {
 		step.Args["beginTime"] = input.StartDate
 	} else if len(orderSteps) > 0 && len(startFields) > 0 {
-		step.Bindings = append(step.Bindings, pmsReadBinding("beginTime", orderSteps, startFields))
+		binding := pmsReadBinding("beginTime", orderSteps, startFields)
+		binding.DateFloor = input.EarliestStartDate
+		step.Bindings = append(step.Bindings, binding)
 	} else {
 		plan.Missing = append(plan.Missing, "inventoryStartDate")
 	}
@@ -359,7 +367,9 @@ func appendPMSReadStayRoomAvailabilityStep(plan *pmsReadPlan, input pmsReadPlanI
 	if input.StartDate != "" {
 		step.Args["beginTime"] = input.StartDate
 	} else if len(orderSteps) > 0 {
-		step.Bindings = append(step.Bindings, pmsReadBinding("beginTime", orderSteps, pmsReadStayStartFields))
+		binding := pmsReadBinding("beginTime", orderSteps, pmsReadStayStartFields)
+		binding.DateFloor = input.EarliestStartDate
+		step.Bindings = append(step.Bindings, binding)
 	}
 	if input.EndDate != "" {
 		step.Args["endTime"] = input.EndDate
@@ -470,9 +480,15 @@ func appendPMSReadPriceStep(plan *pmsReadPlan, input pmsReadPlanInput, orderStep
 	}
 	if input.StartDate != "" {
 		step.Args["beginTime"] = input.StartDate
+	} else if len(orderSteps) > 0 {
+		binding := pmsReadBinding("beginTime", orderSteps, pmsReadStayStartFields)
+		binding.DateFloor = input.EarliestStartDate
+		step.Bindings = append(step.Bindings, binding)
 	}
 	if input.EndDate != "" {
 		step.Args["endTime"] = input.EndDate
+	} else if len(orderSteps) > 0 {
+		step.Bindings = append(step.Bindings, pmsReadBinding("endTime", orderSteps, pmsReadStayEndFields))
 	}
 	if input.ReserveOrderID == "" {
 		step.Bindings = append(step.Bindings, pmsReadBinding("reserveOrderId", filterPMSReadStepIDs(orderSteps, "order.reserve"), pmsReadReserveIDFields))

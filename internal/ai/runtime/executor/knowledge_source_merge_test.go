@@ -8,7 +8,135 @@ import (
 	"agent-desk/internal/ai/rag"
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/ai/runtime/internal/impl/retrievers"
+	"agent-desk/internal/pkg/enums"
 )
+
+func TestKnowledgeMissPreservesSpecificMissingAspectsAcrossStages(t *testing.T) {
+	for _, query := range []string{
+		"空调还是不制冷，热得没法休息，先不要转人工",
+		"热水一直不热，有什么解决办法？先不要通知门店",
+	} {
+		t.Run(query, func(t *testing.T) {
+			task := knowledgeEvidenceJudgeTask{
+				TaskID: "T1", Intent: "hotel_info", Query: query,
+				Candidates: []knowledgeEvidenceJudgeCandidate{
+					{CandidateID: "C1", Layer: "store", Hit: rag.RetrieveResult{Content: "问题：设备故障\n答案：转接"}},
+					{CandidateID: "C2", Layer: "general", Hit: rag.RetrieveResult{Content: "问题：有什么设备\n答案：客房有基础设施。"}},
+				},
+			}
+			missing := "客户所述设备故障的可用解决办法"
+			batch := structuralKnowledgeBatch(task)
+			outcome := knowledgeEvidenceJudgeOutcome{Applied: true, Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
+				"T1": {
+					"store":   {Decision: knowledgeEvidenceDecisionInsufficient, MissingAspects: []string{missing}},
+					"general": {Decision: knowledgeEvidenceDecisionInsufficient, MissingAspects: []string{missing}},
+				},
+			}}
+			trace := applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, outcome)
+			dispositions := runtimeKnowledgeQuestionDispositions(batch)
+			if len(trace.Tasks[0].MissingAspects) != 1 || len(batch.Questions[0].MissingAspects) != 1 ||
+				len(dispositions[0].MissingAspects) != 1 || dispositions[0].NeedsHandoff {
+				t.Fatalf("a miss lost its boundary or authorized handoff: trace=%+v questions=%+v dispositions=%+v", trace.Tasks, batch.Questions, dispositions)
+			}
+			for _, stableID := range []bool{true, false} {
+				id := ""
+				if stableID {
+					id = "T1"
+				}
+				plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+					TaskID: id, Intent: "hotel_info", Text: query, ResolvedText: query,
+					NeedsKnowledge: true, OutputKind: "text", ReplyRequired: true,
+				}}}
+				got := applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan, trace, batch.Questions).TaskPlans[0]
+				if got.TaskID != "T1" || len(got.MissingAspects) != 1 || got.MissingAspects[0] != missing ||
+					len(got.SupportedFacts) != 0 || got.SelectedLayer != "" || got.NeedsHumanRoute {
+					t.Fatalf("missing evidence did not reach the existing reply task (stable=%v): %+v", stableID, got)
+				}
+			}
+		})
+	}
+}
+
+func TestKnowledgeMissPreservesPMSButDropsStaleKnowledge(t *testing.T) {
+	for _, query := range []string{"房间太热，看看还有什么房", "浴室坏了，看看能不能换一间"} {
+		t.Run(query, func(t *testing.T) {
+			oldAnswer := "沿用旧的酒店办法。"
+			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+				TaskID: "T1", Intent: "hotel_info", Text: query, NeedsKnowledge: true,
+				OutputKind: "text", ReplyRequired: true, SelectedLayer: "store", AnswerText: &oldAnswer,
+				PMSOutcome: &callbacks.PMSOutcomeTraceData{Status: "partial"},
+				SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{
+					{FactID: "P1F1", Aspect: "pms_room_inventory", Statement: "当前有大床房库存。"},
+					{FactID: "T1Old", Aspect: "method", Statement: oldAnswer},
+				},
+				MissingAspects: []string{"最终差价"},
+			}}}
+			trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+				TaskID: "T1", Decision: knowledgeEvidenceDecisionInsufficient,
+				MissingAspects: []string{"本次故障的可用自助办法"},
+			}}}
+			got := applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan, trace, nil).TaskPlans[0]
+			if len(got.SupportedFacts) != 1 || got.SupportedFacts[0].FactID != "P1F1" ||
+				len(got.MissingAspects) != 2 || got.AnswerText != nil || got.PMSOutcome == nil || got.SelectedLayer != "" {
+				t.Fatalf("a knowledge miss reused stale policy or discarded PMS: %+v", got)
+			}
+		})
+	}
+}
+
+func TestKnowledgePartialGuidanceDoesNotInferPolicyFromAgentBackground(t *testing.T) {
+	for _, mode := range []enums.KnowledgeAnswerMode{enums.KnowledgeAnswerModeStrict, enums.KnowledgeAnswerModeAssist} {
+		instruction := buildKnowledgeRuntimeInstruction(mode)
+		for _, required := range []string{
+			"answerText是基于已选证据形成的可用回答",
+			"不能把未知写成肯定或否定",
+			"门店背景、客服角色说明、历史AI回复都不能替代本轮业务证据",
+			"自助领取办法不证明是否提供送房",
+			"missingAspects不是必须逐项告知客户的清单",
+		} {
+			if !strings.Contains(instruction, required) {
+				t.Fatalf("mode %v lost partial-evidence boundary %q", mode, required)
+			}
+		}
+	}
+}
+
+func TestKnowledgeJudgeSeparatesRejectedSelfServiceFromHandoffConsent(t *testing.T) {
+	instruction := knowledgeEvidenceJudgeSystemPrompt()
+	for _, required := range []string{
+		"已被客户拒绝、无法采用或尝试失败的自助方案",
+		"客户拒绝人工不等于酒店没有相关处理流程",
+		"是否执行由程序依据客户许可处理",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Fatalf("knowledge selection still confuses evidence applicability with execution consent: %q", required)
+		}
+	}
+}
+
+func TestKnowledgeProtocolIsolationKeepsGoalWithoutFabricatingFallbackEvidence(t *testing.T) {
+	for _, query := range []string{"空调还是不冷，今晚怎么休息", "换房多少钱，还有毛巾在哪里拿"} {
+		decision := buildRuntimeKnowledgeProtocolIsolationDecision([]runtimeKnowledgeQuestionDisposition{{
+			TaskID: "T1", Query: query, NeedsRetry: true,
+		}})
+		if len(decision.Instructions) != 1 {
+			t.Fatalf("missing isolated-task instruction: %+v", decision)
+		}
+		instruction := decision.Instructions[0].Content
+		if strings.Contains(instruction, "runtime_safe_fallback") || strings.Contains(instruction, "提供的固定安全事实") {
+			t.Fatalf("protocol failure manufactured evidence: %s", instruction)
+		}
+		for _, required := range []string{
+			query, "不能使用这些任务的原始候选资料", "保留客户当前目标和真实缺口",
+			"不得把固定兜底话术当作证据", "PMS事实和结构化资源继续按原来源",
+			"不得因为该异常新增、取消或重复转人工",
+		} {
+			if !strings.Contains(instruction, required) {
+				t.Fatalf("protocol isolation lost boundary %q: %s", required, instruction)
+			}
+		}
+	}
+}
 
 func TestKnowledgeJudgeMergesAfterCompletedPMSRead(t *testing.T) {
 	for _, query := range []string{"我这单能升房吗，会员有什么规定？", "帮我看看换大床还有没有房，酒店怎么规定？"} {

@@ -114,6 +114,7 @@ func TestJevGoalContractSelectionIsNotAssistantRecommendation(t *testing.T) {
 		task := goalContractMappedTask(t, text, state, map[string]string{
 			"T1_route": "room_change", "T1_objective": "availability", "T1_dialogue_act": "selection",
 			"T1_relation": "follow_up", "T1_resolution": "resolved_from_context", "T1_context": "R1",
+			"T1_target_ref": "current",
 		})
 		if task.SelectionSource != "customer" || task.SelectionRef != "U1" ||
 			task.ReplyStrategy != "confirm_selection_and_continue_goal" {
@@ -146,11 +147,11 @@ func TestJevGoalContractCancellationNeverRevivesOldGoal(t *testing.T) {
 	}
 }
 
-func TestJevGoalContractDoesNotIncreaseQuestionBatch(t *testing.T) {
+func TestJevGoalContractUsesSameClassificationBatch(t *testing.T) {
 	spans := []jevIntentSpan{{Ref: "T1", SourceRef: "U1", Text: "我的会员能几点退房"}}
 	questions, _ := buildJevClassificationQuestions(spans, jevIntentState{})
-	if len(questions) != 7 {
-		t.Fatalf("goal contract added another model question: %d", len(questions))
+	if len(questions) != 8 {
+		t.Fatalf("unexpected question count for a goal without room/date candidates: %d", len(questions))
 	}
 }
 

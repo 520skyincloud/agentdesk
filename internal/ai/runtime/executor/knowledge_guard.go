@@ -72,10 +72,15 @@ func buildKnowledgeRetrievalErrorDecision(_ models.AIAgent, knowledgeBaseIDs []i
 }
 
 func buildKnowledgeRuntimeInstruction(answerMode enums.KnowledgeAnswerMode) string {
+	evidenceBoundary := "PMS实时事实及资源结果按各自来源使用。" +
+		"answerText是基于已选证据形成的可用回答，可以自然改写，但不能新增业务结论。missingAspects只表示对应方面未知，不能把未知写成肯定或否定；已答事实不能覆盖或补出未知方面。" +
+		"门店背景、客服角色说明、历史AI回复都不能替代本轮业务证据。自助领取办法不证明是否提供送房，不能因无人值守或远程客服就推导某项门店服务不存在。" +
+		"已有办法能推进客户目标时直接说清办法；missingAspects不是必须逐项告知客户的清单，只在缺失方面确实阻断使用或客户明确追问该方面时说明暂未确认，不添加空泛的不能、不提供等结论。" +
+		"先回应当前所求，再补必要方法或下一步，不复制整条知识。"
 	if answerMode == enums.KnowledgeAnswerModeAssist {
-		return "知识库回答约束：沿用回复运行时决策，知识部分依据本轮已选事实和适用条件自然回答，可以归纳，不扩展未确认能力。PMS实时事实及资源结果按各自来源使用。missingAspects只表示对应方面未知，不能把未知写成肯定或否定；已答事实不能覆盖或补出未知方面。先回应当前所求，再补必要方法或下一步，不复制整条知识。"
+		return "知识库回答约束：沿用回复运行时决策，知识部分依据本轮已选事实和适用条件自然回答，可以归纳，不扩展未确认能力。" + evidenceBoundary
 	}
-	return "知识库回答约束：沿用回复运行时决策，知识部分只能依据本轮已选事实和适用条件回答，不用模型常识补充具体事实、步骤、承诺、价格、时效或政策。PMS实时事实及资源结果按各自来源使用。missingAspects只表示对应方面未知，不能把未知写成肯定或否定；已答事实不能覆盖或补出未知方面。先回应当前所求，再补必要方法或下一步，不复制整条知识。"
+	return "知识库回答约束：沿用回复运行时决策，知识部分只能依据本轮已选事实和适用条件回答，不用模型常识补充具体事实、步骤、承诺、价格、时效或政策。" + evidenceBoundary
 }
 
 func buildKnowledgeNoContextInstruction() string {

@@ -483,7 +483,7 @@ func appendGeneratedReplyRepairInstruction(messages []*schema.Message, previousE
 		return ret
 	}
 	reason := compactGeneratedReplyRecoveryError(previousErr)
-	instruction := "【输出协议修复】上一版回复未通过本地完整性校验。任务、来源和知识证据已经冻结，禁止重新解释问题或增加事实。请严格按任务输出契约重新输出全部 replyParts，并补齐所有缺少的 taskId、coveredFactIds 和关键值。"
+	instruction := "【输出协议修复】上一版回复未通过本地完整性校验。任务、来源和知识证据已经冻结，禁止重新解释问题或增加事实。请严格按任务输出契约重新输出全部 replyParts，并补齐缺少的 taskId。coveredFactIds只列本条真正使用的事实，不要为覆盖率引用未使用的事实；被引用事实的关键值必须在content中准确表达。日期必须写明确月日，区间必须保留起止日期，不用今天、明天替换；有时刻时也须保留。"
 	if reason != "" {
 		instruction += " 上一版缺陷：" + reason + "。"
 	}

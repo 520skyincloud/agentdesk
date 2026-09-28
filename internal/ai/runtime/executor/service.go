@@ -130,7 +130,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 		return summary, nil
 	}
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
-		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
+		messages = append(messages, schema.SystemMessage(buildMissingKnowledgeReplyInstruction(taskIDs)))
 	}
 	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 		summary.Status = "completed"
@@ -360,6 +360,16 @@ func ungroundedKnowledgeReplyTaskIDs(plan callbacks.ReplyPlanTraceData) []string
 		ret = append(ret, taskID)
 	}
 	return ret
+}
+
+func buildMissingKnowledgeReplyInstruction(taskIDs []string) string {
+	return "【未确认的知识范围】任务 " + strings.Join(taskIDs, "、") +
+		" 没有足够的已选门店知识，但仍需回应客户当前需求，不用笼统的“无法回答”结束整个会话。" +
+		"有PMS或其他已确认事实时先答已知部分；没有依据时具体说明哪件事还不能确认。" +
+		"不要虚构政策、故障原因、维修步骤、价格、房间属性或补偿，不把未知说成没有或不提供。" +
+		"客户已拒绝人工、工单或通知时尊重其选择，不再次追问同意转接。" +
+		"可询问客户是否希望查询其他房间等已经开放的只读选项，但不能声称有房、已安排或已办理。" +
+		"只问一个能推进当前问题的必要问题；不重复客人说已经做过的处理，也不重复索要已有资料。"
 }
 
 func isUngroundedKnowledgeReplyTask(task callbacks.ReplyTaskPlanTraceData) bool {
@@ -635,12 +645,25 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 		if runtimeReplyTaskHasPMSFact(task) || isPMSRuntimeSubIntent(task.SubIntent) {
 			return false
 		}
+		selfService := false
+		if task.Intent == "service_request" {
+			for _, judged := range collector.Data.Pipeline.EvidenceJudge.Tasks {
+				if judged.TaskID == task.TaskID && judged.HasUsableSelfService && task.SelectedLayer != "" &&
+					judged.SelectedLayer == task.SelectedLayer &&
+					(judged.Decision == knowledgeEvidenceDecisionDirectSingle ||
+						judged.Decision == knowledgeEvidenceDecisionDirectCombined ||
+						judged.Decision == knowledgeEvidenceDecisionPartial) {
+					selfService = true
+					break
+				}
+			}
+		}
 		externalProxy := isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
-		if (!externalProxy && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
+		if (!externalProxy && !selfService && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
 			strings.TrimSpace(task.OutputKind) != "text" {
 			return false
 		}
-		if !externalProxy && (!task.NeedsKnowledge || strings.TrimSpace(task.Output) != "knowledge_text_reply" || len(task.MissingAspects) > 0 ||
+		if !externalProxy && (!task.NeedsKnowledge || strings.TrimSpace(task.Output) != "knowledge_text_reply" || (!selfService && len(task.MissingAspects) > 0) ||
 			task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "" || len(task.SupportedFacts) == 0 ||
 			isKnowledgeHandoffDirectiveContent(*task.AnswerText)) {
 			return false

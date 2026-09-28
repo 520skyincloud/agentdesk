@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
@@ -29,6 +30,7 @@ func runtimePMSHistoryFacts(task callbacks.ReplyTaskPlanTraceData, data any) []r
 		return nil
 	}
 	reserveID, receptID, _ := runtimePMSOrderLocators(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator))
+	explicitSelection := false
 	if reserveID != "" || receptID != "" {
 		selected := make([]map[string]any, 0, 1)
 		for _, row := range rows {
@@ -39,6 +41,17 @@ func runtimePMSHistoryFacts(task callbacks.ReplyTaskPlanTraceData, data any) []r
 		}
 		if len(selected) > 0 {
 			rows = selected
+			explicitSelection = true
+		}
+	}
+	if !explicitSelection && runtimeIntentEntityValue(task.Entities, runtimeIntentEntityHistoryChoice) == "latest" {
+		if latest, ok := runtimePMSLatestHistoryRow(rows, time.Now()); ok {
+			rows = []map[string]any{latest}
+		} else if len(rows) == 1 {
+			return []runtimePMSReadTaskFact{{
+				Aspect:    "pms_order_history_selection",
+				Statement: "已查到订单记录，但当前日期信息不能确认它是最近一次已发生的住宿；需要客户补充住宿日期，不能把未来预订或日期不明的订单当作上次住宿。",
+			}}
 		}
 	}
 	if task.SubjectScope == runtimeSubjectCurrentOrder || task.SubjectScope == runtimeSubjectCurrentStay {
@@ -75,6 +88,37 @@ func runtimePMSHistoryFacts(task callbacks.ReplyTaskPlanTraceData, data any) []r
 		facts[index].Statement = strings.ReplaceAll(facts[index].Statement, "当前订单", "所选历史住宿")
 	}
 	return facts
+}
+
+func runtimePMSLatestHistoryRow(rows []map[string]any, now time.Time) (map[string]any, bool) {
+	var latest map[string]any
+	var latestTime time.Time
+	tied := false
+	for _, row := range rows {
+		checkIn, ok := runtimePMSHotelTime(firstRuntimePMSReadText(row, "checkInTime", "checkInBusinessDate"))
+		if !ok {
+			return nil, false
+		}
+		if checkIn.After(now) {
+			continue
+		}
+		switch {
+		case latest == nil || checkIn.After(latestTime):
+			latest, latestTime, tied = row, checkIn, false
+		case checkIn.Equal(latestTime):
+			tied = true
+		}
+	}
+	return latest, latest != nil && !tied
+}
+
+func runtimePMSHotelTime(value string) (time.Time, bool) {
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", time.RFC3339, "2006-01-02"} {
+		if parsed, err := time.ParseInLocation(layout, strings.TrimSpace(value), runtimeHotelLocation()); err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func runtimePMSProgramFacts(task callbacks.ReplyTaskPlanTraceData, data any) []runtimePMSReadTaskFact {
@@ -171,23 +215,38 @@ func runtimePMSGradeFacts(task callbacks.ReplyTaskPlanTraceData, grade map[strin
 			if !ok || !runtimePMSRequestedBenefit(task, benefit) {
 				continue
 			}
-			label := firstRuntimePMSReadText(benefit, "label", "benefitName")
+			label := firstRuntimePMSReadText(benefit, "benefitName")
+			if label == "" {
+				label = "权益"
+			}
 			parts := []string{}
-			for _, field := range []string{"contentText", "contentValue", "benefitDescription"} {
-				if text := firstRuntimePMSReadText(benefit, field); text != "" {
-					parts = appendIfMissing(parts, text)
+			text := firstRuntimePMSReadText(benefit, "contentText")
+			if text == "" {
+				text = firstRuntimePMSReadText(benefit, "label")
+				if text == label {
+					text = ""
 				}
 			}
+			if text == "" {
+				text = firstRuntimePMSReadText(benefit, "contentValue")
+			}
+			if text != "" {
+				parts = append(parts, text)
+			}
+			if description := firstRuntimePMSReadText(benefit, "benefitDescription"); description != "" {
+				parts = appendIfMissing(parts, description)
+			}
 			aspect := "member_benefit"
-			if strings.Contains(label, "退房") || strings.Contains(label, "延退") {
+			if runtimePMSBenefitRequestedAspect(benefit) == "checkout_time" {
 				aspect = "member_checkout_time"
 			}
+			previousFactCount := len(facts)
 			if len(parts) == 0 {
 				add(aspect, "权益", label)
 			} else {
 				add(aspect, label, strings.Join(parts, "；"))
 			}
-			if len(facts) > 0 {
+			if len(facts) > previousFactCount {
 				for _, token := range knowledgeEvidenceIndividualTimePattern.FindAllString(strings.Join(parts, "；"), -1) {
 					facts[len(facts)-1].CriticalValues = appendIfMissing(facts[len(facts)-1].CriticalValues, token)
 				}
@@ -201,18 +260,31 @@ func runtimePMSRequestedBenefit(task callbacks.ReplyTaskPlanTraceData, benefit m
 	if runtimePMSHasRequestedAspect(task, "member_benefits", "policy", "compound_information") {
 		return true
 	}
-	// Match returned benefit labels, not customer wording or guessed benefit IDs.
-	label := firstRuntimePMSReadText(benefit, "label", "benefitName")
-	if runtimePMSHasRequestedAspect(task, "checkout_time") {
-		return strings.Contains(label, "退房") || strings.Contains(label, "延退")
+	aspect := runtimePMSBenefitRequestedAspect(benefit)
+	return aspect != "" && runtimePMSHasRequestedAspect(task, aspect)
+}
+
+func runtimePMSBenefitRequestedAspect(benefit map[string]any) string {
+	// label is display content (for example "延迟至15:00"), not a benefit type.
+	switch firstRuntimePMSReadText(benefit, "benefitType") {
+	case "LATE_CHECKOUT":
+		return "checkout_time"
+	case "MEMBER_PRICE":
+		return "price"
+	case "FREE_BREAKFAST":
+		return "quantity"
+	case "":
+		name := firstRuntimePMSReadText(benefit, "benefitName")
+		switch {
+		case strings.Contains(name, "退房") || strings.Contains(name, "延退"):
+			return "checkout_time"
+		case strings.Contains(name, "会员价") || strings.Contains(name, "折扣"):
+			return "price"
+		case strings.Contains(name, "早餐") || strings.Contains(name, "份数"):
+			return "quantity"
+		}
 	}
-	if runtimePMSHasRequestedAspect(task, "price") {
-		return strings.Contains(label, "会员价") || strings.Contains(label, "折扣")
-	}
-	if runtimePMSHasRequestedAspect(task, "quantity") {
-		return strings.Contains(label, "早餐") || strings.Contains(label, "份数")
-	}
-	return false
+	return ""
 }
 
 func runtimePMSPersonalMemberFacts(task callbacks.ReplyTaskPlanTraceData, data any) []runtimePMSReadTaskFact {

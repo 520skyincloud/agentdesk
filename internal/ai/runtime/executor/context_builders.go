@@ -85,14 +85,6 @@ func buildRunMessages(ctx context.Context, req RunInput, summary *RunResult, col
 	if collector != nil {
 		activeReplyPlan = collector.Data.Pipeline.ReplyPlan
 		hasDeferredKnowledge = collector.Data.Pipeline.EvidenceJudge.DeferredHandoff
-		if isolatedPlan, taskIDs := isolateUngroundedKnowledgeReplyTasks(activeReplyPlan); len(taskIDs) > 0 {
-			activeReplyPlan = isolatedPlan
-			collector.Data.Pipeline.ReplyPlan = isolatedPlan
-			collector.Data.Pipeline.Validate.Reason = appendValidationReason(
-				collector.Data.Pipeline.Validate.Reason,
-				"isolated ungrounded knowledge task(s) while preserving independent executable tasks: "+strings.Join(taskIDs, ","),
-			)
-		}
 	}
 	if instruction := buildCurrentTurnBoundaryInstructionForReplyPlan(req, history, plan.Intent, activeReplyPlan); strings.TrimSpace(instruction) != "" {
 		messages = append(messages, schema.SystemMessage(instruction))

@@ -460,6 +460,7 @@ func TestJevSelectedContextRetainsSlotsOutsideCompactedText(t *testing.T) {
 	choices := map[string]string{
 		"T1_route": "price_difference", "T1_objective": "price", "T1_dialogue_act": "follow_up",
 		"T1_relation": "follow_up", "T1_resolution": "resolved_from_context", "T1_context": "R1",
+		"T1_target_ref": "R1",
 	}
 	got, err := buildIntentTraceFromJev(jevTestResponse(questions, choices, nil), []jevIntentSpan{span}, contexts)
 	if err != nil {
@@ -469,6 +470,7 @@ func TestJevSelectedContextRetainsSlotsOutsideCompactedText(t *testing.T) {
 		t.Fatalf("text compaction lost the confirmed choice: %#v", got)
 	}
 	choices["T1_context"] = "none"
+	choices["T1_target_ref"] = "none"
 	choices["T1_relation"] = "independent"
 	choices["T1_resolution"] = "clear"
 	got, err = buildIntentTraceFromJev(jevTestResponse(questions, choices, nil), []jevIntentSpan{span}, contexts)
@@ -729,12 +731,18 @@ func jevTestResponse(questions map[string]jev.Question, choices map[string]strin
 			continue
 		}
 		choice := choices[key]
+		if choice == "" && strings.HasSuffix(key, "_scope") {
+			choice = "none"
+		}
+		if choice == "" && strings.Contains(key, "_date_") && strings.HasSuffix(key, "_role") {
+			choice = "ignored"
+		}
 		if choice == "" && strings.HasPrefix(key, "PHONE_") && strings.HasSuffix(key, "_role") {
 			choice = "reservation"
 		}
 		if choice == "" {
 			for suffix, value := range map[string]string{
-				"_route": "parking", "_objective": "availability", "_dialogue_act": "new_request", "_relation": "independent", "_resolution": "clear", "_context": "none", "_count": "1", "_terminal_alignment": "exact",
+				"_route": "parking", "_objective": "availability", "_dialogue_act": "new_request", "_relation": "independent", "_resolution": "clear", "_context": "none", "_target_ref": "none", "_count": "1", "_terminal_alignment": "exact",
 			} {
 				if strings.HasSuffix(key, suffix) {
 					choice = value
