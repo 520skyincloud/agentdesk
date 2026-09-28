@@ -2138,12 +2138,6 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 	homeName := stay.homeName
 	amount := runtimePMSCustomerAmount(firstRuntimePMSReadText(stay.data, "payableAmount", "roomFee", "payAmount", "waitPayAmount"))
 	status := runtimePMSCustomerOrderStatus(stay.data)
-	if status == "已退房" {
-		if checkOut != "" {
-			return "这笔订单已经退房，离店时间是" + checkOut + "。"
-		}
-		return "这笔订单已经退房。"
-	}
 
 	requested := make(map[string]bool)
 	for _, projection := range runtimePMSOrderFieldProjections(task) {
@@ -2163,7 +2157,11 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 			fields = append(fields, "入住时间是"+checkIn)
 		}
 		if requested["pms_order_checkout_time"] && checkOut != "" {
-			fields = append(fields, checkOut+"前退房")
+			if status == "已退房" {
+				fields = append(fields, "已于"+checkOut+"退房")
+			} else {
+				fields = append(fields, checkOut+"前退房")
+			}
 		}
 		if requested["pms_order_amount"] && amount != "" {
 			fields = append(fields, "订单金额是"+amount)
@@ -2174,6 +2172,9 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 		if len(fields) == 1 {
 			switch {
 			case requested["pms_order_checkout_time"]:
+				if status == "已退房" {
+					return "这笔订单已经退房，离店时间是" + checkOut + "。"
+				}
 				return "查到了，您这笔订单是" + checkOut + "前退房。"
 			case requested["pms_order_checkin_time"]:
 				return "查到了，您这笔订单是" + checkIn + "入住。"
@@ -2189,6 +2190,12 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 			return "查到了，" + strings.Join(fields, "，") + "。"
 		}
 		return ""
+	}
+	if status == "已退房" {
+		if checkOut != "" {
+			return "这笔订单已经退房，离店时间是" + checkOut + "。"
+		}
+		return "这笔订单已经退房。"
 	}
 	if task.SubIntent == "order_status" && status != "" {
 		return "查到了，您这笔订单当前是" + status + "。"
@@ -2516,6 +2523,9 @@ func runtimePMSCustomerPriceDifference(result pmsReadPlanResult) string {
 }
 
 func runtimePMSCustomerPriceAnswer(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
+	if stay, ok := runtimePMSCustomerStay(result); ok && runtimePMSCustomerOrderStatus(stay.data) == "已退房" {
+		return "之前那笔订单已经退房，不能拿它的金额作为这次选房的差价依据。您这次要比较的房型价格，我这边还不能确认。"
+	}
 	clause := runtimePMSCustomerPriceClause(task, result)
 	if clause == "" {
 		return ""

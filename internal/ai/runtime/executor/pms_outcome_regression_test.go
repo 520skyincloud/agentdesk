@@ -113,6 +113,31 @@ func TestPMSClosedStayNeverOffersRoomChange(t *testing.T) {
 	}
 }
 
+func TestPMSClosedStayCannotQuoteNewRoomDifferenceButStillAnswersHistory(t *testing.T) {
+	result := pmsReadPlanResult{Steps: []pmsReadStepResult{{
+		StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{
+			"receptOrderId": "REC-1", "orderStatus": "0015003", "roomName": "儿童房",
+			"payableAmount": "376.00", "checkOutTime": "2026-09-28 10:09:39",
+		},
+	}}}
+	for _, question := range []string{"云漫比儿童房要补多少钱？", "重新选这个房要补多少？"} {
+		answer := runtimePMSCustomerPriceAnswer(callbacks.ReplyTaskPlanTraceData{
+			SubIntent: "price_difference", OriginalText: question,
+		}, result)
+		if strings.Contains(answer, "376") || !strings.Contains(answer, "已经退房") {
+			t.Fatalf("closed order became current price basis: %q", answer)
+		}
+	}
+	for _, question := range []string{"之前那笔订单金额是多少", "帮我看历史订单的房费"} {
+		answer := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{
+			SubIntent: "order_detail", OriginalText: question, Text: question, Objective: "price",
+		}, result)
+		if !strings.Contains(answer, "376") {
+			t.Fatalf("history query lost its requested amount: %q", answer)
+		}
+	}
+}
+
 func TestPMSOutcomeCarriesActualMissingFieldsSeparately(t *testing.T) {
 	for _, field := range []string{"inventoryStartDate", "inventoryEndDate"} {
 		task := callbacks.ReplyTaskPlanTraceData{SubIntent: "room_inventory", PMSOutcome: &callbacks.PMSOutcomeTraceData{
