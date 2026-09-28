@@ -234,7 +234,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			Scenario: pmsReadScenarioRenewal, ReceptOrderID: "REC-1", EndDate: "2026-09-26",
 		})
-		if len(plan.Steps) != 3 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected renewal plan: %#v", plan)
 		}
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
@@ -249,7 +249,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			SubIntent: "renewal", Phone: "13800138000", StartDate: "2026-09-25", EndDate: "2026-09-27",
 		})
-		if len(plan.Steps) != 4 || hasPMSReadAction(plan, "renew") {
+		if len(plan.Steps) != 5 || hasPMSReadAction(plan, "renew") {
 			t.Fatalf("renewal plan exposed a write: %#v", plan)
 		}
 		requirePMSReadStep(t, plan, "order.reserve")

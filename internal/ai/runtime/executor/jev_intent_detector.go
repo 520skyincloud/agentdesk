@@ -661,7 +661,9 @@ General questions about membership levels, their upgrade rules and benefits use 
 Physical service requests use hotel knowledge first, not automatic handoff. Complaints, wrong answers, corrections, prices and compensation are not permission to transfer.
 Only explicit current requests for a human use explicit_handoff; "不要转人工" cancels/rejects it. Current serious injury/fire/emergency uses emergency_safety. Do not inherit old handoff or risk topics.
 Public facts about the hotel/owner and around the hotel use knowledge. "How to check in" uses checkin_process; "send the checkin mini program" uses provide_mini_program. Asking whether the hotel's pillow is available as a product ("有同款吗"), where to buy it, its purchase link, price or ordering path uses provide_pillow_product; the customer need not promise to buy. Asking to send, replace or add a pillow to the room, or reporting that a pillow is dirty, broken or uncomfortable, is room_supplies and must never use provide_pillow_product.
-Weather requires a weather query; unrelated everyday chat remains chat. A supplied phone after an order question stays order_query; a supplied phone after a member query stays member_info.`
+Weather requires a weather query; unrelated everyday chat remains chat.
+A supplied phone, "用刚才的手机号", or "帮我查一下" answers a missing slot for the selected active goal; preserve that goal and objective. For example, a phone after a personal checkout-time question stays order_detail/time; a phone after a free-room-upgrade question stays upgrade_eligibility/policy, not order_query or member_info. Membership used as a condition for a room upgrade/change/late checkout stays in that business goal and requires the member facts as well.
+Availability and price questions about the same renewal or room change share one request, dates and selected room. A room selected by the customer is not a new recommendation by the assistant.`
 
 func jevIntentRouteCriteria() map[string]any {
 	return map[string]any{
@@ -916,6 +918,8 @@ func jevCompositeIntentTaskFamily(subIntent string) string {
 		return "order"
 	case "member_program":
 		return "member_program"
+	case "renewal", "room_change", "room_upgrade", "upgrade_eligibility", "late_checkout":
+		return strings.TrimSpace(subIntent)
 	default:
 		return ""
 	}
@@ -981,6 +985,10 @@ func shouldInheritJevBusinessRoute(task callbacks.IntentTaskTraceData, context j
 	}
 	switch strings.TrimSpace(task.SubIntent) {
 	case "clarify", "chat", "acknowledgement", "frustration":
+	case "order_query", "member_info":
+		// Filling a locator must not replace the goal for which it was requested.
+		return task.RelationToPrevious == "clarification_answer" &&
+			isPMSRuntimeSubIntent(context.SubIntent)
 	default:
 		return false
 	}

@@ -141,7 +141,7 @@ func TestPrepareGroundedPMSDirectCommitAnswersRoomExplanationWithoutGenerate(t *
 	}
 }
 
-func TestPrepareGroundedPMSDirectCommitKeepsKnownPriceFactsWhenDifferenceIsMissing(t *testing.T) {
+func TestPrepareGroundedPMSDirectCommitLeavesIncompletePriceGoalToGenerate(t *testing.T) {
 	answer := "您当前订单金额是376.00元，但沐阳的实时房价没有显示，所以现在还算不出准确差价，我先不乱报。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
@@ -152,8 +152,11 @@ func TestPrepareGroundedPMSDirectCommitKeepsKnownPriceFactsWhenDifferenceIsMissi
 		MissingAspects: []string{"目标房型的实时价格未返回"},
 	}}}
 	summary := &RunResult{}
-	if !prepareGroundedPMSDirectCommit(summary, collector) || summary.ReplyText != answer {
-		t.Fatalf("known price facts must be sent directly instead of being reduced by Generate: %#v %q", summary, summary.ReplyText)
+	if prepareGroundedPMSDirectCommit(summary, collector) || summary.ReplyText != "" {
+		t.Fatalf("partial facts must not bypass Generate: %#v %q", summary, summary.ReplyText)
+	}
+	if got := deterministicGeneratedReplyFallback(collector); !strings.Contains(got, "376.00") {
+		t.Fatalf("model-failure recovery must still preserve known facts: %q", got)
 	}
 }
 

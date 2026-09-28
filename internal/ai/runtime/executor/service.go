@@ -674,7 +674,7 @@ func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.Run
 		if (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "") && deterministicPMSRoomExplanation(task) == "" {
 			return false
 		}
-		if !pmsTask && len(task.MissingAspects) > 0 {
+		if len(task.MissingAspects) > 0 {
 			return false
 		}
 		hasPMSFact = hasPMSFact || pmsTask

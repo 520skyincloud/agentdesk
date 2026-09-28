@@ -102,7 +102,7 @@ var (
 	pmsReadStayStartFields = []string{"checkInTime", "receptOrderList[].checkInTime"}
 	pmsReadStayEndFields   = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 	pmsReadRoomFields      = []string{"homeName", "receptOrderList[].homeName"}
-	pmsReadRoomTypeFields  = []string{"productId", "roomTypeId", "roomId", "reserveProductList[].roomId", "receptOrderList[].productId", "receptOrderList[].roomTypeId", "receptOrderList[].roomId"}
+	pmsReadRoomTypeFields  = []string{"roomId", "roomTypeId", "productId", "reserveProductList[].roomId", "receptOrderList[].roomId", "receptOrderList[].roomTypeId", "receptOrderList[].productId"}
 	pmsReadCheckoutFields  = []string{"checkOutTime", "receptOrderList[].checkOutTime"}
 )
 
@@ -241,11 +241,11 @@ func appendPMSReadOrderSteps(plan *pmsReadPlan, input pmsReadPlanInput, receptOn
 	}
 	if len(stepIDs) > 0 {
 		switch plan.Scenario {
-		case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice:
+		case pmsReadScenarioRoomUpgrade, pmsReadScenarioRoomChange, pmsReadScenarioPrice, pmsReadScenarioRenewal:
 			if input.ReserveOrderID == "" && input.ReceptOrderID != "" {
 				plan.Steps = append(plan.Steps, pmsReadPlanStep{
-					ID: "order.reserve", Action: "reserve_order_detail", Purpose: "读取关联预订单的逐日价格", Required: false,
-					Args: map[string]string{}, RequiredArgs: []string{"reserveOrderId"},
+					ID: "order.reserve", Action: "reserve_order_detail", Purpose: "读取关联预订单的房型及逐日价格", Required: false,
+					Args: map[string]string{"receptOrderId": input.ReceptOrderID}, RequiredArgs: []string{"reserveOrderId"},
 					Bindings: []pmsReadPlanBinding{pmsReadBinding("reserveOrderId", []string{"order.recept"}, pmsReadReserveIDFields)},
 				})
 				stepIDs = append(stepIDs, "order.reserve")
@@ -371,6 +371,18 @@ func appendPMSReadRenewalInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput
 	}
 	if pmsReadStepCanResolveArgs(step) {
 		plan.Steps = append(plan.Steps, step)
+		availability := pmsReadPlanStep{
+			ID: "stay.room_availability", Action: "stay_room_availability",
+			Purpose: "核对续住日期内具体房号的占用冲突", Required: false,
+			Args: clonePMSReadArgs(step.Args), RequiredArgs: []string{"beginTime", "endTime", "roomTypeId"},
+			Bindings: append([]pmsReadPlanBinding(nil), step.Bindings...),
+		}
+		delete(availability.Args, "metrics")
+		availability.Bindings = append(availability.Bindings,
+			pmsReadBinding("excludeReserveOrderId", orderSteps, pmsReadReserveIDFields),
+			pmsReadBinding("excludeReceptOrderId", orderSteps, pmsReadReceptIDFields),
+		)
+		plan.Steps = append(plan.Steps, availability)
 	}
 }
 
