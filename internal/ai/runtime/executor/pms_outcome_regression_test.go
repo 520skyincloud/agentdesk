@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
@@ -20,6 +21,52 @@ func TestPMSOutcomeFailureNeverAsksForKnownDates(t *testing.T) {
 		got := deterministicPMSMissingBoundary(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}, "task-1")
 		if got == "" || strings.Contains(got, "告诉我想查询的入住和离店日期") || strings.Contains(got, "打算住到") {
 			t.Fatalf("%s produced missing-date clarification: %q", kind, got)
+		}
+	}
+}
+
+func TestCurrentExplicitOrderLocatorOverridesPreviousOrder(t *testing.T) {
+	for _, text := range []string{"查一下接待单号295976948935847936的状态", "我换了订单，接待单ID:295976948935847936"} {
+		task := callbacks.ReplyTaskPlanTraceData{
+			SubIntent: "order_detail", OriginalText: text,
+			Entities: []callbacks.IntentEntityTraceData{
+				{Type: runtimeIntentEntityOrderLocator, Text: "接待单ID:OLD-1"},
+			},
+		}
+		input := runtimePMSReadPlanInputForTask(task, runtimePMSSessionLocator{OrderLocator: "接待单ID:OLD-1"}, time.Now())
+		if input.ReceptOrderID != "295976948935847936" || input.ReserveOrderID != "" {
+			t.Fatalf("current order correction lost: %#v", input)
+		}
+	}
+}
+
+func TestInventoryReplyUsesAvailableFactsEvenWhenGenerationFails(t *testing.T) {
+	for _, available := range []string{"1", "3"} {
+		plan := buildPMSReadPlan(pmsReadPlanInput{
+			Scenario: pmsReadScenarioDateInventory, StartDate: "2026-09-29", EndDate: "2026-09-30",
+		})
+		result := pmsReadPlanResult{Status: pmsReadStepPartial, Steps: []pmsReadStepResult{
+			{StepID: "inventory.stay", Status: pmsReadStepOK,
+				Args: map[string]string{"beginTime": "2026-09-29", "endTime": "2026-09-30"},
+				Data: []any{
+					map[string]any{"roomTypeId": "room-1", "roomTypeName": "云漫", "bookings": map[string]any{
+						"2026-09-29": map[string]any{"available": available}}},
+					map[string]any{"roomTypeId": "room-2", "roomTypeName": "大床房", "bookings": map[string]any{
+						"2026-09-29": map[string]any{"available": "0"}}},
+				}},
+			{StepID: "stay.room_availability", Status: pmsReadStepUnavailable, ErrorKind: "unavailable"},
+		}}
+		task := callbacks.ReplyTaskPlanTraceData{TaskID: "task-1", SubIntent: "room_inventory",
+			ReplyRequired: true, OutputKind: "text", OriginalText: "这两天有什么房可选"}
+		applyRuntimePMSReadResultToTask(&task, plan, result, 0)
+		if task.AnswerText == nil || !strings.Contains(*task.AnswerText, "云漫") || strings.Contains(*task.AnswerText, "大床房") {
+			t.Fatalf("available inventory facts discarded: %#v", task.AnswerText)
+		}
+		collector := &callbacks.RuntimeTraceCollector{}
+		collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}
+		reply := deterministicGeneratedReplyFallback(collector)
+		if !strings.Contains(reply, "云漫") || strings.Contains(reply, "未能") {
+			t.Fatalf("generation fallback discarded inventory success: %q", reply)
 		}
 	}
 }

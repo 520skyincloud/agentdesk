@@ -499,10 +499,10 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 			continue
 		}
 		if generatedReplyGroupHasPMSFacts(group) {
-			if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
-				parts = append(parts, boundary)
-			} else if content := deterministicPMSCustomerFallback(group); content != "" {
+			if content := deterministicPMSCustomerFallback(group); content != "" {
 				parts = append(parts, content)
+			} else if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
+				parts = append(parts, boundary)
 			} else {
 				parts = append(parts, "这部分实时信息还不完整，我暂时没法给您一个准确结果，先不乱答。")
 			}

@@ -594,7 +594,10 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.TargetRoomTypeText = strings.TrimSpace(sessionLocator.TargetRoomTypeText)
 	}
 	entityLocator := runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator)
-	input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(entityLocator)
+	input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
+	if input.ReserveOrderID == "" && input.ReceptOrderID == "" && input.CustomerNo == "" {
+		input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(entityLocator)
+	}
 	if input.ReserveOrderID == "" && input.ReceptOrderID == "" && input.CustomerNo == "" {
 		input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(text)
 	}
@@ -2088,6 +2091,8 @@ func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsRea
 		return runtimePMSCustomerRoomChoiceAnswer(task, plan, result)
 	case pmsReadScenarioPrice:
 		return runtimePMSCustomerPriceAnswer(task, result)
+	case pmsReadScenarioDateInventory:
+		return runtimePMSCustomerInventoryAnswer(result)
 	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
 		return runtimePMSCustomerMemberAnswer(result)
 	case pmsReadScenarioMemberProgram:
@@ -2095,6 +2100,31 @@ func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsRea
 	default:
 		return ""
 	}
+}
+
+func runtimePMSCustomerInventoryAnswer(result pmsReadPlanResult) string {
+	options := runtimePMSCustomerRoomOptions(result)
+	if len(options) == 0 {
+		return ""
+	}
+	available := make([]string, 0, len(options))
+	incomplete := false
+	for _, option := range options {
+		if option.available == "" {
+			incomplete = true
+			continue
+		}
+		if runtimePMSPositiveAvailability(option.available) {
+			available = appendIfMissing(available, option.name)
+		}
+	}
+	if len(available) > 0 {
+		return "您这段入住日期目前可选" + strings.Join(available, "、") + "。您更倾向哪一种？目前还没有为您锁房。"
+	}
+	if incomplete {
+		return "查到了房型信息，但这段入住日期的余房数量还不完整，暂时不能确认哪些有房。"
+	}
+	return "您这段入住日期暂时没有查到可售房型。您方便调整一下入住日期吗？"
 }
 
 func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {

@@ -38,7 +38,7 @@ var runtimeIntentModelServerStatusPattern = regexp.MustCompile(`status(?: code)?
 
 var runtimePMSCustomerPhoneValuePattern = regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9][0-9](?:[- ]?[0-9]){8}`)
 
-var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(reserveOrderId|receptOrderId|预订单id|接待单id|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})`)
+var runtimePMSCustomerLocatorPattern = regexp.MustCompile(`(?i)(reserveOrderId|receptOrderId|预订单(?:id|号)|接待单(?:id|号)|会员(?:编号|号)|协议公司编号)\s*[:：#]?\s*([A-Za-z0-9][A-Za-z0-9_-]{2,})`)
 
 const (
 	runtimeIntentEntityCustomerPhone  = "customer_phone"

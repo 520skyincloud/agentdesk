@@ -70,7 +70,10 @@ func providerExtraFields(aiConfig models.AIConfig) map[string]any {
 func isDashScopeQwenThinkingModel(aiConfig models.AIConfig) bool {
 	baseURL := strings.ToLower(strings.TrimSpace(aiConfig.BaseURL))
 	modelName := strings.ToLower(strings.TrimSpace(aiConfig.ModelName))
-	return strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")
+	// The OpenAI-compatible gateway preserves Qwen's native thinking switch.
+	// Without it, this hybrid reply model can spend the entire reply budget on reasoning.
+	return (strings.Contains(baseURL, "dashscope.aliyuncs.com") && strings.HasPrefix(modelName, "qwen3")) ||
+		modelName == "qwen3.7-plus" || strings.HasPrefix(modelName, "qwen3.7-plus-")
 }
 
 func isDeepSeekV4ThinkingModel(aiConfig models.AIConfig) bool {
