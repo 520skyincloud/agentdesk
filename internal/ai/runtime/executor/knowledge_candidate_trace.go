@@ -4,8 +4,10 @@ import "agent-desk/internal/ai/runtime/internal/impl/callbacks"
 
 func buildKnowledgeEvidenceCandidateTrace(task knowledgeEvidenceJudgeTask, selectedIDs []string) []callbacks.KnowledgeEvidenceCandidateTraceData {
 	visible := make(map[string]bool, len(task.Candidates))
+	visibleUnits := make(map[string]bool, len(task.Candidates))
 	for _, candidate := range task.Candidates {
 		visible[candidate.CandidateID] = true
+		visibleUnits[candidate.Layer+"\x00"+knowledgeEvidenceJudgeCandidateDedupKey(candidate.Hit)] = true
 	}
 	selected := make(map[string]bool, len(selectedIDs))
 	for _, id := range selectedIDs {
@@ -15,6 +17,9 @@ func buildKnowledgeEvidenceCandidateTrace(task knowledgeEvidenceJudgeTask, selec
 	items := make([]callbacks.KnowledgeEvidenceCandidateTraceData, 0, len(raw))
 	for _, candidate := range raw {
 		disposition := "candidate_budget_excluded"
+		if visibleUnits[candidate.Layer+"\x00"+knowledgeEvidenceJudgeCandidateDedupKey(candidate.Hit)] {
+			disposition = "duplicate_source_unit"
+		}
 		if visible[candidate.CandidateID] {
 			disposition = "judge_not_selected"
 		}

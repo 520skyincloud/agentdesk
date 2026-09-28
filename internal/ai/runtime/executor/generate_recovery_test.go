@@ -177,7 +177,7 @@ func TestDeterministicGeneratedReplyFallbackNeverReturnsEmptyForUnknownTextTask(
 		TaskID: "task-1", OutputKind: "text", ReplyRequired: true, Text: "最终确认，对吗？",
 	}}})
 	got := deterministicGeneratedReplyFallback(collector)
-	if strings.TrimSpace(got) == "" || !strings.Contains(got, "麻烦") {
+	if strings.TrimSpace(got) == "" || strings.Contains(got, "再发") {
 		t.Fatalf("unknown text task must still have a customer-visible fallback, got %q", got)
 	}
 }
@@ -202,7 +202,7 @@ func TestDeterministicGeneratedReplyFallbackKeepsPMSClarification(t *testing.T) 
 	}
 }
 
-func TestDeterministicGeneratedReplyFallbackUsesSafePMSCustomerAnswer(t *testing.T) {
+func TestDeterministicGeneratedReplyFallbackDoesNotReviveLegacyPMSAnswer(t *testing.T) {
 	collector := callbacks.NewRuntimeTraceCollector()
 	answer := "您现在住的是儿童房V05。沐阳在您当前入住期间还有房，需要补28元。"
 	collector.SetReplyPlan(callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
@@ -213,8 +213,8 @@ func TestDeterministicGeneratedReplyFallbackUsesSafePMSCustomerAnswer(t *testing
 			{FactID: "P1F2", Aspect: "pms_price_difference", Statement: "当前查询结果：目标房型有可售库存，差价为28元。"},
 		},
 	}}})
-	if got := deterministicGeneratedReplyFallback(collector); got != answer {
-		t.Fatalf("safe PMS recovery answer was not used: %q", got)
+	if got := deterministicGeneratedReplyFallback(collector); got == answer || strings.Contains(got, "V05") || got == "" {
+		t.Fatalf("failed generation must not revive the old full-record answer: %q", got)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestDeterministicGeneratedReplyFallbackDoesNotExposeInternalGenerationFailu
 		}},
 	}}})
 	got := deterministicGeneratedReplyFallback(collector)
-	if got != "这部分实时信息还不完整，我暂时没法给您一个准确结果，先不乱答。" {
+	if got != "您想换的房间和费用，这次暂时还不能给您准确答复，抱歉。" {
 		t.Fatalf("unexpected PMS last-resort reply: %q", got)
 	}
 	for _, leaked := range []string{"没能整理", "可靠的回复", "再发一次"} {

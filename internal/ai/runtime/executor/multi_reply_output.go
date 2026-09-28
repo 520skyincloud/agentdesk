@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
@@ -85,9 +86,9 @@ func generatedReplyAIConfigForPlan(config models.AIConfig, plan callbacks.ReplyP
 }
 
 func normalizeStructuredReplyPromptText(text string) string {
-	text = strings.ReplaceAll(text, "回复像微信真人，通常 1-3 句。", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。")
-	text = strings.ReplaceAll(text, "回复像微信真人，通常1-3句。", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。")
-	text = strings.ReplaceAll(text, "自然微信口吻，1-3句", "每个 replyParts.content 只回答对应任务，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤")
+	text = strings.ReplaceAll(text, "回复像微信真人，通常 1-3 句。", "每个 replyParts.content 只回答对应任务，先给结论，再说明必要条件；复杂问题用短段答全。")
+	text = strings.ReplaceAll(text, "回复像微信真人，通常1-3句。", "每个 replyParts.content 只回答对应任务，先给结论，再说明必要条件；复杂问题用短段答全。")
+	text = strings.ReplaceAll(text, "自然微信口吻，1-3句", "每个 replyParts.content 自然回答当前任务，复杂问题用短段答全")
 	text = strings.ReplaceAll(text, "最终回复只输出给客人的话", "replyParts 的 content 只写给客人的话")
 	text = strings.ReplaceAll(text, "最终文本只输出给客人的话", "replyParts 的 content 只写给客人的话")
 	return text
@@ -116,7 +117,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 	}
 	exampleJSON, _ := json.Marshal(example)
 	b.Write(exampleJSON)
-	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、重复或增加 taskId。每个 content 只解决对应客户目标，普通问题用 1-2 句，流程问题可用 2-3 个简短步骤。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只填写本条回复实际采用的事实 ID，不要求展示所有查询结果；无关库存、内部判断和未被客户询问的字段必须省略。严格遵守事实的主体、范围和确定程度，不能把可售说成已锁房或已办理。程序会按任务顺序合并为最多三条客户消息。\n")
+	b.WriteString("。JSON 外层是内部协议；只有 content 是客户可见回复。replyParts 必须按以下任务顺序输出，每个文本任务恰好一项，不得遗漏、重复或增加 taskId。每个 content 先回答对应客户目标，再补必要条件；复杂问题可以换行，不硬凑句数。不要写 <<NEXT_MESSAGE>>，也不要把结构化变量动作写进 content。coveredFactIds 只填写本条回复实际采用的事实 ID，不要求展示所有查询结果；无关库存、内部判断和未被客户询问的字段必须省略。严格遵守事实的主体、范围和确定程度，不能把可售说成已锁房或已办理。程序会按任务顺序合并为最多三条客户消息。\n")
 	b.WriteString("自然改写必须保留原事实的主体、条件、范围和确定程度：权益不同不等于价格不同，需要或建议驾车不等于不能步行，已确认包括某些房型不等于只有这些房型。不得把未知属性写成肯定或否定结论；不要用‘因此、所以’补出证据没有确认的能力或限制。\n")
 	b.WriteString("普通互动自然接话；明确要求推荐时，应在已确认候选中给出一个具体建议并说明已知依据。客户在补充原因、纠正、选择或表达不满时，要继续当前目标，不要重新启动同一流程。标注‘仅澄清’的任务只提出一个真正缺失的关键问题。\n")
 	if hasExternalProxyAction {
@@ -144,7 +145,7 @@ func buildMultiReplyOutputInstruction(plan callbacks.ReplyPlanTraceData, require
 				b.WriteString(strings.Join(fact.Aspects, "、"))
 			}
 			if len(fact.CriticalValues) > 0 {
-				b.WriteString("；回复中必须原样包含：")
+				b.WriteString("；采用此事实时应准确保留的关键值：")
 				b.WriteString(strings.Join(fact.CriticalValues, "、"))
 			}
 			b.WriteString("\n")
@@ -244,12 +245,20 @@ func normalizeGeneratedReplyParts(text string, plan callbacks.ReplyPlanTraceData
 }
 
 func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTraceData, requireStructured bool) (string, error) {
+	return normalizeGeneratedReplyPartsWithReceipt(text, plan, requireStructured, nil)
+}
+
+func normalizeGeneratedReplyPartsWithReceipt(text string, plan callbacks.ReplyPlanTraceData, requireStructured bool, accept func(map[string]string)) (string, error) {
 	groups := buildTextReplyTaskGroups(plan)
 	if len(groups) == 0 {
 		return "", nil
 	}
 	if len(groups) == 1 && groups[0].EvidenceLocked {
-		return renderLockedReplyContent(groups[0])
+		content, err := renderLockedReplyContent(groups[0])
+		if err == nil && accept != nil {
+			accept(map[string]string{groups[0].TaskID: content})
+		}
+		return content, err
 	}
 	raw := strings.TrimSpace(text)
 	envelope, parsed := parseGeneratedReplyParts(raw)
@@ -259,6 +268,9 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 		}
 		if requiresStructuredReplyParts(groups, requireStructured) {
 			return "", fmt.Errorf("%w: structured replyParts payload required", errGeneratedReplyProtocol)
+		}
+		if len(groups) == 1 && accept != nil {
+			accept(map[string]string{groups[0].TaskID: raw})
 		}
 		return raw, nil
 	}
@@ -342,6 +354,9 @@ func normalizeGeneratedReplyPartsResult(text string, plan callbacks.ReplyPlanTra
 	if len(taskErrors) > 0 {
 		return "", &generatedReplyTaskError{err: errors.Join(taskErrors...), validParts: contentByTaskID}
 	}
+	if accept != nil {
+		accept(contentByTaskID)
+	}
 	return composeGeneratedReplyContents(parts, 3), nil
 }
 
@@ -418,6 +433,11 @@ func requiresStructuredReplyParts(groups []textReplyTaskGroup, explicitlyRequire
 	if explicitlyRequired || len(groups) > 1 {
 		return true
 	}
+	for _, group := range groups {
+		if group.StructuredRequired && len(group.Facts) > 0 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -474,8 +494,12 @@ func validateCoveredFacts(part generatedReplyPart, group textReplyTaskGroup) err
 }
 
 func containsReplyCriticalValue(content, value string) bool {
-	if containsCriticalValue(content, value) {
+	normalizedValue := normalizeReplyCriticalValueText(value)
+	if strings.Contains(normalizeReplyCriticalValueText(content), normalizedValue) {
 		return true
+	}
+	if strings.ContainsRune(normalizedValue, 0) {
+		return false
 	}
 	// Chinese display quotations may interrupt a name/title. Never normalize
 	// punctuation in credentials, numbers, or other non-Han critical values.
@@ -486,6 +510,44 @@ func containsReplyCriticalValue(content, value string) bool {
 	}
 	withoutQuotes := strings.NewReplacer("“", "", "”", "", "‘", "", "’", "").Replace(content)
 	return containsCriticalValue(withoutQuotes, value)
+}
+
+var generatedReplyCriticalAmountPattern = regexp.MustCompile(`[+-]?[0-9]+(?:\.[0-9]+)?元`)
+
+func normalizeReplyCriticalValueText(text string) string {
+	text = normalizeCriticalValueText(text)
+	var normalized strings.Builder
+	end := 0
+	for _, bounds := range knowledgeEvidenceIndividualTimePattern.FindAllStringIndex(text, -1) {
+		raw := text[bounds[0]:bounds[1]]
+		before, _ := utf8.DecodeLastRuneInString(text[:bounds[0]])
+		after, _ := utf8.DecodeRuneInString(text[bounds[1]:])
+		if unicode.IsDigit(before) || unicode.IsDigit(after) || strings.ContainsRune("零〇一二三四五六七八九十两分秒:：", after) {
+			continue
+		}
+		hour, ok := knowledgeEvidenceClockRawHour(raw)
+		period := knowledgeEvidenceClockPeriod(raw)
+		if !ok || hour < 0 || hour > 23 ||
+			(containsAny(period, []string{"早上", "上午", "凌晨"}) && hour > 12) ||
+			(containsAny(period, []string{"晚上", "夜里", "夜间"}) && hour == 12) {
+			continue
+		}
+		normalized.WriteString(text[end:bounds[0]])
+		normalized.WriteString("\x00clock:")
+		normalized.WriteString(normalizeKnowledgeEvidenceClockTimeWithPeriod(raw, ""))
+		normalized.WriteByte(0)
+		end = bounds[1]
+	}
+	normalized.WriteString(text[end:])
+	// Keep units and all surrounding dates intact; trim only insignificant
+	// decimal zeros, without floating-point conversion or date inference.
+	return generatedReplyCriticalAmountPattern.ReplaceAllStringFunc(normalized.String(), func(raw string) string {
+		amount := strings.TrimSuffix(raw, "元")
+		if strings.Contains(amount, ".") {
+			amount = strings.TrimRight(strings.TrimRight(amount, "0"), ".")
+		}
+		return "\x00amount:" + amount + "元\x00"
+	})
 }
 
 func validateGeneratedReplyFactAspectBoundaries(content string, facts []replyFactRequirement) error {

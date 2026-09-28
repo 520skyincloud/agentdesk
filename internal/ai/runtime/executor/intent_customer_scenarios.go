@@ -10,6 +10,9 @@ func applyRuntimeCustomerScenarioIntentCorrections(intent callbacks.IntentTraceD
 	changed := false
 	for index := range intent.IntentTasks {
 		task := &intent.IntentTasks[index]
+		if task.SubjectScope != "" {
+			continue
+		}
 		text := strings.TrimSpace(task.Text)
 		switch {
 		case runtimeExternalProxyActionRequest(text, *task):

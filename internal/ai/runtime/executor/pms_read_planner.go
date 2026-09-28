@@ -26,6 +26,9 @@ type pmsReadPlanInput struct {
 	Scenario           pmsReadScenario
 	SubIntent          string
 	Phone              string
+	MemberPhone        string
+	SubjectScope       string
+	RequestedAspects   []string
 	CustomerNo         string
 	ReserveOrderID     string
 	ReceptOrderID      string
@@ -114,6 +117,9 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 	if scenario == "" {
 		scenario = pmsReadScenarioForSubIntent(input.SubIntent)
 	}
+	if scenario == pmsReadScenarioOrder && input.SubjectScope != "" {
+		input.OrderHistory = input.SubjectScope == runtimeSubjectHistoricalOrder
+	}
 	plan := pmsReadPlan{Scenario: scenario}
 
 	switch scenario {
@@ -172,9 +178,6 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		plan.Steps = append(plan.Steps, pmsReadPlanStep{
 			ID: "member.program", Action: "member_program", Purpose: "查询全部启用会员等级的权益和升级保级条件", Required: true,
 		})
-		if input.Phone != "" {
-			appendPMSReadMemberStep(&plan, input, false)
-		}
 	default:
 		plan.Missing = append(plan.Missing, "supportedScenario")
 	}
@@ -211,6 +214,7 @@ func appendPMSReadOrderSearchStep(plan *pmsReadPlan, input pmsReadPlanInput) {
 func normalizePMSReadPlanInput(input pmsReadPlanInput) pmsReadPlanInput {
 	input.SubIntent = strings.ToLower(strings.TrimSpace(input.SubIntent))
 	input.Phone = strings.TrimSpace(input.Phone)
+	input.MemberPhone = strings.TrimSpace(input.MemberPhone)
 	input.CustomerNo = strings.TrimSpace(input.CustomerNo)
 	input.ReserveOrderID = strings.TrimSpace(input.ReserveOrderID)
 	input.ReceptOrderID = strings.TrimSpace(input.ReceptOrderID)
@@ -419,24 +423,26 @@ func appendPMSReadRenewalInventoryStep(plan *pmsReadPlan, input pmsReadPlanInput
 }
 
 func appendPMSReadMemberStep(plan *pmsReadPlan, input pmsReadPlanInput, required bool) {
-	if input.Phone == "" {
+	phone := firstNonEmptyReplyTaskText(input.MemberPhone, input.Phone)
+	if phone == "" {
 		plan.Missing = append(plan.Missing, "memberPhone")
 		return
 	}
 	plan.Steps = append(plan.Steps, pmsReadPlanStep{
 		ID: "member.benefits", Action: "member_benefits_by_phone", Purpose: "查询当前会员等级及明确权益", Required: required,
-		Args: map[string]string{"phone": input.Phone}, RequiredArgs: []string{"phone"},
+		Args: map[string]string{"phone": phone}, RequiredArgs: []string{"phone"},
 	})
 }
 
 func appendPMSReadMemberInfoStep(plan *pmsReadPlan, input pmsReadPlanInput) {
-	if input.Phone == "" {
+	phone := firstNonEmptyReplyTaskText(input.MemberPhone, input.Phone)
+	if phone == "" {
 		plan.Missing = append(plan.Missing, "memberPhone")
 		return
 	}
 	plan.Steps = append(plan.Steps, pmsReadPlanStep{
 		ID: "member.info", Action: "member_info_by_phone", Purpose: "查询当前会员等级和状态", Required: true,
-		Args: map[string]string{"phone": input.Phone}, RequiredArgs: []string{"phone"},
+		Args: map[string]string{"phone": phone}, RequiredArgs: []string{"phone"},
 	})
 }
 

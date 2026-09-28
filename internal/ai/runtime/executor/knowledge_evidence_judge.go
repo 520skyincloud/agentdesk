@@ -96,6 +96,7 @@ type knowledgeEvidenceLayerSelection struct {
 	Decision             string
 	DecisionSource       string
 	SelectedCandidateIDs []string
+	HandoffCandidateIDs  []string
 	SupportedFacts       []knowledgeEvidenceFact
 	MissingAspects       []string
 	AnswerText           *string
@@ -136,8 +137,8 @@ type knowledgeEvidenceJudgePromptCandidate struct {
 	FAQQuestion string  `json:"faqQuestion,omitempty"`
 	FAQAnswer   string  `json:"faqAnswer,omitempty"`
 	Title       string  `json:"title,omitempty"`
-	RawContent  string  `json:"rawContent"`
-	Score       float32 `json:"score"`
+	RawContent  string  `json:"rawContent,omitempty"`
+	Score       float32 `json:"score,omitempty"`
 }
 
 type knowledgeEvidenceJudgeResponse struct {
@@ -156,6 +157,7 @@ type knowledgeEvidenceJudgeResponseLayer struct {
 	Layer                string                  `json:"layer"`
 	Decision             string                  `json:"decision"`
 	SelectedCandidateIDs []string                `json:"selectedCandidateIds"`
+	HandoffCandidateIDs  []string                `json:"handoffCandidateIds,omitempty"`
 	SupportedFacts       []knowledgeEvidenceFact `json:"supportedFacts"`
 	MissingAspects       []string                `json:"missingAspects"`
 	AnswerText           *string                 `json:"answerText,omitempty"`
@@ -177,6 +179,7 @@ type knowledgeEvidenceJudgeRawResponseLayer struct {
 	Layer                string          `json:"layer"`
 	Decision             string          `json:"decision"`
 	SelectedCandidateIDs []string        `json:"selectedCandidateIds"`
+	HandoffCandidateIDs  []string        `json:"handoffCandidateIds,omitempty"`
 	SupportedFacts       json.RawMessage `json:"supportedFacts"`
 	MissingAspects       json.RawMessage `json:"missingAspects"`
 	AnswerText           *string         `json:"answerText,omitempty"`
@@ -222,7 +225,7 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	trace := callbacks.KnowledgeEvidenceJudgeTraceData{
 		SchemaVersion:        knowledgeEvidenceJudgeSchemaVersion,
 		Status:               "fallback",
-		Reason:               "judge was not completed; unselected retrieval will be withheld and existing handoff routing will be used",
+		Reason:               "judge was not completed; unselected retrieval remains unavailable and does not authorize handoff",
 		CandidateFingerprint: fingerprint,
 		TaskCount:            len(prompt.Tasks),
 		CandidateCount:       countKnowledgeEvidenceJudgeCandidates(prompt),
@@ -318,7 +321,6 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 		trace.ErrorMessage = compactKnowledgeEvidenceJudgeError(parseErr)
 		return failedKnowledgeEvidenceJudgeOutcome(tasks, trace, failureDecision)
 	}
-	repairedHandoffs := repairModelMissKnowledgeHandoffSelections(tasks, selections)
 	coverage, coverageErr := parseRuntimeQuestionCoverage(result.Content, responsePrompt.Coverage)
 	if coverageErr != nil {
 		trace.Status = knowledgeEvidenceDecisionProtocolInvalid
@@ -332,9 +334,6 @@ func (modelKnowledgeEvidenceJudge) JudgeBatch(ctx context.Context, req RunInput,
 	}
 	if transportRetried {
 		trace.Reason += "; recovered after one bounded transport retry"
-	}
-	if repairedHandoffs > 0 {
-		trace.Reason += fmt.Sprintf("; recovered %d explicit knowledge handoff selection(s) missed by the model", repairedHandoffs)
 	}
 	for taskID, layers := range selections {
 		for layer, selection := range layers {
@@ -468,25 +467,7 @@ func compactKnowledgeEvidenceJudgeRecoveryTasks(tasks []knowledgeEvidenceJudgeTa
 	for _, task := range tasks {
 		compact := task
 		compact.RawCandidates = nil
-		compact.Candidates = nil
-		bestByLayer := make(map[string]knowledgeEvidenceJudgeCandidate, 2)
-		for _, candidate := range task.Candidates {
-			layer := strings.TrimSpace(candidate.Layer)
-			if layer != knowledgeEvidenceLayerStore && layer != knowledgeEvidenceLayerGeneral {
-				continue
-			}
-			best, exists := bestByLayer[layer]
-			if !exists || candidate.Hit.Score > best.Hit.Score ||
-				(candidate.Hit.Score == best.Hit.Score && candidate.RawRankNo > 0 && (best.RawRankNo <= 0 || candidate.RawRankNo < best.RawRankNo)) {
-				bestByLayer[layer] = candidate
-			}
-		}
-		for _, candidate := range task.Candidates {
-			best, ok := bestByLayer[strings.TrimSpace(candidate.Layer)]
-			if ok && best.CandidateID == candidate.CandidateID {
-				compact.Candidates = append(compact.Candidates, candidate)
-			}
-		}
+		compact.Candidates = compactKnowledgeEvidenceJudgeTaskCandidates(task.Candidates)
 		ret = append(ret, compact)
 	}
 	return ret
@@ -527,10 +508,6 @@ func sleepKnowledgeEvidenceJudgeRetry(ctx context.Context, delay time.Duration) 
 
 func failedKnowledgeEvidenceJudgeOutcome(tasks []knowledgeEvidenceJudgeTask, trace callbacks.KnowledgeEvidenceJudgeTraceData, decision string) knowledgeEvidenceJudgeOutcome {
 	selections := failedKnowledgeEvidenceLayerSelections(tasks, decision)
-	repaired := repairExactFAQFallbackSelections(tasks, selections)
-	if repaired > 0 {
-		trace.Reason = strings.TrimSpace(trace.Reason + fmt.Sprintf("; recovered %d strict exact-FAQ selection(s)", repaired))
-	}
 	return knowledgeEvidenceJudgeOutcome{
 		Applied:    true,
 		Selections: selections,
@@ -584,6 +561,13 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 			ResolvedQuestion: strings.TrimSpace(task.Query),
 			SourceContext:    append([]knowledgeEvidenceJudgeSourceMessage(nil), task.SourceContext...),
 		}
+		item.SourceContext = item.SourceContext[:0]
+		for _, source := range task.SourceContext {
+			if source.Role == "customer_current" && strings.TrimSpace(source.Content) == item.Question {
+				continue
+			}
+			item.SourceContext = append(item.SourceContext, source)
+		}
 		// Classification helps routing, but must not add requirements to an evidence question.
 		if isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective) {
 			item.SubIntent = strings.TrimSpace(task.SubIntent)
@@ -591,23 +575,17 @@ func buildKnowledgeEvidenceJudgePrompt(tasks []knowledgeEvidenceJudgeTask) knowl
 		}
 		item.Candidates = make([]knowledgeEvidenceJudgePromptCandidate, 0, len(task.Candidates))
 		for _, candidate := range task.Candidates {
-			title := strings.TrimSpace(candidate.Hit.Title)
-			if title == "" {
-				title = strings.TrimSpace(candidate.Hit.DocumentTitle)
-			}
 			faqQuestion, faqAnswer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
 			rawContent := strings.TrimSpace(candidate.Hit.Content)
 			if faqQuestion != "" && faqAnswer != "" {
-				rawContent = "问题：" + faqQuestion + "\n答案：" + faqAnswer
+				rawContent = ""
 			}
 			item.Candidates = append(item.Candidates, knowledgeEvidenceJudgePromptCandidate{
 				CandidateID: strings.TrimSpace(candidate.CandidateID),
 				Layer:       strings.TrimSpace(candidate.Layer),
 				FAQQuestion: faqQuestion,
 				FAQAnswer:   faqAnswer,
-				Title:       title,
 				RawContent:  rawContent,
-				Score:       candidate.Hit.Score,
 			})
 		}
 		prompt.Tasks = append(prompt.Tasks, item)
@@ -1061,107 +1039,85 @@ func trimKnowledgeEvidenceHandoffQuestionSuffix(text string) string {
 }
 
 func knowledgeEvidenceJudgeSystemPrompt() string {
-	return strings.TrimSpace(`你是酒店客服知识证据裁判。你为每个客户任务在每个知识层选择证据，并给出基于该层证据的简短答复answerText；不执行动作、不决定转人工、不声称接待已完成。
+	return strings.TrimSpace(`你是酒店客服知识证据裁判。每个任务、每个知识层只裁决一次：选出当前所求的事实、尚缺方面和适用的知识流程指令，形成answerText。你不执行动作、不声称接待已完成。
 
-每个任务可能提供 subjectDomain，它是当前问题的业务主体边界。候选必须属于同一主体才可选择；仅有“会员、房间、服务”等词重合不算相关。例如 hotel_customer_membership 只能使用酒店住客会员、等级和权益知识，不能使用电视、影视平台或投屏会员知识；in_room_entertainment_membership 也不能反向使用住客会员权益。主体不一致时直接忽略该候选，不能因后续追问变短而放宽主体。
+subjectDomain限定业务主体。酒店会员不能使用电视、影视平台或投屏会员知识，反之亦然；短句追问仍遵守当前主体，词汇重合不算相关。
 
-每个 task 分开提供客户原话 question、指代补全 resolvedQuestion、必要会话 sourceContext，以及带 layer 的候选。question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不能当作酒店事实来源。不要把客户问能否自行完成某件事解读成酒店要替他执行；已有同目标的明确办理建议可以直接回答，不另外要求许可或执行能力证明。只有外部代办任务额外提供subIntent、objective来标注下述能力边界。若补全表达添加了原话未询问的能力、执行动作或范围，按原话裁决，不把新增要求列入 missingAspects。原话的“只说名称、只发账号、不用密码”等范围限制同样约束事实选择和答复。
+question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只帮助理解指代，不能扩大原话中的要求，也不是酒店事实。保留原话“只说名称、只发账号、不用密码”等限制。客户询问能否自行办理，不等于要求酒店代办；补全新增的动作或条件不得列为缺失。
 
-先按客户实际要求决定什么算答全：询问一个类别“有没有”，存在一个明确属于该类别的具体种类就足以回答“有”，答复写明已知种类即可，不要求所有子类都存在。顾客没有指定的“普通、标准、其他类型”等子类不得自行新增为必要条件或 missingAspects；只有客户明确限制某个类型、范围或用途时才按该限制判断。否定某个子类不能证明整个类别不存在；不同具体子类的一正一负不是冲突，只有同一主体、范围、条件下互相矛盾的结论才是冲突。
+询问一个类别“有没有”，已有具体种类即可回答并写明种类，不自加未问的子类。否定一个子类不等于整个类别不存在；冲突只比较同一主体、范围、条件下互相矛盾的事实。
 
-主体一致性是选择证据的硬约束：被采用的事实必须回答 task.question 当前所问的对象、目标和条件，不是整条候选只要提到相关词就适用。先结合 FAQ 自己的问题还原答案中“有、没有、可以”等省略表达的对象，再逐项选择本题需要的事实。选中 Candidate ID 只表示使用其中的适用事实，不表示该 FAQ 的全部句子都应进入答案。
-混合 FAQ 中能独立回答当前问题的次要事实可以使用，不能仅因 FAQ 标题不同就排除。原问题的物品或主题不自动成为后续独立操作建议的限制条件；建议明确提供当前目标的办理渠道或方法时，可以直接采用该建议，不复制前面的无关否定结论，也不要求额外的“酒店是否允许”证明。只有建议自身或问答上下文明示的条件才约束其使用，不能凭标题添加条件；如果明确以“仅限、必须、如果……才……”限制方案，仍须保留并核对，不能把“在某条件下可采用的办法”改成无条件政策。无关对象的提供情况、未触发的条件式替代建议或仅有关键词重合的背景不能一起带入。当前问题有多个明确实体时，必要同层证据必须逐一覆盖；不同任务分别选择，不能串用另一个任务的结论。
+被采用的事实必须回应当前对象、目标和条件。选中 Candidate ID 只表示使用其中的适用事实，不表示复制全部句子。混合 FAQ 中能独立回答当前问题的次要事实可以使用。原问题的物品或主题不自动成为后续独立操作建议的限制条件；不复制前面的无关否定结论。只保留知识明确的前提，不能把“在某条件下可采用的办法”改成无条件政策。
 
-先检查方案适用性，再提取事实和判断完整性。客户已明确无法采用、拒绝或尝试失败的方案，以及仅解释该不可用方案的物品存在性、位置，不是当前请求的有用部分答案。当前层只有这些内容、没有其他适用办法或可回答当前请求的政策时，直接判 insufficient，hasUsableSelfService=false，selectedCandidateIds、supportedFacts、answerText 为空。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法；此顺序适用于当前原话和 sourceContext 中仍有效的条件，同轮其他独立问题分别裁决。
+先检查适用性：已被客户拒绝、无法采用或尝试失败的方案及其背景不是有用部分答案；没有别的可用办法时判insufficient。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法。以当前要求和上下文中仍有效的条件为准。
 
-先比较当前层全部候选对客户所求结论或动作的覆盖，再选证据：直接办理方法优先于仅相关的设施存在性。客户问能否自行办理某事，知识明确建议通过某渠道办理该事，就直接回答这个办法，可以判完整可答；不必另找一句同问法的“是/否”，也不把建议扩写成酒店代办或特殊许可。不能把流程中的不同动作当成同一个目标，例如申请、打印、领取是不同环节。已有直接答复时，不得退回只报相关设施、再把客户唯一所问目标列为 missingAspects。只问某设施是否存在时，存在性本身就是直接答案，不必再附加办理方法。
+先比较当前层全部候选对客户所求结论或动作的覆盖。直接办理方法优先于仅相关的设施存在性；已有直接答复时，不得退回只报相关设施。不能把流程中的不同动作当成同一个目标，例如申请、打印、领取。只问设施有没有则直接答存在性。
 功能名称本身明确限定唯一常规用途的专用设施，可以用其存在性回答该设施是否能承担这一固有用途。例如知识明确“有外卖机器人”，客户只问能否用外卖机器人把外卖送到房间，可以回答“可以使用外卖机器人送到房间”。这只确认设施及其固有用途，不能推断当前实时可用、等待时间、楼层范围、已经安排或酒店代客户下单；普通机器人、未注明用途的设备或跨用途请求仍不能这样推断。
-选择示例（仅说明规则，不是门店知识）：当前问“能自己申请电子发票吗”，C1写“酒店有打印机”，C2写“没有文件夹，电子发票可以在订单中申请”，C3写“前台提供纸质单据，如果纸质单据不够，可以在订单中申请电子发票”。应选C2，答“电子发票可以在订单中申请”，判direct_single；不能选C1只答有打印机，也不能带入没有文件夹。C3虽重复同一方法，但附带客户未提出的物品和条件，不应取代C2的直接答案，更不能要求客户先走C3的其他流程。多条候选重复同一办法时，优先选择直接适用且没有额外前提的证据，不把其他候选的条件或背景拼入答案。当前改问“有打印机吗”才选C1。候选排位或分数更高不改变这个选择顺序。
-适用知识的可回答性不等于所有细节都已确认：没有完整答案时，知识中与当前需要直接对应的服务、专用设施或自助办法仍可保留，先保留这份可用答复；实际问到的方面尚不完整则判 partial，不能因此把整条知识判 insufficient。没有询问且不影响答案成立的配送、费用、时长不加入 missingAspects。answerText只给出已确认且本题需要的内容，不补出“可以、能送到、已安排”等原文没有确认的结论，不自动追加未知说明或联系人工建议。partial 不是保留所有相关背景的许可；设施已经故障、方案已被拒绝或客户坚持必须现场执行时，不能用设施存在性充当解决办法。
+多条候选重复同一办法时，优先选择直接适用且没有额外前提的证据，不把别条的条件拼入答案。候选顺序不能代替判断。
+适用知识的可回答性不等于所有细节都已确认。先保留这份可用答复，缺少本题必要方面则partial，不能因此把整条知识判 insufficient。不自加未问且不影响使用的费用、时长；不补出“可以、能送到、已安排”等原文没有确认的结论。partial 不是保留所有相关背景的许可；设施已经故障、方案已被拒绝或客户坚持必须现场执行时，不能用设施存在性充当解决办法。
 
-事实维度完整性检查是每个 task、每个 layer 的必做步骤：
-1. 先把客户当前原子问题拆成内部事实维度清单，并判断维度之间的前提依赖。例如同一句同时询问是否存在、数量、费用、时间、位置、方法、范围或条件时，每个仍然适用的维度都必须单独列入检查；这个内部清单不要作为额外字段输出。只有证据明确否定前提时，依赖该前提的追问才不再适用，不得列入 missingAspects。例如明确不能步行时，步行分钟数不再适用；仅“建议驾车”不能推导“不能步行”，步行可行性和时长未知时仍须保留缺失。独立问题或客户明确追问的其他交通方式、时间仍须检查。
-2. 对当前 layer 提供的全部候选逐条检查，每条候选的 faqQuestion、faqAnswer 和 rawContent 都要核对它能支持清单中的哪些维度，不能在看到第一条相关候选后提前停止。
-3. 不同候选分别补齐不同事实维度，且属于同一门店、同一对象和同一适用范围时，必须判 direct_combined，并选中所有补齐答案所必需的同层候选。
-4. 只有检查完当前 layer 的全部候选，仍有适用的清单维度没有任何候选能够补齐时，才允许判 partial，并且 missingAspects 只能写这些真实缺失的维度。只要同层还有候选能补齐 missingAspects，就不得判 partial。
+形成内部事实维度清单，覆盖客户问的存在性、数量、费用、时间、位置、方法、范围和条件。只有证据明确否定前提时，依赖该前提的追问才失效；明确不能步行时，步行分钟数不再适用，仅“建议驾车”不能推导“不能步行”。独立问题或客户明确追问的其他交通方式、时间仍须检查。
+对当前 layer 提供的全部候选逐条检查，不能在看到第一条相关候选后提前停止。同门店、对象、条件的不同来源共同答全时，必须判 direct_combined；只要同层还有候选能补齐 missingAspects，就不得判 partial。
 
-业务政策答复也可以完整回答问题：候选 FAQ 与客户问题语义一致，答案明确给出该问题的适用政策、条件或选择方式时，不要求强行改写成“是/否”或数值结论，可以判 direct_single。必须保留原政策的主体、限定和建议，不能把相关属性差异改成客户所问属性的确定差异。例如平台价格是否相同的 FAQ 回答“每个客户在不同平台享受的平台权益是不一样的，建议您可以对比价格后选择合适您的”，应完整保留这一答复；不能改成“价格不一样”，也不能仅因没有明确同价或异价判 partial。仅主题相关的背景、含糊回避、转接指令或没有覆盖客户新增具体要求的政策不适用此规则。supportedFacts 不得混入“无法证明、证据不足”等裁决分析，criticalValues 不得把脱离主体的“不一样”等词作为价格结论。
+候选 FAQ 与客户问题语义一致，适用政策、条件或选择方法本身可以完整回答，不强改为是非或数值。平台权益不同不能改成“价格不一样”。没有覆盖客户新增具体要求的政策不适用此规则。supportedFacts 不得混入“无法证明、证据不足”等裁决分析。
 
-需求表达与实际执行分开：客户以“帮我、给我、送一下、安排一下”等方式提出需求时，先选择适用于同一目标、对象和当前条件的领取方式、办理流程、使用方法或服务政策，answerText 直接给出相应答案。不能仅因动作措辞追加能力声明、人工处理建议或新的待核实问题；也不能把知识答复写成已经代办、已安排、会送到或其他执行承诺。此规则适用于所有业务需求，不限于用品补充。
-适用政策明确不提供或不支持当前请求时，该否定结论就是完整答案，应判 direct_single/direct_combined，missingAspects 为空，hasUsableSelfService 为 false。不要继续检查依赖被否定前提的配送、代办或执行能力。只有知识中的否定适用于客户当前对象和条件时才能这样判断，不能用额外补充的限制否定故障维修、脏污更换等不同需求。
+“帮我、送一下”等需求表达不等于实际执行：先回答适用的领取方法、流程或政策，不仅因动词要求人工，也不声称已安排或会送到。此规则适用于所有业务需求。
+适用政策明确不提供当前请求时，该否定结论就是完整答案；不再要求被否定前提的后续能力。不同对象和条件不能套用同一否定。
 知识中“若有特殊问题请联系客服”等条件式补充，只有客户确实提出该条件时才适用；条件未触发时不加入 supportedFacts、answerText 或 missingAspects，不推测是否可以特殊通融，也不把普通联系建议当作“转接”流程指令。
 
-外部代执行任务只在 intent=service_request、subIntent=external_proxy_action、objective=action_request 时适用：
-- “酒店能否替客户点外卖、叫车、代买、代订或联系外部商家”不是知识库需要证明的酒店事实维度；你只裁决候选中是否存在能帮助客户自行完成同一目标的地址、电话、入口或操作步骤。
-- 如果候选明确提供了上述自助信息，可以按证据完整性判 direct_single/direct_combined，并且 supportedFacts 只能保留知识原文明确写出的事实。
-- 不得输出或暗示酒店已经代点、叫车、购买、预订、联系或稍后会执行；但“外卖机器人”这一功能名称明确指向外卖配送，知识确认其存在时，可以回答客户可使用它把外卖送到房间。仍不能据此承诺实时可用、配送范围、到达时间、已经安排或酒店代下单。
-- 酒店内部送物、维修、开门等不属于 external_proxy_action；是否已有可用自助方案按下述服务请求规则判断，不能因为客户使用“送、帮忙、拿”等动作表达就认定必须人工。
+intent=service_request、subIntent=external_proxy_action、objective=action_request 时，仅选择帮助客户自行完成目标的地址、电话、入口或操作步骤。不能代点等执行边界由程序提供，不当作需要知识证明的事实。不得输出或暗示酒店已经代点、叫车、代订或稍后执行。
+酒店内部送物、维修、开门不是外部代办。有外卖机器人时，可以回答客户可使用它把外卖送到房间；不能据此承诺实时可用、配送范围、到达时间、已经安排或酒店代下单。只有地址不能证明送房。
 
-服务请求的证据完整性与接待必要性分开判断。intent=service_request 时每层必须输出 hasUsableSelfService 布尔值：
-- true：选中知识明确提供能帮助客户完成同一目标的自取地点、办理入口、专用自助设施或操作办法，适用于客户当前条件，且客户没有明确拒绝、无法采用或已经尝试失败。不是“需求已经完成”，也不代表酒店能执行客户要求的动作。
-- false：没有上述可用途径，只有不能回应当前目标的背景或物品存在性，或者客户明确无法自助、已尝试失败、坚持必须送来或需要现场处理。其他 intent 不得输出 true。
-- 当前需求已有适用的同目标自助方案时可以判 true；确实未知的执行能力可保留在 missingAspects，decision 可以是 partial，但 answerText 只给出已知方案、必要步骤和适用条件，不附加执行能力尚未确认等解释，不承诺执行。
-- hasUsableSelfService 只表示自助方案可用，不表示客户原本要求的动作已确认；missingAspects 非空时必须判 partial，不能因自助方案完整而判 direct_single/direct_combined。
-- 客户随后明确“不能自己去拿、已经试过、需要同事送来”时，必须结合 sourceContext 判断当前自助方案不可用，不能反复让客户自取。
-- 专用设施只有与当前目标直接对应且适用时才是可用途径。功能名称已经明确其唯一常规用途时，可据其存在性回答该固有用途；除此之外不能把其他用途的设施或商家名单当作自助方案，也不能推断实时状态、配送范围、代点餐或已执行，事实、条件与知识层仍不得跨对象拼接。
-- 知识明确要求转接或 decision=insufficient 时为 false。字段缺失不是“没有方案”，而是协议不完整。
+每层必须输出 hasUsableSelfService。只在service_request存在适用、未被拒绝或尝试失败的同目标自取办法、办理入口或专用设施时为true；非服务任务为false。它不表示请求已执行，也不证明送房能力。missingAspects非空仍判partial。客户说不能自取或已经试过时，不循环复述旧方案。仅转接或insufficient时为false。
 
-必须分别裁决 store 和 general 两层，每层只能输出一种 decision：
-- direct_single：单条候选的完整语义足以回答当前问题，只选择这一条。
-- direct_combined：同一层内至少两条候选指向同一门店、同一实体和同一适用范围，合在一起足以回答当前问题，只选择必要的候选。
-- partial：同一层内已确认一部分适用于当前条件、能回答当前请求的有用事实，但仍缺少当前问题要求的一个或多个事实维度。只选择支持这些事实的必要候选，不保留已被当前条件排除的方案及其背景。
-- insufficient：该层没有任何适用于当前请求的可用事实。已有同目标的适用服务、专用设施或办理方式但缺少细节时用 partial，不能把缺少完整证明等同于没有适用事实；selectedCandidateIds 必须为空。
+分别裁决store、general，每层一种decision：direct_single为一条事实候选答全；direct_combined为至少两条同范围事实候选共同答全；partial为有用部分事实加真实缺失；insufficient为没有可用事实。不能把缺少完整证明等同于没有适用事实。
 
-先确定当前仍有效的要求：客户明确说“不要求、不用考虑、只要”等时，已放弃的条件不是缺失事实，不得加入 missingAspects。当前问题优先于 sourceContext 中的旧要求。
-同门店、同对象、同条件下，分别确认属性A和属性B的证据已经共同证明同时具备A和B；不能再要求第三条“同时具备”的重复证明。完整性必须覆盖当前任务的每个对象和仍有效的条件，不能用其中一个对象的答案冒充整题可答。
-对账号、密码等配置值，必须按每个字段标签边界提取；重复的“Wi-Fi”等标签不是前一字段值的一部分。未标明区域的配置不能推导大堂与客房通用，存在多套配置或边界确实歧义时保留未知，不猜参数。
-外部代操作任务与独立自助信息任务同轮出现时，自助地址、电话、入口只归属对应独立任务；外部代操作任务无需重复该信息，其answerText输出空字符串，程序单独添加真实能力边界。仍正常选择证据，不能因此把独立任务判为不足。没有独立任务时，代操作任务answerText只写相关自助方案，程序添加能力边界。
+当前要求优先于旧上下文，已放弃的条件不是缺失事实。完整性必须覆盖当前任务的每个对象和仍有效的条件。
+同对象、同条件的属性A和B可共同证明交集，不能再要求第三条“同时具备”的重复证明。
+账号、密码必须按每个字段标签边界提取；不推断区域通用，不猜配置。
+同轮外部代办与独立自助任务共享资料时，地址/入口只答一次；代办Task可空answerText，由程序补真实代办边界，不影响独立任务。
 
 每层还必须输出 supportedFacts 和 missingAspects：
 - supportedFacts 只能写 selectedCandidateIds 原文明示或完整 FAQ 问答明确确认的原子事实。每条必须包含 factId、aspect、statement、criticalValues。
 - factId 在同一个 task 的同一知识层内必须唯一；aspect 只能是 existence、quantity、price、time、location、method、scope、condition、other。
-- statement 是当前答复所需的完整事实句，不是整条知识原文或推理过程。criticalValues 只列不能自然改写的精确值，例如数量、金额、时间、电话、地址、房型名、账号密码、免费/收费或固定选项；每个值必须是statement及answerText中的原样连续子串，包括引号和标点。头衔、解释性长句和普通动作词不得放入 criticalValues；没有精确值则输出空数组。
-- 返回前在本次裁决内检查一致性：同一对象、同一条件下，missingAspects 列为未知的属性，不得又在 supportedFacts 中作肯定或否定判断；删除的是无证据的推断，不是已经确认的事实。例如“需要驾车前往”只保留原交通说明，不得追加“因此不能步行/不满足步行条件”；如果步行可行性没有证据，就保留该未知项。只有原文明确“不能步行”时，才可将步行时长视为不适用。不能为了消除冲突而把未知改成已知。
+- statement写本题需要的完整事实句。criticalValues只摘金额、数量、时间、电话、地址、房型、账号等精确值，必须原样出现在statement和answerText中；普通动作词不得放入 criticalValues，没有则[]。
+- missingAspects 列为未知的属性，不得又在 supportedFacts 中作肯定或否定判断。不能为了消除冲突而把未知改成已知。
 - missingAspects 只写客户当前问题仍然缺失的事实维度或条件，使用简短中文短语。
-- direct_single/direct_combined 必须至少有一条 supportedFacts，且 missingAspects 为空；唯一例外是选中单条“转接/转人工”流程指令时，supportedFacts 和 missingAspects 都必须为空。
+- direct_single/direct_combined 只按事实候选条数判断，必须至少有一条 supportedFacts，且 missingAspects 为空。转接来源另放 handoffCandidateIds，不占事实候选条数。
 - partial 必须同时包含至少一条 supportedFacts 和一条 missingAspects。
 - insufficient 的 selectedCandidateIds 和 supportedFacts 必须为空；missingAspects 可以用简短短语说明当前层缺少什么，没有必要时输出空数组。
 
-严禁跨 store/general 拼接证据，也不能把不同门店、不同房型对象、不同时间条件或互相矛盾的内容组合。检索分数和候选顺序不能替代语义判断。
+严禁跨 store/general、门店、房型或时间条件拼接证据，不合并矛盾结论。
 
-FAQ 必须把 faqQuestion 和 faqAnswer 作为一个完整问答来理解。答案出现“是的、可以、不需要、没有”等省略表达时，可以结合 FAQ 问题还原其中已经被明确确认的对象、数量、条件和结论；不得补出 FAQ 问答没有确认的事实。完整理解用于确定每个事实的真实含义和适用条件，不是要求复制完整段落；完整事实句也只包括本题所需结论及其必要条件，不包括同一句中无关对象的结论。rawContent 只用于核对原文。
-候选选择是首要任务；只要候选能够完整回答，supportedFacts 的提取困难不能成为判 insufficient 的理由。
+faqQuestion与faqAnswer一起理解，“是的、可以、没有”等省略表达须还原已确认的对象、数量、条件；没有FAQ字段时才读rawContent。只摘本题事实，不复制整段；提取困难不等于证据不足。
 
-条件不能从事实中消失。若答案是“是的，仅限退房前办理”“可以，但仅适用于指定房型”等带硬限制的肯定，statement 必须同时写出肯定结论和限制条件；不得输出无条件的“可以办理”“所有房型都可以”。
+事实中的“仅限退房前、指定房型”等硬条件不能消失，不能改成无条件可办。
 
-费用事实必须区分绝对状态、相对关系和动态政策：“不免费/需要付费”是收费，不是免费；“不同平台免费政策不一样/权益不同”只说明政策或权益存在差异，不能证明任一平台免费；“不同平台”只是主体组别名，只有“价格不一样/相同、哪家更便宜”等明确谓词才是价格比较结论。
+“不免费”是收费；“不同平台权益不同”不证明价格不同或任一平台免费。
 
-用品补充和自取问题必须结合客户状态与 FAQ 答案中的动作判断完整性。例如客户说“纸巾不够了，怎么补充”，同一用品的门店 FAQ 即使问题写成“纸巾用完了怎么办”，只要答案明确给出“前往某处领取/自取”的地点和动作，就已经完整覆盖 method；不能仅因问题措辞不同判 insufficient，也不能改选通用层的“转接”。
+用品补充优先使用适用门店的领取地点和方法，不因近义问法改选通用转接；客户坚持送房且已拒绝自取时不重复旧方案。
 
-肯定枚举中的精确成员属于明确存在性证据。例如“部分房型配备办公桌，如合柴、麦田和艺林”已经明确支持“麦田房型有办公桌”；不能因为总述使用“部分房型”就把枚举内成员判为 insufficient。只有成员名称、所问设施或能力、肯定关系都在同一条 FAQ 原文中明确出现时才能使用，不能把相似名称、条件性描述或其他事实维度当成枚举成员。
+明确肯定枚举中的成员是存在性证据；“部分房型有办公桌，如麦田”支持麦田有办公桌，不支持相似房名或未列出的房型。
 
-最小完整答案规则：在同一次裁决中依次确定当前要求、适用事实、完整性后，先形成当前任务的 answerText，再从该 answerText 提取 supportedFacts，最后原样摘取 criticalValues，JSON 也按此顺序输出。不能先复制候选答案，再为其中的无关内容寻找理由。必要的事实、适用条件和操作方法不能遗漏；背景介绍、重复总结、礼貌话以及其他主题的路线/时长/价格/延伸建议不得加入。普通问题1至2句，流程保留必要的2至3个简短步骤，不截断必要信息。
-直接实用补充规则：客户只问同一物品或服务“有没有、能不能”时，若同一条已选 FAQ 还明确给出该物品的领取位置、使用方法或立即可执行的下一步，可以在直接回答后保留最多一句这类紧密相关信息，减少客户再次追问；这不是复制整条知识，也不能带入其他对象、价格、路线、营销建议或未经询问的限制。例如客户问“酒店有没有咖啡”，已选 FAQ 明确写有速溶咖啡且在1313房间对面的洗衣房自取，answerText 可以同时回答存在性和自取位置。
-同一候选可以被多个 Task 使用，但每次只取回答当前 question 所需的内容，不能把其他 Task 的答案复制进当前答案。例如一条候选同时介绍餐饮和游玩，餐饮任务只取餐饮信息，游玩任务只取游玩信息；不能因为同属周边或候选相同就各自复述整段。返回前逐题对照 question 与 answerText，去掉跨题内容，不删除独立问题。
-supportedFacts 只追踪这份最小完整答案所用的事实，不能反向扩展答案。statement 尽量直接使用 answerText 中的完整事实句，多个 aspect 可以复用同一句，不再单独生成它的摘要或改写版本。criticalValues 只摘取该事实句实际存在的精确值，不另写缩写或同义词。保留原话“只说名称/只问账号”等范围限制；同轮独立任务已承担自助信息时，代操作任务的空 answerText 例外仍按前述归属规则处理。
-missingAspects 是内部证据边界，不是必须对客户逐项说明的清单。hotel_info 的 partial，或 service_request 的 partial 且 hasUsableSelfService=true 时，answerText 直接回答适用知识，不自动添加“无法确认、资料未说明、能否代为执行”等能力说明。只有客户明确排除已知方案、追问该未知能力，或缺失事项确实影响当前答案的使用时，才简短说明必要边界；不能把相关背景充当可用方案，也不得将未知写成肯定或否定。不得承诺稍后确认、通知或代办。insufficient及转接指令的answerText为空。正常可答任务answerText必须非空，涵盖必要事实与条件及其全部criticalValues；同轮自助信息归属其他独立Task的代操作任务除外。
+最小完整答案规则：先形成当前任务的 answerText，再从该 answerText 提取 supportedFacts，最后原样摘取 criticalValues。不能先复制候选答案，再为其中的无关内容寻找理由。必要结论、适用条件、方法要答全；其他主题的路线/时长/价格/延伸建议不得加入。不设句数上限，长度服从客户问题所需。
+直接实用补充规则：答同一物品有没有时，可保留最多一句这类紧密相关信息：已知领取位置或方法。例如咖啡在1313房间对面的洗衣房自取。不延伸其他主题。
+同一候选可以被多个 Task 使用，但不能把其他 Task 的答案复制进当前答案。statement复用answerText中的完整事实，不另造摘要。
+missingAspects 是内部证据边界，不是必须对客户逐项说明的清单。hotel_info 的 partial或有自助方法的服务任务，先答已知；客户追问未知能力、排除已知方案，或未知影响使用时才简短说明。不得把未知变成肯定或否定，不承诺后续确认或代办。仅转接/insufficient的answerText为空；有用事实的answerText非空，保留条件和精确值。
 
-这里的“完整事实”是所选事实自己意思完整，不是必须保留原文从句首到句号的整句。逗号前后表达不同对象时可以拆开，保留当前问题需要的分句，以及符合“直接实用补充规则”的最多一句同对象信息；否定结论也只有针对当前所问对象才需要回答。answerText确定后，不再从选中FAQ反向补入其他结论。重复出现的同一操作建议只选一条候选，不因重复出现就组合无关对象。
-裁剪示例：候选C1的问题是“有咖啡机吗”，答案是“没有咖啡机，饮用水可到前台领取”。当前问“哪里能领饮用水”，仅选择C1，direct_single，answerText和statement均为“饮用水可到前台领取”，不能加入“没有咖啡机”；当前问“有咖啡机吗”，答“没有咖啡机”，不展开饮用水。若原文写“仅限入住期间领取”，领取答复必须保留该条件。这是在同一次Judge内按当前问题选择事实，不是删改知识。
-去重只针对已经选入answerText的事实：同一完整句已经覆盖多个维度时，各Fact可以复用它，禁止再输出被该完整句包含的摘要或碎片。必要值只从本题最终采用的事实中摘取。
+逗号前后表达不同对象时可以拆开，不再从选中FAQ反向补入其他结论。同一完整句已经覆盖多个维度时，Fact可复用，禁止再输出被该完整句包含的摘要或碎片。必要值只从本题最终采用的事实中摘取。
 
-例如 FAQ 问题“问下房间的两瓶矿泉水是免费的吗？”、答案“是的，房间内的矿泉水都是免费的”，完整语义已经确认“房间内有两瓶矿泉水，并且免费”。它足以回答“房间里有几瓶矿泉水”，应判 direct_single；不能因为数量只写在 faqQuestion 中就丢掉这个已被肯定回答确认的事实。这个规则同样适用于其他 FAQ 中被肯定或否定答案确认的对象、数量与条件。
+问“两瓶矿泉水免费吗”、答“是的，都免费”，确认房间内有两瓶矿泉水，并且免费，足以回答“房间里有几瓶矿泉水”；不能丢掉问题中被肯定答案确认的数量。
 
-候选答案如果只是“转接”，它是流程指令，不是酒店事实。只有 FAQ 问题与当前任务语义直接匹配时，才可以把该候选作为 direct_single 单条流程指令选择，此时 supportedFacts 和 missingAspects 都输出空数组；绝不能把 FAQ 问题文字当作已经确认的事实，也不能让“转接”候选参与 direct_combined。
+候选答案如果只是“转接”，它是流程指令，不是酒店事实。只有问题与当前任务、对象和条件直接适用时，才放入 handoffCandidateIds；selectedCandidateIds 只放事实来源。多个同义转接来源可以共同支持同一流程，不受 direct_single/direct_combined 条数限制。事实与适用转接指令可以并存，分别输出；不能因某候选相关或答案缺失就要求人工。仅有流程指令时 decision=insufficient、事实及answerText为空，handoffCandidateIds保留。同一条件下确有相互冲突的流程，不合并执行；保留可回答事实，将冲突方面写入missingAspects。门店已有适用自助方法时，不用通用转接取代它；自助方法被明确拒绝或失败后重新判断当前条件。
 
-事实维度限制的是答复外推，不是否决已有知识：先按前述规则选直接答案；确实没有完整答案时，才保留同目标的适用部分事实，不能以“保留部分事实”为由忽略其他候选已经给出的办理办法。不能扩写未确认的配送范围、使用条件或执行结果；地点名称不能生成距离、步行时间或路线。只有不存在适用于当前需求的知识答复时才判 insufficient。
+事实维度限制的是答复外推，不是否决已有知识。不能扩写未确认的配送范围、使用条件或执行结果，地点名称不证明距离和时长。
 
-同层组合示例：客户问“既有沙发又有办公桌的房型有哪些”，一条候选完整列出有沙发的房型，另一条候选完整列出有办公桌的房型，两条属于同一门店和房型范围时，必须判 direct_combined，并由 Judge 直接计算交集。supportedFacts 只输出交集结论及交集房型 criticalValues，禁止把两组源集合原样交给后续生成阶段。原文出现“部分、如、例如、等”时不是完整名单，但明确列出的成员仍是证据；普通列举或推荐可以回答“能确认同时具备的包括……”，不能写“只有、全部、房型就是……”或排除未列出的成员。只有客户明确要求全部、仅有或完整名单而证据不全时，才把完整范围列入 missingAspects。只知道沙发或只知道办公桌时应判 partial，保留已确认事实，同时明确缺少另一项设施事实。
+问同时有沙发和办公桌的房型，用同范围名单交集直接作答，不把两个源名单丢给客户。部分枚举只证明已列成员，不能写“只有、全部、房型就是……”或排除未列出的成员。只有客户明确要求全部、仅有或完整名单而证据不全时，才把完整范围列为缺失。
 
 否定答案也可以完整回答问题。例如“早餐几点”对应“酒店不提供早餐”可以判 direct_single。必须区分能力/存在性与故障/执行请求，例如“有空调吗”不能选择“空调不制冷需要处理”。
 
-严格输出一个完整 JSON 根对象，不要 Markdown、解释或额外字段。根对象包含 schemaVersion 和 tasks；输入带 coverageInput 时还必须包含 coverage，不能只输出 coverage 子对象。各 layer 内先输出 answerText，再输出所用证据和完整性判定，不能先认定partial再寻找一句相关背景填入答案。必须原样返回每个 taskId；对输入实际包含的每个 layer 恰好返回一次。每层的 hasUsableSelfService 都必须返回 true 或 false，非服务任务为 false。服务任务存在同目标可用自助方案时，partial 与 true 可以同时成立。输出格式（服务任务示例，字段不可省略，coverage 和内容均按实际输入判断）：
-{"schemaVersion":"knowledge_evidence_judge.v2","coverage":{"status":"complete","issues":[]},"tasks":[{"taskId":"T1","layers":[{"layer":"store","answerText":"您可以到指定洗衣房自行取用所需用品。","selectedCandidateIds":["T1C1"],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"您可以到指定洗衣房自行取用所需用品。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"decision":"partial","hasUsableSelfService":true},{"layer":"general","answerText":"","selectedCandidateIds":[],"supportedFacts":[],"missingAspects":[],"decision":"insufficient","hasUsableSelfService":false}]}]}`)
+严格输出完整JSON，不要Markdown或解释。保留schemaVersion/tasks以及全部taskId；每个输入layer返回一次。先输出 answerText，再输出所用证据和完整性判定；hasUsableSelfService必须布尔值。输入有coverageInput时必须输出coverage，不能只输出coverage。格式示例，内容按实际证据填写：
+{"schemaVersion":"knowledge_evidence_judge.v2","coverage":{"status":"complete","issues":[]},"tasks":[{"taskId":"T1","layers":[{"layer":"store","answerText":"您可以到指定洗衣房自行取用所需用品。","selectedCandidateIds":["T1C1"],"handoffCandidateIds":[],"supportedFacts":[{"factId":"T1F1","aspect":"method","statement":"您可以到指定洗衣房自行取用所需用品。","criticalValues":[]}],"missingAspects":["是否提供送房服务"],"decision":"partial","hasUsableSelfService":true},{"layer":"general","answerText":"","selectedCandidateIds":[],"handoffCandidateIds":[],"supportedFacts":[],"missingAspects":[],"decision":"insufficient","hasUsableSelfService":false}]}]}`)
 }
 
 func parseKnowledgeEvidenceJudgeResponse(raw string, tasks []knowledgeEvidenceJudgeTask) (map[string]map[string]knowledgeEvidenceLayerSelection, error) {
@@ -1294,6 +1250,7 @@ func decodeKnowledgeEvidenceJudgeRawLayer(raw knowledgeEvidenceJudgeRawResponseL
 		Layer:                raw.Layer,
 		Decision:             raw.Decision,
 		SelectedCandidateIDs: append([]string(nil), raw.SelectedCandidateIDs...),
+		HandoffCandidateIDs:  append([]string(nil), raw.HandoffCandidateIDs...),
 		AnswerText:           raw.AnswerText,
 	}
 	factsErr := decodeKnowledgeEvidenceJudgeFacts(raw.SupportedFacts, &layer.SupportedFacts)
@@ -1571,8 +1528,14 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 	}
 
 	selectedIDs := make([]string, 0, len(layerResult.SelectedCandidateIDs))
-	seenSelected := make(map[string]struct{}, len(layerResult.SelectedCandidateIDs))
-	for _, rawCandidateID := range layerResult.SelectedCandidateIDs {
+	handoffIDs := make([]string, 0, len(layerResult.HandoffCandidateIDs))
+	candidates := make(map[string]knowledgeEvidenceJudgeCandidate, len(expectedTask.Candidates))
+	for _, candidate := range expectedTask.Candidates {
+		candidates[candidate.CandidateID] = candidate
+	}
+	seenSelected := make(map[string]struct{}, len(layerResult.SelectedCandidateIDs)+len(layerResult.HandoffCandidateIDs))
+	inputIDs := append(append([]string(nil), layerResult.SelectedCandidateIDs...), layerResult.HandoffCandidateIDs...)
+	for index, rawCandidateID := range inputIDs {
 		candidateID := strings.TrimSpace(rawCandidateID)
 		if _, ok := expectedCandidates[candidateID]; !ok {
 			return reject("unknown_or_cross_layer_candidate_id")
@@ -1581,21 +1544,25 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 			return reject("duplicate_candidate_id")
 		}
 		seenSelected[candidateID] = struct{}{}
-		selectedIDs = append(selectedIDs, candidateID)
+		_, answer := splitKnowledgeEvidenceFAQForQuery(candidates[candidateID].Hit, expectedTask.Query)
+		isHandoff := isKnowledgeHandoffDirectiveContent(answer)
+		if index >= len(layerResult.SelectedCandidateIDs) && !isHandoff {
+			return reject("handoff_source_is_not_a_directive")
+		}
+		if isHandoff {
+			handoffIDs = append(handoffIDs, candidateID)
+		} else {
+			selectedIDs = append(selectedIDs, candidateID)
+		}
 	}
-	selectedContainsHandoff := selectedKnowledgeEvidenceContainsHandoffDirective(expectedTask, layer, selectedIDs)
-	selectedHandoff := selectedModelKnowledgeEvidenceIsHandoffDirective(expectedTask, layer, selectedIDs)
-	if selectedContainsHandoff && (!selectedHandoff || decision != knowledgeEvidenceDecisionDirectSingle || len(selectedIDs) != 1) {
-		return reject("handoff_mixed_with_facts_or_combined_candidates")
-	}
-	if selectedHandoff {
+	if len(handoffIDs) > 0 && len(selectedIDs) == 0 {
 		if layerResult.HasUsableSelfService != nil && *layerResult.HasUsableSelfService {
 			return reject("handoff_with_self_service")
 		}
 		return knowledgeEvidenceLayerSelection{
-			Decision:             knowledgeEvidenceDecisionDirectSingle,
-			DecisionSource:       "model",
-			SelectedCandidateIDs: selectedIDs,
+			Decision:            knowledgeEvidenceDecisionDirectSingle,
+			DecisionSource:      "model",
+			HandoffCandidateIDs: handoffIDs,
 		}
 	}
 	if supportedFactsMalformed || missingAspectsMalformed {
@@ -1633,21 +1600,26 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 			decision = knowledgeEvidenceDecisionPartial
 		}
 	}
+	// Legacy responses may count a flow directive as a second factual source.
+	// Keep the fact decision independent of the number of applicable directives.
+	if len(handoffIDs) > 0 && len(selectedIDs) == 1 && decision == knowledgeEvidenceDecisionDirectCombined {
+		decision = knowledgeEvidenceDecisionDirectSingle
+	}
 	switch decision {
 	case knowledgeEvidenceDecisionInsufficient:
 		if len(selectedIDs) != 0 || len(supportedFacts) != 0 {
 			return reject("insufficient_with_selected_candidates_or_facts")
 		}
 	case knowledgeEvidenceDecisionDirectSingle:
-		if len(selectedIDs) != 1 || len(missingAspects) != 0 || (!selectedHandoff && len(supportedFacts) == 0) || (selectedHandoff && len(supportedFacts) != 0) {
+		if len(selectedIDs) != 1 || len(missingAspects) != 0 || len(supportedFacts) == 0 {
 			return reject(fmt.Sprintf("direct_single_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	case knowledgeEvidenceDecisionDirectCombined:
-		if len(selectedIDs) < 2 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) != 0 {
+		if len(selectedIDs) < 2 || len(supportedFacts) == 0 || len(missingAspects) != 0 {
 			return reject(fmt.Sprintf("direct_combined_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	case knowledgeEvidenceDecisionPartial:
-		if len(selectedIDs) == 0 || selectedContainsHandoff || len(supportedFacts) == 0 || len(missingAspects) == 0 {
+		if len(selectedIDs) == 0 || len(supportedFacts) == 0 || len(missingAspects) == 0 {
 			return reject(fmt.Sprintf("partial_cardinality: candidates=%d facts=%d missing=%d", len(selectedIDs), len(supportedFacts), len(missingAspects)))
 		}
 	}
@@ -1666,6 +1638,7 @@ func normalizeParsedKnowledgeEvidenceLayerSelectionProtocolOnly(
 		Decision:             decision,
 		DecisionSource:       "model",
 		SelectedCandidateIDs: selectedIDs,
+		HandoffCandidateIDs:  handoffIDs,
 		SupportedFacts:       supportedFacts,
 		MissingAspects:       missingAspects,
 		AnswerText:           layerResult.AnswerText,

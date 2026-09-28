@@ -570,6 +570,113 @@ func TestValidateCoveredFactsAllowsLosslessCriticalValueFormatting(t *testing.T)
 	}
 }
 
+func TestValidateCoveredFactsAcceptsEquivalentExplicitDateTimes(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		value   string
+		content string
+		valid   bool
+	}{
+		{"24_hour_clock", "9月28日13点", "您可以住到9月28日13:00。", true},
+		{"afternoon_digits", "9月28日13点", "您可以住到9月28日下午1点。", true},
+		{"afternoon_chinese", "9月28日13:00", "您可以住到9月28日下午一点。", true},
+		{"reverse_format", "9月28日下午一点", "您可以住到9月28日13点。", true},
+		{"explicit_year", "2026年9月28日13点", "您可以住到2026年9月28日下午1点。", true},
+		{"different_hour", "9月28日13点", "您可以住到9月28日01:00。", false},
+		{"morning_not_afternoon", "9月28日13点", "您可以住到9月28日上午一点。", false},
+		{"contradictory_period", "9月28日13点", "您可以住到9月28日上午13点。", false},
+		{"different_minute", "9月28日13点", "您可以住到9月28日13点05分。", false},
+		{"chinese_minute_not_prefix", "下午一点", "您可以住到下午一点五分。", false},
+		{"seconds_not_omitted", "9月28日13点", "您可以住到9月28日13:00:30。", false},
+		{"different_day", "9月28日13点", "您可以住到9月29日下午一点。", false},
+		{"different_month", "9月28日13点", "您可以住到10月28日下午一点。", false},
+		{"different_year", "2026年9月28日13点", "您可以住到2027年9月28日下午一点。", false},
+		{"missing_date", "9月28日13点", "您可以住到下午一点。", false},
+		{"relative_date", "9月28日13点", "您可以住到今天下午一点。", false},
+		{"midnight_not_inferred", "9月28日0点", "您可以住到9月28日晚上12点。", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+				FactID: "F1", Aspect: "pms_order_checkout_time",
+				Statement: "订单离店时间为" + test.value + "。", CriticalValues: []string{test.value},
+			}}}
+			part := generatedReplyPart{TaskID: "task-1", Content: test.content, CoveredFactIDs: []string{"F1"}}
+			err := validateCoveredFacts(part, group)
+			if test.valid && err != nil {
+				t.Fatalf("equivalent explicit date/time must pass: %v", err)
+			}
+			if !test.valid && !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("changed or missing explicit date/time must fail, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCoveredFactsAcceptsOnlyLosslessAmountFormatting(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		content string
+		valid   bool
+	}{
+		{"268.00元", "房费是268元。", true},
+		{"268元", "房费是268.00元。", true},
+		{"268.50元", "房费是268.5元。", true},
+		{"0.00元", "费用为0元。", true},
+		{"268.00元/晚", "房费是268元/晚。", true},
+		{"268.50元", "房费是268元。", false},
+		{"268.00元", "房费是2680元。", false},
+		{"268.00元", "房费是1268元。", false},
+		{"268.00元", "金额是-268元。", false},
+		{"268.00元", "房费是268万元。", false},
+		{"268.00元", "房费是268美元。", false},
+		{"268.00元/晚", "房费是268元/人。", false},
+	} {
+		t.Run(test.value+"_"+test.content, func(t *testing.T) {
+			group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+				FactID: "F1", Aspect: "pms_order_amount",
+				Statement: "房费为" + test.value + "。", CriticalValues: []string{test.value},
+			}}}
+			part := generatedReplyPart{TaskID: "task-1", Content: test.content, CoveredFactIDs: []string{"F1"}}
+			err := validateCoveredFacts(part, group)
+			if test.valid && err != nil {
+				t.Fatalf("lossless decimal formatting must pass: %v", err)
+			}
+			if !test.valid && !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("changed amount or unit must fail, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCoveredFactsStillRequiresInventoryDateBounds(t *testing.T) {
+	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{{
+		FactID: "F1", Aspect: "pms_room_inventory",
+		Statement:      "沐阳在9月28日入住至9月30日离店期间可售。",
+		CriticalValues: []string{"9月28日", "9月30日"},
+	}}}
+	for _, test := range []struct {
+		content string
+		valid   bool
+	}{
+		{"沐阳9月28日入住、9月30日离店还有房。", true},
+		{"沐阳9月28日入住还有房。", false},
+		{"沐阳9月30日离店还有房。", false},
+		{"沐阳9月28日入住、10月1日离店还有房。", false},
+		{"沐阳今天入住、后天离店还有房。", false},
+	} {
+		t.Run(test.content, func(t *testing.T) {
+			part := generatedReplyPart{TaskID: "task-1", Content: test.content, CoveredFactIDs: []string{"F1"}}
+			err := validateCoveredFacts(part, group)
+			if test.valid && err != nil {
+				t.Fatalf("both explicit inventory date bounds must pass: %v", err)
+			}
+			if !test.valid && !errors.Is(err, errGeneratedReplyProtocol) {
+				t.Fatalf("missing inventory date bound must fail, got %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateCoveredFactsDoesNotTreatParaphrasesAsCriticalValues(t *testing.T) {
 	group := textReplyTaskGroup{TaskID: "task-1", Facts: []replyFactRequirement{
 		{FactID: "F1", Statement: "完成登记后扫人脸开门。", CriticalValues: []string{"扫人脸"}},
@@ -706,7 +813,7 @@ func TestStructuredReplyPromptRemovesPlainTextOutputConflicts(t *testing.T) {
 			t.Fatalf("structured prompt must remove conflicting instruction %q: %s", forbidden, prompt)
 		}
 	}
-	for _, required := range []string{"replyParts.content", "replyParts 的 content", "普通问题用 1-2 句", "流程问题可用 2-3 个简短步骤"} {
+	for _, required := range []string{"replyParts.content", "replyParts 的 content", "先给结论", "复杂问题用短段答全"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("structured prompt must scope customer-facing text to %q: %s", required, prompt)
 		}
@@ -729,7 +836,7 @@ func TestNormalizeGeneratedReplyPartsUsesActiveTaskFacts(t *testing.T) {
 		},
 	}}
 	instruction := buildMultiReplyOutputInstruction(plan, true)
-	for _, want := range []string{"T1", "T1F1", "T1F2", "两瓶", "免费", "coveredFactIds", "明确要求推荐时", "每个 content 只解决对应客户目标"} {
+	for _, want := range []string{"T1", "T1F1", "T1F2", "两瓶", "免费", "coveredFactIds", "明确要求推荐时", "每个 content 先回答对应客户目标"} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("active fact contract is missing %q: %s", want, instruction)
 		}

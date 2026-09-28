@@ -115,8 +115,8 @@ func TestKnowledgeEvidenceJudgeCompactRecoveryAnswersRobotCorrections(t *testing
 					if err := json.Unmarshal([]byte(userPrompt), &prompt); err != nil {
 						t.Fatalf("decode compact prompt: %v", err)
 					}
-					if len(prompt.Tasks) != 1 || len(prompt.Tasks[0].Candidates) != 1 || prompt.Tasks[0].Candidates[0].CandidateID != "T1C1" {
-						t.Fatalf("compact recovery must retain only the best candidate per layer: %#v", prompt.Tasks)
+					if len(prompt.Tasks) != 1 || len(prompt.Tasks[0].Candidates) != 2 || prompt.Tasks[0].Candidates[0].CandidateID != "T1C1" {
+						t.Fatalf("recovery must preserve the original evidence boundary without best-score-only selection: %#v", prompt.Tasks)
 					}
 					return &ai.ChatCompletionResult{Content: `{"schemaVersion":"knowledge_evidence_judge.v2","tasks":[{"taskId":"T1","layers":[{"layer":"store","decision":"direct_single","hasUsableSelfService":true,"selectedCandidateIds":["T1C1"],"answerText":"\u53ef\u4ee5\u4f7f\u7528\u5916\u5356\u673a\u5668\u4eba\u5c06\u5916\u5356\u9001\u5230\u623f\u95f4\u3002","supportedFacts":[{"factId":"T1F1","aspect":"existence","statement":"\u95e8\u5e97\u6709\u5916\u5356\u673a\u5668\u4eba\u3002","criticalValues":[]}],"missingAspects":[]}]}]}`}, nil
 				},
@@ -241,8 +241,9 @@ func TestJudgeMixedFAQKeepsTheQuestionAndOnlyRendersTheSelectedAnswer(t *testing
 			t.Fatalf("mixed evidence must retain its own FAQ semantics and task owner: %+v", task)
 		}
 		for candidateIndex, candidate := range task.Candidates {
-			if candidate.RawContent != tasks[index].Candidates[candidateIndex].Hit.Content {
-				t.Fatalf("competition must not locally filter or rewrite candidate evidence: %+v", candidate)
+			question, answer := splitKnowledgeEvidenceFAQForQuery(tasks[index].Candidates[candidateIndex].Hit, tasks[index].Query)
+			if candidate.FAQQuestion != question || candidate.FAQAnswer != answer || candidate.RawContent != "" {
+				t.Fatalf("complete FAQ must be provided once without changing its evidence: %+v", candidate)
 			}
 		}
 	}
@@ -624,7 +625,7 @@ func TestKnowledgeEvidenceJudgeClearsQuestionWhenNeitherLayerDirectlyAnswers(t *
 	}
 }
 
-func TestKnowledgeEvidenceJudgeFailureUsesStrictExactFAQWithoutScoreThreshold(t *testing.T) {
+func TestKnowledgeEvidenceJudgeFailureDoesNotReplaceJudgeWithExactFAQ(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "门店答案", "问题：早餐几点\n答案：南七店早餐时间为7:00-9:30。", 0.60)
 	generalHit := judgeTestHit(2, 201, "通用答案", "问题：早餐几点\n答案：通常为7:00-10:00。", 0.99)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -648,19 +649,19 @@ func TestKnowledgeEvidenceJudgeFailureUsesStrictExactFAQWithoutScoreThreshold(t 
 		t.Fatalf("judge failure must not fail the reply path: %v", err)
 	}
 	if judge.calls != 1 {
-		t.Fatalf("a strict exact store FAQ must avoid an unnecessary Judge retry, calls=%d", judge.calls)
+		t.Fatalf("the gate must not add a second semantic Judge call, calls=%d", judge.calls)
 	}
-	if state.RetrieveResult == nil || len(state.RetrieveResult.EffectiveHits) != 1 || !strings.Contains(state.RetrieveResult.ContextText, "南七店早餐时间为7:00-9:30") {
-		t.Fatalf("strict exact FAQ should recover the store answer regardless of score, got %#v", state.RetrieveResult)
+	if state.RetrieveResult == nil || len(state.RetrieveResult.EffectiveHits) != 0 || state.RetrieveResult.ContextText != "" {
+		t.Fatalf("a failed Judge must not be replaced by a local FAQ answer, got %#v", state.RetrieveResult)
 	}
 	if len(state.RetrieveResult.RawHits) != 2 {
 		t.Fatalf("raw hits must remain available for diagnostics, got %#v", state.RetrieveResult.RawHits)
 	}
-	if state.AnswerabilityStatus != answerabilityStatusHasContext || state.Input.Summary.handoffDirective {
-		t.Fatalf("strict exact FAQ recovery must answer without handoff, status=%q summary=%#v", state.AnswerabilityStatus, state.Input.Summary)
+	if state.AnswerabilityStatus == answerabilityStatusHasContext || state.Input.Summary.handoffDirective {
+		t.Fatalf("a Judge failure neither confirms evidence nor authorizes handoff, status=%q summary=%#v", state.AnswerabilityStatus, state.Input.Summary)
 	}
-	if collector.Data.Pipeline.EvidenceJudge.Status != knowledgeEvidenceDecisionMalformed || len(collector.Data.Pipeline.EvidenceJudge.Tasks) != 1 || collector.Data.Pipeline.EvidenceJudge.Tasks[0].DecisionSource != "exact_faq_fallback" || collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer {
-		t.Fatalf("expected exact fallback trace, got %#v", collector.Data.Pipeline.EvidenceJudge)
+	if collector.Data.Pipeline.EvidenceJudge.Status != knowledgeEvidenceDecisionMalformed || len(collector.Data.Pipeline.EvidenceJudge.Tasks) != 1 || collector.Data.Pipeline.EvidenceJudge.Tasks[0].DecisionSource != knowledgeEvidenceDecisionMalformed || collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry {
+		t.Fatalf("expected the original failure provenance for bounded task recovery, got %#v", collector.Data.Pipeline.EvidenceJudge)
 	}
 }
 
@@ -760,7 +761,7 @@ func TestKnowledgeEvidenceJudgeFailureDoesNotUseLegacySemanticScoreRescue(t *tes
 	}
 }
 
-func TestKnowledgeEvidenceJudgeProtocolFailureUsesStrictExactFAQWithPoliteSuffix(t *testing.T) {
+func TestKnowledgeEvidenceJudgeProtocolFailurePreservesRetrievalWithoutPoliteSuffixRescue(t *testing.T) {
 	hit := judgeTestHit(1, 101, "老板信息", "问题：老板是谁\n答案：老板是汤东强。", 0.999)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
 		"老板是谁呀": {
@@ -793,12 +794,12 @@ func TestKnowledgeEvidenceJudgeProtocolFailureUsesStrictExactFAQWithPoliteSuffix
 	if judge.calls != 1 {
 		t.Fatalf("the reply run must call Judge exactly once, calls=%d", judge.calls)
 	}
-	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 1 || len(state.RetrieveResult.EffectiveHits) != 1 || len(state.RetrieveResult.Hits) != 1 || !strings.Contains(state.RetrieveResult.ContextText, "老板是汤东强") {
-		t.Fatalf("a terminal polite particle must not prevent strict exact FAQ recovery: %#v", state.RetrieveResult)
+	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 1 || len(state.RetrieveResult.EffectiveHits) != 0 || len(state.RetrieveResult.Hits) != 0 || state.RetrieveResult.ContextText != "" {
+		t.Fatalf("retrieval must remain diagnostic-only until the Judge supplies applicable facts: %#v", state.RetrieveResult)
 	}
 	trace := collector.Data.Pipeline.EvidenceJudge
-	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || trace.Tasks[0].DecisionSource != "exact_faq_fallback" {
-		t.Fatalf("the polite-suffix match must use score-independent exact fallback: %#v", trace)
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionJudgeProtocolRetry || trace.Tasks[0].DecisionSource != knowledgeEvidenceDecisionMalformed {
+		t.Fatalf("lexical normalization must not relabel a failed Judge as success: %#v", trace)
 	}
 }
 
@@ -1092,12 +1093,9 @@ func TestKnowledgeEvidenceJudgeExactHandoffAndProtocolFailurePreserveBothActions
 			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
 				"T1": {
 					knowledgeEvidenceLayerStore: {
-						Decision:             knowledgeEvidenceDecisionDirectSingle,
-						DecisionSource:       "model",
-						SelectedCandidateIDs: []string{"T1C1"},
-						SupportedFacts: []knowledgeEvidenceFact{{
-							FactID: "T1F1", Aspect: "other", Statement: "转接",
-						}},
+						Decision:            knowledgeEvidenceDecisionDirectSingle,
+						DecisionSource:      "model",
+						HandoffCandidateIDs: []string{"T1C1"},
 					},
 				},
 				"T2": {
@@ -1290,7 +1288,7 @@ func TestKnowledgeEvidenceJudgeFailurePreservesIndependentMiniProgramCommit(t *t
 	}
 }
 
-func TestKnowledgeEvidenceJudgeFailurePreservesStoreHandoffBoundary(t *testing.T) {
+func TestKnowledgeEvidenceJudgeFailureDoesNotAuthorizeStoreHandoff(t *testing.T) {
 	storeHit := judgeTestHit(1, 101, "马桶故障", "问题：马桶堵了怎么办\n答案：转接", 0.82)
 	generalHit := judgeTestHit(2, 201, "通用处理", "问题：马桶堵了怎么办\n答案：可以自行疏通。", 0.99)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -1311,8 +1309,9 @@ func TestKnowledgeEvidenceJudgeFailurePreservesStoreHandoffBoundary(t *testing.T
 	if err != nil {
 		t.Fatalf("judge failure must not fail the reply path: %v", err)
 	}
-	if !state.Input.Summary.handoffDirective || state.AnswerabilityStatus != answerabilityStatusSkipped {
-		t.Fatalf("store handoff directive must remain authoritative during fallback, status=%q summary=%#v", state.AnswerabilityStatus, state.Input.Summary)
+	if state.Input.Summary.handoffDirective || state.AnswerabilityStatus == answerabilityStatusSkipped ||
+		state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 2 || len(state.RetrieveResult.Hits) != 0 {
+		t.Fatalf("unjudged retrieval must not authorize transfer or lose audit evidence, status=%q summary=%#v", state.AnswerabilityStatus, state.Input.Summary)
 	}
 }
 
@@ -1357,7 +1356,7 @@ func TestKnowledgeEvidenceJudgeBatchesAllConflictingAtomicQuestionsOnce(t *testi
 	}
 }
 
-func TestBuildKnowledgeEvidenceJudgeTasksCapsLargeBatchAndKeepsEveryTaskLayer(t *testing.T) {
+func TestBuildKnowledgeEvidenceJudgeTasksUsesInputBudgetAndKeepsEveryTaskLayer(t *testing.T) {
 	batch := &runtimeKnowledgeRetrieveBatch{Questions: make([]runtimeKnowledgeQuestionResult, 0, 8)}
 	for taskIndex := 0; taskIndex < 8; taskIndex++ {
 		hits := make([]rag.RetrieveResult, 0, 8)
@@ -1399,8 +1398,8 @@ func TestBuildKnowledgeEvidenceJudgeTasksCapsLargeBatchAndKeepsEveryTaskLayer(t 
 			t.Fatalf("task %s lost store/general coverage: %#v", task.TaskID, task.Candidates)
 		}
 	}
-	if total != knowledgeEvidenceJudgeBatchCandidateBudget {
-		t.Fatalf("expected %d total judge candidates, got %d", knowledgeEvidenceJudgeBatchCandidateBudget, total)
+	if total != 64 {
+		t.Fatalf("all short candidates fit the input budget and must remain visible, got %d", total)
 	}
 }
 
@@ -1465,8 +1464,8 @@ func TestBuildKnowledgeEvidenceJudgeTasksBudgetsAfterMultiFAQExpansion(t *testin
 	if len(tasks) != 1 || len(tasks[0].RawCandidates) != 30 {
 		t.Fatalf("all FAQ units must be available to pre-budget candidate selection: %#v", tasks)
 	}
-	if len(tasks[0].Candidates) != knowledgeEvidenceJudgeDefaultTaskCandidates {
-		t.Fatalf("expanded single task must obey the %d-item per-task Judge budget, got %d", knowledgeEvidenceJudgeDefaultTaskCandidates, len(tasks[0].Candidates))
+	if len(tasks[0].Candidates) != 30 {
+		t.Fatalf("short expanded FAQ units must not be capped at three, got %d", len(tasks[0].Candidates))
 	}
 	if len(batch.Questions[0].Result.RawHits) != 1 || batch.Questions[0].Result.RawHits[0].Content != rawContent {
 		t.Fatalf("budgeting expanded Judge candidates must not rewrite Retriever RawHits: %#v", batch.Questions[0].Result.RawHits)
@@ -3953,7 +3952,7 @@ func TestBuildKnowledgeEvidenceJudgeTasksCarriesIntentObjectiveAndEntities(t *te
 
 func TestKnowledgeEvidenceJudgePromptSupportsFAQRehydrationAndSameLayerCombination(t *testing.T) {
 	prompt := knowledgeEvidenceJudgeSystemPrompt()
-	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "最小完整答案规则", "其他主题的路线/时长/价格/延伸建议不得加入", "直接实用补充规则", "最多一句这类紧密相关信息", "1313房间对面的洗衣房自取", "普通动作词不得放入 criticalValues", "同一完整句已经覆盖多个维度", "禁止再输出被该完整句包含的摘要或碎片", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不能让“转接”候选参与 direct_combined", "不能扩写未确认的配送范围、使用条件或执行结果"} {
+	for _, required := range []string{"内部事实维度清单", "当前 layer 提供的全部候选逐条检查", "不能在看到第一条相关候选后提前停止", "必须判 direct_combined", "只要同层还有候选能补齐 missingAspects，就不得判 partial", "faqQuestion", "faqAnswer", "省略表达", "direct_combined", "partial", "supportedFacts", "missingAspects", "criticalValues", "严禁跨 store/general", "最小完整答案规则", "其他主题的路线/时长/价格/延伸建议不得加入", "直接实用补充规则", "最多一句这类紧密相关信息", "1313房间对面的洗衣房自取", "普通动作词不得放入 criticalValues", "同一完整句已经覆盖多个维度", "禁止再输出被该完整句包含的摘要或碎片", "沙发", "办公桌", "房间内有两瓶矿泉水，并且免费", "足以回答“房间里有几瓶矿泉水”", "答案如果只是“转接”", "不是酒店事实", "不受 direct_single/direct_combined 条数限制", "不能扩写未确认的配送范围、使用条件或执行结果"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("expected judge prompt to contain %q, got %q", required, prompt)
 		}
@@ -5173,8 +5172,8 @@ func TestBuildKnowledgeEvidenceJudgePromptSeparatesFastGPTFAQQuestionAnswerAndRa
 	if got.FAQAnswer != "是的，房间内的矿泉水都是免费的" {
 		t.Fatalf("FAQ answer was not separated: %#v", got)
 	}
-	if got.RawContent != raw {
-		t.Fatalf("raw content must remain auditable: %#v", got)
+	if got.RawContent != "" {
+		t.Fatalf("complete question/answer fields must not duplicate raw content in model input: %#v", got)
 	}
 }
 
@@ -5405,7 +5404,7 @@ func TestParseKnowledgeEvidenceJudgeRuntimeResponseAcceptsSelectedPureHandoffWit
 	}
 	selection := parsed["T1"][knowledgeEvidenceLayerStore]
 	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || selection.DecisionSource != "model" ||
-		len(selection.SelectedCandidateIDs) != 1 || selection.SelectedCandidateIDs[0] != "T1C1" ||
+		len(selection.HandoffCandidateIDs) != 1 || selection.HandoffCandidateIDs[0] != "T1C1" ||
 		len(selection.SupportedFacts) != 0 || len(selection.MissingAspects) != 0 {
 		t.Fatalf("a Judge-selected pure handoff candidate must remain executable: %#v", selection)
 	}
@@ -5415,7 +5414,7 @@ func TestParseKnowledgeEvidenceJudgeRuntimeResponseAcceptsSelectedPureHandoffWit
 	}
 }
 
-func TestParseKnowledgeEvidenceJudgeRuntimeResponseRejectsNonExactHandoffWithCompetingBodyOutsideBudget(t *testing.T) {
+func TestParseKnowledgeEvidenceJudgeRuntimeResponseDoesNotSemanticallyRejudgeHiddenCandidates(t *testing.T) {
 	handoff := knowledgeEvidenceJudgeCandidate{
 		CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore,
 		Hit: judgeTestHit(1, 101, "马桶故障", "问题：马桶堵住了，怎么办？\n答案：转接", 0.8023),
@@ -5436,8 +5435,8 @@ func TestParseKnowledgeEvidenceJudgeRuntimeResponseRejectsNonExactHandoffWithCom
 		t.Fatalf("parse runtime Judge response: %v", err)
 	}
 	selection := parsed["T1"][knowledgeEvidenceLayerStore]
-	if selection.Decision != knowledgeEvidenceDecisionProtocolInvalid {
-		t.Fatalf("a competing same-layer body answer must still block non-exact handoff: %#v", selection)
+	if selection.Decision != knowledgeEvidenceDecisionDirectSingle || len(selection.HandoffCandidateIDs) != 1 {
+		t.Fatalf("the protocol parser cannot invent a second business judgment from unselected retrieval: %#v", selection)
 	}
 }
 
@@ -5873,7 +5872,7 @@ func TestKnowledgeEvidenceJudgeStoreHandoffWinsGeneralCompleteAnswer(t *testing.
 	}
 }
 
-func TestKnowledgeEvidenceJudgeRecoversHandoffWhenModelReturnsInsufficient(t *testing.T) {
+func TestKnowledgeEvidenceJudgeInsufficientDoesNotAuthorizeLocalHandoffRescue(t *testing.T) {
 	storeHandoff := judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7651)
 	generalNoise := judgeTestHit(2, 201, "客服联系方式", "问题：如何联系客服\n答案：可以在小程序中联系客服。", 0.5118)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -5909,20 +5908,20 @@ func TestKnowledgeEvidenceJudgeRecoversHandoffWhenModelReturnsInsufficient(t *te
 	if err != nil {
 		t.Fatalf("Evaluate returned error: %v", err)
 	}
-	if !summary.handoffDirective || summary.handoffDirectiveSource != "knowledge_top_answer" {
-		t.Fatalf("an exact knowledge transfer directive must survive a Judge insufficient result, got %#v", summary)
+	if summary.handoffDirective || summary.handoffDirectiveSource != "" {
+		t.Fatalf("unselected retrieval must not override a Judge decision into a real transfer, got %#v", summary)
 	}
 	if state.RetrieveResult == nil || len(state.RetrieveResult.RawHits) != 2 {
 		t.Fatalf("the selected transfer FAQ must remain traceable in raw retrieval, got %#v", state.RetrieveResult)
 	}
 	if len(collector.Data.Pipeline.EvidenceJudge.Tasks) != 1 ||
-		collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionDirectHandoff ||
-		collector.Data.Pipeline.EvidenceJudge.Tasks[0].DecisionSource != "deterministic_handoff_model_miss" {
-		t.Fatalf("unexpected recovered handoff trace: %#v", collector.Data.Pipeline.EvidenceJudge)
+		collector.Data.Pipeline.EvidenceJudge.Tasks[0].Disposition != runtimeKnowledgeDispositionNoEvidenceHandoff ||
+		len(collector.Data.Pipeline.EvidenceJudge.Tasks[0].SelectedCandidateIDs) != 0 {
+		t.Fatalf("the actual insufficiency must remain visible without hidden rescue: %#v", collector.Data.Pipeline.EvidenceJudge)
 	}
 }
 
-func TestKnowledgeEvidenceJudgeRecoversExactHandoffBeforeHonoringCurrentRejection(t *testing.T) {
+func TestKnowledgeEvidenceJudgeHonorsCurrentRejectionOfSelectedHandoff(t *testing.T) {
 	const current = "空调不制冷，我住1304，先告诉我可以怎么处理，不要转人工"
 	storeHandoff := judgeTestHit(1, 101, "空调不制冷", "问题：空调不制冷\n答案：转接", 0.7979)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{
@@ -5935,7 +5934,10 @@ func TestKnowledgeEvidenceJudgeRecoversExactHandoffBeforeHonoringCurrentRejectio
 		return knowledgeEvidenceJudgeOutcome{
 			Applied: true,
 			Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
-				"task-1": {knowledgeEvidenceLayerStore: {Decision: knowledgeEvidenceDecisionInsufficient}},
+				"task-1": {knowledgeEvidenceLayerStore: {
+					Decision: knowledgeEvidenceDecisionDirectSingle, DecisionSource: "model",
+					HandoffCandidateIDs: []string{"task-1C1"},
+				}},
 			},
 			Trace: callbacks.KnowledgeEvidenceJudgeTraceData{SchemaVersion: knowledgeEvidenceJudgeSchemaVersion, Status: "completed"},
 		}

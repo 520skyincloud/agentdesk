@@ -104,7 +104,7 @@ func selectIntentPromptPack(intent callbacks.IntentTraceData) callbacks.IntentPr
 		"如果知识库内容写的是让客户联系前台/管家/门店工作人员，只能如实引导客户联系，不能改写成系统已经替客户执行了真实动作。",
 		"知识库已经给出答案时必须直接回答，不要说稍后再查、内部确认或回头答复。",
 		"最终回复只输出给客人的话，不输出思考过程、规则复述、内部判断依据或知识库治理备注。",
-		"回复像微信真人，通常 1-3 句。",
+		"回复自然，先回答当前所求；简单问题简洁，复杂问题用短段答全。",
 	}
 	switch intent.PrimaryIntent {
 	case "hotel_info":
@@ -333,7 +333,7 @@ func buildReplyPlan(intent callbacks.IntentTraceData, prompt callbacks.IntentPro
 			goal = "先查知识库或只读 PMS 回答投诉、赔偿、退款、订单和价格事实；仅在客户明确要求人工或知识库明确要求转人工时路由"
 		}
 	}
-	style := "自然微信口吻，1-3句"
+	style := "自然微信口吻；先给结论，再补必要条件，不限制固定句数"
 	replyRequiredTaskCount := countReplyRequiredTasks(taskPlans)
 	if replyRequiredTaskCount > 1 {
 		goal = "按 IntentDetect 子任务顺序分别处理当前轮每个任务"
@@ -557,6 +557,7 @@ func replyTaskPlanForTopLevelResourceAction(intent callbacks.IntentTraceData, ac
 		plan.ResolutionState = task.ResolutionState
 		plan.DialogueAct = task.DialogueAct
 		plan.ReplyStrategy = task.ReplyStrategy
+		copyRuntimeIntentGoalToReply(task, &plan)
 		plan.Entities = append([]callbacks.IntentEntityTraceData(nil), task.Entities...)
 		plan.Text = task.ResolvedText
 		plan.OriginalText = task.Text
@@ -586,6 +587,10 @@ func replyTaskPlanFromIntentTask(task callbacks.IntentTaskTraceData) callbacks.R
 		Intent:             task.Intent,
 		SubIntent:          task.SubIntent,
 		Objective:          task.Objective,
+		SubjectScope:       task.SubjectScope,
+		RequestedAspects:   append([]string(nil), task.RequestedAspects...),
+		SelectionSource:    task.SelectionSource,
+		SelectionRef:       task.SelectionRef,
 		DialogueAct:        task.DialogueAct,
 		ReplyStrategy:      task.ReplyStrategy,
 		RelationToPrevious: task.RelationToPrevious,

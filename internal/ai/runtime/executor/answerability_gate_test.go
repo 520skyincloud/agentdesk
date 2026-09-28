@@ -497,26 +497,26 @@ func TestExternalProxyPartialKeepsSelectedEvidenceWithoutHandoff(t *testing.T) {
 		Merged:    &retrievers.KnowledgeRetrieveResult{},
 	}
 	task := knowledgeEvidenceJudgeTask{
-		TaskID: "external", Intent: "service_request", Query: "帮我点个外卖", SubIntent: "external_proxy_action", Objective: "action_request",
+		TaskID: "external", Intent: "service_request", Query: "帮我点个外卖，能送房吗", SubIntent: "external_proxy_action", Objective: "action_request",
 		Candidates: []knowledgeEvidenceJudgeCandidate{{CandidateID: "externalC1", Layer: knowledgeEvidenceLayerStore, Hit: hit}},
 	}
 	outcome := knowledgeEvidenceJudgeOutcome{Applied: true, Selections: map[string]map[string]knowledgeEvidenceLayerSelection{
 		"external": {knowledgeEvidenceLayerStore: {
 			Decision: knowledgeEvidenceDecisionPartial, DecisionSource: "model", SelectedCandidateIDs: []string{"externalC1"},
 			SupportedFacts: []knowledgeEvidenceFact{{FactID: "externalF1", Aspect: "method", Statement: "可以自行在美团下单。"}},
-			MissingAspects: []string{"酒店不能代执行外部下单"},
+			MissingAspects: []string{"能否送房"},
 		}},
 	}}
 
 	trace := applyKnowledgeEvidenceJudgeOutcome(batch, []knowledgeEvidenceJudgeTask{task}, outcome)
-	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].MissingAspects) != 0 {
-		t.Fatalf("external proxy partial evidence must answer without active missing aspects: %#v", batch.Questions[0])
+	if batch.Questions[0].Disposition != runtimeKnowledgeDispositionAnswer || len(batch.Questions[0].MissingAspects) != 1 {
+		t.Fatalf("external proxy partial evidence must retain unknowns without routing to human: %#v", batch.Questions[0])
 	}
-	if strings.Contains(result.ContextText, "尚未确认方面") || strings.Contains(result.ContextText, "酒店不能代执行外部下单") {
-		t.Fatalf("external proxy capability boundary must not leak into the fact boundary: %q", result.ContextText)
+	if !strings.Contains(result.ContextText, "能否送房") {
+		t.Fatalf("a usable ordering method must not erase a separate delivery gap: %q", result.ContextText)
 	}
-	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || len(trace.Tasks[0].MissingAspects) != 0 || len(trace.Tasks[0].SupportedFacts) != 1 {
-		t.Fatalf("execution trace must keep facts and clear active handoff gaps: %#v", trace.Tasks)
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer || len(trace.Tasks[0].MissingAspects) != 1 || len(trace.Tasks[0].SupportedFacts) != 1 {
+		t.Fatalf("execution trace must keep both facts and their limits: %#v", trace.Tasks)
 	}
 }
 
@@ -531,6 +531,9 @@ func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *t
 			Title:           query,
 			Content:         "问题：" + query + "\n答案：这是对应答案。",
 			Score:           0.9,
+		}
+		if index == knowledgeEvidenceJudgeBatchCandidateBudget {
+			hit.Content += strings.Repeat("完整来源过长，不能截断后假装覆盖全部条件。", knowledgeEvidenceJudgeInputByteBudget)
 		}
 		batch.Questions = append(batch.Questions, runtimeKnowledgeQuestionResult{
 			TaskID: taskID,
@@ -548,7 +551,7 @@ func TestKnowledgeEvidenceJudgeBudgetExhaustionIsProtocolRetryNotNoEvidence(t *t
 
 	judgeTasks := buildKnowledgeEvidenceJudgeTasks(batch, []int64{1}, []int64{1}, nil, "")
 	if len(judgeTasks) != knowledgeEvidenceJudgeBatchCandidateBudget {
-		t.Fatalf("candidate budget must leave one of 29 single-candidate Tasks unjudged, got %d", len(judgeTasks))
+		t.Fatalf("the oversized source must exceed the byte budget, got %d judged tasks", len(judgeTasks))
 	}
 	trace := callbacks.KnowledgeEvidenceJudgeTraceData{
 		SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
@@ -2021,7 +2024,8 @@ func TestKnowledgePolicyEvaluateInjectsNoContextInstructionForKnowledgeQuestion(
 		t.Fatalf("expected policy to avoid robotic fallback, got %q", state.Decision.Instructions[0].Content)
 	}
 	assertNoFixedFallbackSource(t, state.Decision.Instructions[0].Content)
-	if !strings.Contains(state.Decision.Instructions[0].Content, "只有客户随后明确要求人工") {
+	if !strings.Contains(state.Decision.Instructions[0].Content, "人工仅按运行时已授权来源执行") ||
+		!strings.Contains(state.Decision.Instructions[0].Content, "话术不能授予操作权限") {
 		t.Fatalf("expected no-context policy to avoid automatic handoff, got %q", state.Decision.Instructions[0].Content)
 	}
 	if state.Input.Summary == nil || state.Input.Summary.handoffDirective {

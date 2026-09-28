@@ -123,40 +123,22 @@ func TestRuntimePMSReadPlanInputUsesCurrentAndSessionLocators(t *testing.T) {
 	})
 }
 
-func TestPrepareGroundedPMSDirectCommitAnswersRoomExplanationWithoutGenerate(t *testing.T) {
-	collector := callbacks.NewRuntimeTraceCollector()
-	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
-		TaskID: "task-room-explanation", Intent: "hotel_info", SubIntent: "room_change", Objective: "explanation",
-		OriginalText: "这些房都是什么意思，我不太懂", Text: "这些房都是什么意思，我不太懂",
-		OutputKind: "text", Output: "knowledge_text_reply", ReplyRequired: true,
-		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_room_inventory", Statement: "儿童房、橙意和沐阳有房"}},
-	}}}
-	summary := &RunResult{}
-	if !prepareGroundedPMSDirectCommit(summary, collector) {
-		t.Fatal("room-type explanation should be committed directly without waiting for Generate")
-	}
-	want := "这些是酒店的房型名称。您更在意床型、空间还是楼层？我可以按您的需求帮您挑一个。"
-	if summary.ReplyText != want {
-		t.Fatalf("unexpected customer explanation: got=%q want=%q", summary.ReplyText, want)
-	}
-}
-
-func TestPrepareGroundedPMSDirectCommitLeavesIncompletePriceGoalToGenerate(t *testing.T) {
-	answer := "您当前订单金额是376.00元，但沐阳的实时房价没有显示，所以现在还算不出准确差价，我先不乱报。"
-	collector := callbacks.NewRuntimeTraceCollector()
-	collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
-		TaskID: "task-price", Intent: "hotel_info", SubIntent: "price_difference", Objective: "price",
-		OriginalText: "那要补多少钱", Text: "那要补多少钱", OutputKind: "text", Output: "text_reply", ReplyRequired: true,
-		AnswerText:     &answer,
-		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{Aspect: "pms_order_recept", Statement: "当前订单金额376.00元"}},
-		MissingAspects: []string{"目标房型的实时价格未返回"},
-	}}}
-	summary := &RunResult{}
-	if prepareGroundedPMSDirectCommit(summary, collector) || summary.ReplyText != "" {
-		t.Fatalf("partial facts must not bypass Generate: %#v %q", summary, summary.ReplyText)
-	}
-	if got := deterministicGeneratedReplyFallback(collector); !strings.Contains(got, "376.00") {
-		t.Fatalf("model-failure recovery must still preserve known facts: %q", got)
+func TestPMSFactsNeverPrewriteCustomerAnswer(t *testing.T) {
+	for _, question := range []string{"这些房型有什么不同？", "你能按我需要的推荐吗？"} {
+		oldAnswer := "旧的房型模板不能成为最终回复"
+		task := callbacks.ReplyTaskPlanTraceData{
+			TaskID: "T1", Intent: "hotel_info", SubIntent: "room_change", Objective: "explanation",
+			OriginalText: question, RequestedAspects: []string{"explanation"},
+			OutputKind: "text", ReplyRequired: true, AnswerText: &oldAnswer,
+		}
+		applyRuntimePMSReadResultToTask(&task, pmsReadPlan{Scenario: pmsReadScenarioRoomChange}, pmsReadPlanResult{
+			Status: pmsReadStepOK, Steps: []pmsReadStepResult{{
+				StepID: "order.recept", Status: pmsReadStepOK, Data: map[string]any{"roomName": "沐阳", "homeName": "1304"},
+			}},
+		}, 0)
+		if task.AnswerText != nil || len(task.SupportedFacts) == 0 {
+			t.Fatalf("PMS must provide facts to Generate, not an answer template: %#v", task)
+		}
 	}
 }
 
@@ -393,7 +375,9 @@ func TestRuntimePMSTargetRoomTypePrefersCurrentSelectionOverHistoricalTarget(t *
 		},
 		{OriginalText: "沐阳差价多少", DialogueAct: "follow_up"},
 	} {
-		if got := runtimePMSTargetRoomTypeText(task); got != "沐阳" {
+		got := runtimePMSTargetRoomTypeText(task)
+		catalog := []any{map[string]any{"roomTypeId": "SUN", "roomTypeName": "沐阳"}}
+		if _, name, status := resolveRuntimePMSTargetRoomType(catalog, got); status != pmsReadStepOK || name != "沐阳" {
 			t.Fatalf("current room selection lost to historical target: task=%#v got=%q", task, got)
 		}
 	}
@@ -729,8 +713,11 @@ func TestResolveRuntimePMSTargetRoomTypeIsDeterministic(t *testing.T) {
 		t.Fatalf("normalized exact target must be selected: id=%q name=%q status=%q", id, name, status)
 	}
 
-	if _, _, status = resolveRuntimePMSTargetRoomType(inventory, "我想换到豪华大床房"); status != pmsReadStepEmpty {
-		t.Fatalf("sentence containment must not select a PMS room type, got %q", status)
+	if id, _, status = resolveRuntimePMSTargetRoomType(inventory, "我想换到豪华大床房"); status != pmsReadStepOK || id != "ROOM-2" {
+		t.Fatalf("a unique real catalog name in a selection must bind, got %q %q", id, status)
+	}
+	if _, _, status = resolveRuntimePMSTargetRoomType(inventory, "大床房和豪华大床房比较一下"); status != pmsReadStepAmbiguous {
+		t.Fatalf("two separately mentioned catalog choices must remain ambiguous, got %q", status)
 	}
 
 	duplicateName := []any{
@@ -929,17 +916,18 @@ func TestRuntimePMSCustomerAnswerUsesTheCustomersActualGoal(t *testing.T) {
 			"checkInTime": "2026-09-23 14:00:00", "checkOutTime": "2026-09-25 12:00:00",
 		}},
 	}}
-	checkout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我看看我什么时候退房"}, orderResult)
+	checkout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "帮我看看我什么时候退房", RequestedAspects: []string{"checkout_time"}}, orderResult)
 	if checkout != "查到了，您这笔订单是9月25日12点前退房。" {
 		t.Fatalf("checkout answer was not projected to the customer goal: %q", checkout)
 	}
-	roomTypeAndCheckout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "那我订的是哪种房，最晚几点退房？"}, orderResult)
+	roomTypeAndCheckout := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "那我订的是哪种房，最晚几点退房？", RequestedAspects: []string{"room_type", "checkout_time"}}, orderResult)
 	if roomTypeAndCheckout != "查到了，您订的是儿童房，9月25日12点前退房。" {
 		t.Fatalf("compound room type and checkout answer lost a requested field: %q", roomTypeAndCheckout)
 	}
 	roomNumberAndCheckIn := runtimePMSCustomerOrderAnswer(callbacks.ReplyTaskPlanTraceData{
-		OriginalText: "房号和入住日期呢？",
-		ResolvedText: "查询当前订单的房号、入住日期和上一轮退房时间",
+		OriginalText:     "房号和入住日期呢？",
+		ResolvedText:     "查询当前订单的房号、入住日期和上一轮退房时间",
+		RequestedAspects: []string{"room_number", "checkin_time"},
 	}, orderResult)
 	if roomNumberAndCheckIn != "查到了，当前安排的房号是V05，入住时间是9月23日14点。" {
 		t.Fatalf("compound room number and check-in answer lost a requested field: %q", roomNumberAndCheckIn)
@@ -954,6 +942,7 @@ func TestApplyRuntimePMSReadResultProjectsEveryRequestedOrderFact(t *testing.T) 
 	task := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail",
 		OriginalText: "那我订的是哪种房，最晚几点退房？", Text: "那我订的是哪种房，最晚几点退房？", ReplyRequired: true,
+		RequestedAspects: []string{"room_type", "checkout_time"},
 	}
 	plan := pmsReadPlan{Scenario: pmsReadScenarioOrder}
 	result := pmsReadPlanResult{Status: pmsReadStepOK, Steps: []pmsReadStepResult{
@@ -974,7 +963,7 @@ func TestApplyRuntimePMSReadResultProjectsEveryRequestedOrderFact(t *testing.T) 
 	for _, fact := range task.SupportedFacts {
 		got[fact.Aspect] = fact.Statement
 	}
-	if got["pms_order_room_type"] != "当前订单房型为儿童房。" || got["pms_order_checkout_time"] != "当前订单离店时间为2026-09-25 12:00:00。" {
+	if got["pms_order_room_type"] != "当前订单房型为儿童房。" || got["pms_order_checkout_time"] != "当前订单离店时间为9月25日12点。" {
 		t.Fatalf("compound order facts were incomplete: %#v", got)
 	}
 }
@@ -983,6 +972,7 @@ func TestApplyRuntimePMSReadResultProjectsOnlyRequestedCheckoutFact(t *testing.T
 	task := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_query",
 		OriginalText: "我的房到几号", Text: "我的房到几号", ReplyRequired: true,
+		RequestedAspects: []string{"checkout_time"},
 	}
 	plan := pmsReadPlan{Scenario: pmsReadScenarioOrder}
 	result := pmsReadPlanResult{Status: pmsReadStepOK, Steps: []pmsReadStepResult{
@@ -999,10 +989,10 @@ func TestApplyRuntimePMSReadResultProjectsOnlyRequestedCheckoutFact(t *testing.T
 		t.Fatalf("duplicate order sources must collapse to one customer-goal fact: %#v", task.SupportedFacts)
 	}
 	fact := task.SupportedFacts[0]
-	if fact.Aspect != "pms_order_checkout_time" || fact.Statement != "当前订单离店时间为2026-09-25 12:00:00。" {
+	if fact.Aspect != "pms_order_checkout_time" || fact.Statement != "当前订单离店时间为9月25日12点。" {
 		t.Fatalf("checkout question exposed the wrong PMS fact: %#v", fact)
 	}
-	if len(fact.CriticalValues) != 1 || fact.CriticalValues[0] != "2026-09-25 12:00:00" {
+	if len(fact.CriticalValues) != 1 || fact.CriticalValues[0] != "9月25日12点" {
 		t.Fatalf("checkout fact must preserve the exact critical value: %#v", fact)
 	}
 	joined, _ := json.Marshal(task.SupportedFacts)
@@ -1181,8 +1171,8 @@ func TestExecuteRuntimePMSUpgradeDoesNotPriceUnmatchedRoomText(t *testing.T) {
 		missing   string
 	}{
 		{
-			name:   "sentence containing a room name",
-			target: "我想换到豪华大床房",
+			name:   "room name absent from the real catalog",
+			target: "我想换到花园套房",
 			inventory: []any{
 				map[string]any{"roomTypeId": "ROOM-1", "roomTypeName": "大床房"},
 				map[string]any{"roomTypeId": "ROOM-2", "roomTypeName": "豪华大床房"},
@@ -1280,7 +1270,7 @@ func TestApplyRuntimePMSRenewalKeepsUsableReserveInventoryWithoutReception(t *te
 		facts = append(facts, fact.Statement)
 	}
 	joined := strings.Join(facts, "\n")
-	if !strings.Contains(joined, "续住日期区间") || !strings.Contains(joined, "橙意可售4间") || strings.Contains(joined, "其他房型") {
+	if !strings.Contains(joined, "9月24日入住至9月25日离店") || !strings.Contains(joined, "4间") || strings.Contains(joined, "其他房型") {
 		t.Fatalf("usable renewal facts were not preserved and scoped: %q", joined)
 	}
 }
@@ -1370,7 +1360,7 @@ func TestApplyRuntimePMSReadPlansAttachesFactsAndRemovesHandledTool(t *testing.T
 		if !handled || gotIntent.NeedsTool || gotPlan.TaskPlans[0].NeedsTool || containsString(gotIntent.ToolCodes, toolx.BuiltinPMSQuery.Code) {
 			t.Fatalf("handled PMS task must leave Generate without the tool: intent=%#v plan=%#v", gotIntent, gotPlan)
 		}
-		if len(gotPlan.TaskPlans[0].SupportedFacts) != 2 || gotPlan.TaskPlans[0].AnswerText == nil || strings.TrimSpace(*gotPlan.TaskPlans[0].AnswerText) == "" ||
+		if len(gotPlan.TaskPlans[0].SupportedFacts) == 0 || gotPlan.TaskPlans[0].AnswerText != nil ||
 			!containsString(summary.InvokedToolCodes, toolx.BuiltinPMSQuery.Code) || summary.ToolCallCount != 1 {
 			t.Fatalf("PMS facts or invocation trace missing: plan=%#v summary=%#v", gotPlan, summary)
 		}
@@ -1628,7 +1618,7 @@ func TestRuntimePMSKnowledgeHandoffRestoresKnowledgeRouteWhenReadIsUnavailable(t
 
 		_, gotPlan, _ := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, baseIntent(), plan, summary, collector, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), unavailableInvoker())
 		task := gotPlan.TaskPlans[0]
-		if task.Output != "knowledge_text_reply" || task.OutputKind != "text" || !task.ReplyRequired || len(task.SupportedFacts) != 1 || task.SupportedFacts[0].Statement != answer || task.AnswerText == nil || *task.AnswerText != answer {
+		if task.Output != "knowledge_text_reply" || task.OutputKind != "text" || !task.ReplyRequired || len(task.SupportedFacts) != 1 || task.SupportedFacts[0].Statement != answer || task.AnswerText != nil {
 			t.Fatalf("answer-then-handoff lost its usable knowledge answer: %#v", task)
 		}
 		trace := collector.Data.Pipeline.EvidenceJudge
@@ -1657,7 +1647,7 @@ func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
 			plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{TaskID: "T1", Intent: "hotel_info", SubIntent: test.subIntent, OriginalText: "查一下 13800138000 的会员", NeedsTool: true, OutputKind: "text", ReplyRequired: true}}}
 			_, gotPlan, handled := applyRuntimePMSReadPlansWithInvoker(context.Background(), RunInput{}, adapter.HistoryBuildResult{}, intent, plan, &RunResult{}, nil, time.Date(2026, 9, 22, 12, 0, 0, 0, time.Local), invoker)
 			if !handled || len(invoker.calls) != 1 || invoker.calls[0].action != test.action || invoker.calls[0].args["phone"] != "13800138000" ||
-				len(gotPlan.TaskPlans[0].SupportedFacts) != 1 || gotPlan.TaskPlans[0].AnswerText == nil || strings.TrimSpace(*gotPlan.TaskPlans[0].AnswerText) == "" {
+				len(gotPlan.TaskPlans[0].SupportedFacts) == 0 || gotPlan.TaskPlans[0].AnswerText != nil {
 				t.Fatalf("member route was not executed deterministically: test=%#v calls=%#v plan=%#v", test, invoker.calls, gotPlan)
 			}
 		}

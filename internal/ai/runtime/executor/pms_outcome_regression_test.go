@@ -40,7 +40,7 @@ func TestCurrentExplicitOrderLocatorOverridesPreviousOrder(t *testing.T) {
 	}
 }
 
-func TestInventoryReplyUsesAvailableFactsEvenWhenGenerationFails(t *testing.T) {
+func TestInventoryReplyKeepsFactsWithoutLockingCustomerText(t *testing.T) {
 	for _, available := range []string{"1", "3"} {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			Scenario: pmsReadScenarioDateInventory, StartDate: "2026-09-29", EndDate: "2026-09-30",
@@ -59,14 +59,12 @@ func TestInventoryReplyUsesAvailableFactsEvenWhenGenerationFails(t *testing.T) {
 		task := callbacks.ReplyTaskPlanTraceData{TaskID: "task-1", SubIntent: "room_inventory",
 			ReplyRequired: true, OutputKind: "text", OriginalText: "这两天有什么房可选"}
 		applyRuntimePMSReadResultToTask(&task, plan, result, 0)
-		if task.AnswerText == nil || !strings.Contains(*task.AnswerText, "云漫") || strings.Contains(*task.AnswerText, "大床房") {
-			t.Fatalf("available inventory facts discarded: %#v", task.AnswerText)
+		var facts strings.Builder
+		for _, fact := range task.SupportedFacts {
+			facts.WriteString(fact.Statement)
 		}
-		collector := &callbacks.RuntimeTraceCollector{}
-		collector.Data.Pipeline.ReplyPlan = callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}}
-		reply := deterministicGeneratedReplyFallback(collector)
-		if !strings.Contains(reply, "云漫") || strings.Contains(reply, "未能") {
-			t.Fatalf("generation fallback discarded inventory success: %q", reply)
+		if task.AnswerText != nil || !strings.Contains(facts.String(), "云漫") || !strings.Contains(facts.String(), available+"间") {
+			t.Fatalf("available inventory facts discarded or prewritten: %#v", task)
 		}
 	}
 }

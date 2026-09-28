@@ -58,6 +58,7 @@ type RunResult struct {
 	ErrorMessage              string
 	SkipReply                 bool
 	ModelUsageCalls           []ModelUsageCall
+	generatedTaskReplies      map[string]string
 	handoffDirective          bool
 	handoffDirectiveReason    string
 	handoffDirectiveSource    string

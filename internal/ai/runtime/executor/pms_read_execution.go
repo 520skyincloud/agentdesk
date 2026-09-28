@@ -227,11 +227,21 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 		if input.Phone != "" {
 			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, input.Phone)
 		}
+		if input.MemberPhone != "" {
+			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityMemberPhone, input.MemberPhone)
+		}
 		if input.TargetRoomTypeText != "" && runtimeIntentEntityValue(task.Entities, runtimeIntentEntityTargetRoomType) == "" {
 			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityTargetRoomType, input.TargetRoomTypeText)
 		}
 		plan := buildPMSReadPlan(input)
 		results, finalPlan := executeRuntimePMSReadPlan(ctx, plan, input, invoker)
+		for _, step := range results {
+			if step.StepID == "inventory.stay" && input.TargetRoomTypeText != "" {
+				if _, name, status := resolveRuntimePMSTargetRoomType(step.Data, input.TargetRoomTypeText); status == pmsReadStepOK {
+					setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityTargetRoomType, name)
+				}
+			}
+		}
 		aggregated, err := aggregatePMSReadPlanResults(finalPlan, results)
 		if err != nil {
 			aggregated = pmsReadPlanResult{Status: pmsReadStepUnavailable, Unconfirmed: []string{"PMS 查询计划结果无效"}}
@@ -575,14 +585,18 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 	if runtimePMSCurrentTextRejectsTargetRoomType(task.OriginalText) {
 		targetRoomTypeText = ""
 	}
-	currentPhone := runtimePMSLastUsableCustomerPhone(task.OriginalText)
-	phoneRejected := runtimePMSCurrentTextRejectsCustomerPhone(task.OriginalText)
+	currentPhone := runtimePMSCurrentTaskPhone(task.OriginalText, task.SubIntent, task.SubjectScope, task.Entities)
+	phoneRejected := runtimePMSCurrentTaskRejectsPhone(task.OriginalText, task.SubIntent, task.SubjectScope, task.Entities)
 	phone := currentPhone
 	if phone == "" && !phoneRejected {
 		phone = runtimePMSLastUsableCustomerPhone(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone))
 	}
-	if phone == "" && !phoneRejected {
+	if phone == "" && !phoneRejected && task.SubjectScope == "" {
 		phone = runtimePMSLastUsableCustomerPhone(text)
+		if phone == runtimeIntentEntityValue(task.Entities, runtimeIntentEntityMemberPhone) &&
+			phone != runtimeIntentEntityValue(task.Entities, runtimeIntentEntityCustomerPhone) && !isMemberRuntimeSubIntent(task.SubIntent) {
+			phone = ""
+		}
 	}
 	if phone == "" && !phoneRejected {
 		phone = sessionLocator.Phone
@@ -591,10 +605,21 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		Scenario:           pmsReadScenarioForSubIntent(task.SubIntent),
 		SubIntent:          task.SubIntent,
 		Phone:              phone,
+		MemberPhone:        firstNonEmptyReplyTaskText(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityMemberPhone), sessionLocator.MemberPhone),
+		SubjectScope:       task.SubjectScope,
+		RequestedAspects:   append([]string(nil), task.RequestedAspects...),
 		RoomKeyword:        runtimePMSRoomKeyword(task),
 		TargetRoomTypeText: targetRoomTypeText,
 		OrderHistory:       runtimePMSAsksOrderHistory(text),
 		AssessMembership:   containsAny(text, []string{"会员", "权益", "免差", "免费升"}),
+	}
+	if task.SubjectScope != "" {
+		input.OrderHistory = task.SubjectScope == runtimeSubjectHistoricalOrder
+		input.AssessMembership = runtimePMSHasRequestedAspect(task, "member_benefits", "member_level", "member_validity")
+	}
+	if task.SubjectScope == runtimeSubjectPersonalMembership {
+		input.MemberPhone = firstNonEmptyReplyTaskText(currentPhone, input.MemberPhone, input.Phone)
+		input.Phone = input.MemberPhone
 	}
 	if input.TargetRoomTypeText == "" && runtimePMSTaskRetainsTargetRoomType(task.SubIntent) &&
 		(task.ResolutionState == runtimeIntentResolutionResolvedFromContext || input.Scenario == pmsReadScenarioPrice) &&
@@ -632,10 +657,30 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 	if input.Scenario == pmsReadScenarioLateCheckout {
 		input.TargetCheckoutTime = runtimePMSLateCheckoutTargetTime(task)
 	}
+	if task.SubjectScope == runtimeSubjectPublicMembership || input.Scenario == pmsReadScenarioMemberProgram {
+		input.Phone, input.MemberPhone, input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = "", "", "", "", ""
+	}
 	return input
 }
 
 func applyRuntimePMSCurrentTurnPhone(input *pmsReadPlanInput, task callbacks.ReplyTaskPlanTraceData, session runtimePMSSessionLocator, currentText string) {
+	if input.Scenario == pmsReadScenarioMemberProgram {
+		return
+	}
+	if task.SubjectScope != "" {
+		if phone := runtimePMSCurrentTaskPhone(currentText, task.SubIntent, task.SubjectScope, task.Entities); phone != "" {
+			if runtimeIntentScopeIsMembership(task.SubjectScope) {
+				input.MemberPhone, input.Phone = phone, phone
+				input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = "", "", ""
+			} else {
+				input.Phone = phone
+				if phone != session.Phone {
+					input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
+				}
+			}
+		}
+		return
+	}
 	// Split tasks share an unambiguous locator explicitly supplied in this turn.
 	// Never let a historical model entity override that customer correction.
 	if runtimePMSCurrentTextRejectsCustomerPhone(currentText) {
@@ -652,6 +697,14 @@ func applyRuntimePMSCurrentTurnPhone(input *pmsReadPlanInput, task callbacks.Rep
 		return
 	}
 	for phone := range phones {
+		if task.SubjectScope == runtimeSubjectPersonalMembership {
+			input.MemberPhone, input.Phone = phone, phone
+			input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = "", "", ""
+			continue
+		}
+		if input.MemberPhone == phone && input.Phone != "" && input.Phone != phone {
+			continue
+		}
 		input.Phone = phone
 		if phone != session.Phone {
 			input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
@@ -869,6 +922,12 @@ func runtimePMSCurrentRoomTypeSelection(task callbacks.ReplyTaskPlanTraceData) s
 	current := strings.TrimSpace(task.OriginalText)
 	if current == "" {
 		return ""
+	}
+	if (task.SelectionSource == "customer" || task.DialogueAct == "selection") &&
+		runtimePMSRoomKeyword(callbacks.ReplyTaskPlanTraceData{OriginalText: current}) == "" {
+		// Keep the customer selection intact. It is bound only after comparing
+		// against the real PMS catalog, not by enumerating Chinese prefixes.
+		return current
 	}
 	selectionCue := false
 	if index := strings.IndexAny(current, "，。！？,.!?\n"); index >= 0 {
@@ -1848,7 +1907,10 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 		return "", "", pmsReadStepUnavailable
 	}
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
-	type candidate struct{ id, name string }
+	type candidate struct {
+		id, name string
+		mentions [][2]int
+	}
 	exactCandidates := make([]candidate, 0)
 	for _, value := range items {
 		row, ok := value.(map[string]any)
@@ -1861,8 +1923,18 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 		if id == "" || normalizedName == "" {
 			continue
 		}
-		if normalizedTarget == normalizedName {
-			exactCandidates = append(exactCandidates, candidate{id: id, name: name})
+		mentions := [][2]int{}
+		for from := 0; from < len(normalizedTarget); {
+			start := strings.Index(normalizedTarget[from:], normalizedName)
+			if start < 0 {
+				break
+			}
+			start += from
+			mentions = append(mentions, [2]int{start, start + len(normalizedName)})
+			from = start + len(normalizedName)
+		}
+		if len(mentions) > 0 {
+			exactCandidates = append(exactCandidates, candidate{id: id, name: name, mentions: mentions})
 		}
 	}
 	candidates := exactCandidates
@@ -1871,6 +1943,27 @@ func resolveRuntimePMSTargetRoomType(data any, targetText string) (string, strin
 	}
 	unique := make(map[string]candidate)
 	for _, item := range candidates {
+		containedByLongerName := true
+		for _, mention := range item.mentions {
+			contained := false
+			for _, other := range candidates {
+				if item.id == other.id || len([]rune(other.name)) <= len([]rune(item.name)) {
+					continue
+				}
+				for _, outer := range other.mentions {
+					if outer[0] <= mention[0] && outer[1] >= mention[1] {
+						contained = true
+					}
+				}
+			}
+			if !contained {
+				containedByLongerName = false
+				break
+			}
+		}
+		if containedByLongerName {
+			continue
+		}
 		unique[item.id] = item
 	}
 	if len(unique) != 1 {
@@ -1980,12 +2073,13 @@ func applyRuntimePMSReadResultToTask(task *callbacks.ReplyTaskPlanTraceData, pla
 		}
 		task.MissingAspects = appendIfMissing(task.MissingAspects, message)
 	}
-	// Generate still owns the normal response. Keep one customer-safe projection
-	// from the same structured result so an empty model response can recover the
-	// active goal without dumping PMS facts or asking the customer to repeat it.
-	if answer := strings.TrimSpace(runtimePMSCustomerAnswer(*task, plan, result)); answer != "" {
-		task.AnswerText = &answer
-	} else if len(task.SupportedFacts) == 0 {
+	for _, missing := range runtimePMSRequestedProjectionMissing(*task) {
+		task.MissingAspects = appendIfMissing(task.MissingAspects, missing)
+	}
+	// PMS provides facts, never a customer reply to be copied or locked by a
+	// later stage. Only a no-fact clarification keeps a server control answer.
+	task.AnswerText = nil
+	if len(task.SupportedFacts) == 0 {
 		if answer := runtimePMSOutcomeBoundary(*task); answer != "" {
 			task.AnswerText = &answer
 		}
@@ -2001,18 +2095,27 @@ type runtimePMSReadTaskFact struct {
 func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
 	switch step.StepID {
 	case "order.history":
-		return []runtimePMSReadTaskFact{{Aspect: "pms_order_history", Statement: runtimePMSHistoryAnswer(step.Data)}}
+		return runtimePMSHistoryFacts(task, step.Data)
 	case "member.program":
-		return []runtimePMSReadTaskFact{{Aspect: "pms_member_program", Statement: runtimePMSProgramAnswer(task, step.Data)}}
+		return runtimePMSProgramFacts(task, step.Data)
+	case "member.info", "member.benefits":
+		return runtimePMSPersonalMemberFacts(task, step.Data)
 	case "price.board":
-		return []runtimePMSReadTaskFact{{Aspect: "pms_price_board", Statement: runtimePMSBoardPriceFact(step)}}
+		return runtimePMSPriceBoardFacts(plan, step)
+	case "inventory.stay":
+		return runtimePMSInventoryFacts(plan, step)
+	case "stay.room_availability":
+		return runtimePMSStayRoomFacts(plan, step)
 	}
-	if plan.Scenario == pmsReadScenarioOrder && (step.StepID == "order.reserve" || step.StepID == "order.recept") {
-		if facts, requested := runtimePMSFocusedOrderFacts(task, step.Data); len(facts) > 0 {
-			return facts
-		} else if requested {
-			return nil
+	if step.StepID == "order.reserve" || step.StepID == "order.recept" {
+		if plan.Scenario == pmsReadScenarioOrder {
+			if facts, requested := runtimePMSFocusedOrderFacts(task, step.Data); len(facts) > 0 {
+				return facts
+			} else if requested {
+				return nil
+			}
 		}
+		return runtimePMSOrderOverviewFacts(step.Data, "查询定位的住宿")
 	}
 	statement := runtimePMSReadFactStatement(plan, step)
 	if statement == "" {
@@ -2032,74 +2135,85 @@ type runtimePMSOrderFieldProjection struct {
 }
 
 func runtimePMSOrderFieldProjections(task callbacks.ReplyTaskPlanTraceData) []runtimePMSOrderFieldProjection {
-	currentText := firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
-	current := runtimePMSOrderFieldProjectionsForText(currentText)
-	for _, projection := range current {
-		if projection.match {
-			return current
-		}
-	}
-	resolvedText := strings.TrimSpace(task.ResolvedText)
-	if resolvedText != "" && runtimePMSNormalizedTaskText(resolvedText) != runtimePMSNormalizedTaskText(currentText) {
-		current = runtimePMSOrderFieldProjectionsForText(resolvedText)
-		for _, projection := range current {
-			if projection.match {
-				return current
-			}
-		}
-	}
-	// Preserve the model's field family when the customer's wording does not
-	// match a specific field. A time question must not fall back to a full order.
-	for index := range current {
+	if len(task.RequestedAspects) == 0 {
+		// Legacy runlogs have only the broad objective. Preserve that field
+		// family, without interpreting the customer's wording a second time.
 		switch task.Objective {
 		case "time":
-			current[index].match = current[index].aspect == "pms_order_checkin_time" || current[index].aspect == "pms_order_checkout_time"
+			task.RequestedAspects = []string{"stay_dates"}
 		case "price":
-			current[index].match = current[index].aspect == "pms_order_amount"
+			task.RequestedAspects = []string{"order_amount"}
 		}
 	}
-	return current
-}
-
-func runtimePMSOrderFieldProjectionsForText(text string) []runtimePMSOrderFieldProjection {
 	return []runtimePMSOrderFieldProjection{
 		{
 			aspect: "pms_order_room_type", label: "当前订单房型",
-			match: containsAny(text, []string{"房型", "什么房", "哪种房", "订的什么房", "订的是哪种房"}),
+			match: runtimePMSHasRequestedAspect(task, "room_type"),
 			value: func(order map[string]any) string { return strings.Join(runtimePMSOrderRoomNames(order), "/") },
 		},
 		{
 			aspect: "pms_order_room_number", label: "当前订单房号",
-			match: containsAny(text, []string{"房号", "哪间房", "住哪间", "什么房间"}),
+			match: runtimePMSHasRequestedAspect(task, "room_number"),
 			value: func(order map[string]any) string { return firstRuntimePMSReadText(order, "homeName") },
 		},
 		{
 			aspect: "pms_order_checkin_time", label: "当前订单入住时间",
-			match: containsAny(text, []string{"入住时间", "入住日期", "几点入住", "哪天入住", "什么时候入住", "到店时间"}),
+			match: runtimePMSHasRequestedAspect(task, "checkin_time", "stay_dates"),
 			value: func(order map[string]any) string {
 				return firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate")
 			},
 		},
 		{
 			aspect: "pms_order_checkout_time", label: "当前订单离店时间",
-			match: containsAny(text, []string{"退房", "离店", "住到", "到几号", "到哪天", "到什么时候"}),
+			match: runtimePMSHasRequestedAspect(task, "checkout_time", "stay_dates"),
 			value: func(order map[string]any) string {
 				return firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate")
 			},
 		},
 		{
 			aspect: "pms_order_amount", label: "当前订单金额",
-			match: containsAny(text, []string{"多少钱", "金额", "费用", "房费"}),
+			match: runtimePMSHasRequestedAspect(task, "order_amount", "price"),
 			value: func(order map[string]any) string {
 				return firstRuntimePMSReadText(order, "payableAmount", "roomFee", "payAmount", "waitPayAmount")
 			},
 		},
 		{
 			aspect: "pms_order_status", label: "当前订单状态",
-			match: containsAny(text, []string{"订单状态", "预订状态", "成功了吗", "确认了吗"}),
+			match: runtimePMSHasRequestedAspect(task, "status", "order_status"),
 			value: runtimePMSCustomerOrderStatus,
 		},
 	}
+}
+
+func runtimePMSOrderOverviewFacts(data any, scope string) []runtimePMSReadTaskFact {
+	facts := []runtimePMSReadTaskFact{}
+	for _, field := range []struct {
+		aspect string
+		label  string
+		value  func(map[string]any) string
+	}{
+		{"pms_order_room_type", "房型", func(order map[string]any) string { return strings.Join(runtimePMSOrderRoomNames(order), "/") }},
+		{"pms_order_room_number", "房号", func(order map[string]any) string { return firstRuntimePMSReadText(order, "homeName") }},
+		{"pms_order_checkin_time", "入住时间", func(order map[string]any) string {
+			return firstRuntimePMSReadText(order, "checkInTime", "checkInBusinessDate")
+		}},
+		{"pms_order_checkout_time", "离店时间", func(order map[string]any) string {
+			return firstRuntimePMSReadText(order, "checkOutTime", "checkOutBusinessDate")
+		}},
+		{"pms_order_status", "状态", runtimePMSCustomerOrderStatus},
+	} {
+		values := runtimePMSUniqueOrderValues(data, field.value)
+		if len(values) == 1 {
+			if field.aspect == "pms_order_checkin_time" || field.aspect == "pms_order_checkout_time" {
+				values[0] = runtimePMSCustomerDateTime(values[0])
+			}
+			facts = append(facts, runtimePMSReadTaskFact{
+				Aspect: field.aspect, Statement: scope + "的" + field.label + "：" + values[0] + "。",
+				CriticalValues: append([]string(nil), values...),
+			})
+		}
+	}
+	return facts
 }
 
 func runtimePMSFocusedOrderFacts(task callbacks.ReplyTaskPlanTraceData, data any) ([]runtimePMSReadTaskFact, bool) {
@@ -2114,6 +2228,12 @@ func runtimePMSFocusedOrderFacts(task callbacks.ReplyTaskPlanTraceData, data any
 		values := runtimePMSUniqueOrderValues(data, item.value)
 		if len(values) != 1 {
 			continue
+		}
+		if item.aspect == "pms_order_checkin_time" || item.aspect == "pms_order_checkout_time" {
+			values[0] = runtimePMSCustomerDateTime(values[0])
+		}
+		if item.aspect == "pms_order_amount" {
+			values[0] = runtimePMSCustomerAmount(values[0])
 		}
 		facts = append(facts, runtimePMSReadTaskFact{
 			Aspect: item.aspect, Statement: item.label + "为" + values[0] + "。",
@@ -2151,28 +2271,6 @@ func runtimePMSReadTaskHasFact(task callbacks.ReplyTaskPlanTraceData, aspect, st
 		}
 	}
 	return false
-}
-
-func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
-	switch plan.Scenario {
-	case pmsReadScenarioOrder:
-		if data, ok := result.Confirmed["order.history"]; ok {
-			return runtimePMSHistoryAnswer(data)
-		}
-		return runtimePMSCustomerOrderAnswer(task, result)
-	case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade:
-		return runtimePMSCustomerRoomChoiceAnswer(task, plan, result)
-	case pmsReadScenarioPrice:
-		return runtimePMSCustomerPriceAnswer(task, result)
-	case pmsReadScenarioDateInventory:
-		return runtimePMSCustomerInventoryAnswer(result)
-	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
-		return runtimePMSCustomerMemberAnswer(result)
-	case pmsReadScenarioMemberProgram:
-		return runtimePMSProgramAnswer(task, result.Confirmed["member.program"])
-	default:
-		return ""
-	}
 }
 
 func runtimePMSCustomerInventoryAnswer(result pmsReadPlanResult) string {
@@ -2341,6 +2439,14 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 		return answer + "目前只是选了一个候选房，还没有实际换房。"
 	}
 	targetText := runtimePMSTargetRoomTypeText(task)
+	for _, step := range result.Steps {
+		if step.StepID == "inventory.stay" {
+			if _, name, status := resolveRuntimePMSTargetRoomType(step.Data, targetText); status == pmsReadStepOK {
+				targetText = name
+			}
+			break
+		}
+	}
 	normalizedTarget := normalizeRuntimePMSRoomTypeText(targetText)
 	if runtimePMSGenericRoomChoice(normalizedTarget) {
 		normalizedTarget = ""
@@ -2680,34 +2786,6 @@ func runtimePMSCustomerPriceClause(task callbacks.ReplyTaskPlanTraceData, result
 	return missingPriceClause
 }
 
-func runtimePMSCustomerMemberAnswer(result pmsReadPlanResult) string {
-	for _, step := range result.Steps {
-		if step.StepID != "member.info" && step.StepID != "member.benefits" {
-			continue
-		}
-		root, _ := step.Data.(map[string]any)
-		member, _ := root["member"].(map[string]any)
-		grade, _ := root["grade"].(map[string]any)
-		if member == nil {
-			member = root
-		}
-		gradeName := firstRuntimePMSReadText(member, "gradeName")
-		benefits := runtimePMSMemberBenefitTexts(grade)
-		if gradeName == "" && len(benefits) == 0 {
-			return ""
-		}
-		answer := "查到了"
-		if gradeName != "" {
-			answer += "，您当前是" + gradeName
-		}
-		if len(benefits) > 0 {
-			answer += "，可用权益包括" + strings.Join(benefits, "、")
-		}
-		return answer + "。"
-	}
-	return ""
-}
-
 func runtimePMSCustomerDateTime(value string) string {
 	value = strings.TrimSpace(value)
 	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", time.RFC3339} {
@@ -2769,7 +2847,7 @@ func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.Reply
 
 func runtimePMSReadHasOtherOrderFact(result pmsReadPlanResult, skipStepID string) bool {
 	for _, step := range result.Steps {
-		if step.StepID == "order.history" && step.Status == pmsReadStepOK && runtimePMSHistoryAnswer(step.Data) != "" {
+		if step.StepID == "order.history" && step.Status == pmsReadStepOK && len(runtimePMSHistoryRows(step.Data)) > 0 {
 			return true
 		}
 		if step.StepID == skipStepID || (step.StepID != "order.reserve" && step.StepID != "order.recept") {

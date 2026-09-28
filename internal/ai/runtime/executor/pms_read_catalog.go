@@ -11,61 +11,75 @@ func runtimePMSAsksOrderHistory(text string) bool {
 	return containsAny(text, []string{"历史订单", "以前的订单", "之前的订单", "以前住", "上次住", "上次的订单", "住过", "入住记录", "过去的订单", "所有订单", "全部订单"})
 }
 
-func runtimePMSHistoryAnswer(data any) string {
+func runtimePMSHistoryRows(data any) []map[string]any {
 	root, _ := data.(map[string]any)
 	rows, _ := root["rows"].([]any)
-	if len(rows) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(rows))
+	ret := make([]map[string]any, 0, len(rows))
 	for _, value := range rows {
-		row, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		parts := []string{}
-		start := runtimePMSCustomerDateTime(firstRuntimePMSReadText(row, "checkInTime"))
-		end := runtimePMSCustomerDateTime(firstRuntimePMSReadText(row, "checkOutTime"))
-		if start != "" {
-			parts = append(parts, start+"入住")
-		}
-		if end != "" {
-			parts = append(parts, end+"离店")
-		}
-		if room := firstRuntimePMSReadText(row, "roomName"); room != "" {
-			parts = append(parts, room)
-		}
-		if status := runtimePMSCustomerOrderStatus(row); status != "" {
-			parts = append(parts, status)
-		}
-		if amount := runtimePMSCustomerAmount(firstRuntimePMSReadText(row, "payAmount")); amount != "" {
-			parts = append(parts, "订单金额"+amount)
-		}
-		if len(parts) > 0 {
-			lines = append(lines, strings.Join(parts, "，")+"。")
-		}
-		if len(lines) == 10 {
-			break
+		if row, ok := value.(map[string]any); ok {
+			ret = append(ret, row)
 		}
 	}
-	if len(lines) == 0 {
-		return ""
-	}
-	prefix := fmt.Sprintf("查到这个手机号有%d笔订单：", len(rows))
-	if len(rows) > len(lines) {
-		prefix += fmt.Sprintf("先列出其中%d笔，您可以告诉我想查哪段入住日期。", len(lines))
-	}
-	return prefix + "\n" + strings.Join(lines, "\n")
+	return ret
 }
 
-func runtimePMSProgramAnswer(task callbacks.ReplyTaskPlanTraceData, data any) string {
+func runtimePMSHistoryFacts(task callbacks.ReplyTaskPlanTraceData, data any) []runtimePMSReadTaskFact {
+	rows := runtimePMSHistoryRows(data)
+	if len(rows) == 0 {
+		return nil
+	}
+	reserveID, receptID, _ := runtimePMSOrderLocators(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityOrderLocator))
+	if reserveID != "" || receptID != "" {
+		selected := make([]map[string]any, 0, 1)
+		for _, row := range rows {
+			if (receptID != "" && firstRuntimePMSReadText(row, "receptOrderId") == receptID) ||
+				(receptID == "" && reserveID != "" && firstRuntimePMSReadText(row, "reserveOrderId") == reserveID) {
+				selected = append(selected, row)
+			}
+		}
+		if len(selected) > 0 {
+			rows = selected
+		}
+	}
+	if task.SubjectScope == runtimeSubjectCurrentOrder || task.SubjectScope == runtimeSubjectCurrentStay {
+		return []runtimePMSReadTaskFact{{
+			Aspect:    "pms_order_history_scope",
+			Statement: "当前有效订单未匹配；手机号搜索另查到住宿记录，但不能以历史住宿替代当前订单。需要确认客户要查询的是哪次住宿。",
+		}}
+	}
+	if len(rows) > 1 {
+		options := make([]string, 0, min(len(rows), 3))
+		for _, row := range rows[:min(len(rows), 3)] {
+			fields := []string{}
+			if date := firstRuntimePMSReadText(row, "checkInTime", "checkInBusinessDate"); date != "" {
+				fields = append(fields, "入住日期"+runtimePMSCustomerDateTime(date))
+			}
+			if room := firstRuntimePMSReadText(row, "roomName"); room != "" {
+				fields = append(fields, "房型"+room)
+			}
+			if len(fields) > 0 {
+				options = append(options, strings.Join(fields, "、"))
+			}
+		}
+		return []runtimePMSReadTaskFact{{
+			Aspect: "pms_order_history_selection",
+			Statement: fmt.Sprintf("匹配到%d笔住宿记录，当前尚未唯一选择；可用于区分的记录为%s。需要客户选择住宿日期，不能任选一笔回答金额或离店时间。",
+				len(rows), strings.Join(options, "；")),
+		}}
+	}
+	facts, requested := runtimePMSFocusedOrderFacts(task, rows[0])
+	if !requested {
+		facts = runtimePMSOrderOverviewFacts(rows[0], "历史住宿")
+	}
+	for index := range facts {
+		facts[index].Statement = strings.ReplaceAll(facts[index].Statement, "当前订单", "所选历史住宿")
+	}
+	return facts
+}
+
+func runtimePMSProgramFacts(task callbacks.ReplyTaskPlanTraceData, data any) []runtimePMSReadTaskFact {
 	root, _ := data.(map[string]any)
 	grades, _ := root["grades"].([]any)
-	text := strings.TrimSpace(task.OriginalText)
-	if text == "" {
-		text = strings.TrimSpace(task.ResolvedText + task.Text)
-	}
-	var selected []map[string]any
 	var all []map[string]any
 	for _, value := range grades {
 		grade, ok := value.(map[string]any)
@@ -73,33 +87,371 @@ func runtimePMSProgramAnswer(task callbacks.ReplyTaskPlanTraceData, data any) st
 			continue
 		}
 		all = append(all, grade)
-		name := firstRuntimePMSReadText(grade, "gradeName")
-		if name != "" && strings.Contains(text, strings.TrimSuffix(name, "会员")) {
-			selected = append(selected, grade)
-		}
 	}
-	if len(selected) == 0 || containsAny(text, []string{"所有", "各个", "哪些等级", "各等级", "各项"}) {
+	selected := runtimePMSGradesMentionedByTask(task, all)
+	if len(selected) == 0 {
 		selected = all
 	}
-	var lines []string
+	names := make([]string, 0, len(selected))
 	for _, grade := range selected {
-		name := firstRuntimePMSReadText(grade, "gradeName")
-		parts := []string{}
-		if benefits := runtimePMSMemberBenefitTexts(grade); len(benefits) > 0 {
-			parts = append(parts, strings.Join(benefits, "、"))
+		if name := firstRuntimePMSReadText(grade, "gradeName"); name != "" {
+			names = append(names, name)
 		}
-		if validity := firstRuntimePMSReadText(grade, "validityText"); validity != "" {
-			parts = append(parts, "有效期"+validity)
-		}
-		if rule := firstRuntimePMSReadText(grade, "upgradeRuleSummary"); rule != "" {
-			parts = append(parts, "升级条件："+rule)
-		}
-		if rule := firstRuntimePMSReadText(grade, "keepGradeRuleSummary"); rule != "" {
-			parts = append(parts, "保级条件："+rule)
-		}
-		lines = append(lines, name+"："+strings.Join(parts, "；")+"。")
 	}
-	return strings.Join(lines, "\n")
+	if len(names) == 0 {
+		return nil
+	}
+	facts := []runtimePMSReadTaskFact{{
+		Aspect: "pms_member_level_names", Statement: "公开会员等级：" + strings.Join(names, "、") + "。",
+		CriticalValues: append([]string(nil), names...),
+	}}
+	if len(task.RequestedAspects) == 0 || runtimePMSOnlyRequestedAspect(task, "member_level_names") {
+		return facts
+	}
+	for _, grade := range selected {
+		facts = append(facts, runtimePMSGradeFacts(task, grade, firstRuntimePMSReadText(grade, "gradeName"))...)
+	}
+	return facts
+}
+
+func runtimePMSGradesMentionedByTask(task callbacks.ReplyTaskPlanTraceData, grades []map[string]any) []map[string]any {
+	for _, text := range []string{task.OriginalText, task.ResolvedText, task.Text} {
+		selected := make([]map[string]any, 0, 1)
+		for _, grade := range grades {
+			name := strings.TrimSuffix(firstRuntimePMSReadText(grade, "gradeName"), "会员")
+			if name != "" && strings.Contains(text, name) {
+				selected = append(selected, grade)
+			}
+		}
+		if len(selected) > 0 {
+			return selected
+		}
+	}
+	return nil
+}
+
+func runtimePMSHasRequestedAspect(task callbacks.ReplyTaskPlanTraceData, aspects ...string) bool {
+	for _, requested := range task.RequestedAspects {
+		for _, aspect := range aspects {
+			if strings.TrimSpace(requested) == aspect {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runtimePMSOnlyRequestedAspect(task callbacks.ReplyTaskPlanTraceData, aspect string) bool {
+	return len(task.RequestedAspects) == 1 && strings.TrimSpace(task.RequestedAspects[0]) == aspect
+}
+
+func runtimePMSGradeFacts(task callbacks.ReplyTaskPlanTraceData, grade map[string]any, name string) []runtimePMSReadTaskFact {
+	facts := make([]runtimePMSReadTaskFact, 0, 4)
+	add := func(aspect, label, value string) {
+		if value == "" {
+			return
+		}
+		facts = append(facts, runtimePMSReadTaskFact{
+			Aspect: "pms_" + aspect, Statement: name + "的" + label + "：" + value + "。",
+		})
+	}
+	if runtimePMSHasRequestedAspect(task, "member_upgrade_conditions") {
+		add("member_upgrade_conditions", "等级升级条件", firstRuntimePMSReadText(grade, "upgradeRuleSummary"))
+	}
+	if runtimePMSHasRequestedAspect(task, "member_retention_conditions") {
+		add("member_retention_conditions", "保级条件", firstRuntimePMSReadText(grade, "keepGradeRuleSummary"))
+	}
+	if runtimePMSHasRequestedAspect(task, "member_validity") {
+		add("member_validity", "等级有效期", firstRuntimePMSReadText(grade, "validityText"))
+	}
+	if runtimePMSHasRequestedAspect(task, "member_benefits", "checkout_time", "price", "quantity", "policy", "compound_information") {
+		benefits, _ := grade["benefits"].([]any)
+		for _, value := range benefits {
+			benefit, ok := value.(map[string]any)
+			if !ok || !runtimePMSRequestedBenefit(task, benefit) {
+				continue
+			}
+			label := firstRuntimePMSReadText(benefit, "label", "benefitName")
+			parts := []string{}
+			for _, field := range []string{"contentText", "contentValue", "benefitDescription"} {
+				if text := firstRuntimePMSReadText(benefit, field); text != "" {
+					parts = appendIfMissing(parts, text)
+				}
+			}
+			aspect := "member_benefit"
+			if strings.Contains(label, "退房") || strings.Contains(label, "延退") {
+				aspect = "member_checkout_time"
+			}
+			if len(parts) == 0 {
+				add(aspect, "权益", label)
+			} else {
+				add(aspect, label, strings.Join(parts, "；"))
+			}
+			if len(facts) > 0 {
+				for _, token := range knowledgeEvidenceIndividualTimePattern.FindAllString(strings.Join(parts, "；"), -1) {
+					facts[len(facts)-1].CriticalValues = appendIfMissing(facts[len(facts)-1].CriticalValues, token)
+				}
+			}
+		}
+	}
+	return facts
+}
+
+func runtimePMSRequestedBenefit(task callbacks.ReplyTaskPlanTraceData, benefit map[string]any) bool {
+	if runtimePMSHasRequestedAspect(task, "member_benefits", "policy", "compound_information") {
+		return true
+	}
+	// Match returned benefit labels, not customer wording or guessed benefit IDs.
+	label := firstRuntimePMSReadText(benefit, "label", "benefitName")
+	if runtimePMSHasRequestedAspect(task, "checkout_time") {
+		return strings.Contains(label, "退房") || strings.Contains(label, "延退")
+	}
+	if runtimePMSHasRequestedAspect(task, "price") {
+		return strings.Contains(label, "会员价") || strings.Contains(label, "折扣")
+	}
+	if runtimePMSHasRequestedAspect(task, "quantity") {
+		return strings.Contains(label, "早餐") || strings.Contains(label, "份数")
+	}
+	return false
+}
+
+func runtimePMSPersonalMemberFacts(task callbacks.ReplyTaskPlanTraceData, data any) []runtimePMSReadTaskFact {
+	root, _ := data.(map[string]any)
+	member, _ := root["member"].(map[string]any)
+	grade, _ := root["grade"].(map[string]any)
+	if member == nil {
+		member = root
+	}
+	name := firstRuntimePMSReadText(member, "gradeName")
+	if name == "" {
+		return nil
+	}
+	facts := []runtimePMSReadTaskFact{{
+		Aspect: "pms_member_identity", Statement: "本次查询的客户会员等级为" + name + "。",
+		CriticalValues: []string{name},
+	}}
+	if status := firstRuntimePMSReadText(member, "statusName"); status != "" {
+		facts = append(facts, runtimePMSReadTaskFact{Aspect: "pms_member_status", Statement: "会员状态：" + status + "。"})
+	}
+	if available := firstRuntimePMSReadText(member, "gradeAvailable"); available == "true" || available == "false" {
+		label := "当前会员等级有效"
+		if available == "false" {
+			label = "当前会员等级不可用，不能承诺使用对应权益"
+		}
+		facts = append(facts, runtimePMSReadTaskFact{Aspect: "pms_member_status", Statement: label + "。"})
+	}
+	if runtimePMSHasRequestedAspect(task, "member_validity") {
+		for _, field := range []struct{ key, label string }{{"validStartTime", "会员有效开始时间"}, {"validEndTime", "会员有效结束时间"}} {
+			if value := firstRuntimePMSReadText(member, field.key); value != "" {
+				value = runtimePMSCustomerDateTime(value)
+				facts = append(facts, runtimePMSReadTaskFact{
+					Aspect: "pms_member_validity", Statement: field.label + "：" + value + "。", CriticalValues: []string{value},
+				})
+			}
+		}
+	}
+	return append(facts, runtimePMSGradeFacts(task, grade, name)...)
+}
+
+func runtimePMSRequestedProjectionMissing(task callbacks.ReplyTaskPlanTraceData) []string {
+	hasFact := func(aspects ...string) bool {
+		for _, fact := range task.SupportedFacts {
+			for _, aspect := range aspects {
+				if fact.Aspect == aspect {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if task.PMSOutcome == nil || (task.PMSOutcome.Status != string(pmsReadStepOK) && task.PMSOutcome.Status != string(pmsReadStepPartial)) {
+		return nil
+	}
+	missing := []string{}
+	for _, requested := range task.RequestedAspects {
+		aspect, label := "", ""
+		switch requested {
+		case "checkout_time":
+			aspect, label = "pms_order_checkout_time", "订单离店时间"
+			if runtimeIntentScopeIsMembership(task.SubjectScope) {
+				aspect, label = "pms_member_checkout_time", "会员延迟退房权益"
+			}
+		case "checkin_time":
+			aspect, label = "pms_order_checkin_time", "订单入住时间"
+		case "order_amount":
+			aspect, label = "pms_order_amount", "所选订单金额"
+		case "member_upgrade_conditions":
+			aspect, label = "pms_member_upgrade_conditions", "会员等级升级条件"
+		case "member_retention_conditions":
+			aspect, label = "pms_member_retention_conditions", "会员保级条件"
+		default:
+			continue
+		}
+		if !hasFact(aspect) {
+			missing = append(missing, "本次查询未返回可确认的"+label+"；保留其他已知事实，不由其他订单或权益推断。")
+		}
+	}
+	return missing
+}
+
+func runtimePMSPriceBoardFacts(plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
+	rows, _ := step.Data.([]any)
+	dates, err := runtimePMSStayDates(step.Args["beginTime"], step.Args["endTime"])
+	if err != nil {
+		return nil
+	}
+	targetID := firstNonEmptyReplyTaskText(runtimePMSPlanTargetRoomTypeID(plan), step.Args["roomTypeId"])
+	facts := []runtimePMSReadTaskFact{}
+	seenRooms := 0
+	for _, value := range rows {
+		row, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := firstRuntimePMSReadText(row, "roomId", "productId", "roomTypeId")
+		if targetID != "" && id != targetID {
+			continue
+		}
+		name := firstRuntimePMSReadText(row, "roomTypeName", "productName")
+		if name == "" {
+			continue
+		}
+		bookings, _ := row["bookings"].(map[string]any)
+		for _, date := range dates {
+			day, _ := bookings[date].(map[string]any)
+			price := firstRuntimePMSReadText(day, "price")
+			if price == "" {
+				continue
+			}
+			customerDate, amount := runtimePMSCustomerDateTime(date), runtimePMSCustomerAmount(price)
+			facts = append(facts, runtimePMSReadTaskFact{
+				Aspect:         "pms_price_board",
+				Statement:      name + "在" + customerDate + "晚的挂牌售价为" + amount + "；这不是原订单已付金额，也不是完成会员或渠道结算后的最终补退金额。",
+				CriticalValues: []string{customerDate, amount},
+			})
+		}
+		seenRooms++
+		if targetID == "" && seenRooms >= 6 {
+			break
+		}
+	}
+	return facts
+}
+
+func runtimePMSPlanTargetRoomTypeID(plan pmsReadPlan) string {
+	for _, stepID := range []string{"price.difference", "inventory.stay", "price.board"} {
+		for _, step := range plan.Steps {
+			if step.ID == stepID && step.Args["roomTypeId"] != "" {
+				return step.Args["roomTypeId"]
+			}
+		}
+	}
+	return ""
+}
+
+func runtimePMSInventoryFacts(plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
+	rows, _ := step.Data.([]any)
+	dates, err := runtimePMSStayDates(step.Args["beginTime"], step.Args["endTime"])
+	if err != nil {
+		return nil
+	}
+	targetID := firstNonEmptyReplyTaskText(runtimePMSPlanTargetRoomTypeID(plan), step.Args["roomTypeId"])
+	start := runtimePMSCustomerDateTime(step.Args["beginTime"])
+	end := runtimePMSCustomerDateTime(step.Args["endTime"])
+	facts := []runtimePMSReadTaskFact{}
+	for _, value := range rows {
+		row, ok := value.(map[string]any)
+		if !ok || !runtimePMSInventoryRoomTypeRow(row) {
+			continue
+		}
+		if targetID != "" && firstRuntimePMSReadText(row, "roomTypeId", "productId", "roomId") != targetID {
+			continue
+		}
+		name := firstRuntimePMSReadText(row, "roomTypeName", "productName", "roomName")
+		if name == "" {
+			continue
+		}
+		available := runtimePMSInventoryAvailability(row, dates)
+		bookings, _ := row["bookings"].(map[string]any)
+		complete := true
+		for _, date := range dates {
+			day, _ := bookings[date].(map[string]any)
+			if firstRuntimePMSReadText(day, "available") == "" {
+				complete = false
+				break
+			}
+		}
+		statement := name + "在" + start + "入住至" + end + "离店区间"
+		critical := []string{start, end}
+		if !complete || available == "" {
+			statement += "仅返回部分库存，不能确认全程可售。"
+		} else {
+			statement += "的各晚最低可售库存为" + available + "间。"
+		}
+		statement += "这是房型库存，不代表同一房号全程可用，也没有锁房或办理变更。"
+		facts = append(facts, runtimePMSReadTaskFact{
+			Aspect: "pms_room_inventory", Statement: statement, CriticalValues: critical,
+		})
+		if targetID == "" && len(facts) >= 6 {
+			break
+		}
+	}
+	return facts
+}
+
+func runtimePMSStayRoomFacts(plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
+	root, _ := step.Data.(map[string]any)
+	if root == nil {
+		return nil
+	}
+	start := runtimePMSCustomerDateTime(firstRuntimePMSReadText(root, "startDate"))
+	end := runtimePMSCustomerDateTime(firstRuntimePMSReadText(root, "endDate"))
+	scope := start + "至" + end
+	if firstRuntimePMSReadText(root, "coverageComplete") != "true" {
+		return []runtimePMSReadTaskFact{{
+			Aspect:    "pms_stay_room_availability",
+			Statement: scope + "的具体房号占用资料未完整覆盖；" + firstRuntimePMSReadText(root, "reason") + "。不能将当前空房当作完整入住区间可分配。",
+		}}
+	}
+	targetID := runtimePMSPlanTargetRoomTypeID(plan)
+	candidates, _ := root["candidates"].([]any)
+	facts := []runtimePMSReadTaskFact{}
+	for _, value := range candidates {
+		row, ok := value.(map[string]any)
+		if !ok || (targetID != "" && firstRuntimePMSReadText(row, "roomTypeId") != targetID) {
+			continue
+		}
+		home := firstRuntimePMSReadText(row, "homeName")
+		if home == "" {
+			continue
+		}
+		name := firstRuntimePMSReadText(row, "roomTypeName")
+		statement := name + "的" + home + "房在" + scope + "区间没有查到订单冲突，且未锁房、未维修。"
+		if floor := firstRuntimePMSReadText(row, "floorName"); floor != "" {
+			statement += "楼层为" + floor + "。"
+		}
+		if firstRuntimePMSReadText(row, "readyNow") == "true" {
+			statement += "当前为空净房。"
+		} else {
+			statement += "当前是否已清洁可入住尚未确认。"
+		}
+		statement += "本次仅查询，并未分配或锁定该房间。"
+		facts = append(facts, runtimePMSReadTaskFact{
+			Aspect: "pms_stay_room_availability", Statement: statement,
+			CriticalValues: []string{start, end},
+		})
+		if len(facts) == 3 {
+			break
+		}
+	}
+	if len(facts) == 0 {
+		return []runtimePMSReadTaskFact{{
+			Aspect:         "pms_stay_room_availability",
+			Statement:      "在" + scope + "区间没有查到满足目标房型且无占用冲突的具体房间；这不等于其他房型均不可用。",
+			CriticalValues: []string{start, end},
+		}}
+	}
+	return facts
 }
 
 func runtimePMSBoardPriceFact(step pmsReadStepResult) string {

@@ -132,19 +132,6 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	if taskIDs := ungroundedKnowledgeReplyTaskIDs(collector.Data.Pipeline.ReplyPlan); len(taskIDs) > 0 {
 		return completeUngroundedKnowledgeFallback(summary, collector, taskIDs)
 	}
-	if prepareGroundedPMSDirectCommit(summary, collector) {
-		summary.Status = "completed"
-		summary.ModelName = req.AIConfig.ModelName
-		collector.Data.Status = summary.Status
-		collector.Data.Output.ReplyText = summary.ReplyText
-		collector.Data.Output.FinishReason = "grounded_pms_direct_commit"
-		collector.Data.Pipeline.Generate.Status = "skipped"
-		collector.Data.Pipeline.Generate.Reason = "all reply tasks have customer-safe answers grounded by structured PMS or Judge evidence"
-		collector.Data.Pipeline.Validate.Status = "passed"
-		collector.Data.Pipeline.Validate.Reason = "structured PMS answer passed protocol and send-safety validation"
-		summary.TraceData = collector.Marshal()
-		return summary, nil
-	}
 	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
 		summary.Status = "completed"
 		summary.ModelName = req.AIConfig.ModelName
@@ -209,27 +196,7 @@ func (s *Service) ExecuteRun(ctx context.Context, req RunInput) (*RunResult, err
 	if consumeErr != nil {
 		return completeGeneratedReplyProtocolFailure(summary, collector, consumeErr, "generate")
 	}
-	validation := enforceGeneratedReplyActionLedger(summary, collector)
-	if validation.RequestHandoffConfirmation {
-		summary.handoffDirective = true
-		summary.handoffDirectiveReason = validation.HandoffReason
-		summary.handoffDirectiveSource = "generated_reply_guard"
-		ledger := collector.Data.ActionLedger
-		ledger.RequestedActions = appendIfMissingActionLedgerItem(ledger.RequestedActions, callbacks.ActionLedgerItem{
-			Action: "human_route",
-			Status: "requested",
-			Reason: validation.HandoffReason,
-		})
-		collector.SetActionLedger(ledger)
-		if handled, err := executeRuntimeHandoffDirective(req, summary, collector); handled || err != nil {
-			return completeRuntimeHandoffDirective(summary, collector, err, true)
-		}
-		summary.ReplyText = "这个问题我目前还没有足够准确的资料，不能直接承诺已经安排同事处理。"
-		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
-			collector.Data.Pipeline.Validate.Reason,
-			"automatic handoff is disabled, so the unsupported promise was replaced with a non-action reply",
-		)
-	}
+	enforceGeneratedReplyActionLedger(summary, collector)
 	collector.Data.Status = summary.Status
 	collector.Data.Output.ReplyText = summary.ReplyText
 	if strings.TrimSpace(collector.Data.Output.FinishReason) == "" {
@@ -652,81 +619,6 @@ func prepareHotelVariableDirectCommit(req RunInput, summary *RunResult, collecto
 	return hasStructuredCommit || strings.TrimSpace(summary.ReplyText) != ""
 }
 
-func prepareGroundedPMSDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
-	if summary == nil || collector == nil {
-		return false
-	}
-	intent := collector.Data.Pipeline.Intent
-	if intent.NeedsTool || intent.NeedsResource || intent.NeedsHumanRoute || len(intent.ResourceActions) > 0 {
-		return false
-	}
-	plan := collector.Data.Pipeline.ReplyPlan
-	if len(plan.TaskPlans) == 0 {
-		return false
-	}
-	hasPMSFact := false
-	for _, task := range plan.TaskPlans {
-		if !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
-			strings.TrimSpace(task.OutputKind) != "text" || len(task.SupportedFacts) == 0 {
-			return false
-		}
-		pmsTask := runtimeReplyTaskHasPMSFact(task)
-		if (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "") && deterministicPMSRoomExplanation(task) == "" {
-			return false
-		}
-		if len(task.MissingAspects) > 0 {
-			return false
-		}
-		hasPMSFact = hasPMSFact || pmsTask
-	}
-	if !hasPMSFact {
-		return false
-	}
-	groups := buildTextReplyTaskGroups(plan)
-	if len(groups) != len(plan.TaskPlans) {
-		return false
-	}
-	parts := make([]string, 0, len(groups))
-	for index, group := range groups {
-		task := plan.TaskPlans[index]
-		reply := ""
-		if (task.AnswerText == nil || strings.TrimSpace(*task.AnswerText) == "") && runtimePMSTaskAsksRoomExplanation(task) {
-			reply = deterministicPMSRoomExplanation(task)
-		}
-		if reply == "" && runtimeReplyTaskHasPMSFact(task) {
-			var err error
-			reply, err = SanitizeGeneratedReplyText(strings.TrimSpace(*task.AnswerText))
-			if err != nil {
-				return false
-			}
-		} else if reply == "" {
-			group.EvidenceLocked = true
-			var err error
-			reply, err = validateLockedReplyContent(group)
-			if err != nil || validateGeneratedReplyFactAspectBoundaries(reply, group.Facts) != nil {
-				return false
-			}
-		}
-		if strings.TrimSpace(reply) == "" || strings.Contains(reply, "```") ||
-			json.Valid([]byte(unwrapGeneratedReplyMarkdownFence(reply))) {
-			return false
-		}
-		parts = append(parts, strings.TrimSpace(reply))
-	}
-	previousOutput := collector.Data.Output
-	previousValidate := collector.Data.Pipeline.Validate
-	summary.ReplyText = composeGeneratedReplyContents(parts, 3)
-	expectedReply := summary.ReplyText
-	validation := enforceGeneratedReplyActionLedger(summary, collector)
-	if validation.RequestHandoffConfirmation || summary.ReplyText != expectedReply {
-		summary.ReplyText = ""
-		collector.Data.Output = previousOutput
-		collector.Data.Pipeline.Validate = previousValidate
-		return false
-	}
-	return true
-}
-
 func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collector *callbacks.RuntimeTraceCollector) bool {
 	if summary == nil || collector == nil {
 		return false
@@ -740,6 +632,9 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 		return false
 	}
 	for _, task := range plan.TaskPlans {
+		if runtimeReplyTaskHasPMSFact(task) || isPMSRuntimeSubIntent(task.SubIntent) {
+			return false
+		}
 		externalProxy := isExternalProxyActionClassification(task.Intent, task.SubIntent, task.Objective)
 		if (!externalProxy && strings.TrimSpace(task.Intent) != "hotel_info") || !task.ReplyRequired || task.NeedsTool || task.NeedsResource || task.NeedsHumanRoute ||
 			strings.TrimSpace(task.OutputKind) != "text" {
@@ -797,8 +692,8 @@ func prepareGroundedIndependentKnowledgeDirectCommit(summary *RunResult, collect
 	previousValidate := collector.Data.Pipeline.Validate
 	summary.ReplyText = composeGeneratedReplyContents(parts, 3)
 	expectedReply := summary.ReplyText
-	validation := enforceGeneratedReplyActionLedger(summary, collector)
-	if validation.RequestHandoffConfirmation || summary.ReplyText != expectedReply {
+	enforceGeneratedReplyActionLedger(summary, collector)
+	if summary.ReplyText != expectedReply {
 		summary.ReplyText = ""
 		collector.Data.Output = previousOutput
 		collector.Data.Pipeline.Validate = previousValidate

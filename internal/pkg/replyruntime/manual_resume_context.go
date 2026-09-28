@@ -78,6 +78,10 @@ type ManualResumeTaskPlan struct {
 	Intent             string               `json:"intent,omitempty"`
 	SubIntent          string               `json:"subIntent,omitempty"`
 	Objective          string               `json:"objective,omitempty"`
+	SubjectScope       string               `json:"subjectScope,omitempty"`
+	RequestedAspects   []string             `json:"requestedAspects,omitempty"`
+	SelectionSource    string               `json:"selectionSource,omitempty"`
+	SelectionRef       string               `json:"selectionRef,omitempty"`
 	RelationToPrevious string               `json:"relationToPrevious,omitempty"`
 	ResolutionState    string               `json:"resolutionState,omitempty"`
 	Entities           []ManualResumeEntity `json:"entities,omitempty"`

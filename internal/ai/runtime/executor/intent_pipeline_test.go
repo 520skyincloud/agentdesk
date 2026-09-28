@@ -3542,7 +3542,7 @@ func TestCurrentTurnBoundaryInstructionBlocksUnsupportedActionPromises(t *testin
 	if !strings.Contains(instruction, "动作安全") {
 		t.Fatalf("expected current-turn boundary to include action safety, got %q", instruction)
 	}
-	for _, expected := range []string{"真实动作", "内部核实", "通知转告", "现场查看", "接待路由"} {
+	for _, expected := range []string{"查询事实不等于执行成功", "已通知", "现场处理", "办理完成", "接待路由"} {
 		if !strings.Contains(instruction, expected) {
 			t.Fatalf("expected action safety to include %q, got %q", expected, instruction)
 		}
@@ -3563,7 +3563,7 @@ func TestCurrentTurnBoundaryInstructionForEmojiBlocksInternalReasoning(t *testin
 func TestCurrentTurnBoundaryInstructionForCorrectionRequiresFriendlyAck(t *testing.T) {
 	req := RunInput{Conversation: models.Conversation{ID: 7}, UserMessage: models.Message{MessageType: enums.IMMessageTypeText, Content: "我没给你发语音大哥"}}
 	instruction := buildCurrentTurnBoundaryInstruction(req, adapter.HistoryBuildResult{}, callbacks.IntentTraceData{PrimaryIntent: "interaction", SubIntent: "correction"})
-	if !strings.Contains(instruction, "纠错/误会") || !strings.Contains(instruction, "只输出一句完整短句") || !strings.Contains(instruction, "不要补答或追问任何旧业务主题") {
+	if !strings.Contains(instruction, "纠错/误会") || !strings.Contains(instruction, "回答纠正后的目标") || !strings.Contains(instruction, "没有业务问题时简短回应") {
 		t.Fatalf("expected correction boundary to scope the reply to the current correction, got %q", instruction)
 	}
 }
@@ -3586,7 +3586,7 @@ func TestRuntimePipelineInvoiceAttachmentFollowUpUsesKnowledge(t *testing.T) {
 		t.Fatal("invoice attachment follow-up should use knowledge")
 	}
 	instruction := buildCurrentTurnBoundaryInstruction(req, history, plan.Intent)
-	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "不能因为未命中自动转人工") || strings.Contains(instruction, "只能说当前资料没写明") {
+	if !strings.Contains(instruction, "动作安全") || !strings.Contains(instruction, "不能因未命中或失败自动转人工") || strings.Contains(instruction, "只能说当前资料没写明") {
 		t.Fatalf("expected invoice follow-up to retain category-level action safety, got %q", instruction)
 	}
 }

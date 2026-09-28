@@ -729,6 +729,9 @@ func jevTestResponse(questions map[string]jev.Question, choices map[string]strin
 			continue
 		}
 		choice := choices[key]
+		if choice == "" && strings.HasPrefix(key, "PHONE_") && strings.HasSuffix(key, "_role") {
+			choice = "reservation"
+		}
 		if choice == "" {
 			for suffix, value := range map[string]string{
 				"_route": "parking", "_objective": "availability", "_dialogue_act": "new_request", "_relation": "independent", "_resolution": "clear", "_context": "none", "_count": "1", "_terminal_alignment": "exact",

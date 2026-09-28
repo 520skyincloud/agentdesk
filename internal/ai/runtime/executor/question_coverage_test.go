@@ -496,8 +496,8 @@ func TestQuestionCoveragePromptSeparatesTaskAndEvidenceFailures(t *testing.T) {
 		t.Fatal("contextual plural requests must follow the same per-object coverage contract")
 	}
 	judgePrompt := knowledgeEvidenceJudgeSystemPrompt()
-	applicability := strings.Index(judgePrompt, "先检查方案适用性")
-	completeness := strings.Index(judgePrompt, "事实维度完整性检查")
+	applicability := strings.Index(judgePrompt, "先检查适用性")
+	completeness := strings.Index(judgePrompt, "形成内部事实维度清单")
 	if applicability < 0 || applicability >= completeness {
 		t.Fatal("an unusable solution must be excluded before retaining partial facts")
 	}

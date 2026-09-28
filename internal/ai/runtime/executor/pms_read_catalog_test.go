@@ -31,10 +31,11 @@ func TestOrderHistorySearchExplicitAndFallback(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		answer := runtimePMSCustomerAnswer(callbacks.ReplyTaskPlanTraceData{}, plan, aggregate)
-		if !strings.Contains(answer, "已退房") || !strings.Contains(answer, "云漫") ||
-			strings.Contains(answer, "9007199254740993") || strings.Contains(answer, "13800000000") {
-			t.Fatalf("history answer wrong or leaks identifiers: %s", answer)
+		facts := runtimePMSHistoryFacts(callbacks.ReplyTaskPlanTraceData{SubjectScope: runtimeSubjectHistoricalOrder}, data)
+		statement := runtimePMSFactStatementsForTest(facts)
+		if !strings.Contains(statement, "已退房") || !strings.Contains(statement, "云漫") ||
+			strings.Contains(statement, "9007199254740993") || strings.Contains(statement, "13800000000") {
+			t.Fatalf("history facts wrong or leak identifiers: %s", statement)
 		}
 		if !runtimePMSReadHasOtherOrderFact(aggregate, "order.recept") {
 			t.Fatal("history must suppress contradictory empty current-order facts")
@@ -78,12 +79,14 @@ func TestMembershipClassificationKeepsConditionedBenefitsTogether(t *testing.T) 
 }
 
 func TestPublicDiamondBenefitsAndDatedBoardProjection(t *testing.T) {
-	answer := runtimePMSProgramAnswer(callbacks.ReplyTaskPlanTraceData{OriginalText: "钻石会员有哪些权益，怎么保级？"},
+	facts := runtimePMSProgramFacts(callbacks.ReplyTaskPlanTraceData{OriginalText: "钻石会员有哪些权益，怎么保级？",
+		RequestedAspects: []string{"member_benefits", "member_retention_conditions"}},
 		map[string]any{"grades": []any{
 			map[string]any{"gradeName": "普通会员", "gradeAvailable": true, "benefits": []any{map[string]any{"label": "9.9折"}}},
 			map[string]any{"gradeName": "钻石会员", "gradeAvailable": true, "benefits": []any{map[string]any{"label": "8.5折"}, map[string]any{"label": "15:00退房"}},
 				"keepGradeRuleSummary": "2000成长值或12房夜"},
 		}})
+	answer := runtimePMSFactStatementsForTest(facts)
 	for _, want := range []string{"钻石", "8.5折", "15:00", "2000成长值或12房夜"} {
 		if !strings.Contains(answer, want) {
 			t.Fatalf("missing benefit %s: %s", want, answer)
@@ -102,4 +105,12 @@ func TestPublicDiamondBenefitsAndDatedBoardProjection(t *testing.T) {
 	if !strings.Contains(price, "218元") || strings.Contains(price, "999") || strings.Contains(price, "没有显示") {
 		t.Fatalf("dated price missing or checkout day charged: %s", price)
 	}
+}
+
+func runtimePMSFactStatementsForTest(facts []runtimePMSReadTaskFact) string {
+	parts := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		parts = append(parts, fact.Statement)
+	}
+	return strings.Join(parts, "\n")
 }

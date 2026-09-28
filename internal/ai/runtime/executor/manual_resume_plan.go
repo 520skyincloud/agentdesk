@@ -97,6 +97,10 @@ func manualResumeFrozenIntentTasks(plans []replyruntime.ManualResumeTaskPlan, co
 			Intent:             intent,
 			SubIntent:          strings.TrimSpace(plan.SubIntent),
 			Objective:          semanticGateNormalizeObjective(plan.Objective),
+			SubjectScope:       plan.SubjectScope,
+			RequestedAspects:   append([]string(nil), plan.RequestedAspects...),
+			SelectionSource:    plan.SelectionSource,
+			SelectionRef:       plan.SelectionRef,
 			RelationToPrevious: semanticGateNormalizeRelation(plan.RelationToPrevious),
 			ResolutionState:    semanticGateNormalizeResolution(plan.ResolutionState),
 			Entities:           manualResumeIntentEntities(plan.Entities),
@@ -218,6 +222,7 @@ func manualResumeDropFrozenIntentEntries(entries []manualResumeIntentMergeEntry)
 func cloneManualResumeIntentTask(task callbacks.IntentTaskTraceData) callbacks.IntentTaskTraceData {
 	ret := task
 	ret.Entities = append([]callbacks.IntentEntityTraceData(nil), task.Entities...)
+	ret.RequestedAspects = append([]string(nil), task.RequestedAspects...)
 	ret.SourceRefs = append([]string(nil), task.SourceRefs...)
 	return ret
 }

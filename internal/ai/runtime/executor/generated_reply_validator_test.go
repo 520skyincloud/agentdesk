@@ -68,7 +68,7 @@ func TestEnforceGeneratedReplyActionLedgerRemovesResourceCommitText(t *testing.T
 	}
 }
 
-func TestEnforceGeneratedReplyActionLedgerScopesCorrectionToFirstSentence(t *testing.T) {
+func TestEnforceGeneratedReplyActionLedgerDoesNotTruncateCorrectionAnswer(t *testing.T) {
 	summary := &RunResult{
 		ReplyText: "哈哈，是我看岔了，抱歉。你说电视打不开，是现在到房间了还是过几天才住？",
 	}
@@ -80,11 +80,8 @@ func TestEnforceGeneratedReplyActionLedgerScopesCorrectionToFirstSentence(t *tes
 
 	enforceGeneratedReplyActionLedger(summary, collector)
 
-	if summary.ReplyText != "哈哈，是我看岔了，抱歉。" {
-		t.Fatalf("expected correction to stop after the current acknowledgement, got %q", summary.ReplyText)
-	}
-	if !strings.Contains(collector.Data.Pipeline.Validate.Reason, "current correction") {
-		t.Fatalf("expected correction scoping to be recorded, got %q", collector.Data.Pipeline.Validate.Reason)
+	if summary.ReplyText != "哈哈，是我看岔了，抱歉。你说电视打不开，是现在到房间了还是过几天才住？" {
+		t.Fatalf("action authorization must not discard the actual response after an acknowledgement: %q", summary.ReplyText)
 	}
 }
 
@@ -127,7 +124,7 @@ func TestEnforceGeneratedReplyActionLedgerRemovesUnsupportedStaffAction(t *testi
 	}
 }
 
-func TestEnforceGeneratedReplyActionLedgerRemovesNeutralStaffAction(t *testing.T) {
+func TestEnforceGeneratedReplyActionLedgerPreservesAdviceWithoutClaimingExecution(t *testing.T) {
 	summary := &RunResult{
 		ReplyText: "电视投屏要先连同一个 WiFi。得让同事去房间看一下。我看看怎么能帮上你。",
 	}
@@ -139,8 +136,8 @@ func TestEnforceGeneratedReplyActionLedgerRemovesNeutralStaffAction(t *testing.T
 
 	enforceGeneratedReplyActionLedger(summary, collector)
 
-	if strings.Contains(summary.ReplyText, "同事去") || strings.Contains(summary.ReplyText, "我看看") {
-		t.Fatalf("expected neutral unsupported staff action to be removed, got %q", summary.ReplyText)
+	if !strings.Contains(summary.ReplyText, "得让同事去房间看一下") || !strings.Contains(summary.ReplyText, "我看看") {
+		t.Fatalf("action authorization must not reinterpret neutral advice or read-only language: %q", summary.ReplyText)
 	}
 	if !strings.Contains(summary.ReplyText, "电视投屏") {
 		t.Fatalf("expected knowledge sentence to remain, got %q", summary.ReplyText)
@@ -256,7 +253,7 @@ func TestEnforceGeneratedReplyActionLedgerRemovesFrontDeskTransferPromise(t *tes
 
 	enforceGeneratedReplyActionLedger(summary, collector)
 
-	if strings.Contains(summary.ReplyText, "现场看") || strings.Contains(summary.ReplyText, "前台同事") || strings.Contains(summary.ReplyText, "跟进") {
+	if strings.Contains(summary.ReplyText, "前台同事") || strings.Contains(summary.ReplyText, "跟进") {
 		t.Fatalf("expected unsupported front desk transfer promise to be removed, got %q", summary.ReplyText)
 	}
 	if !strings.Contains(summary.ReplyText, "你现在在哪个房间") {
@@ -276,7 +273,7 @@ func TestEnforceGeneratedReplyActionLedgerRemovesObservedFrontDeskTransferVarian
 
 	enforceGeneratedReplyActionLedger(summary, collector)
 
-	for _, forbidden := range []string{"现场", "转达", "前台同事", "处理"} {
+	for _, forbidden := range []string{"转达", "前台同事"} {
 		if strings.Contains(summary.ReplyText, forbidden) {
 			t.Fatalf("expected unsupported observed transfer variant %q to be removed, got %q", forbidden, summary.ReplyText)
 		}
@@ -324,7 +321,7 @@ func TestEnforceGeneratedReplyActionLedgerRemovesFindSomeoneAndAskColleague(t *t
 
 			enforceGeneratedReplyActionLedger(summary, collector)
 
-			for _, forbidden := range []string{"找人", "处理", "问一下同事", "问下同事", "转人工", "转过去", "前台工作人员", "去前台说一下"} {
+			for _, forbidden := range []string{"我再帮你找人", "我帮你转人工", "我帮你转过去"} {
 				if strings.Contains(summary.ReplyText, forbidden) {
 					t.Fatalf("expected unsupported staff wording %q to be removed, got %q", forbidden, summary.ReplyText)
 				}
@@ -368,7 +365,7 @@ func TestEnforceGeneratedReplyActionLedgerKeepsDeclinedHandoffBoundary(t *testin
 	}
 }
 
-func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply(t *testing.T) {
+func TestEnforceGeneratedReplyActionLedgerNeverAuthorizesHandoffFromGeneratedProse(t *testing.T) {
 	summary := &RunResult{ReplyText: "稍等，我先帮你把信息转给人工对接处理。"}
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{
@@ -379,11 +376,14 @@ func TestEnforceGeneratedReplyActionLedgerRequestsRealHandoffForPromiseOnlyReply
 
 	outcome := enforceGeneratedReplyActionLedger(summary, collector)
 
-	if !outcome.RequestHandoffConfirmation {
-		t.Fatalf("expected unsupported promise-only reply to request a real direct handoff, got %#v", outcome)
+	if !outcome.RejectedAction || collector.Data.Pipeline.Validate.Status != "failed" {
+		t.Fatalf("unsupported promise must remain a generation error, got %#v", outcome)
 	}
-	if summary.ReplyText != "" {
-		t.Fatalf("expected unsupported promise not to be committed as text, got %q", summary.ReplyText)
+	if strings.Contains(summary.ReplyText, "转给人工") || summary.handoffDirective {
+		t.Fatalf("generation must never authorize or claim a real handoff: %#v", summary)
+	}
+	if actionLedgerContainsAction(collector.Data.ActionLedger.RequestedActions, "human_route") {
+		t.Fatal("unsupported generated text added action authorization")
 	}
 }
 
@@ -398,7 +398,7 @@ func TestEnforceGeneratedReplyActionLedgerKeepsRoomNumberClarification(t *testin
 
 	outcome := enforceGeneratedReplyActionLedger(summary, collector)
 
-	if outcome.RequestHandoffConfirmation {
+	if outcome.RejectedAction {
 		t.Fatalf("room-number clarification must not request direct handoff, got %#v", outcome)
 	}
 	if summary.ReplyText != "请告诉我房间号，我先确认是哪一间房。" {

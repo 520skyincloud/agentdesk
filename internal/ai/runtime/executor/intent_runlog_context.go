@@ -12,6 +12,7 @@ import (
 )
 
 const runtimeRecentRunLogContextLimit = 20
+const runtimeRecentBusinessTaskLimit = 8
 
 type runtimeRecentRunTrace struct {
 	Log     models.AgentRunLog
@@ -73,6 +74,14 @@ func runtimeTraceFromRunLog(raw string) (callbacks.RuntimeTraceData, bool) {
 }
 
 func runtimeRecentUniqueBusinessTaskForRequest(req RunInput) *runtimeRecentBusinessTask {
+	candidates := runtimeRecentBusinessTasksForRequest(req)
+	if len(candidates) == 1 {
+		return &candidates[0]
+	}
+	return nil
+}
+
+func runtimeRecentBusinessTasksForRequest(req RunInput) []runtimeRecentBusinessTask {
 	for _, recent := range runtimeRecentRunTraces(req) {
 		if recent.Log.FinalStatus != "completed" && recent.Runtime.Status != "completed" {
 			continue
@@ -81,16 +90,19 @@ func runtimeRecentUniqueBusinessTaskForRequest(req RunInput) *runtimeRecentBusin
 			return nil
 		}
 		candidates := runtimeTraceBusinessTasks(recent.Runtime)
-		switch len(candidates) {
-		case 0:
+		if len(candidates) == 0 {
 			continue
-		case 1:
-			return &runtimeRecentBusinessTask{RunLogID: recent.Log.ID, Task: candidates[0]}
-		default:
-			// The latest business turn is multi-topic, so an omitted reference is
-			// not safe to bind to an older, unrelated single task.
-			return nil
 		}
+		// Only the latest business turn is selectable. A mixed turn keeps its
+		// subjects separate instead of falling back to an older single topic.
+		ret := make([]runtimeRecentBusinessTask, 0, len(candidates))
+		for _, task := range candidates {
+			ret = append(ret, runtimeRecentBusinessTask{RunLogID: recent.Log.ID, Task: task})
+			if len(ret) == runtimeRecentBusinessTaskLimit {
+				break
+			}
+		}
+		return ret
 	}
 	return nil
 }
@@ -104,7 +116,7 @@ func runtimeTraceBlocksEarlierBusinessContext(trace callbacks.RuntimeTraceData) 
 		if task.Objective == "cancel" || task.DialogueAct == "cancellation" || task.RelationToPrevious == "cancel_previous" {
 			continue
 		}
-		if canonicalIntentCode(task.Intent) != "interaction" {
+		if canonicalIntentCode(task.Intent) != "interaction" || isPMSRuntimeSubIntent(task.SubIntent) {
 			return false
 		}
 		if strings.TrimSpace(task.RelationToPrevious) != "independent" ||
@@ -122,9 +134,32 @@ func runtimeTraceBlocksEarlierBusinessContext(trace callbacks.RuntimeTraceData) 
 func runtimeTraceBusinessTasks(trace callbacks.RuntimeTraceData) []callbacks.ReplyTaskPlanTraceData {
 	ret := make([]callbacks.ReplyTaskPlanTraceData, 0, len(trace.Pipeline.ReplyPlan.TaskPlans))
 	seen := make(map[string]struct{}, len(trace.Pipeline.ReplyPlan.TaskPlans))
+	sentTaskIDs := runtimeTraceSentPMSTaskIDs(trace)
+	// Failure notices retain task ownership at Commit, not evidence coverage.
+	// Keep the pending goal and customer slots without claiming facts were shown.
+	unconfirmedReply := strings.EqualFold(strings.TrimSpace(trace.Pipeline.Validate.Status), "failed") ||
+		strings.TrimSpace(trace.Pipeline.Generate.FallbackMode) != ""
 	for _, task := range trace.Pipeline.ReplyPlan.TaskPlans {
 		if !runtimeReplyTaskIsBusinessContext(task) {
 			continue
+		}
+		if len(trace.Output.CommitMessages) > 0 {
+			if _, sent := sentTaskIDs[strings.TrimSpace(task.TaskID)]; !sent {
+				continue
+			}
+		}
+		if len(trace.Output.CommitMessages) == 0 || unconfirmedReply {
+			// Legacy records can explain the pending question, but an unsent
+			// suggestion or uncommitted result is not confirmed evidence.
+			task.SupportedFacts = nil
+			task.SelectionSource, task.SelectionRef = "", ""
+			task.SelectedCandidateIDs = nil
+			task.SelectedLayer = ""
+			task.AnswerText = nil
+		}
+		if canonicalIntentCode(task.Intent) == "interaction" && isPMSRuntimeSubIntent(task.SubIntent) {
+			task.Intent = "hotel_info"
+			task.ResolvedText = firstNonEmptyReplyTaskText(task.OriginalText, task.Text)
 		}
 		key := strings.TrimSpace(task.TaskID)
 		if key == "" {
@@ -146,7 +181,8 @@ func runtimeReplyTaskIsBusinessContext(task callbacks.ReplyTaskPlanTraceData) bo
 	if strings.TrimSpace(firstNonEmptyReplyTaskText(task.ResolvedText, task.Text, task.OriginalText)) == "" {
 		return false
 	}
-	if strings.TrimSpace(task.OutputKind) == "context_only" || canonicalIntentCode(task.Intent) == "interaction" {
+	if strings.TrimSpace(task.OutputKind) == "context_only" ||
+		(canonicalIntentCode(task.Intent) == "interaction" && !isPMSRuntimeSubIntent(task.SubIntent)) {
 		return false
 	}
 	if task.NeedsHumanRoute || strings.TrimSpace(task.OutputKind) == "handoff" {

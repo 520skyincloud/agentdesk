@@ -82,8 +82,13 @@ func TestCurrentChoiceOverridesPersistedChoice(t *testing.T) {
 			OriginalText: text, DialogueAct: "selection",
 			Entities: []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityTargetRoomType, Text: "湖景大床房"}},
 		}
-		if got := runtimePMSTargetRoomTypeText(task); got != "庭院双床房" {
-			t.Fatalf("persisted selection overrode current customer choice: %q", got)
+		current := runtimePMSTargetRoomTypeText(task)
+		catalog := []any{
+			map[string]any{"roomTypeId": "COURTYARD", "roomTypeName": "庭院双床房"},
+			map[string]any{"roomTypeId": "LAKE", "roomTypeName": "湖景大床房"},
+		}
+		if id, _, status := resolveRuntimePMSTargetRoomType(catalog, current); status != pmsReadStepOK || id != "COURTYARD" {
+			t.Fatalf("persisted selection overrode current customer choice: %q => %s/%s", current, id, status)
 		}
 	}
 }

@@ -1,0 +1,98 @@
+# 客服结构优化实施与验收交接
+
+日期：2026-09-28。工作树：`zhixiweibao-pms-live`。
+分支：`codex/pms-live-from-weiwei-20260920`，实施前 HEAD：`de0991a`。
+
+## 范围
+
+落实 [全类型优化方案](customer-service-structural-optimization-plan-20260928.md)，
+按客户当前目标使用知识、订单、房态、价格、会员与资源，输出自然且有依据的客服回复。
+不是固定六问六答，不新增 Agent、消息发送链路、PMS 后台或回复状态机。
+
+只操作 test-2，HPMS 持续只读。主 customer-audit 脏工作树、生产、
+“薇薇”和“薇薇2”均不修改。
+
+## 已实施代码
+
+1. **目标与上下文**：现有 Task 兼容增加对象范围、具体所求及客户选择来源。
+   保留手机号补充、会员与订单对象分离、选择、纠正、取消和混合问题的有界上下文。
+2. **PMS 事实**：取消整段会员表及订单摘要直发，按当前方面投影原子事实。
+   真实目录匹配目标房型，保留住宿区间、逐日挂牌价、空价格与可用性边界。
+3. **知识裁决**：去掉单题固定三条和检索阶段可答性裁决，改实际输入预算；
+   事实和转接来源分开。运行链路不再在 Judge 失败后用本地 exact-FAQ 改选答案。
+4. **回复组织**：PMS 与混合任务使用现有 Generate。取消固定句数，
+   多问题按 Task 顺序答复，仍由原 Commit/Outbox 发送最多三条文本及绑定资源。
+5. **恢复与授权**：只修复可定位的失败 Task，保留通过事实及发送校验的兄弟答案；
+   模型话术不能反向触发人工。超时停止，不发送迟到结果，不把失败通知标为业务通过。
+6. **提示词一致性**：同时检查代码提示与 test-2 实际数据库配置，避免旧
+   “知识是唯一来源”“订单异常就转同事”等规则覆盖本轮能力。
+
+主要文件：`internal/ai/runtime/executor/` 的 Intent、上下文、PMS、
+answerability/Judge、Generate/recovery/validator/service；
+`internal/ai/runtime/instruction/assembler.go`；
+`internal/ai/runtime/internal/impl/callbacks/trace_callback.go`；
+`internal/pkg/replyruntime/manual_resume_context.go`。
+
+## 共享契约、权限与数据库
+
+- 只新增内部 Trace/ReplyPlan/恢复快照兼容字段，不改外部 HTTP DTO、枚举、
+  WebSocket、企微员工号协议、Outbox 或计费口径。
+- 无 models、DDL 或 migration 变更；SQLite/MySQL 原有兼容性保持。
+- 跨客户、跨门店、身份核验及 HPMS 写开关边界不放宽。
+- 开始及提交前执行 `git fetch origin`。本轮文件与两条并行分支相对合并基点的新改动
+  无同文件重叠；ai-billing 远端新增仅为备份资料，customer-audit 多租户改动不在本次文件内。
+- Intent 内部契约、PMS 事实和 Generate 消费应作为同一发布单元合并，不单独部署半套。
+  本次不需要为了合并无关分支而 rebase，不覆盖其他开发者工作。
+
+## 自动验证
+
+以下命令已在发布候选最终代码上通过：
+
+```sh
+go test ./internal/ai/runtime/... ./internal/pms/... ./internal/pkg/replyruntime/... ./internal/pkg/toolx/... ./internal/services/...
+go test ./internal/ai/runtime/executor -run 'TestReplyRecovery|TestReplyReceipt|TestFinalWhitespace|TestFailedGeneration' -count=1
+go test -race ./internal/pms -count=1
+env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o .codex-build/agent-desk-structural ./cmd/server
+git diff --check
+```
+
+新增测试覆盖同类双问法、指定方面、真实目录选择、取消与号码纠正、
+会员号码与订单号码隔离、历史不冒充在住、空价与逐日覆盖、事实/人工分离、
+部分回复恢复、未经执行的承诺、失败状态及超时不返迟到内容。
+受控响应单测不等于真实模型理解能力通过。
+发布前最终包回归的 executor 用时10.986秒、services用时18.957秒；
+这里是测试程序运行时间，不是客服响应延迟。无前端修改。
+
+## 真实预检
+
+已执行专用样本的 23 次只读 GET，没有创建 HPMS 订单或修改业务数据：
+
+- 当前样本尾号6801：接口仍返回接待单，但预计离店时间已过，营业日与时间不一致。
+  不能用它证明原房续住正向流程已通过。
+- 历史样本尾号0806和1522可以查到；后一号码有多笔历史，必须正确定位。
+- 银卡和金卡样本权益分别返回13:00和14:00；公开钻石权益为15:00。
+- 未在返回权益内见到免费房间升级资格，不能从会员等级推断。
+- 库存日期查询和房价看板可用；库存内价格为空，不能当免费。
+
+已准备六段有限隔离旅程；逐轮审阅理解、事实、完成度、表达、耗时和本地提交。
+当前测试脚本及脱敏原始证据存 `.codex-build/`，不将私密数据或二进制提交仓库。
+
+## 尚不能宣称完成
+
+- 每类真实双问法及连续旅程的最终内容和性能验收。
+- 企微收件端显示、卡片可打开与正向人工实际转接，隔离 ChannelID=0 不代表这些通过。
+- 干净的当前订单样本下原房续住正向验证。
+- 最终换房结算差价、会员权益适用/已用次数等未获得的数据；挂牌价不是结算成功。
+- 30元累计补救：现有 `ServiceRecoveryService` 只有申请记录，未接入授权政策和额度账本。
+  本轮不对顾客承诺已经减免或发券/退款。
+- 多笔历史的完整次数统计不等于单笔历史查询，不冒充已实现。
+
+## 发布与回滚
+
+发布前备份原 release、原版本代码、数据库、配置、运行环境与旧提示词，
+校验二进制哈希；实际服务仅通过已有 `agentdesk` 切换。
+提示词更新按原值哈希比较后写入；失败可只还原本轮改过且未被他人改变的配置。
+运行版本、备份位置和真实问答结论在验收后补充。
+
+异常回退原程序和本轮提示词，不恢复旧数据库，不删除真实聊天或操作审计。
+不触及“薇薇/薇薇2”，不修改外部 HPMS。发布集有安全或事实硬失败时，不扩大启用。

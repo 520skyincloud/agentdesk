@@ -77,7 +77,7 @@ func TestPrepareGroundedIndependentKnowledgeDirectCommit(t *testing.T) {
 	}
 }
 
-func TestPrepareGroundedPMSDirectCommit(t *testing.T) {
+func TestGroundedPMSFactsStillRequireCustomerReplyGeneration(t *testing.T) {
 	answer := "您现在住的是儿童房V05。沐阳在您当前入住期间还有房，当前可选房间有1501、1502、1503，具体差价还需要进一步核对。"
 	collector := callbacks.NewRuntimeTraceCollector()
 	collector.Data.Pipeline.Intent = callbacks.IntentTraceData{}
@@ -91,11 +91,11 @@ func TestPrepareGroundedPMSDirectCommit(t *testing.T) {
 	}}}
 	summary := &RunResult{Status: "started"}
 
-	if !prepareGroundedPMSDirectCommit(summary, collector) {
-		t.Fatal("single grounded PMS answer should skip redundant Generate")
+	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("PMS facts are not a completed customer answer, even if an old trace carries AnswerText")
 	}
-	if summary.ReplyText != answer {
-		t.Fatalf("PMS direct commit changed the customer-safe answer: %q", summary.ReplyText)
+	if summary.ReplyText != "" {
+		t.Fatalf("PMS data must be organized by Generate before commit: %q", summary.ReplyText)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestPrepareDeterministicClarificationDirectCommit(t *testing.T) {
 	}
 }
 
-func TestPrepareGroundedPMSDirectCommitKeepsUnansweredOrMixedTasksOnGenerate(t *testing.T) {
+func TestKnowledgeDirectCommitCannotAbsorbPMSOrUnansweredTasks(t *testing.T) {
 	answer := "沐阳在您当前入住期间还有房。"
 	baseTask := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "task-1", Intent: "hotel_info", SubIntent: "room_change",
@@ -139,14 +139,14 @@ func TestPrepareGroundedPMSDirectCommitKeepsUnansweredOrMixedTasksOnGenerate(t *
 			collector := callbacks.NewRuntimeTraceCollector()
 			collector.Data.Pipeline.Intent = test.intent
 			collector.Data.Pipeline.ReplyPlan = test.plan
-			if prepareGroundedPMSDirectCommit(&RunResult{Status: "started"}, collector) {
+			if prepareGroundedIndependentKnowledgeDirectCommit(&RunResult{Status: "started"}, collector) {
 				t.Fatal("incomplete or mixed PMS task must keep the normal Generate path")
 			}
 		})
 	}
 }
 
-func TestPrepareGroundedPMSDirectCommitCombinesCompletePMSAndKnowledgeTasks(t *testing.T) {
+func TestCompleteMixedPMSAndKnowledgeTasksUseGenerate(t *testing.T) {
 	pmsAnswer := "查到了，您这笔订单是9月25日12点前退房。"
 	parkingAnswer := "酒店提供免费停车服务，设有地上地下停车场。"
 	collector := callbacks.NewRuntimeTraceCollector()
@@ -170,12 +170,11 @@ func TestPrepareGroundedPMSDirectCommitCombinesCompletePMSAndKnowledgeTasks(t *t
 	}}
 	summary := &RunResult{Status: "started"}
 
-	if !prepareGroundedPMSDirectCommit(summary, collector) {
-		t.Fatal("complete PMS and knowledge tasks should skip redundant Generate")
+	if prepareGroundedIndependentKnowledgeDirectCommit(summary, collector) {
+		t.Fatal("mixed PMS and knowledge tasks must share Generate without losing either source")
 	}
-	want := pmsAnswer + "\n<<NEXT_MESSAGE>>\n" + parkingAnswer
-	if summary.ReplyText != want {
-		t.Fatalf("mixed direct reply changed task order: got %q want %q", summary.ReplyText, want)
+	if summary.ReplyText != "" {
+		t.Fatalf("mixed facts must not be committed as prewritten PMS prose: %q", summary.ReplyText)
 	}
 }
 

@@ -7,11 +7,11 @@ import (
 	"unicode/utf8"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/services"
 )
 
 type generatedReplyValidationOutcome struct {
-	RequestHandoffConfirmation bool
-	HandoffReason              string
+	RejectedAction bool
 }
 
 var internalReplyHeaderMarkers = []string{
@@ -148,9 +148,8 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 		return outcome
 	}
 	intent := collector.Data.Pipeline.Intent
-	scoped := limitCorrectionReplyToCurrentTurn(original, intent)
-	cleaned := removeStructuredResourceCommitMentions(scoped, intent)
-	humanRouteCommitted := actionLedgerContainsAction(collector.Data.ActionLedger.CommittedActions, "human_route")
+	cleaned := removeStructuredResourceCommitMentions(original, intent)
+	humanRouteCommitted := generatedReplyHumanRouteCompleted(collector)
 	cleaned = removeUnsupportedStaffActionMentions(cleaned, humanRouteCommitted)
 	cleaned = normalizeReplyTextWhitespace(cleaned)
 	cleaned = normalizeIncompleteReplyEnding(cleaned)
@@ -161,13 +160,14 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 		if !humanRouteCommitted && containsUnsupportedHandoffPromise(original) {
 			summary.ReplyText = ""
 			collector.Data.Output.ReplyText = ""
-			collector.Data.Pipeline.Validate.Status = "passed"
+			collector.Data.Pipeline.Validate.Status = "failed"
 			collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 				collector.Data.Pipeline.Validate.Reason,
-				"unsupported handoff promise was replaced by the real direct handoff flow",
+				"unsupported handoff promise was rejected; generated wording cannot authorize an action",
 			)
-			outcome.RequestHandoffConfirmation = true
-			outcome.HandoffReason = "生成回复要求门店同事接手，但尚未执行真实转接"
+			outcome.RejectedAction = true
+			summary.ReplyText = "这件事还没有安排同事处理。"
+			collector.Data.Output.ReplyText = summary.ReplyText
 			return outcome
 		}
 		cleaned = "这个问题我目前还没有足够准确的资料。"
@@ -177,14 +177,10 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 	}
 	summary.ReplyText = cleaned
 	collector.Data.Output.ReplyText = cleaned
-	collector.Data.Pipeline.Validate.Status = "passed"
-	if scoped != original {
-		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
-			collector.Data.Pipeline.Validate.Reason,
-			"correction reply was scoped to the current correction and did not continue an older topic",
-		)
+	if collector.Data.Pipeline.Validate.Status != "failed" {
+		collector.Data.Pipeline.Validate.Status = "passed"
 	}
-	if cleaned != scoped {
+	if cleaned != original {
 		collector.Data.Pipeline.Validate.Reason = appendValidationReason(
 			collector.Data.Pipeline.Validate.Reason,
 			"action ledger removed unsupported actions or normalized an incomplete reply ending",
@@ -193,15 +189,29 @@ func enforceGeneratedReplyActionLedger(summary *RunResult, collector *callbacks.
 	return outcome
 }
 
-func limitCorrectionReplyToCurrentTurn(text string, intent callbacks.IntentTraceData) string {
-	if intent.PrimaryIntent != "interaction" || !isSocialCorrectionSubIntent(intent.SubIntent) {
-		return text
+func validateGeneratedReplyActionAuthorization(text string, collector *callbacks.RuntimeTraceCollector) error {
+	if collector == nil || strings.TrimSpace(text) == "" {
+		return nil
 	}
-	sentences := splitTerminalReplySentences(text)
-	if len(sentences) == 0 {
-		return text
+	committed := generatedReplyHumanRouteCompleted(collector)
+	if !committed && normalizeReplyTextWhitespace(removeUnsupportedStaffActionMentions(text, false)) != normalizeReplyTextWhitespace(text) {
+		return fmt.Errorf("%w: reply claims a staff action without a committed action; answer from existing facts without promising dispatch", ErrGeneratedReplyProtocol)
 	}
-	return sentences[0]
+	return nil
+}
+
+func generatedReplyHumanRouteCompleted(collector *callbacks.RuntimeTraceCollector) bool {
+	if collector == nil {
+		return false
+	}
+	for _, item := range collector.Data.ActionLedger.CommittedActions {
+		if item.Action == "human_route" &&
+			(item.Status == string(services.HandoffDispatchStatusDispatched) ||
+				item.Status == string(services.HandoffDispatchStatusAlreadyActive)) {
+			return true
+		}
+	}
+	return false
 }
 
 func splitTerminalReplySentences(text string) []string {
@@ -282,8 +292,25 @@ func removeUnsupportedStaffActionMentions(text string, humanRouteCommitted bool)
 	}
 	text = removeUnsupportedActionClauses(text, unsupportedFirstPersonRecordActionPhrases())
 	return filterReplySentences(text, func(sentence string) bool {
+		if strings.Contains(sentence, services.DirectHandoffSuccessMessage) {
+			return true
+		}
+		if isStaffActionConsentQuestion(sentence) {
+			return false
+		}
 		return containsAnyReplyPhrase(sentence, unsupportedFirstPersonStaffActionPhrases())
 	})
+}
+
+func isStaffActionConsentQuestion(sentence string) bool {
+	sentence = strings.TrimSpace(sentence)
+	if !strings.HasSuffix(sentence, "？") && !strings.HasSuffix(sentence, "?") {
+		return false
+	}
+	if strings.Contains(sentence, "已") || strings.Contains(sentence, "马上") || strings.Contains(sentence, "稍等") {
+		return false
+	}
+	return containsAnyReplyPhrase(sentence, []string{"需要我", "要我", "要不要", "是否需要"})
 }
 
 func removeUnsupportedActionClauses(text string, phrases []string) string {
@@ -392,15 +419,9 @@ func unsupportedFirstPersonStaffActionPhrases() []string {
 		"我让同事", "我叫同事", "我喊同事", "我找同事", "我这边找同事", "我这边需要找同事",
 		"我帮你转给同事", "我转给同事", "我反馈给同事", "我通知同事", "我安排同事", "我帮你转达", "我转达",
 		"我帮你找人", "我再帮你找人", "找人来处理", "帮你找人来处理",
-		"我让前台", "我联系前台", "我帮你转前台", "我帮你转达给前台", "我帮你转人工", "我帮你转过去", "转达给前台", "转给前台", "转过去",
-		"联系前台工作人员", "前台工作人员帮你处理", "工作人员帮你处理", "帮你处理", "去前台说一下", "方便去前台",
-		"转前台同事", "转达给前台同事", "前台同事来跟进", "前台同事处理", "我帮你问", "我帮你确认", "我帮你查", "我查一下", "我先查", "我先问",
-		"我看看", "我看下", "帮你看看", "帮您看看", "我看看怎么", "看看怎么帮", "我这边看看",
+		"我让前台", "我联系前台", "我帮你转前台", "我帮你转达给前台", "我帮你转人工", "我帮你转过去",
+		"我帮您转人工", "我帮您转给同事", "我已通知", "我已经通知", "已经安排同事", "已安排同事",
 		"我先给你留意", "我先给您留意", "我这边先给你留意", "我这边先给您留意", "我帮你留意", "我帮您留意",
-		"同事过去", "同事过来", "同事查看", "同事处理", "同事接手", "同事上门",
-		"需要同事查看", "需要同事处理", "需要同事接手", "得让同事", "要让同事", "让同事去", "让同事过来",
-		"问一下同事", "问下同事", "咨询同事",
-		"需要现场看", "现场看一下", "现场看看", "现场看", "现场处理",
 		"我先帮你把信息转给人工", "我先帮您把信息转给人工", "我先把你的情况交过去", "我先把您的情况交过去",
 		"稍等我帮你转一下", "稍等我帮您转一下", "我帮你转一下", "我帮您转一下",
 	)
@@ -423,7 +444,7 @@ func containsUnsupportedHandoffPromise(text string) bool {
 	if compact == "" {
 		return false
 	}
-	if containsAnyReplyPhrase(compact, []string{"转人工", "转前台", "转给人工", "转给同事", "转给工作人员", "转达给前台", "转达给同事"}) {
+	if containsAnyReplyPhrase(compact, []string{services.DirectHandoffSuccessMessage, "转人工", "转前台", "转给人工", "转给同事", "转给工作人员", "转达给前台", "转达给同事"}) {
 		return true
 	}
 	if strings.Contains(compact, "交过去") && containsAnyReplyPhrase(compact, []string{"我先", "我帮", "你的情况", "您的情况", "信息"}) {

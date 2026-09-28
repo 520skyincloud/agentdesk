@@ -74,14 +74,13 @@ func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.Agen
 				continue
 			}
 			replyText := strings.TrimSpace(messageOutput.Message.Content)
-			replyText, err := normalizeGeneratedReplyPartsResult(
+			replyText, err := normalizeGeneratedReplyPartsWithReceipt(
 				replyText,
 				collector.Data.Pipeline.ReplyPlan,
 				collector.Data.Pipeline.EvidenceJudge.DeferredHandoff || sawToolCall,
+				func(parts map[string]string) { summary.generatedTaskReplies = parts },
 			)
-			if err == nil {
-				replyText, err = SanitizeGeneratedReplyText(replyText)
-			}
+			replyText, err = validateGeneratedReplyReceipt(replyText, err, summary, collector)
 			if err != nil {
 				if isBlockedInternalReplyMarkerError(err) {
 					collector.Data.Pipeline.Generate.BlockedInternalMarker = true
@@ -142,6 +141,55 @@ func consumeAgentEvents(ctx context.Context, events *adk.AsyncIterator[*adk.Agen
 		return protocolErr
 	}
 	return executionErr
+}
+
+// Only task replies that passed both fact and delivery checks may survive recovery.
+func validateGeneratedReplyReceipt(text string, parseErr error, summary *RunResult, collector *callbacks.RuntimeTraceCollector) (string, error) {
+	parts := summary.generatedTaskReplies
+	var taskErr *generatedReplyTaskError
+	if errors.As(parseErr, &taskErr) {
+		parts = taskErr.validParts
+	}
+	if len(parts) == 0 {
+		if parseErr != nil {
+			return "", parseErr
+		}
+		cleaned, err := SanitizeGeneratedReplyText(text)
+		if err == nil {
+			err = validateGeneratedReplyActionAuthorization(cleaned, collector)
+		}
+		return cleaned, err
+	}
+	valid := make(map[string]string, len(parts))
+	firstErr := parseErr
+	for taskID, content := range parts {
+		cleaned, err := SanitizeGeneratedReplyText(content)
+		if err == nil {
+			err = validateGeneratedReplyActionAuthorization(cleaned, collector)
+		}
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: task %s: %v", ErrGeneratedReplyProtocol, taskID, err)
+			}
+			continue
+		}
+		if strings.TrimSpace(cleaned) != "" {
+			valid[taskID] = cleaned
+		}
+	}
+	summary.generatedTaskReplies = valid
+	if firstErr != nil {
+		return "", &generatedReplyTaskError{err: firstErr, validParts: valid}
+	}
+	if collector != nil {
+		if combined, complete := composeValidatedTaskReplies(collector.Data.Pipeline.ReplyPlan, valid); complete {
+			return combined, nil
+		}
+	}
+	return "", &generatedReplyTaskError{
+		err:        fmt.Errorf("%w: validated task replies did not complete the current plan", ErrGeneratedReplyProtocol),
+		validParts: valid,
+	}
 }
 
 func isBlockedInternalReplyMarkerError(err error) bool {

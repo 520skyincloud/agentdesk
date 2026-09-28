@@ -7,10 +7,10 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
 
-func TestPMSReadResultProvidesEvidenceAndSafeRecoveryAnswer(t *testing.T) {
+func TestPMSReadResultProvidesRequestedFactsWithoutFinalAnswer(t *testing.T) {
 	task := callbacks.ReplyTaskPlanTraceData{
 		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail",
-		OriginalText: "我几点退房", OutputKind: "text", ReplyRequired: true,
+		OriginalText: "我几点退房", RequestedAspects: []string{"checkout_time"}, SubjectScope: "current_stay", OutputKind: "text", ReplyRequired: true,
 	}
 	applyRuntimePMSReadResultToTask(&task, pmsReadPlan{Scenario: pmsReadScenarioOrder}, pmsReadPlanResult{
 		Status: pmsReadStepOK,
@@ -19,23 +19,23 @@ func TestPMSReadResultProvidesEvidenceAndSafeRecoveryAnswer(t *testing.T) {
 			Data: map[string]any{"roomName": "沐阳大床房", "homeName": "1501", "checkOutTime": "2026-09-25 12:00:00"},
 		}},
 	}, 0)
-	if task.AnswerText == nil || *task.AnswerText != "查到了，您这笔订单是9月25日12点前退房。" {
-		t.Fatalf("PMS safe recovery answer mismatch: %#v", task.AnswerText)
+	if task.AnswerText != nil {
+		t.Fatalf("PMS must not prewrite a full-record customer answer: %#v", task.AnswerText)
 	}
 	if len(task.SupportedFacts) != 1 || task.SupportedFacts[0].Aspect == "pms_customer_answer" {
 		t.Fatalf("PMS should expose typed evidence only: %#v", task.SupportedFacts)
 	}
 }
 
-func TestSingleEvidenceTaskAcceptsNaturalTextWithoutReplyPartsProtocol(t *testing.T) {
+func TestSingleEvidenceTaskUsesExistingFactReferences(t *testing.T) {
 	plan := callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
 		TaskID: "T1", Intent: "hotel_info", SubIntent: "order_detail", OutputKind: "text", ReplyRequired: true,
 		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: "pms_order_recept", Statement: "离店时间为2026-09-25 12:00:00。"}},
 	}}}
-	if instruction := buildMultiReplyOutputInstruction(plan, false); instruction != "" {
-		t.Fatalf("one natural reply should not require the batch JSON protocol: %q", instruction)
+	if instruction := buildMultiReplyOutputInstruction(plan, false); !strings.Contains(instruction, "coveredFactIds") {
+		t.Fatalf("single PMS task must retain evidence attribution: %q", instruction)
 	}
-	got, err := normalizeGeneratedReplyPartsResult("您这笔订单是9月25日12点前退房。", plan, false)
+	got, err := normalizeGeneratedReplyPartsResult(`{"replyParts":[{"taskId":"T1","content":"您这笔订单是9月25日12点前退房。","coveredFactIds":["P1F1"]}]}`, plan, false)
 	if err != nil || got != "您这笔订单是9月25日12点前退房。" {
 		t.Fatalf("natural single-task reply was rejected: got=%q err=%v", got, err)
 	}

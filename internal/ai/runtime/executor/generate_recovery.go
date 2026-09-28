@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
+	"agent-desk/internal/pkg/toolx"
 	"agent-desk/internal/pkg/usagex"
 	"agent-desk/internal/services"
 
@@ -52,12 +53,26 @@ func runGeneratedReplyWithRecovery(
 		return result, fmt.Errorf("generated reply attempt is required")
 	}
 	runInvokedToolCodes := append([]string(nil), summaryInvokedToolCodes(summary)...)
+	priorSideEffectTool := false
+	for _, code := range runInvokedToolCodes {
+		if code != toolx.BuiltinPMSQuery.Code {
+			priorSideEffectTool = true
+		}
+	}
 	defer func() {
 		restoreGeneratedReplyRunToolState(summary, runInvokedToolCodes)
 	}()
 	var lastErr error
 	validParts := make(map[string]string)
+	var originalPlan callbacks.ReplyPlanTraceData
+	if collector != nil {
+		originalPlan = collector.Data.Pipeline.ReplyPlan
+		defer func() { collector.Data.Pipeline.ReplyPlan = originalPlan }()
+	}
 	for attemptIndex := 1; attemptIndex <= generatedReplyMaxAttempts; attemptIndex++ {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		if attemptIndex > 1 {
 			if stillEligible != nil && !stillEligible() {
 				markGeneratedReplyCancelled(summary, collector)
@@ -73,6 +88,14 @@ func runGeneratedReplyWithRecovery(
 		attemptMessages := messages
 		if attemptIndex > 1 {
 			attemptMessages = appendGeneratedReplyRepairInstruction(messages, lastErr)
+			if collector != nil && len(validParts) > 0 {
+				pending := pendingGeneratedReplyPlan(originalPlan, validParts)
+				collector.Data.Pipeline.ReplyPlan = pending
+				attemptMessages = append(attemptMessages, schema.SystemMessage(
+					"【本次修复范围】此前已通过的任务保持原答复，不再生成。以下契约替代前面的全部任务列表，只回答其中待修复的任务。\n"+
+						buildMultiReplyOutputInstruction(pending, true),
+				))
+			}
 		}
 		receiptOffset := generatedReplyGatewayReceiptCount(ctx)
 		usageOffset := generatedReplyModelUsageCount(summary)
@@ -81,7 +104,24 @@ func runGeneratedReplyWithRecovery(
 		attemptErr := attempt(ctx, attemptMessages)
 		runInvokedToolCodes = mergeGeneratedReplyToolCodes(runInvokedToolCodes, summaryInvokedToolCodes(summary))
 		runInvokedToolCodes = mergeGeneratedReplyToolCodes(runInvokedToolCodes, generatedReplyToolCodesSince(collector, toolTraceOffset))
+		if err := ctx.Err(); err != nil {
+			recordGeneratedReplyAttemptModelCalls(ctx, summary, receiptOffset, usageOffset, err)
+			summary.ReplyText = ""
+			return result, err
+		}
 		attemptInvokedTool := generatedReplyToolTraceCount(collector) > toolTraceOffset
+		if attemptErr == nil && generatedReplyAttemptHasOutcome(summary) {
+			if len(validParts) > 0 {
+				for taskID, content := range summary.generatedTaskReplies {
+					validParts[taskID] = content
+				}
+				if combined, ok := composeValidatedTaskReplies(originalPlan, validParts); ok {
+					summary.ReplyText = combined
+				} else {
+					attemptErr = fmt.Errorf("%w: partial recovery did not complete the original task plan", ErrGeneratedReplyProtocol)
+				}
+			}
+		}
 		if attemptErr == nil && generatedReplyAttemptHasOutcome(summary) {
 			recordGeneratedReplyAttemptModelCalls(ctx, summary, receiptOffset, usageOffset, nil)
 			markGeneratedReplyAttemptTrace(collector, result.AttemptCount, "")
@@ -104,16 +144,22 @@ func runGeneratedReplyWithRecovery(
 
 		if attemptIndex == generatedReplyMaxAttempts ||
 			!isRetryableGeneratedReplyError(lastErr) ||
-			len(runInvokedToolCodes) > 0 || attemptInvokedTool ||
+			priorSideEffectTool || len(summary.InvokedToolCodes) > 0 || attemptInvokedTool ||
 			summary.Interrupted {
 			break
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if stillEligible != nil && !stillEligible() {
 		markGeneratedReplyCancelled(summary, collector)
 		result.FallbackMode = "cancelled_before_fallback"
 		return result, nil
+	}
+	if collector != nil {
+		collector.Data.Pipeline.ReplyPlan = originalPlan
 	}
 	fallback := deterministicGeneratedReplyFallbackWithParts(collector, validParts)
 	if fallback != "" {
@@ -125,10 +171,37 @@ func runGeneratedReplyWithRecovery(
 		}
 		result.FallbackMode = "supported_facts"
 		markGeneratedReplyAttemptTrace(collector, result.AttemptCount, result.FallbackMode)
+		if collector != nil {
+			collector.Data.Pipeline.Validate.Status = "failed"
+			collector.Data.Pipeline.Validate.Reason = "generation failed after bounded recovery; retained valid task replies and sent limited failure notices"
+		}
 		return result, nil
 	}
 	markGeneratedReplyAttemptTrace(collector, result.AttemptCount, "unavailable")
 	return result, lastErr
+}
+
+func pendingGeneratedReplyPlan(plan callbacks.ReplyPlanTraceData, valid map[string]string) callbacks.ReplyPlanTraceData {
+	pending := plan
+	pending.TaskPlans = nil
+	for _, task := range plan.TaskPlans {
+		if strings.TrimSpace(valid[task.TaskID]) == "" {
+			pending.TaskPlans = append(pending.TaskPlans, task)
+		}
+	}
+	return pending
+}
+
+func composeValidatedTaskReplies(plan callbacks.ReplyPlanTraceData, replies map[string]string) (string, bool) {
+	var parts []string
+	for _, group := range buildTextReplyTaskGroups(plan) {
+		content := strings.TrimSpace(replies[group.TaskID])
+		if content == "" {
+			return "", false
+		}
+		parts = append(parts, content)
+	}
+	return composeGeneratedReplyContents(parts, 3), len(parts) > 0
 }
 
 func runResumedGeneratedReplyWithRecovery(
@@ -237,6 +310,7 @@ func resetGeneratedReplyAttemptState(summary *RunResult) {
 	summary.Interrupts = nil
 	summary.InvokedToolCodes = nil
 	summary.ToolCallCount = 0
+	summary.generatedTaskReplies = nil
 }
 
 func summaryInvokedToolCodes(summary *RunResult) []string {
@@ -499,12 +573,10 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 			continue
 		}
 		if generatedReplyGroupHasPMSFacts(group) {
-			if content := deterministicPMSCustomerFallback(group); content != "" {
-				parts = append(parts, content)
-			} else if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
+			if boundary := deterministicPMSMissingBoundary(plan, group.TaskID); boundary != "" {
 				parts = append(parts, boundary)
 			} else {
-				parts = append(parts, "这部分实时信息还不完整，我暂时没法给您一个准确结果，先不乱答。")
+				parts = append(parts, generatedReplyFailureNotice(plan, group.TaskID))
 			}
 			continue
 		}
@@ -526,7 +598,7 @@ func deterministicGeneratedReplyFallbackWithParts(collector *callbacks.RuntimeTr
 				parts = append(parts, text)
 				continue
 			}
-			parts = append(parts, "不好意思，我刚才没理解完整，麻烦您把要问的内容再发我一下。")
+			parts = append(parts, generatedReplyFailureNotice(plan, group.TaskID))
 			continue
 		}
 		statements := make([]string, 0, len(fallbackFacts))
@@ -551,15 +623,23 @@ func generatedReplyGroupHasPMSFacts(group textReplyTaskGroup) bool {
 	return false
 }
 
-func deterministicPMSCustomerFallback(group textReplyTaskGroup) string {
-	if group.AnswerText == nil {
-		return ""
+func generatedReplyFailureNotice(plan callbacks.ReplyPlanTraceData, taskID string) string {
+	for _, task := range plan.TaskPlans {
+		if task.TaskID != taskID {
+			continue
+		}
+		switch pmsReadScenarioForSubIntent(task.SubIntent) {
+		case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
+			return "您问的会员信息，这次暂时无法准确答复，抱歉。"
+		case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade, pmsReadScenarioPrice:
+			return "您想换的房间和费用，这次暂时还不能给您准确答复，抱歉。"
+		case pmsReadScenarioRenewal, pmsReadScenarioLateCheckout:
+			return "延长入住的具体条件，这次暂时无法准确答复，抱歉。"
+		case pmsReadScenarioOrder:
+			return "这笔住宿的具体情况，这次暂时无法准确答复，抱歉。"
+		}
 	}
-	content, err := SanitizeGeneratedReplyText(strings.TrimSpace(*group.AnswerText))
-	if err != nil || content == "" {
-		return ""
-	}
-	return content
+	return "您刚才问的这件事，我暂时还不能给出准确答复，抱歉。"
 }
 
 func deterministicPMSMissingBoundary(plan callbacks.ReplyPlanTraceData, taskID string) string {
