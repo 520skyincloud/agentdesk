@@ -30,7 +30,7 @@ var (
 	runtimePMSLateClockPattern      = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*([01]?[0-9]|2[0-3])[:：]([0-5][0-9])`)
 	runtimePMSLateChinesePattern    = regexp.MustCompile(`(?:延迟|延退|推迟)(?:退房)?(?:到|至)?\s*(?:(上午|下午|晚上|中午|凌晨)\s*)?([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?`)
 	runtimePMSPeriodCheckoutPattern = regexp.MustCompile(`(上午|下午|晚上|中午|凌晨)\s*([0-9零〇一二两三四五六七八九十]{1,3})(?:点|时)(半|[0-9零〇一二三四五六七八九十]{1,2}分?)?\s*(?:才|再)?(?:退房|离店|走)`)
-	runtimePMSExtensionPattern      = regexp.MustCompile(`(?:多住|再住|续住|再续|续)([0-9零〇一二两三四五六七八九十]{1,3})(?:晚|天)`)
+	runtimePMSExtensionPattern      = regexp.MustCompile(`(?:多住|再住|续住|再续|续|住)([0-9零〇一二两三四五六七八九十]{1,3})(?:晚|天)`)
 )
 
 var (
@@ -222,6 +222,7 @@ func applyRuntimePMSReadPlansWithInvoker(ctx context.Context, req RunInput, hist
 			continue
 		}
 		input := runtimePMSReadPlanInputForTask(*task, sessionLocator, now)
+		applyRuntimePMSCurrentTurnPhone(&input, *task, sessionLocator, req.UserMessage.Content)
 		// Retain the customer's query locator, not a claim of verified identity.
 		if input.Phone != "" {
 			setRuntimeIntentEntity(&task.Entities, runtimeIntentEntityCustomerPhone, input.Phone)
@@ -593,6 +594,7 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		RoomKeyword:        runtimePMSRoomKeyword(task),
 		TargetRoomTypeText: targetRoomTypeText,
 		OrderHistory:       runtimePMSAsksOrderHistory(text),
+		AssessMembership:   containsAny(text, []string{"会员", "权益", "免差", "免费升"}),
 	}
 	if input.TargetRoomTypeText == "" && runtimePMSTaskRetainsTargetRoomType(task.SubIntent) &&
 		(task.ResolutionState == runtimeIntentResolutionResolvedFromContext || input.Scenario == pmsReadScenarioPrice) &&
@@ -631,6 +633,30 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		input.TargetCheckoutTime = runtimePMSLateCheckoutTargetTime(task)
 	}
 	return input
+}
+
+func applyRuntimePMSCurrentTurnPhone(input *pmsReadPlanInput, task callbacks.ReplyTaskPlanTraceData, session runtimePMSSessionLocator, currentText string) {
+	// Split tasks share an unambiguous locator explicitly supplied in this turn.
+	// Never let a historical model entity override that customer correction.
+	if runtimePMSCurrentTextRejectsCustomerPhone(currentText) {
+		return
+	}
+	matches := runtimePMSCustomerPhoneValuePattern.FindAllString(currentText, -1)
+	phones := map[string]bool{}
+	for _, match := range matches {
+		if phone := runtimePMSLastUsableCustomerPhone(match); phone != "" {
+			phones[phone] = true
+		}
+	}
+	if len(phones) != 1 {
+		return
+	}
+	for phone := range phones {
+		input.Phone = phone
+		if phone != session.Phone {
+			input.ReserveOrderID, input.ReceptOrderID, input.CustomerNo = runtimePMSOrderLocators(task.OriginalText)
+		}
+	}
 }
 
 func runtimePMSLateCheckoutTargetTime(task callbacks.ReplyTaskPlanTraceData) string {
@@ -889,7 +915,10 @@ func runtimePMSReadDates(task callbacks.ReplyTaskPlanTraceData, scenario pmsRead
 	if err == nil {
 		now = now.In(location)
 	}
-	text := strings.Join([]string{task.OriginalText, task.Text, task.ResolvedText}, "\n")
+	text := firstNonEmpty(task.OriginalText, task.ResolvedText, task.Text)
+	if len(runtimePMSDateMentions(text, now)) == 0 {
+		text = firstNonEmpty(task.ResolvedText, task.Text, task.OriginalText)
+	}
 	dateText := text
 	if correctedText := runtimePMSCorrectedDateText(text); correctedText != "" {
 		dateText = correctedText
@@ -1862,7 +1891,7 @@ func normalizeRuntimePMSRoomTypeText(text string) string {
 		b.WriteRune(r)
 	}
 	normalized := b.String()
-	for _, suffix := range []string{"房间", "房型", "房"} {
+	for _, suffix := range []string{"呢", "吧", "吗", "啊", "房间", "房型", "房"} {
 		normalized = strings.TrimSuffix(normalized, suffix)
 	}
 	return normalized

@@ -51,6 +51,25 @@ func TestRuntimeTraceCollectorPMSNameFallbackAndOtherTools(t *testing.T) {
 	}
 }
 
+func TestRuntimeTraceCollectorKeepsCatalogReadActionsPrivate(t *testing.T) {
+	for _, action := range []string{"orders_by_phone", "member_program", "room_prices"} {
+		collector := NewRuntimeTraceCollector()
+		collector.AddToolItem(ToolTraceItem{
+			ToolCode:      toolx.BuiltinPMSQuery.Code,
+			Arguments:     map[string]any{"action": action, "phone": "13800138000", "tenantId": "private-tenant"},
+			ResultPreview: "private-response",
+		})
+		if collector.Data.Tools.Items[0].Arguments["action"] != action {
+			t.Fatalf("read action disappeared: %s", action)
+		}
+		for _, secret := range []string{"13800138000", "private-tenant", "private-response"} {
+			if strings.Contains(collector.Marshal(), secret) {
+				t.Fatalf("trace leaked %s", secret)
+			}
+		}
+	}
+}
+
 func TestRuntimeTraceCollectorKeepsCompositeMemberQueryAction(t *testing.T) {
 	collector := NewRuntimeTraceCollector()
 	collector.AddToolItem(ToolTraceItem{

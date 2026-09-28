@@ -223,7 +223,8 @@ func (c *RuntimeTraceCollector) AddToolItem(item ToolTraceItem) {
 			switch action {
 			case "reserve_order_detail", "recept_order_detail", "reserve_order_by_phone", "recept_order_by_phone",
 				"room_status", "inventory", "stay_room_availability", "renew_candidates", "renew",
-				"member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone":
+				"member_info_by_phone", "member_benefits_by_grade", "member_benefits_by_phone",
+				"orders_by_phone", "member_program", "room_prices":
 				arguments["action"] = action
 			}
 		}

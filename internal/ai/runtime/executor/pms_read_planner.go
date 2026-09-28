@@ -37,6 +37,7 @@ type pmsReadPlanInput struct {
 	ExtensionDays      int
 	TargetCheckoutTime string
 	OrderHistory       bool
+	AssessMembership   bool
 }
 
 type pmsReadPlan struct {
@@ -176,6 +177,9 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 		}
 	default:
 		plan.Missing = append(plan.Missing, "supportedScenario")
+	}
+	if input.AssessMembership && (scenario == pmsReadScenarioRoomChange || scenario == pmsReadScenarioPrice || scenario == pmsReadScenarioRenewal) {
+		appendPMSReadMemberStep(&plan, input, false)
 	}
 	// Query prices on the same dates as availability, without treating the
 	// inventory response's nullable price as the price-board quote.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 )
@@ -38,6 +39,34 @@ func TestOrderHistorySearchExplicitAndFallback(t *testing.T) {
 		if !runtimePMSReadHasOtherOrderFact(aggregate, "order.recept") {
 			t.Fatal("history must suppress contradictory empty current-order facts")
 		}
+	}
+}
+
+func TestCatalogFollowupsUseCurrentTurnLocatorAndDates(t *testing.T) {
+	now := time.Date(2026, 9, 28, 15, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	session := runtimePMSSessionLocator{Phone: "13900000000", OrderLocator: "接待单ID:123"}
+	task := callbacks.ReplyTaskPlanTraceData{SubIntent: "upgrade_eligibility", OriginalText: "能免费升房吗？",
+		Entities: []callbacks.IntentEntityTraceData{{Type: runtimeIntentEntityCustomerPhone, Text: "13900000000"}}}
+	input := runtimePMSReadPlanInputForTask(task, session, now)
+	applyRuntimePMSCurrentTurnPhone(&input, task, session, "我的会员是13800000000，帮我看看权益，能免费升房吗？")
+	if input.Phone != "13800000000" || input.ReceptOrderID != "" {
+		t.Fatalf("sibling task retained old identity: %#v", input)
+	}
+	for _, tc := range []struct{ current, resolved, start, end string }{
+		{"我还想住一晚，今晚原来的房间还能住吗，多少钱？", "", "2026-09-28", "2026-09-29"},
+		{"如果我住到9月30日中午呢，这两晚房价分别多少？", "今晚再住一晚。\n当前客户补充：如果我住到9月30日中午呢", "", "2026-09-30"},
+	} {
+		start, end := runtimePMSReadDates(callbacks.ReplyTaskPlanTraceData{OriginalText: tc.current, ResolvedText: tc.resolved}, pmsReadScenarioRenewal, now)
+		if start != tc.start || end != tc.end {
+			t.Fatalf("current date contaminated by history: %s => %s/%s", tc.current, start, end)
+		}
+	}
+	if normalizeRuntimePMSRoomTypeText("沐阳呢") != normalizeRuntimePMSRoomTypeText("沐阳") {
+		t.Fatal("question particle became part of the selected room type")
+	}
+	plan := buildPMSReadPlan(pmsReadPlanInput{Scenario: pmsReadScenarioRoomChange, Phone: "13800000000", AssessMembership: true})
+	if !hasPMSReadAction(plan, "member_benefits_by_phone") {
+		t.Fatal("room change with membership question skipped membership query")
 	}
 }
 
