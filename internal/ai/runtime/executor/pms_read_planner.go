@@ -36,6 +36,7 @@ type pmsReadPlanInput struct {
 	EndDate            string
 	ExtensionDays      int
 	TargetCheckoutTime string
+	OrderHistory       bool
 }
 
 type pmsReadPlan struct {
@@ -116,7 +117,11 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 
 	switch scenario {
 	case pmsReadScenarioOrder:
-		appendPMSReadOrderSteps(&plan, input, false)
+		if input.OrderHistory {
+			appendPMSReadOrderSearchStep(&plan, input)
+		} else {
+			appendPMSReadOrderSteps(&plan, input, false)
+		}
 	case pmsReadScenarioRoomStatus:
 		orderSteps := []string(nil)
 		if input.RoomKeyword == "" {
@@ -163,17 +168,40 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 	case pmsReadScenarioMemberBenefit:
 		appendPMSReadMemberStep(&plan, input, true)
 	case pmsReadScenarioMemberProgram:
-		// No documented grade-directory endpoint is connected. Do not invent one
-		// or request a phone as if it could unlock all public membership levels.
-		plan.Missing = append(plan.Missing, "memberGradeCatalog")
+		plan.Steps = append(plan.Steps, pmsReadPlanStep{
+			ID: "member.program", Action: "member_program", Purpose: "查询全部启用会员等级的权益和升级保级条件", Required: true,
+		})
 		if input.Phone != "" {
 			appendPMSReadMemberStep(&plan, input, false)
 		}
 	default:
 		plan.Missing = append(plan.Missing, "supportedScenario")
 	}
+	// Query prices on the same dates as availability, without treating the
+	// inventory response's nullable price as the price-board quote.
+	for _, step := range plan.Steps {
+		if step.ID == "inventory.stay" {
+			plan.Steps = append(plan.Steps, pmsReadPlanStep{
+				ID: "price.board", Action: "room_prices", Purpose: "查询入住日期逐日看板售价，不代表最终结算报价", Required: false,
+				Args: clonePMSReadArgs(step.Args), Bindings: append([]pmsReadPlanBinding(nil), step.Bindings...),
+				RequiredArgs: append([]string(nil), step.RequiredArgs...),
+			})
+			break
+		}
+	}
 	plan.Missing = uniquePMSReadStrings(plan.Missing)
 	return plan
+}
+
+func appendPMSReadOrderSearchStep(plan *pmsReadPlan, input pmsReadPlanInput) {
+	if input.Phone == "" {
+		plan.Missing = append(plan.Missing, "customerLocator")
+		return
+	}
+	plan.Steps = append(plan.Steps, pmsReadPlanStep{
+		ID: "order.history", Action: "orders_by_phone", Purpose: "按手机号搜索并区分当前与历史订单", Required: true,
+		Args: map[string]string{"phone": input.Phone}, RequiredArgs: []string{"phone"},
+	})
 }
 
 func normalizePMSReadPlanInput(input pmsReadPlanInput) pmsReadPlanInput {

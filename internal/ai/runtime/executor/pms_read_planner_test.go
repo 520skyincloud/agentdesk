@@ -87,7 +87,7 @@ func TestBuildPMSReadPlanDateInventory(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			Scenario: pmsReadScenarioDateInventory, StartDate: "2026-09-23", EndDate: "2026-09-25", TargetRoomTypeID: "ROOM-2",
 		})
-		if len(plan.Steps) != 2 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 3 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected explicit inventory plan: %#v", plan)
 		}
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
@@ -103,7 +103,7 @@ func TestBuildPMSReadPlanDateInventory(t *testing.T) {
 
 	t.Run("missing dates bind to the known order", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{Scenario: pmsReadScenarioDateInventory, ReserveOrderID: "RES-1"})
-		if len(plan.Steps) != 3 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 4 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected order-derived inventory plan: %#v", plan)
 		}
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
@@ -127,7 +127,7 @@ func TestBuildPMSReadPlanRoomUpgrade(t *testing.T) {
 			SubIntent: "room_upgrade", Phone: "13800138000", ReceptOrderID: "REC-1",
 			TargetRoomTypeID: "ROOM-2", StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 7 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected upgrade plan: %#v", plan)
 		}
 		for _, id := range []string{"order.recept", "order.reserve", "inventory.stay", "stay.room_availability", "member.benefits", "price.difference"} {
@@ -166,7 +166,7 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 			Scenario: pmsReadScenarioRoomChange, ReceptOrderID: "REC-1", RoomKeyword: "1401",
 			TargetRoomTypeID: "ROOM-2", StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 7 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected room change plan: %#v", plan)
 		}
 		room := requirePMSReadStep(t, plan, "room.status")
@@ -177,7 +177,7 @@ func TestBuildPMSReadPlanRoomChange(t *testing.T) {
 
 	t.Run("phone lookup binds room and dates without inventing a room", func(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{SubIntent: "room_change", Phone: "13800138000"})
-		if len(plan.Steps) != 5 || containsPMSReadString(plan.Missing, "targetRoomTypeId") {
+		if len(plan.Steps) != 6 || containsPMSReadString(plan.Missing, "targetRoomTypeId") {
 			t.Fatalf("unexpected contextual room change plan: %#v", plan)
 		}
 		requirePMSReadStep(t, plan, "order.reserve")
@@ -206,7 +206,7 @@ func TestBuildPMSReadPlanPriceDifference(t *testing.T) {
 			Scenario: pmsReadScenarioPrice, ReserveOrderID: "RES-1", TargetRoomTypeID: "ROOM-2",
 			StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 3 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 4 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected price plan: %#v", plan)
 		}
 		price := requirePMSReadStep(t, plan, "price.difference")
@@ -220,7 +220,7 @@ func TestBuildPMSReadPlanPriceDifference(t *testing.T) {
 			SubIntent: "upgrade_price", Phone: "13800138000", TargetRoomTypeID: "ROOM-2",
 			StartDate: "2026-09-23", EndDate: "2026-09-25",
 		})
-		if len(plan.Steps) != 4 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected phone price plan: %#v", plan)
 		}
 		price := requirePMSReadStep(t, plan, "price.difference")
@@ -234,7 +234,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			Scenario: pmsReadScenarioRenewal, ReceptOrderID: "REC-1", EndDate: "2026-09-26",
 		})
-		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected renewal plan: %#v", plan)
 		}
 		inventory := requirePMSReadStep(t, plan, "inventory.stay")
@@ -249,7 +249,7 @@ func TestBuildPMSReadPlanRenewal(t *testing.T) {
 		plan := buildPMSReadPlan(pmsReadPlanInput{
 			SubIntent: "renewal", Phone: "13800138000", StartDate: "2026-09-25", EndDate: "2026-09-27",
 		})
-		if len(plan.Steps) != 5 || hasPMSReadAction(plan, "renew") {
+		if len(plan.Steps) != 6 || hasPMSReadAction(plan, "renew") {
 			t.Fatalf("renewal plan exposed a write: %#v", plan)
 		}
 		requirePMSReadStep(t, plan, "order.reserve")
@@ -292,7 +292,7 @@ func TestBuildPMSReadPlanLateCheckout(t *testing.T) {
 			Scenario: pmsReadScenarioLateCheckout, Phone: "13800138000", ReceptOrderID: "REC-1", RoomKeyword: "1401",
 			StartDate: "2026-09-25", EndDate: "2026-09-26", TargetCheckoutTime: "15:00",
 		})
-		if len(plan.Steps) != 5 || len(plan.Missing) != 0 {
+		if len(plan.Steps) != 6 || len(plan.Missing) != 0 {
 			t.Fatalf("unexpected late checkout plan: %#v", plan)
 		}
 		for _, id := range []string{"order.recept", "room.status", "inventory.stay", "member.benefits", "late_checkout.assessment"} {
@@ -377,7 +377,7 @@ func TestAggregatePMSReadPlanResultsPreservesPartialSuccess(t *testing.T) {
 		if result.Status != "partial" || len(result.Confirmed) != 4 ||
 			result.Confirmed["order.recept"] == nil || result.Confirmed["inventory.stay"] == nil ||
 			result.Confirmed["stay.room_availability"] == nil ||
-			!reflect.DeepEqual(result.Unconfirmed, []string{"member.benefits", "price.difference"}) {
+			!reflect.DeepEqual(result.Unconfirmed, []string{"member.benefits", "price.difference", "price.board"}) {
 			t.Fatalf("successful upgrade subqueries were lost: %#v", result)
 		}
 	})
@@ -414,6 +414,7 @@ func TestBuildPMSReadPlanNeverEmitsWriteActions(t *testing.T) {
 		"recept_order_detail": true, "recept_order_by_phone": true,
 		"renew_candidates": true, "room_status": true, "inventory": true, "stay_room_availability": true,
 		"member_info_by_phone": true, "member_benefits_by_phone": true, "price_difference": true,
+		"room_prices": true, "member_program": true, "orders_by_phone": true,
 	}
 	for _, scenario := range []pmsReadScenario{
 		pmsReadScenarioOrder, pmsReadScenarioRoomStatus, pmsReadScenarioDateInventory,

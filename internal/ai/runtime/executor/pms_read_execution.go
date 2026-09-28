@@ -527,7 +527,7 @@ func buildRuntimePMSResolvedInstruction(plan callbacks.ReplyPlanTraceData) strin
 	if !hasPMSFacts {
 		return ""
 	}
-	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 要先理解客户此刻的目的，只选择能直接解决该目的的事实组织自然回复；不要复述全部库存、冲突检测、净脏房统计或内部评估过程。库存日期由订单派生时，必须按完整入住期间或具体日期范围表述；任一入住日无库存时，只能说明完整入住期间不能满足，不能擅自缩写成今天满房。客户要求推荐时，可在真实候选中推荐一个并说明已有依据；没有可区分依据时应如实说明候选目前看起来条件相同，再给出一个可选建议。不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费。客户手机号只用于定位查询，不得在回复中原样复述完整手机号；内部预订单/接待单 ID 也不得在回复中原样复述。"
+	return "PMS 只读事实已经由服务端查询并写入当前任务的已确认事实。Generate 要先理解客户此刻的目的，只选择能直接解决该目的的事实组织自然回复；不要复述全部库存、冲突检测、净脏房统计或内部评估过程。库存日期由订单派生时，必须按完整入住期间或具体日期范围表述；任一入住日无库存时，只能说明完整入住期间不能满足，不能擅自缩写成今天满房。价格必须注明适用日期；原订单金额不是续住价格，看板售价不是最终差价，未知差价不等于零。客户要求推荐时，可在真实候选中推荐一个并说明已有依据；没有可区分依据时应如实说明再给出一个可选建议，不得编造安静、楼层、价格相近等未返回的优势。客户同时问权益和升房时，两者均需回答，不得只答能否免费升房。公共会员等级规则不需要手机号；已有手机号且查询成功后，不能以规则或价格缺失为由再问手机号。历史查询成功后不能因当前有效订单为空而说没有订单。不得再次调用 pms_query，不得补全尚未确认方面，也不得把可售、可选或评估结果说成已经锁房、换房、升房、续住、延退或完成收费；不得邀请确认办理或登记，本轮只查询。客户手机号只用于定位查询，不得在回复中原样复述完整手机号；内部预订单/接待单 ID 也不得在回复中原样复述。"
 }
 
 func appendRuntimePMSResolvedOrderLocator(task *callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) {
@@ -592,6 +592,7 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		Phone:              phone,
 		RoomKeyword:        runtimePMSRoomKeyword(task),
 		TargetRoomTypeText: targetRoomTypeText,
+		OrderHistory:       runtimePMSAsksOrderHistory(text),
 	}
 	if input.TargetRoomTypeText == "" && runtimePMSTaskRetainsTargetRoomType(task.SubIntent) &&
 		(task.ResolutionState == runtimeIntentResolutionResolvedFromContext || input.Scenario == pmsReadScenarioPrice) &&
@@ -1007,6 +1008,18 @@ func runtimePMSDateMentions(text string, now time.Time) []runtimePMSDateMention 
 func executeRuntimePMSReadPlan(ctx context.Context, plan pmsReadPlan, input pmsReadPlanInput, invoker runtimePMSReadInvoker) ([]pmsReadStepResult, pmsReadPlan) {
 	byStep := make(map[string]pmsReadStepResult, len(plan.Steps)+1)
 	executeRuntimePMSReadSteps(ctx, plan.Steps, byStep, invoker)
+	if plan.Scenario == pmsReadScenarioOrder && !input.OrderHistory && input.Phone != "" {
+		allEmpty := len(plan.Steps) > 0
+		for _, step := range plan.Steps {
+			if byStep[step.ID].Status != pmsReadStepEmpty {
+				allEmpty = false
+			}
+		}
+		if allEmpty {
+			appendPMSReadOrderSearchStep(&plan, input)
+			executeRuntimePMSReadSteps(ctx, plan.Steps[len(plan.Steps)-1:], byStep, invoker)
+		}
+	}
 
 	if input.TargetRoomTypeID == "" && strings.TrimSpace(input.TargetRoomTypeText) != "" {
 		if inventory, ok := byStep["inventory.stay"]; ok && (inventory.Status == pmsReadStepOK || inventory.Status == pmsReadStepPartial) {
@@ -1176,6 +1189,9 @@ func runtimePMSReadStepDependenciesComplete(step pmsReadPlanStep, byStep map[str
 		if _, known := knownStepIDs["inventory.stay"]; known {
 			dependencies["inventory.stay"] = struct{}{}
 		}
+		if _, known := knownStepIDs["price.board"]; known {
+			dependencies["price.board"] = struct{}{}
+		}
 	}
 	for stepID := range dependencies {
 		if _, complete := byStep[stepID]; !complete {
@@ -1200,7 +1216,11 @@ func assessRuntimePMSPriceDifference(results map[string]pmsReadStepResult, args 
 	if err != nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, ErrorKind: "partial", Message: err.Error()}
 	}
-	assessment, err := pms.AssessPriceDifference(priceOrder, inventory.Data, args["roomTypeId"], startDate, endDate)
+	priceData := inventory.Data
+	if board := results["price.board"]; board.Status == pmsReadStepOK {
+		priceData = pms.MergeRoomPrices(inventory.Data, board.Data)
+	}
+	assessment, err := pms.AssessPriceDifference(priceOrder, priceData, args["roomTypeId"], startDate, endDate)
 	if err != nil {
 		return pmsReadStepResult{Status: pmsReadStepUnavailable, Message: "PMS 差价评估暂时不可用"}
 	}
@@ -1316,7 +1336,8 @@ func isRuntimePMSReadOnlyAction(action string) bool {
 	case "reserve_order_detail", "reserve_order_by_phone",
 		"recept_order_detail", "recept_order_by_phone",
 		"renew_candidates", "room_status", "inventory", "stay_room_availability",
-		"member_info_by_phone", "member_benefits_by_phone", "price_difference", "late_checkout_assessment":
+		"member_info_by_phone", "member_benefits_by_phone", "member_program", "orders_by_phone", "room_prices",
+		"price_difference", "late_checkout_assessment":
 		return true
 	default:
 		return false
@@ -1949,6 +1970,14 @@ type runtimePMSReadTaskFact struct {
 }
 
 func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, step pmsReadStepResult) []runtimePMSReadTaskFact {
+	switch step.StepID {
+	case "order.history":
+		return []runtimePMSReadTaskFact{{Aspect: "pms_order_history", Statement: runtimePMSHistoryAnswer(step.Data)}}
+	case "member.program":
+		return []runtimePMSReadTaskFact{{Aspect: "pms_member_program", Statement: runtimePMSProgramAnswer(task, step.Data)}}
+	case "price.board":
+		return []runtimePMSReadTaskFact{{Aspect: "pms_price_board", Statement: runtimePMSBoardPriceFact(step)}}
+	}
 	if plan.Scenario == pmsReadScenarioOrder && (step.StepID == "order.reserve" || step.StepID == "order.recept") {
 		if facts, requested := runtimePMSFocusedOrderFacts(task, step.Data); len(facts) > 0 {
 			return facts
@@ -2098,6 +2127,9 @@ func runtimePMSReadTaskHasFact(task callbacks.ReplyTaskPlanTraceData, aspect, st
 func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
 	switch plan.Scenario {
 	case pmsReadScenarioOrder:
+		if data, ok := result.Confirmed["order.history"]; ok {
+			return runtimePMSHistoryAnswer(data)
+		}
 		return runtimePMSCustomerOrderAnswer(task, result)
 	case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade:
 		return runtimePMSCustomerRoomChoiceAnswer(task, plan, result)
@@ -2108,7 +2140,7 @@ func runtimePMSCustomerAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsRea
 	case pmsReadScenarioMemberInfo, pmsReadScenarioMemberBenefit:
 		return runtimePMSCustomerMemberAnswer(result)
 	case pmsReadScenarioMemberProgram:
-		return runtimePMSCustomerMemberAnswer(result) + "其他会员等级的完整权益和升级条件，我这边暂时还查不到，不能给您不准确的说明。"
+		return runtimePMSProgramAnswer(task, result.Confirmed["member.program"])
 	default:
 		return ""
 	}
@@ -2545,6 +2577,9 @@ func runtimePMSCustomerPriceDifference(result pmsReadPlanResult) string {
 
 func runtimePMSCustomerPriceAnswer(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
 	if stay, ok := runtimePMSCustomerStay(result); ok && runtimePMSCustomerOrderStatus(stay.data) == "已退房" {
+		if board := runtimePMSCustomerBoardPrice(result); board != "" {
+			return "之前那笔订单已经退房，不能拿它的金额作为这次选房的差价依据。" + board
+		}
 		return "之前那笔订单已经退房，不能拿它的金额作为这次选房的差价依据。您这次要比较的房型价格，我这边还不能确认。"
 	}
 	clause := runtimePMSCustomerPriceClause(task, result)
@@ -2572,6 +2607,9 @@ func runtimePMSCustomerPriceAnswer(task callbacks.ReplyTaskPlanTraceData, result
 func runtimePMSCustomerPriceClause(task callbacks.ReplyTaskPlanTraceData, result pmsReadPlanResult) string {
 	if exact := runtimePMSCustomerPriceDifference(result); exact != "" {
 		return exact
+	}
+	if board := runtimePMSCustomerBoardPrice(result); board != "" {
+		return board + "换房的最终补退金额还需要核对原订单的逐日房费和适用优惠"
 	}
 	target := strings.TrimSpace(runtimePMSTargetRoomTypeText(task))
 	if runtimePMSGenericRoomChoice(normalizeRuntimePMSRoomTypeText(target)) {
@@ -2689,7 +2727,7 @@ func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.Reply
 		return true
 	case "member.benefits":
 		return plan.Scenario == pmsReadScenarioMemberBenefit || plan.Scenario == pmsReadScenarioMemberProgram || containsAny(text, []string{"会员", "权益", "免差", "免费升", "等级"})
-	case "price.difference":
+	case "price.difference", "price.board":
 		return plan.Scenario == pmsReadScenarioPrice || containsAny(text, []string{"差价", "补多少", "多少钱", "费用", "价格"})
 	case "room.status":
 		return plan.Scenario == pmsReadScenarioRoomStatus || containsAny(text, []string{"房态", "空净", "空脏", "住净", "住脏", "打扫", "清扫", "维修", "锁房"})
@@ -2702,6 +2740,9 @@ func runtimePMSOptionalStepRelevantToTask(plan pmsReadPlan, task callbacks.Reply
 
 func runtimePMSReadHasOtherOrderFact(result pmsReadPlanResult, skipStepID string) bool {
 	for _, step := range result.Steps {
+		if step.StepID == "order.history" && step.Status == pmsReadStepOK && runtimePMSHistoryAnswer(step.Data) != "" {
+			return true
+		}
 		if step.StepID == skipStepID || (step.StepID != "order.reserve" && step.StepID != "order.recept") {
 			continue
 		}
@@ -2956,10 +2997,11 @@ func runtimePMSMemberFactForPlan(plan pmsReadPlan, data any) string {
 			fields = append(fields, "当前等级不可用")
 		}
 	}
-	benefits := runtimePMSMemberBenefitTextsForScenario(grade, plan.Scenario)
+	benefits := runtimePMSMemberBenefitTexts(grade)
 	if len(benefits) > 0 {
 		fields = append(fields, "权益"+strings.Join(benefits, "、"))
-	} else if grade != nil && plan.Scenario == pmsReadScenarioRoomUpgrade {
+	}
+	if grade != nil && plan.Scenario == pmsReadScenarioRoomUpgrade && len(runtimePMSMemberBenefitTextsForScenario(grade, plan.Scenario)) == 0 {
 		fields = append(fields, "当前权益中未查到免费升房或免差价说明")
 	}
 	if plan.Scenario == pmsReadScenarioMemberBenefit || plan.Scenario == pmsReadScenarioMemberProgram || plan.Scenario == "" {

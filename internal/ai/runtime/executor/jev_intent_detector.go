@@ -685,7 +685,7 @@ func jevIntentRouteCriteria() map[string]any {
 		"provide_location":       "Request THIS HOTEL's address/location/navigation.",
 		"provide_mini_program":   "Request THIS HOTEL's check-in mini-program.",
 		"provide_pillow_product": "Ask whether THIS HOTEL's pillow is available as a product (有同款吗), or ask for its purchase link, ordering path or price. Never use for room delivery/replacement/addition, dirty/broken pillows, discomfort or a compliment without any product inquiry.",
-		"order_query":            "Find current orders by customer phone/order ID; repeated lookup or corrected phone also belongs here.",
+		"order_query":            "Find current or historical orders/stay records by customer phone/order ID; repeated lookup or corrected phone also belongs here. Preserve whether the customer asks about past stays, current stays, or all orders in resolvedText.",
 		"order_detail":           "Specific order room, dates, rate, payment or status, including first-person requests for the customer's own checkout/departure time such as 我的房到几号/住到几号, and contextual follow-ups such as this order's original/latest checkout time. 房到几号 means checkout date, not room number.",
 		"room_status":            "Live room status/cleanliness.",
 		"room_inventory":         "Available room types or inventory for a date range.",

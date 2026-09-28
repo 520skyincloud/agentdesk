@@ -96,6 +96,14 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 		endpoint = memberInfoByPhonePath
 	case "member_benefits_by_grade":
 		endpoint = memberBenefitsByGradePath
+	case "member_grade_catalog":
+		endpoint = "/admin-api/member/grade/page"
+	case "recept_order_search":
+		endpoint = "/admin-api/hpms/orderManage/receptOrder/page"
+	case "reserve_order_search":
+		endpoint = "/admin-api/hpms/orderManage/reserveOrder/page"
+	case "room_prices":
+		endpoint = "/admin-api/hpms/changePrice/query"
 	default:
 		return QueryResult{}, fmt.Errorf("PMS 接口文档尚未提供该查询类型")
 	}
@@ -110,13 +118,20 @@ func (c *Client) Query(ctx context.Context, action string, args map[string]strin
 			query.Set(key, value)
 		}
 	}
-	if !memberQuery && c.hotelID != "" && query.Get("hotelId") == "" {
+	if c.hotelID != "" && query.Get("hotelId") != "" && query.Get("hotelId") != c.hotelID {
+		return QueryResult{}, fmt.Errorf("PMS 查询不能覆盖服务端酒店")
+	}
+	if !memberQuery && action != "member_grade_catalog" && c.hotelID != "" && query.Get("hotelId") == "" {
 		query.Set("hotelId", c.hotelID)
 	}
-	if action == "inventory" {
+	if action == "inventory" || action == "room_prices" || action == "member_grade_catalog" ||
+		action == "recept_order_search" || action == "reserve_order_search" {
 		if err := c.bindInventoryTenant(query); err != nil {
 			return QueryResult{}, err
 		}
+	}
+	if (action == "room_prices" || action == "member_grade_catalog") && query.Get("tenantId") == "" {
+		return QueryResult{}, fmt.Errorf("PMS 查询缺少服务端租户配置")
 	}
 	if err := validateReadQuery(action, query); err != nil {
 		return QueryResult{}, err
@@ -331,7 +346,7 @@ func (c *Client) applyHeaders(request *http.Request) {
 
 func allowedQueryArgs(action string, args map[string]string) map[string]string {
 	allowed := map[string]map[string]struct{}{
-		"reserve_order_detail":     {"reserveOrderId": {}, "hotelId": {}, "tenantId": {}},
+		"reserve_order_detail":     {"reserveOrderId": {}, "receptOrderId": {}, "hotelId": {}, "tenantId": {}},
 		"reserve_order_by_phone":   {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
 		"recept_order_detail":      {"receptOrderId": {}, "hotelId": {}, "tenantId": {}},
 		"recept_order_by_phone":    {"phone": {}, "customerNo": {}, "hotelId": {}, "tenantId": {}},
@@ -340,6 +355,10 @@ func allowedQueryArgs(action string, args map[string]string) map[string]string {
 		"inventory":                {"beginTime": {}, "endTime": {}, "roomId": {}, "channelType": {}, "hotelTargetId": {}, "hotelTargetType": {}, "orderType": {}, "hourDuration": {}, "hotelId": {}, "tenantId": {}},
 		"member_info_by_phone":     {"phone": {}},
 		"member_benefits_by_grade": {"gradeId": {}, "gradeCode": {}},
+		"member_grade_catalog":     {"pageNum": {}, "pageSize": {}},
+		"recept_order_search":      {"keyword": {}, "pageNum": {}, "pageSize": {}},
+		"reserve_order_search":     {"keyword": {}, "pageNum": {}, "pageSize": {}},
+		"room_prices":              {"beginTime": {}, "endTime": {}, "roomId": {}},
 	}
 	set := allowed[action]
 	ret := make(map[string]string, len(set))
@@ -376,7 +395,7 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 	if strings.TrimSpace(ret["customerNo"]) == "" && strings.TrimSpace(ret["memberId"]) != "" {
 		ret["customerNo"] = ret["memberId"]
 	}
-	if action == "inventory" {
+	if action == "inventory" || action == "room_prices" {
 		if strings.TrimSpace(ret["beginTime"]) == "" {
 			ret["beginTime"] = ret["startDate"]
 		}
@@ -387,13 +406,16 @@ func normalizeQueryArgs(action string, args map[string]string) map[string]string
 			ret["roomId"] = ret["roomTypeId"]
 		}
 	}
-	if action == "renew_candidates" {
+	if action == "renew_candidates" || action == "member_grade_catalog" || action == "recept_order_search" || action == "reserve_order_search" {
 		if strings.TrimSpace(ret["pageNum"]) == "" {
 			ret["pageNum"] = "1"
 		}
 		if strings.TrimSpace(ret["pageSize"]) == "" {
 			ret["pageSize"] = "20"
 		}
+	}
+	if action == "recept_order_search" || action == "reserve_order_search" {
+		ret["keyword"] = strings.TrimSpace(args["phone"])
 	}
 	return ret
 }
@@ -408,9 +430,13 @@ func validateReadQuery(action string, query url.Values) error {
 		if strings.TrimSpace(query.Get("receptOrderId")) == "" {
 			return fmt.Errorf("接待单详情查询需要真实接待单 ID")
 		}
-	case "inventory":
+	case "inventory", "room_prices":
 		if !validQueryDate(query.Get("beginTime")) || !validQueryDate(query.Get("endTime")) {
 			return fmt.Errorf("库存查询需要完整的入住和离店日期")
+		}
+	case "recept_order_search", "reserve_order_search":
+		if query.Get("hotelId") == "" || !mainlandMemberPhone.MatchString(query.Get("keyword")) {
+			return fmt.Errorf("订单搜索需要服务端酒店和客户有效手机号")
 		}
 	case "renew_candidates":
 		if strings.TrimSpace(query.Get("currentReceptOrderId")) == "" &&

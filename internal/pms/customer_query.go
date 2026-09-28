@@ -28,7 +28,7 @@ func CustomerQueryData(action string, data any) (any, error) {
 			return nil, err
 		}
 		return result, nil
-	case "inventory":
+	case "inventory", "room_prices":
 		return customerQueryArray(data, customerInventoryData)
 	case "renew_candidates":
 		source, err := customerQueryObject(data)

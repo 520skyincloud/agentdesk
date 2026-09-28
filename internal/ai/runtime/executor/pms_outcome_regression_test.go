@@ -157,8 +157,8 @@ func TestPublicMembershipPlanDoesNotDemandIdentity(t *testing.T) {
 				t.Fatalf("public rules cannot demand personal identity: %#v", plan)
 			}
 		}
-		if len(plan.Missing) != 1 || plan.Missing[0] != "memberGradeCatalog" {
-			t.Fatalf("missing catalog must be explicit: %#v", plan)
+		if len(plan.Missing) != 0 || !hasPMSReadAction(plan, "member_program") {
+			t.Fatalf("public rules must query the existing catalog: %#v", plan)
 		}
 	}
 }

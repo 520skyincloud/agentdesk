@@ -77,7 +77,7 @@ func TestPMSQueryToolSchemaExposesOnlyReadOnlyActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	action, ok := schema.Properties.Get("action")
-	if !ok || len(action.Enum) != 11 {
+	if !ok || len(action.Enum) != 14 {
 		t.Fatalf("unexpected read-only action schema: %#v", action)
 	}
 	for _, value := range action.Enum {

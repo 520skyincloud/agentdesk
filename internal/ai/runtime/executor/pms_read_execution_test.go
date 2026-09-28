@@ -415,7 +415,7 @@ func TestExecuteRuntimePMSReadPlanBindsOrderFacts(t *testing.T) {
 		}}
 		input := pmsReadPlanInput{Scenario: pmsReadScenarioDateInventory, ReserveOrderID: "RES-1"}
 		results, _ := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		if len(results) != 3 || len(invoker.calls) != 3 {
+		if len(results) != 4 || len(invoker.calls) != 4 {
 			t.Fatalf("unexpected calls/results: calls=%#v results=%#v", invoker.calls, results)
 		}
 		var inventory *runtimePMSFakeCall
@@ -905,15 +905,15 @@ func TestRuntimePMSCustomerFactsStayFocusedOnTheCurrentDecision(t *testing.T) {
 		}
 	})
 
-	t.Run("upgrade member fact only keeps upgrade-related benefits", func(t *testing.T) {
+	t.Run("upgrade member fact preserves benefits for compound questions", func(t *testing.T) {
 		fact := runtimePMSMemberFactForPlan(pmsReadPlan{Scenario: pmsReadScenarioRoomUpgrade}, map[string]any{
 			"member": map[string]any{"gradeName": "银卡会员", "statusName": "启用", "gradeAvailable": true},
 			"grade": map[string]any{"benefits": []any{
 				map[string]any{"label": "9.5折"}, map[string]any{"label": "1份早餐"}, map[string]any{"label": "免费升房一次"},
 			}},
 		})
-		if !strings.Contains(fact, "免费升房一次") || strings.Contains(fact, "早餐") || strings.Contains(fact, "9.5折") {
-			t.Fatalf("upgrade member fact included unrelated benefits: %q", fact)
+		if !strings.Contains(fact, "免费升房一次") || !strings.Contains(fact, "早餐") || !strings.Contains(fact, "9.5折") {
+			t.Fatalf("compound membership facts were lost: %q", fact)
 		}
 	})
 }
@@ -1162,7 +1162,7 @@ func TestExecuteRuntimePMSUpgradeRunsOnlyGroundedReadSteps(t *testing.T) {
 			Scenario: pmsReadScenarioRoomUpgrade, Phone: "13800138000", ReceptOrderID: "REC-1", TargetRoomTypeText: target,
 		}
 		results, plan := executeRuntimePMSReadPlan(context.Background(), buildPMSReadPlan(input), input, invoker)
-		if len(results) != 6 || len(invoker.calls) != 5 {
+		if len(results) != 7 || len(invoker.calls) != 6 {
 			t.Fatalf("upgrade must query order, inventory, specific rooms, member and price: plan=%#v calls=%#v results=%#v", plan, invoker.calls, results)
 		}
 		if !runtimePMSFakeCalled(invoker.calls, "recept_order_detail") || !runtimePMSFakeCalled(invoker.calls, "reserve_order_detail") || !runtimePMSFakeCalled(invoker.calls, "inventory") ||

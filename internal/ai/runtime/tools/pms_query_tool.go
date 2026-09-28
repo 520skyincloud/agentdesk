@@ -41,7 +41,7 @@ func (t *PMSQueryTool) Build(ctx registry.Context) (einotool.BaseTool, error) {
 func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: toolx.BuiltinPMSQuery.Name,
-		Desc: "只读查询 PMS 的订单、实时房态、库存、会员信息和差价评估。stay_room_availability 会组合实时房态返回的具体房间、未来订单入住/离店区间和锁房/维修状态，计算整个入住区间无冲突的候选房号；它不锁房、不排房，超过实时房态未来30天覆盖范围时只返回 partial。查询会员权益、升级或保级规则时，用客户手机号调用 member_benefits_by_phone；工具内部先查会员，再用真实等级查询权益和规则，不需要模型提供等级 ID 或猜测等级名称。仅查会员基本信息时使用 member_info_by_phone。price_difference 只调用订单详情和库存 GET 接口，只有日期、每日金额、币种和相同计价口径齐全时才返回 exact；缺失或跨日期价格不完整时返回 quote_only/insufficient_data，不能把空价格当成免费或把估算说成最终差价。gradeAvailable=false 或会员冻结/挂失时如实说明，不承诺可使用权益；权益配置不代表已升房、延退、发券或已执行其他操作。",
+		Desc: "只读查询 PMS。orders_by_phone 按客户手机号搜索当前及历史订单，返回精确匹配且去重的订单；两个 *_order_by_phone 仅查当前有效订单。member_program 无需手机号，读取全部启用会员等级、权益和升级保级规则。member_benefits_by_phone 工具内部先查会员再查真实等级权益，不需要模型提供等级 ID；gradeAvailable=false 或冻结/挂失时不得承诺权益可用。room_prices 按日期和房型读取逐日房价看板，不代表会员或渠道最终结算报价。stay_room_availability 组合房态、未来订单和锁房维修状态，计算整个入住期间的候选房号；超过未来30天返回 partial。price_difference 只有相同日期、币种和计价口径的价格齐全才返回 exact，否则仅供参考。空价格不是免费，会员等级不是免费升房资格，权益配置不代表已升房。以上查询不执行换房、升房、续住、延退、锁房、收费或权益履约。",
 		ParamsOneOf: schema.NewParamsOneOfByJSONSchema(&einojsonschema.Schema{
 			Version:  einojsonschema.Version,
 			Type:     "object",
@@ -53,7 +53,8 @@ func (t *PMSQueryTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 						"reserve_order_detail", "reserve_order_by_phone",
 						"recept_order_detail", "recept_order_by_phone",
 						"renew_candidates", "room_status", "inventory", "stay_room_availability",
-						"member_info_by_phone", "member_benefits_by_phone", "price_difference",
+						"member_info_by_phone", "member_benefits_by_phone", "member_program",
+						"orders_by_phone", "room_prices", "price_difference",
 					},
 					Description: "只读查询操作；stay_room_availability 需要完整入住和离店日期，可选真实 roomTypeId，并只返回无占用冲突的具体候选房号；price_difference 需要真实的 reserveOrderId 或 receptOrderId、目标 roomTypeId 和入住日期。服务端只调用已有 GET 查询；不支持续住提交、改房、排房、换房、延迟退房、改价或会员权益履约。",
 				}},
@@ -159,7 +160,11 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 	var result pms.QueryResult
 	var err error
 	partialMessage := ""
-	if input.Action == "member_benefits_by_phone" {
+	if input.Action == "member_program" {
+		result, err = client.MemberProgram(callCtx)
+	} else if input.Action == "orders_by_phone" {
+		result, err = client.SearchOrders(callCtx, normalizePMSPhone(input.Phone))
+	} else if input.Action == "member_benefits_by_phone" {
 		result, partialMessage, err = queryMemberBenefitsByPhone(callCtx, client, args["phone"])
 	} else if input.Action == "price_difference" {
 		result, err = queryPriceDifference(callCtx, client, input.ReserveOrderID, input.ReceptOrderID, input.RoomTypeID, firstNonEmpty(input.BeginTime, input.StartDate), firstNonEmpty(input.EndTime, input.EndDate))
@@ -194,6 +199,14 @@ func (t *PMSQueryTool) InvokableRun(ctx context.Context, argumentsInJSON string,
 		"data":   result.Data,
 		"source": result.Source,
 		"asOf":   result.AsOf,
+	}
+	if input.Action == "orders_by_phone" {
+		root, _ := result.Data.(map[string]any)
+		rows, _ := root["rows"].([]any)
+		if len(rows) == 0 {
+			output["status"] = "empty"
+			output["message"] = "未查到符合当前手机号查询条件的订单"
+		}
 	}
 	if partialMessage != "" {
 		output["status"] = "partial"
@@ -244,7 +257,8 @@ func isPMSReadOnlyAction(action string) bool {
 	case "reserve_order_detail", "reserve_order_by_phone",
 		"recept_order_detail", "recept_order_by_phone",
 		"renew_candidates", "room_status", "inventory", "stay_room_availability",
-		"member_info_by_phone", "member_benefits_by_phone", "price_difference":
+		"member_info_by_phone", "member_benefits_by_phone", "member_program",
+		"orders_by_phone", "room_prices", "price_difference":
 		return true
 	default:
 		return false
@@ -265,11 +279,11 @@ func validatePMSReadOnlyInput(action, reserveOrderID, receptOrderID, phone, cust
 		if normalizePMSPhone(phone) == "" && strings.TrimSpace(customerNo) == "" {
 			return fmt.Errorf("订单查询需要客户提供的有效手机号或会员编号/协议公司编号")
 		}
-	case "member_info_by_phone", "member_benefits_by_phone":
+	case "member_info_by_phone", "member_benefits_by_phone", "orders_by_phone":
 		if normalizePMSPhone(phone) == "" {
 			return fmt.Errorf("查询需要客户提供的有效手机号")
 		}
-	case "inventory":
+	case "inventory", "room_prices":
 		if queryDate(firstNonEmpty(beginTime, startDate)) == "" || queryDate(firstNonEmpty(endTime, endDate)) == "" {
 			return fmt.Errorf("库存查询需要完整的入住和离店日期")
 		}
@@ -382,6 +396,13 @@ func queryPriceDifference(ctx context.Context, client *pms.Client, reserveOrderI
 	inventoryData, err := pms.CustomerQueryData(inventory.Action, inventory.Data)
 	if err != nil {
 		return pms.QueryResult{}, err
+	}
+	if prices, queryErr := client.Query(ctx, "room_prices", map[string]string{
+		"beginTime": startDate, "endTime": endDate, "roomTypeId": roomTypeID,
+	}); queryErr == nil {
+		if projected, projectErr := pms.CustomerQueryData(prices.Action, prices.Data); projectErr == nil {
+			inventoryData = pms.MergeRoomPrices(inventoryData, projected)
+		}
 	}
 	assessment, err := pms.AssessPriceDifference(orderData, inventoryData, roomTypeID, startDate, endDate)
 	if err != nil {
