@@ -93,3 +93,16 @@ func runtimeIntentContextEntitiesForScope(entities []callbacks.IntentEntityTrace
 	}
 	return ret
 }
+
+func jevBusinessContextForScopeChoice(choice string, contexts map[string]jevIntentContext) (string, bool) {
+	const prefix = "continue_"
+	if !strings.HasPrefix(choice, prefix) {
+		return "", false
+	}
+	ref := strings.TrimPrefix(choice, prefix)
+	context, ok := contexts[ref]
+	if !ok || !context.BusinessSnapshot {
+		return "", false
+	}
+	return ref, true
+}

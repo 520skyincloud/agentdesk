@@ -391,19 +391,21 @@ func TestCompleteUngroundedKnowledgeFallbackOffersMaintenanceTicketWithoutAutoma
 		name      string
 		subIntent string
 		customer  string
-		wantReply string
+		wantTopic string
+		noHandoff bool
 	}{
 		{
 			name:      "maintenance respects rejected handoff",
 			subIntent: "maintenance",
 			customer:  "空调不制冷，我住1304，先告诉我怎么处理，不要转人工",
-			wantReply: ungroundedMaintenanceOfferNoHandoffReply,
+			wantTopic: "空调问题",
+			noHandoff: true,
 		},
 		{
 			name:      "air conditioner malfunction offers a ticket",
 			subIntent: "air_conditioner",
 			customer:  "房间空调坏了，能帮我处理吗",
-			wantReply: ungroundedMaintenanceOfferReply,
+			wantTopic: "空调问题",
 		},
 	}
 
@@ -421,7 +423,10 @@ func TestCompleteUngroundedKnowledgeFallbackOffersMaintenanceTicketWithoutAutoma
 
 			got, err := completeUngroundedKnowledgeFallback(summary, collector, []string{"task-1"})
 
-			if err != nil || got != summary || summary.Status != "completed" || summary.ReplyText != tt.wantReply {
+			if err != nil || got != summary || summary.Status != "completed" ||
+				!strings.Contains(summary.ReplyText, tt.wantTopic) ||
+				!strings.Contains(summary.ReplyText, "需要门店同事处理") ||
+				(tt.noHandoff && !strings.Contains(summary.ReplyText, "按您的要求先不转接")) {
 				t.Fatalf("unexpected maintenance fallback summary=%#v err=%v", summary, err)
 			}
 			if summary.handoffDirective || summary.handoffDispatchStatus != "" {
@@ -442,10 +447,11 @@ func TestIsolateUngroundedMaintenanceTaskKeepsOfferInsideMixedReply(t *testing.T
 		name      string
 		subIntent string
 		customer  string
-		wantReply string
+		wantTopic string
+		noHandoff bool
 	}{
-		{name: "air conditioner repair", subIntent: "air_conditioner_repair", customer: "空调不出风了怎么办", wantReply: ungroundedMaintenanceOfferReply},
-		{name: "generic maintenance without handoff", subIntent: "maintenance", customer: "马桶堵了，先不要转人工", wantReply: ungroundedMaintenanceOfferNoHandoffReply},
+		{name: "air conditioner repair", subIntent: "air_conditioner_repair", customer: "空调不出风了怎么办", wantTopic: "空调问题"},
+		{name: "generic maintenance without handoff", subIntent: "maintenance", customer: "马桶堵了，先不要转人工", wantTopic: "卫生间设施问题", noHandoff: true},
 	}
 
 	for _, tt := range tests {
@@ -465,7 +471,11 @@ func TestIsolateUngroundedMaintenanceTaskKeepsOfferInsideMixedReply(t *testing.T
 				t.Fatalf("expected only the maintenance task to be isolated, got %#v", isolated)
 			}
 			facts := got.TaskPlans[0].SupportedFacts
-			if got.TaskPlans[0].SelectedLayer != "runtime_safe_fallback" || len(facts) != 1 || facts[0].Statement != tt.wantReply || facts[0].Aspect != "service_resolution" {
+			if got.TaskPlans[0].SelectedLayer != "runtime_safe_fallback" || len(facts) != 1 ||
+				!strings.Contains(facts[0].Statement, tt.wantTopic) ||
+				!strings.Contains(facts[0].Statement, "需要门店同事处理") ||
+				(tt.noHandoff && !strings.Contains(facts[0].Statement, "按您的要求先不转接")) ||
+				facts[0].Aspect != "service_resolution" {
 				t.Fatalf("maintenance task did not receive the fixed service offer: %#v", got.TaskPlans[0])
 			}
 			if strings.Contains(facts[0].Statement, "已登记") || strings.Contains(facts[0].Statement, "已转接") {

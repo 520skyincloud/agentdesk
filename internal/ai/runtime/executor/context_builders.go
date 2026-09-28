@@ -233,6 +233,7 @@ func buildBoundedGenerationConversationContext(history adapter.HistoryBuildResul
 		b.WriteString(strings.Join(adjacentTaskIDs, "、"))
 		b.WriteString("。使用下面有界历史理解当前指代、纠正或槽位答案，以当前任务的 resolvedText 和客户最新要求为准；旧动作被撤回后不得继续解释或执行，旧问题不得重复回答。\n")
 		appendBoundedGenerationHistoryEntries(&b, adjacentEntries)
+		b.WriteString("历史客服话术不是本轮事实来源。库存、房号可用性、价格、会员资格只使用下方本轮已确认事实；历史仅用于理解客户所指，不可用旧回复补齐本轮查询失败或缺失结果。\n")
 	}
 	if len(recapTaskIDs) > 0 {
 		b.WriteString("会话回顾上下文适用任务：")
@@ -272,6 +273,12 @@ func appendBoundedGenerationHistoryEntries(b *strings.Builder, entries []bounded
 func generationConversationContextMode(task callbacks.ReplyTaskPlanTraceData) string {
 	if looksLikeConversationRecapTask(task) {
 		return "recap"
+	}
+	if task.PMSOutcome != nil && strings.TrimSpace(task.SubjectScope) != "" &&
+		strings.TrimSpace(task.ResolvedText) != "" {
+		// Intent has already resolved the referent and PMS has refreshed this
+		// goal. Reinjecting old assistant answers can revive stale inventory.
+		return ""
 	}
 	relation := strings.ToLower(strings.TrimSpace(task.RelationToPrevious))
 	resolution := strings.ToLower(strings.TrimSpace(task.ResolutionState))
@@ -449,6 +456,16 @@ func buildActiveGenerationTaskContext(req RunInput, intent callbacks.IntentTrace
 		if strategy := strings.TrimSpace(task.ReplyStrategy); strategy != "" {
 			b.WriteString("- 回复策略：")
 			b.WriteString(strategy)
+			b.WriteString("\n")
+		}
+		if aspects := compactGenerationContextStrings(task.RequestedAspects); len(aspects) > 0 {
+			b.WriteString("- 本轮具体所求（优先于自包含问题中的旧背景）：")
+			b.WriteString(strings.Join(aspects, "、"))
+			b.WriteString("\n")
+		}
+		if scope := strings.TrimSpace(task.SubjectScope); scope != "" {
+			b.WriteString("- 本轮对象范围：")
+			b.WriteString(scope)
 			b.WriteString("\n")
 		}
 

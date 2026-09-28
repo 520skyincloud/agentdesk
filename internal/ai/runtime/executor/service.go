@@ -502,13 +502,44 @@ func ungroundedMaintenanceServiceReply(task callbacks.ReplyTaskPlanTraceData, cu
 	}
 
 	handoffText := strings.TrimSpace(strings.Join([]string{taskText, currentText}, "\n"))
+	topic := maintenanceTopicLabel(taskText)
 	if utils.IsExplicitHumanHandoffRejection(handoffText) {
+		if topic != "" {
+			return "关于" + topic + "，需要门店同事处理；按您的要求先不转接。需要的话，我可以帮您登记维修工单。", true
+		}
 		return ungroundedMaintenanceOfferNoHandoffReply, true
+	}
+	if topic != "" {
+		return "关于" + topic + "，需要门店同事处理。需要的话，我可以帮您登记维修工单。", true
 	}
 	return ungroundedMaintenanceOfferReply, true
 }
 
+func maintenanceTopicLabel(text string) string {
+	text = strings.TrimSpace(text)
+	switch {
+	case containsAny(text, []string{"空调", "不制冷", "不出风", "制冷"}):
+		return "空调问题"
+	case containsAny(text, []string{"热水", "热水器"}):
+		return "热水问题"
+	case containsAny(text, []string{"马桶", "下水", "堵"}):
+		return "卫生间设施问题"
+	case containsAny(text, []string{"门锁", "房门", "打不开", "开不了门"}):
+		return "房门问题"
+	case containsAny(text, []string{"灯", "照明", "灯泡"}):
+		return "照明问题"
+	}
+	return ""
+}
+
 func fallbackCriticalValues(reply string) []string {
+	if strings.Contains(reply, "维修工单") {
+		values := []string{"门店同事处理", "维修工单"}
+		if strings.Contains(reply, "先不转接") {
+			values = append(values, "先不转接")
+		}
+		return values
+	}
 	if reply == ungroundedMaintenanceOfferNoHandoffReply {
 		return []string{"门店同事处理", "先不转接", "维修工单"}
 	}

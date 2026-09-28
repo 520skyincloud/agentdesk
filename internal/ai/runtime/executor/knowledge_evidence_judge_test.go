@@ -761,6 +761,50 @@ func TestKnowledgeEvidenceJudgeFailureDoesNotUseLegacySemanticScoreRescue(t *tes
 	}
 }
 
+func TestKnowledgeEvidenceJudgeTimeoutPreservesDeclinedSupplySelfHelp(t *testing.T) {
+	storeHit := judgeTestHit(1, 101, "多余毛巾", "问题：有多余的毛巾吗？\n答案：酒店提供面巾，放在1313房间对面的洗衣房内，您可以自行取用。", 0.83)
+	handoffHit := judgeTestHit(2, 201, "毛巾不足转接", "问题：毛巾不够用怎么办？\n答案：转接", 0.84)
+	result := &retrievers.KnowledgeRetrieveResult{
+		KnowledgeBaseIDs: []int64{1, 2},
+		RawHits:          []rag.RetrieveResult{storeHit, handoffHit},
+		Hits:             []rag.RetrieveResult{storeHit, handoffHit},
+		ContextResults:   []rag.RetrieveResult{storeHit, handoffHit},
+		ContextText:      storeHit.Content + "\n" + handoffHit.Content,
+	}
+	batch := &runtimeKnowledgeRetrieveBatch{
+		Questions: []runtimeKnowledgeQuestionResult{{
+			TaskID: "T1", Intent: "service_request", SubIntent: "supplies_self_help",
+			Query:  "房间毛巾不够用了，能再送一条吗？不要转人工，也不要登记工单。",
+			Result: result,
+		}},
+	}
+	batch.Merged = mergeRuntimeKnowledgeQuestionResults([]int64{1, 2}, result.Options, batch.Questions[0].Query, batch.Questions)
+	tasks := []knowledgeEvidenceJudgeTask{{
+		TaskID: "T1", Intent: "service_request", SubIntent: "supplies_self_help",
+		Query: batch.Questions[0].Query, OriginalText: batch.Questions[0].Query,
+		Candidates: []knowledgeEvidenceJudgeCandidate{
+			{CandidateID: "T1C1", Layer: knowledgeEvidenceLayerStore, Hit: storeHit},
+			{CandidateID: "T1C2", Layer: knowledgeEvidenceLayerGeneral, Hit: handoffHit},
+		},
+	}}
+	outcome := failedKnowledgeEvidenceJudgeOutcome(tasks, callbacks.KnowledgeEvidenceJudgeTraceData{
+		SchemaVersion: knowledgeEvidenceJudgeSchemaVersion,
+		Status:        knowledgeEvidenceDecisionTimeout,
+	}, knowledgeEvidenceDecisionTimeout)
+
+	trace := applyKnowledgeEvidenceJudgeOutcome(batch, tasks, outcome)
+	if len(result.EffectiveHits) != 1 || result.EffectiveHits[0].SourceRecordID != storeHit.SourceRecordID {
+		t.Fatalf("timeout should preserve the safe self-help fact only: %#v", result.EffectiveHits)
+	}
+	if len(trace.Tasks) != 1 || trace.Tasks[0].Disposition != runtimeKnowledgeDispositionAnswer ||
+		trace.Tasks[0].DecisionSource != "store_service_faq_rescue" {
+		t.Fatalf("declined supply self-help was not recovered safely: %#v", trace.Tasks)
+	}
+	if got := runtimeKnowledgeQuestionDispositions(batch); len(got) != 1 || !got[0].HasAnswer || got[0].NeedsHandoff || got[0].NeedsRetry {
+		t.Fatalf("timeout recovery must not reintroduce human routing: %#v", got)
+	}
+}
+
 func TestKnowledgeEvidenceJudgeProtocolFailurePreservesRetrievalWithoutPoliteSuffixRescue(t *testing.T) {
 	hit := judgeTestHit(1, 101, "老板信息", "问题：老板是谁\n答案：老板是汤东强。", 0.999)
 	retriever := judgeTestRetriever(map[string]*retrievers.KnowledgeRetrieveResult{

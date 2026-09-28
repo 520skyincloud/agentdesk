@@ -16,24 +16,38 @@ func addJevGoalSlotQuestions(spans []jevIntentSpan, questions map[string]jev.Que
 			runtimeIntentEntityValue(candidate.Entities, runtimeIntentEntityTargetRoomType) != ""
 	}
 	for spanIndex, span := range spans {
+		scopes := map[string]any{
+			"latest_history":                 "The most recent historical stay for the supplied/corrected identity, selected by actual stay time.",
+			runtimeSubjectHistoricalOrder:    "Historical stays without a unique latest/date/order selection.",
+			runtimeSubjectCurrentOrder:       "This/current/active reservation or order.",
+			runtimeSubjectCurrentStay:        "A new ongoing stay adjustment, room change, upgrade, renewal or related assessment.",
+			runtimeSubjectRoomCandidates:     "An independent room/inventory search, not a continuation of an existing stay decision.",
+			runtimeSubjectPersonalMembership: "This customer's own membership identity or eligibility.",
+			runtimeSubjectPublicMembership:   "Public hotel membership tiers or named-tier rules, not this customer's own record.",
+			runtimeSubjectPublicPolicy:       "General hotel policy or knowledge.",
+			"none":                           "No business object applies.",
+		}
+		snapshots := 0
+		for ref, candidate := range contexts {
+			if !candidate.BusinessSnapshot {
+				continue
+			}
+			snapshots++
+			scopes["continue_"+ref] = fmt.Sprintf(
+				"Continue this active business goal and its still-valid typed date/identity slots: %s, scope=%s, request=%s. A separate H reference can select an older named room without replacing this goal.",
+				ref, candidate.SubjectScope, candidate.Text,
+			)
+		}
+		if snapshots == 0 {
+			scopes["inherit_context"] = "No structured active task exists. Continue the business object of the explicitly selected prior customer context."
+		}
 		questions[span.Ref+"_scope"] = jev.Question{
 			Type: "choice",
 			Instructions: map[string]any{
 				"taskRef": span.Ref, "currentText": span.Text,
-				"question": "Select the customer's business object and time scope independently of the route. 上次/最近一次/上一回 means latest_history, INCLUDING when correcting the phone. A named-room follow-up such as 那就看看沐阳吧，有房吗 after an ongoing room-change request is inherit_context: preserve its stay dates and goal even when the prior answer failed. Choose room_candidates only for an independent room search, not to discard an active stay. An explicit switch to this/current reservation is current_order.",
+				"question": "Select the customer's business object and time scope independently of the route and named-item reference. 上次/最近一次/上一回 means latest_history, INCLUDING when correcting the phone. A named-room, price, preference or date follow-up to an ongoing room-change request continues its active task using continue_R1 (or the matching R ref), even if context/target_ref points to an older H sentence naming the room. Preserve that active goal's typed stay dates and identity; an H sentence is not a replacement business goal. Choose room_candidates only for an independent room search. An explicit switch to this/current reservation is current_order.",
 			},
-			Criteria: map[string]any{
-				"inherit_context":                "Continue the business object and temporal scope of the explicitly selected prior context.",
-				"latest_history":                 "The most recent historical stay for the supplied/corrected identity, selected by actual stay time.",
-				runtimeSubjectHistoricalOrder:    "Historical stays without a unique latest/date/order selection.",
-				runtimeSubjectCurrentOrder:       "This/current/active reservation or order.",
-				runtimeSubjectCurrentStay:        "An ongoing stay adjustment, room change, upgrade, renewal or related assessment.",
-				runtimeSubjectRoomCandidates:     "An independent room/inventory search, not a continuation of an existing stay decision.",
-				runtimeSubjectPersonalMembership: "This customer's own membership identity or eligibility.",
-				runtimeSubjectPublicMembership:   "Public hotel membership tiers or named-tier rules, not this customer's own record.",
-				runtimeSubjectPublicPolicy:       "General hotel policy or knowledge.",
-				"none":                           "No business object applies.",
-			},
+			Criteria: scopes,
 		}
 		targets := map[string]any{
 			"none":    "No target applies, or the customer rejects the previous named selection. Supplying a phone/date or asking a price for the same goal retains its target using the prior reference, not none.",
@@ -96,6 +110,9 @@ func runtimeHotelLocation() *time.Location {
 
 func applyJevTaskGoalSlots(task *callbacks.IntentTaskTraceData, span jevIntentSpan, response jev.Response, contexts map[string]jevIntentContext) error {
 	scope := response.Answers[span.Ref+"_scope"].Choice
+	if _, valid := jevBusinessContextForScopeChoice(scope, contexts); valid {
+		scope = "inherit_context"
+	}
 	switch scope {
 	case "latest_history":
 		task.SubjectScope = runtimeSubjectHistoricalOrder

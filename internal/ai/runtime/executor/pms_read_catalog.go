@@ -247,6 +247,9 @@ func runtimePMSGradeFacts(task callbacks.ReplyTaskPlanTraceData, grade map[strin
 				add(aspect, label, strings.Join(parts, "；"))
 			}
 			if len(facts) > previousFactCount {
+				if runtimePMSBenefitRequestedAspect(benefit) == "price" {
+					facts[len(facts)-1].Statement += "这是会员价格规则，尚未核实本次订单、渠道和目标房型的适用条件；没有已确认的计算结果，不得自行套用挂牌价生成折后价或补退金额。"
+				}
 				for _, token := range knowledgeEvidenceIndividualTimePattern.FindAllString(strings.Join(parts, "；"), -1) {
 					facts[len(facts)-1].CriticalValues = appendIfMissing(facts[len(facts)-1].CriticalValues, token)
 				}
@@ -257,11 +260,32 @@ func runtimePMSGradeFacts(task callbacks.ReplyTaskPlanTraceData, grade map[strin
 }
 
 func runtimePMSRequestedBenefit(task callbacks.ReplyTaskPlanTraceData, benefit map[string]any) bool {
+	if runtimePMSRoomDecisionTask(task) && !runtimeIntentScopeIsMembership(task.SubjectScope) {
+		aspect := runtimePMSBenefitRequestedAspect(benefit)
+		if aspect == "price" {
+			return runtimePMSHasRequestedAspect(task, "member_benefits", "price", "price_difference", "policy", "compound_information")
+		}
+		if aspect != "" {
+			return runtimePMSHasRequestedAspect(task, aspect)
+		}
+		// Unknown benefit types are retained as rules, never interpreted as
+		// granted eligibility or a price calculation.
+		return runtimePMSHasRequestedAspect(task, "member_benefits")
+	}
 	if runtimePMSHasRequestedAspect(task, "member_benefits", "policy", "compound_information") {
 		return true
 	}
 	aspect := runtimePMSBenefitRequestedAspect(benefit)
 	return aspect != "" && runtimePMSHasRequestedAspect(task, aspect)
+}
+
+func runtimePMSRoomDecisionTask(task callbacks.ReplyTaskPlanTraceData) bool {
+	switch pmsReadScenarioForSubIntent(task.SubIntent) {
+	case pmsReadScenarioRoomChange, pmsReadScenarioRoomUpgrade, pmsReadScenarioPrice:
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimePMSBenefitRequestedAspect(benefit map[string]any) string {
@@ -300,7 +324,7 @@ func runtimePMSPersonalMemberFacts(task callbacks.ReplyTaskPlanTraceData, data a
 	}
 	facts := []runtimePMSReadTaskFact{{
 		Aspect: "pms_member_identity", Statement: "本次查询的客户会员等级为" + name + "。",
-		CriticalValues: []string{name},
+		CriticalValues: []string{runtimePMSMemberTierCriticalName(name)},
 	}}
 	if status := firstRuntimePMSReadText(member, "statusName"); status != "" {
 		facts = append(facts, runtimePMSReadTaskFact{Aspect: "pms_member_status", Statement: "会员状态：" + status + "。"})
@@ -323,6 +347,15 @@ func runtimePMSPersonalMemberFacts(task callbacks.ReplyTaskPlanTraceData, data a
 		}
 	}
 	return append(facts, runtimePMSGradeFacts(task, grade, name)...)
+}
+
+func runtimePMSMemberTierCriticalName(name string) string {
+	// The category suffix is optional in ordinary speech; the actual tier
+	// name remains required, so "银卡" cannot be rewritten as "钻石".
+	if short := strings.TrimSpace(strings.TrimSuffix(name, "会员")); short != "" {
+		return short
+	}
+	return name
 }
 
 func runtimePMSRequestedProjectionMissing(task callbacks.ReplyTaskPlanTraceData) []string {
@@ -464,7 +497,7 @@ func runtimePMSInventoryFacts(plan pmsReadPlan, step pmsReadStepResult) []runtim
 		facts = append(facts, runtimePMSReadTaskFact{
 			Aspect: "pms_room_inventory", Statement: statement, CriticalValues: critical,
 		})
-		if targetID == "" && len(facts) >= 6 {
+		if targetID == "" && len(facts) >= runtimePMSRoomTypeFactLimit(plan) {
 			break
 		}
 	}
@@ -512,7 +545,7 @@ func runtimePMSStayRoomFacts(plan pmsReadPlan, step pmsReadStepResult) []runtime
 			Aspect: "pms_stay_room_availability", Statement: statement,
 			CriticalValues: []string{start, end},
 		})
-		if len(facts) == 3 {
+		if len(facts) == runtimePMSConcreteRoomFactLimit(plan) {
 			break
 		}
 	}
@@ -524,6 +557,20 @@ func runtimePMSStayRoomFacts(plan pmsReadPlan, step pmsReadStepResult) []runtime
 		}}
 	}
 	return facts
+}
+
+func runtimePMSRoomTypeFactLimit(plan pmsReadPlan) int {
+	if strings.TrimSpace(plan.ReplyStrategy) == "recommend_one_supported_option" {
+		return 2
+	}
+	return 6
+}
+
+func runtimePMSConcreteRoomFactLimit(plan pmsReadPlan) int {
+	if strings.TrimSpace(plan.ReplyStrategy) == "recommend_one_supported_option" {
+		return 2
+	}
+	return 3
 }
 
 func runtimePMSBoardPriceFact(step pmsReadStepResult) string {

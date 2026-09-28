@@ -19,6 +19,7 @@ import (
 	"agent-desk/internal/ai/runtime/internal/impl/callbacks"
 	"agent-desk/internal/models"
 	"agent-desk/internal/pkg/usagex"
+	"agent-desk/internal/pkg/utils"
 	"agent-desk/internal/services"
 )
 
@@ -508,6 +509,48 @@ func sleepKnowledgeEvidenceJudgeRetry(ctx context.Context, delay time.Duration) 
 
 func failedKnowledgeEvidenceJudgeOutcome(tasks []knowledgeEvidenceJudgeTask, trace callbacks.KnowledgeEvidenceJudgeTraceData, decision string) knowledgeEvidenceJudgeOutcome {
 	selections := failedKnowledgeEvidenceLayerSelections(tasks, decision)
+	if decision == knowledgeEvidenceDecisionTimeout ||
+		decision == knowledgeEvidenceDecisionMalformed ||
+		decision == knowledgeEvidenceDecisionProtocolInvalid {
+		// A Judge outage must not erase a plainly matching FAQ. Recover only
+		// deterministic exact/high-confidence facts; unrelated candidates stay
+		// in the retry path and cannot authorize an answer or handoff.
+		fallback, grounded, handoffs := deterministicKnowledgeEvidenceJudgeFallbackSelections(tasks)
+		for taskID, layers := range fallback {
+			var task *knowledgeEvidenceJudgeTask
+			for index := range tasks {
+				if strings.TrimSpace(tasks[index].TaskID) == strings.TrimSpace(taskID) {
+					task = &tasks[index]
+					break
+				}
+			}
+			// Keep this rescue narrow: service-supply FAQs have a
+			// deterministic self-service path, while ordinary hotel facts
+			// still require a successful Judge decision.
+			if task == nil || strings.TrimSpace(task.Intent) != "service_request" ||
+				!knowledgeEvidenceTaskAllowsStoreSupplyFAQRescue(*task) ||
+				!utils.IsExplicitHumanHandoffRejection(strings.Join([]string{task.Query, task.OriginalText}, "\n")) {
+				continue
+			}
+			for layer, selection := range layers {
+				if selection.Decision == knowledgeEvidenceDecisionInsufficient ||
+					len(selection.SupportedFacts) == 0 ||
+					selection.Decision == knowledgeEvidenceDecisionDirectSingle &&
+						len(selection.SelectedCandidateIDs) == 1 &&
+						len(selection.HandoffCandidateIDs) > 0 {
+					continue
+				}
+				if selections[taskID] == nil {
+					selections[taskID] = make(map[string]knowledgeEvidenceLayerSelection)
+				}
+				selections[taskID][layer] = selection
+			}
+		}
+		if grounded > 0 || handoffs > 0 {
+			trace.Reason = strings.TrimSpace(trace.Reason) +
+				fmt.Sprintf("; deterministic fallback preserved %d grounded answer(s) and %d exact handoff(s)", grounded, handoffs)
+		}
+	}
 	return knowledgeEvidenceJudgeOutcome{
 		Applied:    true,
 		Selections: selections,
@@ -1052,7 +1095,7 @@ question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只
 先检查适用性（自助方案）：已被客户拒绝、无法采用或尝试失败的自助方案及其背景不是有用部分答案；没有别的可用办法时判insufficient。不能为了保留相关事实而判 partial、再复述客户已经不能采用的办法。以当前要求和上下文中仍有效的条件为准。客户拒绝人工不等于酒店没有相关处理流程；适用转接指令仍记录到handoffCandidateIds，是否执行由程序依据客户许可处理。
 
 先比较当前层全部候选对客户所求结论或动作的覆盖。直接办理方法优先于仅相关的设施存在性；已有直接答复时，不得退回只报相关设施。不能把流程中的不同动作当成同一个目标，例如申请、打印、领取。只问设施有没有则直接答存在性。
-功能名称本身明确限定唯一常规用途的专用设施，可以用其存在性回答该设施是否能承担这一固有用途。例如知识明确“有外卖机器人”，客户只问能否用外卖机器人把外卖送到房间，可以回答“可以使用外卖机器人送到房间”。这只确认设施及其固有用途，不能推断当前实时可用、等待时间、楼层范围、已经安排或酒店代客户下单；普通机器人、未注明用途的设备或跨用途请求仍不能这样推断。
+功能名称本身明确限定唯一常规用途的专用设施，可以用其存在性回答该设施是否能承担这一固有用途。例如知识明确“有外卖机器人”，客户只问能否使用该机器人送外卖，可以回答“酒店有外卖机器人，您可以按现场指引使用”。有外卖机器人时，可以回答客户可使用它把外卖送到房间，但只有证据明确写出“送到房间/房门口”时才可以复述该范围；不能把“有外卖机器人”升级成酒店会代送、已经安排、一定送到房门口或当前实时可用。普通机器人、未注明用途的设备或跨用途请求仍不能这样推断。
 多条候选重复同一办法时，优先选择直接适用且没有额外前提的证据，不把别条的条件拼入答案。候选顺序不能代替判断。
 适用知识的可回答性不等于所有细节都已确认。先保留这份可用答复，缺少本题必要方面则partial，不能因此把整条知识判 insufficient。不自加未问且不影响使用的费用、时长；不补出“可以、能送到、已安排”等原文没有确认的结论。partial 不是保留所有相关背景的许可；设施已经故障、方案已被拒绝或客户坚持必须现场执行时，不能用设施存在性充当解决办法。
 
@@ -1066,7 +1109,7 @@ question 是当前请求范围的依据；resolvedQuestion 和 sourceContext 只
 知识中“若有特殊问题请联系客服”等条件式补充，只有客户确实提出该条件时才适用；条件未触发时不加入 supportedFacts、answerText 或 missingAspects，不推测是否可以特殊通融，也不把普通联系建议当作“转接”流程指令。
 
 intent=service_request、subIntent=external_proxy_action、objective=action_request 时，仅选择帮助客户自行完成目标的地址、电话、入口或操作步骤。不能代点等执行边界由程序提供，不当作需要知识证明的事实。不得输出或暗示酒店已经代点、叫车、代订或稍后执行。
-酒店内部送物、维修、开门不是外部代办。有外卖机器人时，可以回答客户可使用它把外卖送到房间；不能据此承诺实时可用、配送范围、到达时间、已经安排或酒店代下单。只有地址不能证明送房。
+酒店内部送物、维修、开门不是外部代办。有外卖机器人时，只能按已选事实回答其存在和明确记录的配送范围；不能据此承诺实时可用、配送范围、到达时间、已经安排或酒店代下单，也不能承诺必然送到门口。只有地址不能证明送房。
 
 每层必须输出 hasUsableSelfService。只在service_request存在适用、未被拒绝或尝试失败的同目标自取办法、办理入口或专用设施时为true；非服务任务为false。它不表示请求已执行，也不证明送房能力。missingAspects非空仍判partial。客户说不能自取或已经试过时，不循环复述旧方案。仅转接或insufficient时为false。
 
@@ -6687,29 +6730,188 @@ func repairStoreServiceSupplyInsufficientFAQSelections(tasks []knowledgeEvidence
 		}
 		taskSelections := selections[task.TaskID]
 		selection, ok := taskSelections[knowledgeEvidenceLayerStore]
-		if !ok || selection.Decision != knowledgeEvidenceDecisionInsufficient {
+		if !ok || (selection.Decision != knowledgeEvidenceDecisionInsufficient && selection.Decision != knowledgeEvidenceDecisionTimeout) {
 			continue
 		}
 		repairedSelection, ok := highConfidenceDirectFAQSelectionAtMinimum(task, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore)
-		if !ok {
-			continue
-		}
-		if len(task.RawCandidates) > 0 {
+		if ok && len(task.RawCandidates) > 0 {
 			fullTask := task
 			fullTask.Candidates = task.RawCandidates
 			fullTask.RawCandidates = nil
 			fullSelection, fullOK := highConfidenceDirectFAQSelectionAtMinimum(fullTask, knowledgeEvidenceLayerStore, knowledgeEvidenceStoreSupplyRescueScore)
 			if !fullOK || len(repairedSelection.SelectedCandidateIDs) != 1 || len(fullSelection.SelectedCandidateIDs) != 1 ||
 				repairedSelection.SelectedCandidateIDs[0] != fullSelection.SelectedCandidateIDs[0] {
-				continue
+				repairedSelection = knowledgeEvidenceLayerSelection{}
+				fullOK = false
 			}
-			repairedSelection = fullSelection
+			if fullOK {
+				repairedSelection = fullSelection
+			} else {
+				ok = false
+			}
 		}
-		repairedSelection.DecisionSource = "store_service_faq_rescue"
-		taskSelections[knowledgeEvidenceLayerStore] = repairedSelection
+		if ok && len(repairedSelection.SupportedFacts) > 0 && len(strictMechanicalMissingKnowledgeEvidenceAspects(task, repairedSelection.SupportedFacts)) == 0 {
+			repairedSelection.DecisionSource = "store_service_faq_rescue"
+			taskSelections[knowledgeEvidenceLayerStore] = repairedSelection
+			repaired++
+			continue
+		}
+		partialSelection, partialOK := deterministicDeclinedSupplyPartialSelection(task)
+		if !partialOK {
+			continue
+		}
+		partialSelection.DecisionSource = "store_service_faq_rescue"
+		taskSelections[knowledgeEvidenceLayerStore] = partialSelection
 		repaired++
 	}
 	return repaired
+}
+
+// deterministicDeclinedSupplyPartialSelection preserves a grounded self-service
+// fact when the customer has explicitly declined human handling but the request
+// also asks for an execution scope (for example, room delivery) that the FAQ
+// does not confirm. The missing scope stays explicit so Generate cannot turn
+// pickup into delivery or invent an operational result.
+func deterministicDeclinedSupplyPartialSelection(task knowledgeEvidenceJudgeTask) (knowledgeEvidenceLayerSelection, bool) {
+	if !utils.IsExplicitHumanHandoffRejection(task.Query) ||
+		!knowledgeEvidenceTaskAllowsStoreSupplyFAQRescue(task) ||
+		!knowledgeEvidenceDeclinedSupplyRequestsDelivery(task.Query) {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+
+	candidates := task.Candidates
+	if len(task.RawCandidates) > 0 {
+		candidates = task.RawCandidates
+	}
+	var (
+		selectedCandidate knowledgeEvidenceJudgeCandidate
+		selectedFacts     []knowledgeEvidenceFact
+		selectedMatch     float64
+	)
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.Layer) != knowledgeEvidenceLayerStore ||
+			isKnowledgeHandoffDirectiveContent(candidate.Hit.Content) ||
+			candidate.Hit.Score < knowledgeEvidenceStoreSupplyRescueScore {
+			continue
+		}
+		question, answer, questionMatch, facts, ok := knowledgeEvidenceDirectFAQCandidateEligibilityAtMinimum(
+			task,
+			candidate,
+			knowledgeEvidenceStoreSupplyRescueScore,
+		)
+		if !ok {
+			question, answer, questionMatch, facts, ok = declinedSupplyFAQFactsAtMinimum(task, candidate)
+		}
+		if !ok || len(facts) == 0 {
+			continue
+		}
+		missing := strictMechanicalMissingKnowledgeEvidenceAspects(task, facts)
+		if len(missing) == 0 {
+			missing = []string{"是否能送到房间"}
+		}
+		if !knowledgeEvidenceMissingAspectsContainDeliveryBoundary(missing) {
+			continue
+		}
+		if knowledgeEvidenceDirectFAQHasConflict(
+			task,
+			knowledgeEvidenceLayerStore,
+			candidate.CandidateID,
+			question,
+			answer,
+			questionMatch,
+			knowledgeEvidenceStoreSupplyRescueScore,
+		) {
+			continue
+		}
+		if selectedCandidate.CandidateID == "" ||
+			questionMatch > selectedMatch+0.02 ||
+			(questionMatch >= selectedMatch-0.02 && candidate.Hit.Score > selectedCandidate.Hit.Score) {
+			selectedCandidate = candidate
+			selectedFacts = facts
+			selectedMatch = questionMatch
+		}
+	}
+	if selectedCandidate.CandidateID == "" || len(selectedFacts) == 0 {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	missing := strictMechanicalMissingKnowledgeEvidenceAspects(task, selectedFacts)
+	missing = normalizeDeclinedSupplyDeliveryMissingAspects(task, missing)
+	if len(missing) == 0 {
+		return knowledgeEvidenceLayerSelection{}, false
+	}
+	return knowledgeEvidenceLayerSelection{
+		HasUsableSelfService: true,
+		Decision:             knowledgeEvidenceDecisionPartial,
+		SelectedCandidateIDs: []string{selectedCandidate.CandidateID},
+		SupportedFacts:       selectedFacts,
+		MissingAspects:       missing,
+	}, true
+}
+
+func knowledgeEvidenceDeclinedSupplyRequestsDelivery(query string) bool {
+	compact := normalizeRuntimeKnowledgeQuery(query)
+	if knowledgeEvidenceServiceOperationTarget(query) == "delivery" {
+		return true
+	}
+	if !containsAny(compact, []string{"送", "配送"}) || containsAny(compact, []string{"自取", "领取", "哪里拿", "在哪拿", "怎么拿"}) {
+		return false
+	}
+	return containsAny(compact, []string{"送来", "送过来", "送一条", "送一个", "送一份", "再送", "给我送", "送到房间", "送到房门口", "拿到房间", "拿过来"})
+}
+
+func declinedSupplyFAQFactsAtMinimum(task knowledgeEvidenceJudgeTask, candidate knowledgeEvidenceJudgeCandidate) (string, string, float64, []knowledgeEvidenceFact, bool) {
+	question, answer := splitKnowledgeEvidenceFAQForQuery(candidate.Hit, task.Query)
+	questionMatch, _ := knowledgeEvidenceFAQDirectMatchScore(question, answer, task.Query)
+	if strings.TrimSpace(candidate.Layer) != knowledgeEvidenceLayerStore ||
+		candidate.Hit.Score < knowledgeEvidenceStoreSupplyRescueScore ||
+		question == "" || answer == "" || isKnowledgeHandoffDirectiveContent(answer) ||
+		!knowledgeEvidenceFAQSharesTaskSubject(task.Query, strings.Join([]string{question, answer, candidate.Hit.Title}, " ")) ||
+		!knowledgeEvidenceCandidateMatchesTaskSubjects(task, candidate, question, answer) ||
+		!knowledgeEvidenceDeclinedSupplyCandidateTargetCompatible(question, answer, candidate.Hit.Title) {
+		return question, answer, questionMatch, nil, false
+	}
+	facts := deterministicKnowledgeEvidenceFactsFromFAQ(task.TaskID, answer)
+	facts = enrichKnowledgeEvidenceFactsFromFAQUnit(task, question, answer, facts)
+	facts = groundedKnowledgeEvidenceFacts(task, candidate.Layer, []string{candidate.CandidateID}, facts)
+	facts = finalizeKnowledgeEvidenceFactsForTask(task, facts)
+	return question, answer, questionMatch, facts, len(facts) > 0
+}
+
+func knowledgeEvidenceDeclinedSupplyCandidateTargetCompatible(question string, answer string, title string) bool {
+	target := knowledgeEvidenceServiceOperationTarget(strings.Join([]string{question, answer, title}, " "))
+	switch target {
+	case "pickup", "replenish", "locate":
+		return true
+	default:
+		return knowledgeEvidenceServiceOperationTargetsCompatible("delivery", target)
+	}
+}
+
+func knowledgeEvidenceMissingAspectsContainDeliveryBoundary(missing []string) bool {
+	for _, aspect := range missing {
+		compact := normalizeRuntimeKnowledgeQuery(aspect)
+		if containsAny(compact, []string{"范围", "配送", "送房", "送到房间", "送到房门口", "能否送", "是否送"}) {
+			continue
+		}
+		return false
+	}
+	return len(missing) > 0
+}
+
+func normalizeDeclinedSupplyDeliveryMissingAspects(task knowledgeEvidenceJudgeTask, missing []string) []string {
+	ret := make([]string, 0, len(missing))
+	for _, aspect := range missing {
+		compact := normalizeRuntimeKnowledgeQuery(aspect)
+		if containsAny(compact, []string{"范围", "配送", "送房", "送到房间", "送到房门口", "能否送", "是否送"}) {
+			ret = appendIfMissing(ret, "是否能送到房间")
+			continue
+		}
+		ret = appendIfMissing(ret, strings.TrimSpace(aspect))
+	}
+	if len(ret) == 0 && knowledgeEvidenceDeclinedSupplyRequestsDelivery(task.Query) {
+		ret = append(ret, "是否能送到房间")
+	}
+	return ret
 }
 
 func knowledgeEvidenceTaskAllowsStoreSupplyFAQRescue(task knowledgeEvidenceJudgeTask) bool {
@@ -7933,6 +8135,7 @@ func deterministicKnowledgeEvidenceJudgeFallbackSelections(tasks []knowledgeEvid
 		selections[task.TaskID] = taskSelections
 	}
 	repairHighConfidenceInsufficientKnowledgeSelections(tasks, selections)
+	repairStoreServiceSupplyInsufficientFAQSelections(tasks, selections)
 	groundedAnswers := 0
 	for _, task := range tasks {
 		taskSelections := selections[task.TaskID]

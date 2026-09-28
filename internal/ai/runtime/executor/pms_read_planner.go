@@ -25,6 +25,7 @@ const (
 type pmsReadPlanInput struct {
 	Scenario           pmsReadScenario
 	SubIntent          string
+	ReplyStrategy      string
 	Phone              string
 	MemberPhone        string
 	SubjectScope       string
@@ -45,9 +46,10 @@ type pmsReadPlanInput struct {
 }
 
 type pmsReadPlan struct {
-	Scenario pmsReadScenario
-	Steps    []pmsReadPlanStep
-	Missing  []string
+	Scenario      pmsReadScenario
+	ReplyStrategy string
+	Steps         []pmsReadPlanStep
+	Missing       []string
 }
 
 type pmsReadPlanStep struct {
@@ -122,7 +124,7 @@ func buildPMSReadPlan(input pmsReadPlanInput) pmsReadPlan {
 	if scenario == pmsReadScenarioOrder && input.SubjectScope != "" {
 		input.OrderHistory = input.SubjectScope == runtimeSubjectHistoricalOrder
 	}
-	plan := pmsReadPlan{Scenario: scenario}
+	plan := pmsReadPlan{Scenario: scenario, ReplyStrategy: strings.TrimSpace(input.ReplyStrategy)}
 
 	switch scenario {
 	case pmsReadScenarioOrder:

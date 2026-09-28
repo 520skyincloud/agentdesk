@@ -2517,6 +2517,15 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 		if planTaskID == "" {
 			planTask.TaskID = matchedTaskID
 		}
+		if runtimePMSMembershipFactsCoverRequestedAspects(*planTask) {
+			planTask.NeedsKnowledge = false
+			planTask.Output = "text_reply"
+			planTask.SelectedLayer = ""
+			planTask.SelectedCandidateIDs = nil
+			planTask.SupportedFacts = runtimeReplyTaskPMSFacts(*planTask)
+			planTask.AnswerText = nil
+			continue
+		}
 		planTask.SelectedLayer = matched.SelectedLayer
 		planTask.SelectedCandidateIDs = append([]string(nil), matched.SelectedCandidateIDs...)
 		pmsFacts := runtimeReplyTaskPMSFacts(*planTask)
@@ -2550,6 +2559,68 @@ func applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan callbacks.ReplyPlanTraceDa
 		}
 	}
 	return plan
+}
+
+func runtimePMSMembershipFactsCoverRequestedAspects(task callbacks.ReplyTaskPlanTraceData) bool {
+	if !runtimeIntentScopeIsMembership(task.SubjectScope) || task.PMSOutcome == nil ||
+		task.PMSOutcome.Status != string(pmsReadStepOK) || len(task.PMSOutcome.MissingFields) > 0 ||
+		len(task.RequestedAspects) == 0 {
+		return false
+	}
+	available := make(map[string]bool, len(task.SupportedFacts))
+	for _, fact := range task.SupportedFacts {
+		if strings.TrimSpace(fact.Statement) != "" {
+			available[fact.Aspect] = true
+		}
+	}
+	for _, aspect := range task.RequestedAspects {
+		covered := false
+		switch aspect {
+		case "member_level_names", "member_upgrade_conditions", "member_retention_conditions", "member_validity":
+			covered = available["pms_"+aspect]
+		case "member_level":
+			covered = available["pms_member_identity"]
+		case "checkout_time":
+			covered = available["pms_member_checkout_time"]
+		case "member_benefits":
+			covered = available["pms_member_benefit"] || available["pms_member_checkout_time"]
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+func reconcileRuntimeKnowledgeRequirementsWithPMS(intent callbacks.IntentTraceData, plan callbacks.ReplyPlanTraceData) (callbacks.IntentTraceData, callbacks.ReplyPlanTraceData) {
+	changed := false
+	usedIntentTasks := make(map[int]struct{})
+	for index, task := range plan.TaskPlans {
+		if !task.NeedsKnowledge || !runtimePMSMembershipFactsCoverRequestedAspects(task) {
+			continue
+		}
+		if !changed {
+			plan.TaskPlans = append([]callbacks.ReplyTaskPlanTraceData(nil), plan.TaskPlans...)
+			intent.IntentTasks = append([]callbacks.IntentTaskTraceData(nil), intent.IntentTasks...)
+			changed = true
+		}
+		plan.TaskPlans[index].NeedsKnowledge = false
+		plan.TaskPlans[index].Output = "text_reply"
+		if intentIndex := runtimePMSMatchingIntentTaskIndex(task, intent.IntentTasks, usedIntentTasks); intentIndex >= 0 {
+			intent.IntentTasks[intentIndex].NeedsKnowledge = false
+			usedIntentTasks[intentIndex] = struct{}{}
+		}
+	}
+	if changed {
+		intent.NeedsKnowledge = false
+		for _, task := range plan.TaskPlans {
+			if runtimeReplyTaskUsesKnowledge(task) {
+				intent.NeedsKnowledge = true
+				break
+			}
+		}
+	}
+	return intent, plan
 }
 
 func matchKnowledgeEvidenceTraceTask(planTask callbacks.ReplyTaskPlanTraceData, traces []callbacks.KnowledgeEvidenceJudgeTaskTraceData, questions map[string]string, used map[string]bool) (callbacks.KnowledgeEvidenceJudgeTaskTraceData, bool) {
@@ -2942,6 +3013,15 @@ func (g *KnowledgeAnswerabilityGate) retrieveKnowledge(ctx context.Context, stat
 	gate := g.withDefaults()
 	req := state.Input.Request
 	intent := state.Input.Intent
+	if collector := state.Input.Collector; collector != nil {
+		// PMS has already run. Reconcile source requirements before retrieval,
+		// instead of asking knowledge to judge facts supplied by the live source.
+		var plan callbacks.ReplyPlanTraceData
+		intent, plan = reconcileRuntimeKnowledgeRequirementsWithPMS(intent, collector.Data.Pipeline.ReplyPlan)
+		state.Input.Intent = intent
+		collector.Data.Pipeline.Intent = intent
+		collector.SetReplyPlan(plan)
+	}
 	knowledgeActionInstruction := buildKnowledgePathActionInstruction(req, intent)
 	if instruction := buildMissingMediaContextInstruction(req, state.Input.Messages, intent); strings.TrimSpace(instruction) != "" {
 		state.Decision.Instructions = append(state.Decision.Instructions, schema.SystemMessage(instruction))

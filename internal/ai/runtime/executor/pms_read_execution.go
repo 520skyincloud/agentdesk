@@ -364,20 +364,7 @@ func resolveRuntimePMSKnowledgeHandoffForTask(req RunInput, task *callbacks.Repl
 		HandoffHit:     rag.RetrieveResult{Content: "转人工"},
 	}
 	if utils.IsExplicitHumanHandoffRejection(currentRuntimeIntentSemanticText(req)) {
-		pmsFacts := runtimeReplyTaskPMSFacts(*task)
 		applyDeclinedKnowledgeHandoffReply(task, currentRuntimeIntentSemanticText(req))
-		boundaryStatement := declinedKnowledgeHandoffReply
-		if task.AnswerText != nil && strings.TrimSpace(*task.AnswerText) != "" {
-			boundaryStatement = strings.TrimSpace(*task.AnswerText)
-		}
-		if len(pmsFacts) > 0 {
-			task.SupportedFacts = append(pmsFacts, callbacks.KnowledgeEvidenceFactTraceData{
-				FactID:    taskID + "FHandoffBoundary",
-				Aspect:    "handoff_boundary",
-				Statement: boundaryStatement,
-			})
-			task.AnswerText = nil
-		}
 		taskTrace.Disposition = runtimeKnowledgeDispositionAnswer
 		taskTrace.DecisionSource = "customer_declined_handoff"
 		trace.DeferredTaskIDs = removePMSReadString(trace.DeferredTaskIDs, taskID)
@@ -604,6 +591,7 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 	input := pmsReadPlanInput{
 		Scenario:           pmsReadScenarioForSubIntent(task.SubIntent),
 		SubIntent:          task.SubIntent,
+		ReplyStrategy:      task.ReplyStrategy,
 		Phone:              phone,
 		MemberPhone:        firstNonEmptyReplyTaskText(runtimeIntentEntityValue(task.Entities, runtimeIntentEntityMemberPhone), sessionLocator.MemberPhone),
 		SubjectScope:       task.SubjectScope,
@@ -612,6 +600,11 @@ func runtimePMSReadPlanInputForTask(task callbacks.ReplyTaskPlanTraceData, sessi
 		TargetRoomTypeText: targetRoomTypeText,
 		OrderHistory:       runtimePMSAsksOrderHistory(text),
 		AssessMembership:   containsAny(text, []string{"会员", "权益", "免差", "免费升"}),
+	}
+	if strings.TrimSpace(input.ReplyStrategy) == "" &&
+		input.TargetRoomTypeText == "" &&
+		!runtimePMSCustomerExplicitlyRequestsRoomList(text) {
+		input.ReplyStrategy = "recommend_one_supported_option"
 	}
 	if task.SubjectScope != "" {
 		input.OrderHistory = task.SubjectScope == runtimeSubjectHistoricalOrder
@@ -2151,6 +2144,11 @@ func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsR
 		return runtimePMSInventoryFacts(plan, step)
 	case "stay.room_availability":
 		return runtimePMSStayRoomFacts(plan, step)
+	case "room.status":
+		if plan.Scenario != pmsReadScenarioRoomStatus &&
+			!runtimePMSHasRequestedAspect(task, "room_status", "cleanliness") {
+			return nil
+		}
 	}
 	if step.StepID == "order.reserve" || step.StepID == "order.recept" {
 		if plan.Scenario == pmsReadScenarioOrder {
@@ -2159,6 +2157,23 @@ func runtimePMSReadFactsForTask(task callbacks.ReplyTaskPlanTraceData, plan pmsR
 			} else if requested {
 				return nil
 			}
+		}
+		if runtimePMSRoomDecisionTask(task) {
+			contextTask := task
+			contextTask.RequestedAspects = []string{"room_type"}
+			if runtimePMSHasRequestedAspect(task, "room_number") {
+				contextTask.RequestedAspects = append(contextTask.RequestedAspects, "room_number")
+			}
+			if runtimePMSHasRequestedAspect(task, "price", "price_difference", "order_amount") {
+				contextTask.RequestedAspects = append(contextTask.RequestedAspects, "order_amount")
+			}
+			facts, _ := runtimePMSFocusedOrderFacts(contextTask, step.Data)
+			for index := range facts {
+				if facts[index].Aspect == "pms_order_amount" {
+					facts[index].Statement += "此数为已查订单金额，不是本次变更期间的逐日可抵扣房费；缺少结算依据不等于该金额没有查到。"
+				}
+			}
+			return facts
 		}
 		return runtimePMSOrderOverviewFacts(step.Data, "查询定位的住宿")
 	}
@@ -2459,6 +2474,7 @@ func runtimePMSCustomerOrderAnswer(task callbacks.ReplyTaskPlanTraceData, result
 }
 
 func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, plan pmsReadPlan, result pmsReadPlanResult) string {
+	replyStrategy := firstNonEmptyReplyTaskText(task.ReplyStrategy, plan.ReplyStrategy)
 	stay, hasStay := runtimePMSCustomerStay(result)
 	options := runtimePMSCustomerRoomOptions(result)
 	if !hasStay {
@@ -2537,7 +2553,7 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 			}
 			parts := []string{option.name + "在您当前入住期间还有房"}
 			if rooms := runtimePMSCustomerCandidateRooms(result, option.name, 3); len(rooms) > 0 {
-				if task.ReplyStrategy == "recommend_one_supported_option" {
+				if replyStrategy == "recommend_one_supported_option" {
 					answer := prefix + "好，那我先替您选" + rooms[0] + "，这间目前可以选择。"
 					if runtimePMSTaskAsksPrice(task) {
 						if price := runtimePMSCustomerPriceClause(task, result); price != "" {
@@ -2575,10 +2591,18 @@ func runtimePMSCustomerRoomChoiceAnswer(task callbacks.ReplyTaskPlanTraceData, p
 	if plan.Scenario == pmsReadScenarioRoomUpgrade {
 		verb = "考虑"
 	}
-	if task.ReplyStrategy == "recommend_one_supported_option" {
+	if replyStrategy == "recommend_one_supported_option" {
 		return prefix + "那我先替您选" + alternatives[0] + "，这个房型在您当前入住期间还有房。您觉得可以的话，我再帮您看具体房间。"
 	}
 	return prefix + "当前完整入住期间可以" + verb + strings.Join(alternatives, "、") + "，您更想选哪一种？我再帮您看具体房间。"
+}
+
+func runtimePMSCustomerExplicitlyRequestsRoomList(text string) bool {
+	text = strings.TrimSpace(text)
+	return containsAny(text, []string{
+		"有哪些房型", "哪几种房型", "几种房型", "房型列表", "完整列表",
+		"全部房型", "所有房型", "都有哪些房型", "还有哪些房型",
+	})
 }
 
 func runtimePMSTaskAsksRoomExplanation(task callbacks.ReplyTaskPlanTraceData) bool {

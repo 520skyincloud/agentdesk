@@ -1631,6 +1631,61 @@ func TestRuntimePMSKnowledgeHandoffRestoresKnowledgeRouteWhenReadIsUnavailable(t
 	})
 }
 
+func TestRuntimePMSDeclinedHandoffPreservesNonPMSFacts(t *testing.T) {
+	const taskID = "T1"
+	knowledgeFact := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID: "T1F1", Aspect: "method", Statement: "毛巾可在洗衣房自取。",
+	}
+	deliveryFact := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID: "T1F2", Aspect: "location", Statement: "外卖地址填写酒店名称、楼层和房间号。",
+	}
+	pmsFact := callbacks.KnowledgeEvidenceFactTraceData{
+		FactID: "T1P1", Aspect: "pms_member_checkout_time", Statement: "银卡会员可延迟至13:00退房。",
+	}
+	collector := callbacks.NewRuntimeTraceCollector()
+	collector.SetKnowledgeEvidenceJudge(callbacks.KnowledgeEvidenceJudgeTraceData{
+		Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+			TaskID: taskID, Decision: knowledgeEvidenceDecisionDirectSingle,
+			Disposition:   runtimeKnowledgeDispositionDirectHandoff,
+			SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		}},
+	})
+	task := callbacks.ReplyTaskPlanTraceData{
+		TaskID: taskID, Intent: "hotel_info", SubIntent: "member_benefits",
+		OriginalText: "我能几点退房？顺便问下毛巾在哪里拿，不要转人工",
+		NeedsTool:    true, NeedsKnowledge: true, OutputKind: "text",
+		ReplyRequired: true, Output: "knowledge_text_reply",
+		SelectedLayer: knowledgeEvidenceLayerStore, SelectedCandidateIDs: []string{"C1"},
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{pmsFact, knowledgeFact, deliveryFact},
+	}
+	req := RunInput{UserMessage: models.Message{Content: task.OriginalText}}
+	plan := pmsReadPlan{
+		Scenario: pmsReadScenarioMemberBenefit,
+		Steps:    []pmsReadPlanStep{{ID: "member.benefits", Required: true}},
+	}
+	result := pmsReadPlanResult{
+		Status: pmsReadStepUnavailable,
+		Steps:  []pmsReadStepResult{{StepID: "member.benefits", Status: pmsReadStepUnavailable}},
+	}
+
+	resolveRuntimePMSKnowledgeHandoffForTask(
+		req, &task, callbacks.ReplyPlanTraceData{TaskPlans: []callbacks.ReplyTaskPlanTraceData{task}},
+		plan, result, &RunResult{}, collector,
+	)
+
+	if task.NeedsKnowledge || task.Output != "text_reply" || task.OutputKind != "text" ||
+		!task.ReplyRequired || task.NeedsHumanRoute || task.AnswerText != nil {
+		t.Fatalf("declined PMS handoff did not become an answerable task: %#v", task)
+	}
+	if len(task.SupportedFacts) != 4 ||
+		task.SupportedFacts[0].FactID != pmsFact.FactID ||
+		task.SupportedFacts[1].FactID != knowledgeFact.FactID ||
+		task.SupportedFacts[2].FactID != deliveryFact.FactID ||
+		task.SupportedFacts[3].Aspect != "handoff_boundary" {
+		t.Fatalf("declined PMS handoff lost non-PMS facts: %#v", task.SupportedFacts)
+	}
+}
+
 func TestApplyRuntimePMSReadPlansExecutesMemberAndRoomStatus(t *testing.T) {
 	t.Run("member routes query the documented phone actions", func(t *testing.T) {
 		for _, test := range []struct {

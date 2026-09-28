@@ -93,6 +93,209 @@ func TestPMSOnlyTaskBypassesFAQRequirement(t *testing.T) {
 	}
 }
 
+func TestCompletedMembershipFactsBypassKnowledgeAtRuntimeEntry(t *testing.T) {
+	tests := []struct {
+		name       string
+		scope      string
+		aspect     string
+		factAspect string
+		statement  string
+		questions  []string
+	}{
+		{
+			name: "public_checkout", scope: runtimeSubjectPublicMembership, aspect: "checkout_time",
+			factAspect: "pms_member_checkout_time", statement: "钻石卡会员延迟退房权益为15:00。",
+			questions: []string{"钻石卡最晚能几点走？", "办了钻石会员能住到下午几点？"},
+		},
+		{
+			name: "public_upgrade", scope: runtimeSubjectPublicMembership, aspect: "member_upgrade_conditions",
+			factAspect: "pms_member_upgrade_conditions", statement: "钻石卡升级需要累计入住房夜 >= 12 且等级成长积分 >= 2000。",
+			questions: []string{"那要怎么升到钻石卡？", "达到什么条件才有这个等级？"},
+		},
+		{
+			name: "personal_checkout", scope: runtimeSubjectPersonalMembership, aspect: "checkout_time",
+			factAspect: "pms_member_checkout_time", statement: "本次查询的银卡会员延迟退房权益为13:00。",
+			questions: []string{"那我现在的会员能几点退？", "按我的会员等级最晚几点离店？"},
+		},
+	}
+	for _, tc := range tests {
+		for _, question := range tc.questions {
+			t.Run(tc.name+"/"+question, func(t *testing.T) {
+				intent, plan := membershipKnowledgeGateFixture(question, tc.scope, tc.aspect, tc.factAspect, tc.statement)
+				collector := callbacks.NewRuntimeTraceCollector()
+				collector.SetReplyPlan(plan)
+				retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+				judge := &fakeKnowledgeEvidenceJudge{}
+				gate := newTestKnowledgePolicyGate(retriever)
+				gate.judge = judge
+
+				state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+					Request: newKnowledgePolicyRunInput(question, "1"), Summary: &RunResult{}, Intent: intent, Collector: collector,
+				})
+				if err != nil || !state.SkipGate || retriever.called || judge.calls != 0 {
+					t.Fatalf("completed PMS facts still reached retrieval/Judge: err=%v state=%+v queries=%v judgeCalls=%d",
+						err, state, retriever.queries, judge.calls)
+				}
+				for _, got := range []callbacks.IntentTraceData{state.Input.Intent, collector.Data.Pipeline.Intent} {
+					if got.NeedsKnowledge || len(got.IntentTasks) != 1 || got.IntentTasks[0].NeedsKnowledge || !got.NeedsTool {
+						t.Fatalf("runtime intent requirements were not reconciled: %+v", got)
+					}
+				}
+				got := collector.Data.Pipeline.ReplyPlan.TaskPlans[0]
+				if got.NeedsKnowledge || got.Output != "text_reply" || !got.ReplyRequired || !got.NeedsTool ||
+					len(got.SupportedFacts) != 1 || got.SupportedFacts[0].Statement != tc.statement ||
+					got.TaskID != "member" || got.RequestedAspects[0] != tc.aspect ||
+					got.ResolvedText != plan.TaskPlans[0].ResolvedText || got.PMSOutcome.Status != "ok" {
+					t.Fatalf("source reconciliation changed facts or task identity: %+v", got)
+				}
+				if !intent.IntentTasks[0].NeedsKnowledge || !plan.TaskPlans[0].NeedsKnowledge {
+					t.Fatal("source reconciliation mutated the input slices")
+				}
+			})
+		}
+	}
+}
+
+func TestCompletedMembershipFactsKeepIndependentKnowledgeQuestions(t *testing.T) {
+	for _, tc := range []struct{ query, answer string }{
+		{"外卖怎么拿？", "酒店提供外卖机器人，您可以用它将外卖送至客房。"},
+		{"酒店可以停车吗？", "酒店提供免费停车服务，推荐从昭潭路进入。"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			question := "我能几点退房？"
+			intent, plan := membershipKnowledgeGateFixture(question, runtimeSubjectPersonalMembership, "checkout_time",
+				"pms_member_checkout_time", "银卡会员延迟退房权益为13:00。")
+			intent.IntentTasks = append(intent.IntentTasks, callbacks.IntentTaskTraceData{
+				Intent: "hotel_info", Text: tc.query, ResolvedText: tc.query, NeedsKnowledge: true, SourceRefs: []string{"U2"},
+			})
+			plan.TaskPlans = append(plan.TaskPlans, callbacks.ReplyTaskPlanTraceData{
+				TaskID: "policy", Intent: "hotel_info", Text: tc.query, OriginalText: tc.query, ResolvedText: tc.query,
+				NeedsKnowledge: true, Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true, SourceRefs: []string{"U2"},
+			})
+			plan.ActiveTaskCount, plan.ReplyRequiredTaskCount = 2, 2
+			hit := rag.RetrieveResult{KnowledgeBaseID: 1, ChunkID: 101, Content: "问题：" + tc.query + "\n答案：" + tc.answer, Score: .98}
+			retriever := &fakeKnowledgeContextRetriever{
+				knowledgeBaseIDs: []int64{1}, result: &retrievers.KnowledgeRetrieveResult{
+					KnowledgeBaseIDs: []int64{1}, Hits: []rag.RetrieveResult{hit},
+					ContextResults: []rag.RetrieveResult{hit}, ContextText: hit.Content,
+				},
+			}
+			judge := &fakeKnowledgeEvidenceJudge{outcome: func(tasks []knowledgeEvidenceJudgeTask) knowledgeEvidenceJudgeOutcome {
+				return deterministicTestKnowledgeEvidenceJudge{}.JudgeBatch(context.Background(), RunInput{}, tasks)
+			}}
+			gate := newTestKnowledgePolicyGate(retriever)
+			gate.judge = judge
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(plan)
+			state, err := gate.Evaluate(context.Background(), answerabilityGateInput{
+				Request: newKnowledgePolicyRunInput(question+tc.query, "1"), Summary: &RunResult{}, Intent: intent, Collector: collector,
+			})
+			if err != nil || state.SkipGate || !stringSliceSetEqual(retriever.queries, []string{normalizeRuntimeKnowledgeQuery(tc.query)}) ||
+				judge.calls != 1 || len(judge.tasks) != 1 || judge.tasks[0].TaskID != "policy" {
+				t.Fatalf("source selection did not isolate the knowledge sibling: err=%v queries=%v judge=%+v", err, retriever.queries, judge)
+			}
+			if !state.Input.Intent.NeedsKnowledge || state.Input.Intent.IntentTasks[0].NeedsKnowledge ||
+				!state.Input.Intent.IntentTasks[1].NeedsKnowledge || !collector.Data.Pipeline.Intent.NeedsKnowledge {
+				t.Fatalf("mixed intent requirements changed: %+v", state.Input.Intent)
+			}
+			got := collector.Data.Pipeline.ReplyPlan
+			if len(got.TaskPlans) != 2 || got.TaskPlans[0].TaskID != "member" || got.TaskPlans[1].TaskID != "policy" ||
+				got.TaskPlans[0].NeedsKnowledge || len(got.TaskPlans[0].SupportedFacts) != 1 ||
+				got.TaskPlans[0].SupportedFacts[0].Statement != plan.TaskPlans[0].SupportedFacts[0].Statement ||
+				countReplyRequiredTasks(got.TaskPlans) != 2 {
+				t.Fatalf("mixed task order, PMS facts or replies were lost: %+v", got)
+			}
+		})
+	}
+}
+
+func TestMembershipKnowledgeRemainsForUnresolvedRequestedAspects(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*callbacks.ReplyTaskPlanTraceData)
+	}{
+		{"partial", func(task *callbacks.ReplyTaskPlanTraceData) { task.PMSOutcome.Status = "partial" }},
+		{"query_error", func(task *callbacks.ReplyTaskPlanTraceData) { task.PMSOutcome.Status = "error" }},
+		{"missing_identifier", func(task *callbacks.ReplyTaskPlanTraceData) { task.PMSOutcome.MissingFields = []string{"memberPhone"} }},
+		{"missing_fact", func(task *callbacks.ReplyTaskPlanTraceData) { task.SupportedFacts = nil }},
+		{"empty_fact", func(task *callbacks.ReplyTaskPlanTraceData) { task.SupportedFacts[0].Statement = " " }},
+		{"other_policy", func(task *callbacks.ReplyTaskPlanTraceData) {
+			task.RequestedAspects = append(task.RequestedAspects, "policy")
+		}},
+		{"unknown_aspect", func(task *callbacks.ReplyTaskPlanTraceData) { task.RequestedAspects = []string{"future_benefit"} }},
+		{"order_scope", func(task *callbacks.ReplyTaskPlanTraceData) { task.SubjectScope = runtimeSubjectCurrentStay }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			query := "这个会员最晚几点退房，能怎么用？"
+			intent, plan := membershipKnowledgeGateFixture(query, runtimeSubjectPublicMembership, "checkout_time",
+				"pms_member_checkout_time", "钻石卡会员延迟退房权益为15:00。")
+			tc.change(&plan.TaskPlans[0])
+			gotIntent, gotPlan := reconcileRuntimeKnowledgeRequirementsWithPMS(intent, plan)
+			if !gotIntent.NeedsKnowledge || !gotIntent.IntentTasks[0].NeedsKnowledge || !gotPlan.TaskPlans[0].NeedsKnowledge {
+				t.Fatalf("incomplete or mixed requirements were cleared: intent=%+v plan=%+v", gotIntent, gotPlan)
+			}
+			collector := callbacks.NewRuntimeTraceCollector()
+			collector.SetReplyPlan(plan)
+			retriever := &fakeKnowledgeContextRetriever{knowledgeBaseIDs: []int64{1}}
+			state, err := newTestKnowledgePolicyGate(retriever).Evaluate(context.Background(), answerabilityGateInput{
+				Request: newKnowledgePolicyRunInput(query, "1"), Summary: &RunResult{}, Intent: intent, Collector: collector,
+			})
+			if err != nil || state.SkipGate || !retriever.called {
+				t.Fatalf("incomplete or mixed PMS task bypassed knowledge: err=%v state=%+v", err, state)
+			}
+		})
+	}
+}
+
+func TestKnowledgeMergeCannotReopenCompletedMembershipFacts(t *testing.T) {
+	for _, tc := range []struct{ aspect, factAspect, statement string }{
+		{"checkout_time", "pms_member_checkout_time", "钻石会员可延迟至15:00退房。"},
+		{"member_upgrade_conditions", "pms_member_upgrade_conditions", "钻石卡升级需要累计入住房夜 >= 12 且等级成长积分 >= 2000。"},
+	} {
+		t.Run(tc.aspect, func(t *testing.T) {
+			_, plan := membershipKnowledgeGateFixture("这个会员的条件是什么？", runtimeSubjectPublicMembership, tc.aspect, tc.factAspect, tc.statement)
+			trace := callbacks.KnowledgeEvidenceJudgeTraceData{Tasks: []callbacks.KnowledgeEvidenceJudgeTaskTraceData{{
+				TaskID: "member", Decision: knowledgeEvidenceDecisionInsufficient, MissingAspects: []string{"知识库未找到对应会员政策"},
+			}}}
+			got := applyKnowledgeEvidenceJudgeTraceToReplyPlan(plan, trace, nil).TaskPlans[0]
+			if got.NeedsKnowledge || got.Output != "text_reply" || len(got.MissingAspects) != 0 ||
+				len(got.SupportedFacts) != 1 || got.SupportedFacts[0].Statement != tc.statement {
+				t.Fatalf("knowledge absence contradicted complete live facts: %+v", got)
+			}
+			for _, status := range []string{"partial", "ok"} {
+				_, mixed := membershipKnowledgeGateFixture("这个会员的条件是什么？", runtimeSubjectPublicMembership, tc.aspect, tc.factAspect, tc.statement)
+				mixed.TaskPlans[0].PMSOutcome.Status = status
+				mixed.TaskPlans[0].RequestedAspects = append(mixed.TaskPlans[0].RequestedAspects, "policy")
+				mixed.TaskPlans[0].MissingAspects = []string{"当前会员有效期未返回"}
+				got = applyKnowledgeEvidenceJudgeTraceToReplyPlan(mixed, trace, nil).TaskPlans[0]
+				if !got.NeedsKnowledge || len(got.MissingAspects) != 2 || len(got.SupportedFacts) != 1 ||
+					got.SupportedFacts[0].Statement != tc.statement || got.AnswerText != nil {
+					t.Fatalf("a genuine partial or policy gap was discarded (status=%s): %+v", status, got)
+				}
+			}
+		})
+	}
+}
+
+func membershipKnowledgeGateFixture(query, scope, aspect, factAspect, statement string) (callbacks.IntentTraceData, callbacks.ReplyPlanTraceData) {
+	resolved := "钻石卡最晚能几点走？\n当前客户补充：" + query
+	intent := hotelInfoIntent()
+	intent.NeedsTool = true
+	intent.IntentTasks = []callbacks.IntentTaskTraceData{{
+		Intent: "hotel_info", SubIntent: "member_benefits", Text: query, ResolvedText: resolved,
+		SubjectScope: scope, RequestedAspects: []string{aspect}, NeedsKnowledge: true, NeedsTool: true, SourceRefs: []string{"U1"},
+	}}
+	plan := callbacks.ReplyPlanTraceData{ActiveTaskCount: 1, ReplyRequiredTaskCount: 1, TaskPlans: []callbacks.ReplyTaskPlanTraceData{{
+		TaskID: "member", Intent: "hotel_info", SubIntent: "member_benefits", Text: query, OriginalText: query, ResolvedText: resolved,
+		SubjectScope: scope, RequestedAspects: []string{aspect}, NeedsKnowledge: true, NeedsTool: true, SourceRefs: []string{"U1"},
+		Output: "knowledge_text_reply", OutputKind: "text", ReplyRequired: true,
+		PMSOutcome:     &callbacks.PMSOutcomeTraceData{Status: "ok"},
+		SupportedFacts: []callbacks.KnowledgeEvidenceFactTraceData{{FactID: "P1F1", Aspect: factAspect, Statement: statement}},
+	}}}
+	return intent, plan
+}
+
 func TestMixedMemberAndKnowledgeTasksOnlyRetrieveKnowledgeAndKeepBothReplies(t *testing.T) {
 	tasks := []callbacks.IntentTaskTraceData{
 		{Intent: "hotel_info", SubIntent: "member_benefits", NeedsTool: true, Text: "我有哪些会员权益", ResolvedText: "我有哪些会员权益", SourceRefs: []string{"U1"}},

@@ -107,6 +107,7 @@ func jevCurrentPhoneCandidates(spans []jevIntentSpan) []jevIntentPhoneCandidate 
 
 type jevIntentContext struct {
 	Text             string
+	BusinessSnapshot bool
 	DateValue        string
 	SourceRef        string
 	Intent           string
@@ -634,7 +635,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 		historyOptions[task.Ref] = description
 		contextText := compactJevActiveGoalText(firstNonEmptyReplyTaskText(task.ResolvedText, task.Text))
 		contexts[task.Ref] = jevIntentContext{
-			Text: contextText, Intent: task.Intent, SubIntent: task.SubIntent,
+			Text: contextText, BusinessSnapshot: true, Intent: task.Intent, SubIntent: task.SubIntent,
 			Objective: task.Objective, SubjectScope: firstNonEmptyReplyTaskText(task.SubjectScope, jevTaskSubjectScope(task.SubIntent)),
 			RequestedAspects: append([]string(nil), task.RequestedAspects...),
 			SelectionSource:  task.SelectionSource, SelectionRef: task.SelectionRef,
@@ -696,7 +697,7 @@ func buildJevClassificationQuestions(spans []jevIntentSpan, state jevIntentState
 			options[earlier.Ref] = earlier.Text
 			contexts[earlier.Ref] = jevIntentContext{Text: earlier.Text, SourceRef: earlier.SourceRef}
 		}
-		questions[span.Ref+"_context"] = jev.Question{Type: "choice", Instructions: instructions("Select the ONE prior customer task needed to understand this task (phone supplied after an order lookup question, correction, subject of 'how much', or an elliptical continuation such as '查查我的', '就是这个', '那你回答啊'), or none for self-contained tasks. recentBusinessTask is a real prior runtime task from the same conversation session and is the preferred context when it uniquely matches an omitted subject. Choose the most recent still-relevant subject, not an unrelated topic. A service reply is context, not a new customer request."), Criteria: options}
+		questions[span.Ref+"_context"] = jev.Question{Type: "choice", Instructions: instructions("Select the ONE prior customer task needed to understand this wording (phone supplied after an order lookup question, correction, subject of 'how much', or an elliptical continuation such as '查查我的', '就是这个', '那你回答啊'), or none for self-contained tasks. The separate scope choice must select continue_Rx to retain an ongoing structured business goal; an older H sentence can identify a named item but must not replace that goal's current dates and identity. recentBusinessTask is a real prior runtime task from this conversation session. Choose the most recent still-relevant subject, not an unrelated topic. A service reply is context, not a new customer request."), Criteria: options}
 		questions[span.Ref+"_policy"] = jev.Question{Type: "noul", Instructions: instructions("In addition to live PMS facts, does this task need hotel policy/knowledge (upgrade eligibility, service recovery, waiver conditions, late-checkout policy, or recorded room descriptions such as quiet, street-facing, near elevators)? Room attributes require hotel knowledge and cannot be inferred from a floor number or room name. Pure order details, phone lookup and current room counts do not need a FAQ."), Criteria: map[string]any{
 			"true":  "A hotel-specific policy, eligibility condition, remedy or service explanation is requested alongside live facts.",
 			"false": "Only live factual data or no PMS data is requested.",
@@ -879,16 +880,25 @@ func buildIntentTraceFromJev(response jev.Response, spans []jevIntentSpan, conte
 		}
 		ref := response.Answers[span.Ref+"_context"].Choice
 		scope := response.Answers[span.Ref+"_scope"].Choice
+		businessRef, businessScopeChoice := jevBusinessContextForScopeChoice(scope, contexts)
+		if businessScopeChoice {
+			scope = "inherit_context"
+		}
 		targetRef := response.Answers[span.Ref+"_target_ref"].Choice
 		if (ref == "none" || ref == "") && targetRef != "" && targetRef != "none" && targetRef != "current" {
 			ref = targetRef
 		}
-		switch scope {
-		case "latest_history":
-			task.SubjectScope = runtimeSubjectHistoricalOrder
-		case runtimeSubjectHistoricalOrder, runtimeSubjectCurrentOrder, runtimeSubjectCurrentStay,
-			runtimeSubjectRoomCandidates, runtimeSubjectPersonalMembership, runtimeSubjectPublicMembership, runtimeSubjectPublicPolicy:
-			task.SubjectScope = scope
+		if businessRef != "" {
+			ref = businessRef
+		}
+		if !cancelled {
+			switch scope {
+			case "latest_history":
+				task.SubjectScope = runtimeSubjectHistoricalOrder
+			case runtimeSubjectHistoricalOrder, runtimeSubjectCurrentOrder, runtimeSubjectCurrentStay,
+				runtimeSubjectRoomCandidates, runtimeSubjectPersonalMembership, runtimeSubjectPublicMembership, runtimeSubjectPublicPolicy:
+				task.SubjectScope = scope
+			}
 		}
 		if ref != "none" && ref != "" && !cancelled {
 			context, valid := contexts[ref]

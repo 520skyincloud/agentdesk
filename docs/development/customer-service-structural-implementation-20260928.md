@@ -115,6 +115,34 @@ git diff --check
 自然表达的值校验和受控回复出口；不扩大HPMS写入，不改成固定问答。
 最终修复版本及针对性复测结果继续在下方记录。
 
+### 2026-09-28 Judge 超时下的用品自助事实恢复
+
+补齐一项已复现的结构性缺口：客户提出“房间毛巾不够，能再送一条”，并明确
+“不要转人工、不要登记工单”时，知识 Judge 超时不能把同一条 FAQ 中已确认的
+自取事实整条丢弃。
+
+- `knowledge_evidence_judge.go` 仅在用品服务任务、客户明确拒绝人工、候选为门店
+  知识且得分达到现有窄阈值时，保留可核验的领取位置/自取方式。
+- 客户请求的送房/配送范围单独写入 `MissingAspects`；不会把自取升级为配送，
+  不会生成“无人化运营、衣柜备用、暂时无法配送”等未有证据的说法。
+- Judge `timeout` 可走这条已有自助事实恢复；`protocol_invalid`、普通酒店信息、
+  无用品主题或客户未拒绝人工均不走该恢复。
+- 恢复仍由原 `Knowledge Judge → ReplyPlan → Generate → Commit/Outbox` 链路消费，
+  不新增 Agent、发送链路或工单状态机。
+
+针对性回归通过：
+
+```sh
+go test ./internal/ai/runtime/executor -run TestKnowledgeEvidenceJudgeTimeoutPreservesDeclinedSupplySelfHelp -count=1
+go test ./internal/ai/runtime/executor -count=1
+go test ./internal/ai/runtime/instruction -count=1
+go test ./internal/ai/runtime/... ./internal/pms/... ./internal/pkg/replyruntime/... ./internal/pkg/toolx/... ./internal/services/... -count=1
+go test -race ./internal/pms -count=1
+```
+
+当前代码仍保持 `AGENT_DESK_PMS_ALLOW_WRITE=false`；本节只修复知识事实保留，
+不改变 HPMS 只读边界或人工路由授权。
+
 发布前备份原 release、原版本代码、数据库、配置、运行环境与旧提示词，
 校验二进制哈希；实际服务仅通过已有 `agentdesk` 切换。
 提示词更新按原值哈希比较后写入；失败可只还原本轮改过且未被他人改变的配置。
